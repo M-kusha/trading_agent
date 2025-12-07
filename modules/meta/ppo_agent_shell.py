@@ -998,3 +998,64 @@ class PPOAgentShell(
         """Cleanup resources and stop monitoring."""
         self._monitoring_active = False
         self.logger.info("[PPOAgentShell] Cleanup completed")
+
+    # ─────────────────────────────────────────────────────────────
+    # State Persistence
+    # ─────────────────────────────────────────────────────────────
+
+    def _get_custom_state(self) -> Dict[str, Any]:
+        """
+        Get custom state for persistence.
+        
+        Saves:
+        - Performance metrics (decision counts, avg processing time)
+        - Circuit breaker state
+        - Health status
+        - Last decisions (for graceful recovery)
+        """
+        return {
+            "performance_metrics": dict(self._performance_metrics),
+            "circuit_breaker": {
+                "state": self.circuit_breaker.get("state", "CLOSED"),
+                "failures": self.circuit_breaker.get("failures", 0),
+                "last_failure": self.circuit_breaker.get("last_failure"),
+            },
+            "health_status": self._health_status,
+            "last_decisions": {
+                k: v.to_dict() if hasattr(v, "to_dict") else v
+                for k, v in self._last_decisions.items()
+            },
+            "config": {
+                "instruments": self._cfg.instruments,
+                "primary_instrument": self._cfg.primary_instrument,
+            },
+        }
+
+    def _set_custom_state(self, state: Dict[str, Any]) -> None:
+        """
+        Restore custom state from persistence.
+        """
+        if not state:
+            return
+        
+        # Restore performance metrics
+        metrics = state.get("performance_metrics", {})
+        if metrics:
+            self._performance_metrics.update(metrics)
+        
+        # Restore circuit breaker (but keep it CLOSED on fresh start for safety)
+        cb = state.get("circuit_breaker", {})
+        if cb:
+            # Reset circuit breaker on restart (don't persist OPEN state)
+            self.circuit_breaker["failures"] = max(0, cb.get("failures", 0) - 1)  # Decay failures
+            self.circuit_breaker["state"] = "CLOSED"  # Always start fresh
+            self.circuit_breaker["last_failure"] = cb.get("last_failure")
+        
+        # Restore health status
+        self._health_status = state.get("health_status", "healthy")
+        
+        self.logger.info(
+            f"📂 PPOAgentShell state restored | "
+            f"decisions={self._performance_metrics.get('total_decisions', 0)} | "
+            f"avg_time={self._performance_metrics.get('avg_processing_time_ms', 0):.1f}ms"
+        )

@@ -1502,3 +1502,52 @@ class ThemeExpert(VotingExpertBase):
             "theme_composite_score": 0.5,
             "_thesis": thesis,
         }
+
+    # ═══════════════════════════════════════════════════════════════════
+    # STATE PERSISTENCE - Save/Load module state
+    # ═══════════════════════════════════════════════════════════════════
+
+    def _get_custom_state(self) -> Dict[str, Any]:
+        """
+        Get custom state for persistence.
+        
+        Saves:
+        - Regime history (for persistence filtering)
+        - Regime persistence count
+        - Confidence calibration settings
+        """
+        return {
+            "regime_history": list(self.regime_history)[-20:],  # Keep last 20
+            "regime_persistence_count": self.regime_persistence_count,
+            "base_confidence": self.base_confidence,
+            "sentiment_weights": dict(self.sentiment_weights),
+        }
+
+    def _set_custom_state(self, state: Dict[str, Any]) -> None:
+        """
+        Restore custom state from persistence.
+        """
+        if not state:
+            return
+        
+        # Restore regime history
+        regime_hist = state.get("regime_history", [])
+        self.regime_history = list(regime_hist)
+        
+        # Restore persistence count
+        self.regime_persistence_count = int(state.get("regime_persistence_count", 0))
+        
+        # Restore confidence settings (if customized)
+        if "base_confidence" in state:
+            self.base_confidence = float(state["base_confidence"])
+        
+        # Restore sentiment weights (if customized)
+        weights = state.get("sentiment_weights", {})
+        if weights:
+            self.sentiment_weights.update(weights)
+        
+        self.log_info(
+            f"📂 ThemeExpert state restored | "
+            f"regime_history={len(self.regime_history)} | "
+            f"persistence={self.regime_persistence_count}"
+        )

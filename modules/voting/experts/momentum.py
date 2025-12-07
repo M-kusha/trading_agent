@@ -1488,3 +1488,79 @@ class MomentumExpert(VotingExpertBase):
         base_outputs.setdefault("momentum_analysis", analysis)
 
         return base_outputs
+
+    # ═══════════════════════════════════════════════════════════════════
+    # STATE PERSISTENCE - Save/Load module state
+    # ═══════════════════════════════════════════════════════════════════
+
+    def _get_custom_state(self) -> Dict[str, Any]:
+        """
+        Get custom state for persistence.
+        
+        Saves per-instrument momentum state:
+        - RSI values and history
+        - MACD values
+        - Momentum indicators
+        - Divergence patterns
+        """
+        instrument_states = {}
+        for inst, state in self.instrument_state.items():
+            instrument_states[inst] = {
+                "rsi_value": float(state.get("rsi_value", 50.0)),
+                "macd_value": float(state.get("macd_value", 0.0)),
+                "macd_signal": float(state.get("macd_signal", 0.0)),
+                "macd_histogram": float(state.get("macd_histogram", 0.0)),
+                "stoch_k": float(state.get("stoch_k", 50.0)),
+                "stoch_d": float(state.get("stoch_d", 50.0)),
+                "composite_momentum": float(state.get("composite_momentum", 0.0)),
+                "momentum_direction": int(state.get("momentum_direction", 0)),
+                "momentum_acceleration": float(state.get("momentum_acceleration", 0.0)),
+                "rsi_history": list(state.get("rsi_history", []))[-20:],
+                "macd_history": list(state.get("macd_history", []))[-20:],
+                "momentum_history": list(state.get("momentum_history", []))[-20:],
+            }
+        
+        return {
+            "instrument_state": instrument_states,
+            "composite_momentum": float(getattr(self, "composite_momentum", 0.0)),
+            "momentum_direction": int(getattr(self, "momentum_direction", 0)),
+            "momentum_acceleration": float(getattr(self, "momentum_acceleration", 0.0)),
+        }
+
+    def _set_custom_state(self, state: Dict[str, Any]) -> None:
+        """
+        Restore custom state from persistence.
+        """
+        if not state:
+            return
+        
+        # Restore per-instrument state
+        inst_states = state.get("instrument_state", {})
+        for inst, saved in inst_states.items():
+            if inst in self.instrument_state:
+                self.instrument_state[inst].update({
+                    "rsi_value": float(saved.get("rsi_value", 50.0)),
+                    "macd_value": float(saved.get("macd_value", 0.0)),
+                    "macd_signal": float(saved.get("macd_signal", 0.0)),
+                    "macd_histogram": float(saved.get("macd_histogram", 0.0)),
+                    "stoch_k": float(saved.get("stoch_k", 50.0)),
+                    "stoch_d": float(saved.get("stoch_d", 50.0)),
+                    "composite_momentum": float(saved.get("composite_momentum", 0.0)),
+                    "momentum_direction": int(saved.get("momentum_direction", 0)),
+                    "momentum_acceleration": float(saved.get("momentum_acceleration", 0.0)),
+                })
+                # Restore histories as deques
+                for key in ["rsi_history", "macd_history", "momentum_history"]:
+                    hist = saved.get(key, [])
+                    if key in self.instrument_state[inst]:
+                        self.instrument_state[inst][key] = deque(hist, maxlen=30)
+        
+        # Restore legacy single-instrument state
+        self.composite_momentum = float(state.get("composite_momentum", 0.0))
+        self.momentum_direction = int(state.get("momentum_direction", 0))
+        self.momentum_acceleration = float(state.get("momentum_acceleration", 0.0))
+        
+        self.log_info(
+            f"📂 MomentumExpert state restored | "
+            f"instruments={len(inst_states)}"
+        )

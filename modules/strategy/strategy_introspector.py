@@ -2298,3 +2298,77 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
                 'timestamp': datetime.datetime.now().isoformat(),
                 'summary': {'error': 'payload_build_failed'}
             }
+
+    # ═══════════════════════════════════════════════════════════════════
+    # STATE PERSISTENCE - Save/Load module state
+    # ═══════════════════════════════════════════════════════════════════
+
+    def _get_custom_state(self) -> Dict[str, Any]:
+        """
+        Get custom state for persistence.
+        
+        Saves critical analysis state that is expensive to rebuild:
+        - Strategy profiles (per-strategy performance tracking)
+        - Performance analytics (historical metrics)
+        - Adaptation history (past adjustments)
+        - Introspection metrics (cumulative statistics)
+        - Current analysis state (latest insights)
+        """
+        return {
+            "strategy_profiles": {
+                k: dict(v) for k, v in self.strategy_profiles.items()
+            },
+            "performance_analytics": {
+                k: list(v)[-100:] for k, v in self.performance_analytics.items()  # Keep last 100
+            },
+            "adaptation_history": list(self.adaptation_history),
+            "introspection_metrics": dict(self.introspection_metrics),
+            "current_analysis": dict(self.current_analysis),
+            "error_count": self.error_count,
+            "is_disabled": self.is_disabled,
+            "_baseline_metrics": dict(self._baseline_metrics),
+        }
+
+    def _set_custom_state(self, state: Dict[str, Any]) -> None:
+        """
+        Restore custom state from persistence.
+        """
+        if not state:
+            return
+        
+        # Restore strategy profiles
+        profiles = state.get("strategy_profiles", {})
+        for k, v in profiles.items():
+            self.strategy_profiles[k].update(v)
+        
+        # Restore performance analytics
+        analytics = state.get("performance_analytics", {})
+        for k, v in analytics.items():
+            self.performance_analytics[k] = list(v)
+        
+        # Restore adaptation history
+        history = state.get("adaptation_history", [])
+        self.adaptation_history = deque(history, maxlen=50)
+        
+        # Restore introspection metrics
+        metrics = state.get("introspection_metrics", {})
+        self.introspection_metrics.update(metrics)
+        
+        # Restore current analysis
+        analysis = state.get("current_analysis", {})
+        self.current_analysis.update(analysis)
+        
+        # Restore error state
+        self.error_count = state.get("error_count", 0)
+        self.is_disabled = state.get("is_disabled", False)
+        
+        # Restore baseline metrics if customized
+        baselines = state.get("_baseline_metrics", {})
+        if baselines:
+            self._baseline_metrics.update(baselines)
+        
+        self.logger.info(
+            f"📂 StrategyIntrospector state restored | "
+            f"profiles={len(self.strategy_profiles)} | "
+            f"adaptations={len(self.adaptation_history)}"
+        )

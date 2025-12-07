@@ -619,3 +619,91 @@ class CollusionDetector(VotingModuleBase):
             "member_independence_scores": {},
             "_thesis": thesis,
         }
+
+    # ═══════════════════════════════════════════════════════════════════
+    # STATE PERSISTENCE - Save/Load module state
+    # ═══════════════════════════════════════════════════════════════════
+
+    def _get_custom_state(self) -> Dict[str, Any]:
+        """
+        Get custom state for persistence.
+        
+        Saves:
+        - Vote history (recent votes for pattern detection)
+        - Collusion history (detected collusion events)
+        - Member profiles (behavioral profiles)
+        - Detection statistics
+        - Quality metrics
+        """
+        # Convert pair tuples to strings for JSON serialization
+        pair_history = {}
+        for pair, history in self.pair_agreement_history.items():
+            key = f"{pair[0]}|{pair[1]}"
+            pair_history[key] = list(history)
+        
+        return {
+            "collusion_score": self.collusion_score,
+            "vote_history": [
+                v if isinstance(v, dict) else {"vote": v}
+                for v in list(self.vote_history)[-50:]  # Last 50
+            ],
+            "collusion_history": list(self.collusion_history),
+            "pair_agreement_history": pair_history,
+            "member_profiles": {k: dict(v) for k, v in self.member_profiles.items()},
+            "detection_stats": dict(self.detection_stats),
+            "quality_metrics": dict(self.quality_metrics),
+            "suspicious_pairs": [list(p) for p in self.suspicious_pairs],
+            "current_threshold": self.current_threshold,
+        }
+
+    def _set_custom_state(self, state: Dict[str, Any]) -> None:
+        """
+        Restore custom state from persistence.
+        """
+        if not state:
+            return
+        
+        # Restore collusion score
+        self.collusion_score = float(state.get("collusion_score", 0.0))
+        
+        # Restore vote history
+        vote_hist = state.get("vote_history", [])
+        self.vote_history = deque(vote_hist, maxlen=self.window * 2)
+        
+        # Restore collusion history
+        coll_hist = state.get("collusion_history", [])
+        self.collusion_history = deque(coll_hist, maxlen=100)
+        
+        # Restore pair agreement history (convert string keys back to tuples)
+        pair_hist = state.get("pair_agreement_history", {})
+        for key, history in pair_hist.items():
+            parts = key.split("|")
+            if len(parts) == 2:
+                pair = (parts[0], parts[1])
+                self.pair_agreement_history[pair] = deque(history, maxlen=self.window)
+        
+        # Restore member profiles
+        profiles = state.get("member_profiles", {})
+        for k, v in profiles.items():
+            self.member_profiles[k].update(v)
+        
+        # Restore statistics
+        stats = state.get("detection_stats", {})
+        self.detection_stats.update(stats)
+        
+        # Restore quality metrics
+        quality = state.get("quality_metrics", {})
+        self.quality_metrics.update(quality)
+        
+        # Restore suspicious pairs
+        susp_pairs = state.get("suspicious_pairs", [])
+        self.suspicious_pairs = {tuple(p) for p in susp_pairs if len(p) == 2}
+        
+        # Restore threshold
+        self.current_threshold = float(state.get("current_threshold", self.base_threshold))
+        
+        self.logger.info(
+            f"📂 CollusionDetector state restored | "
+            f"score={self.collusion_score:.2f} | "
+            f"checks={self.detection_stats.get('total_checks', 0)}"
+        )

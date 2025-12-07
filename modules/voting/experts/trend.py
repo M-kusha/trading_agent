@@ -1753,3 +1753,85 @@ class TrendExpert(VotingExpertBase):
             "confidence": 0.1,
             "_thesis": thesis,
         }
+
+    # ═══════════════════════════════════════════════════════════════════
+    # STATE PERSISTENCE - Save/Load module state
+    # ═══════════════════════════════════════════════════════════════════
+
+    def _get_custom_state(self) -> Dict[str, Any]:
+        """
+        Get custom state for persistence.
+        
+        Saves per-instrument computed state:
+        - MA values and history
+        - ADX values and history
+        - Trend state and history
+        - Support/resistance levels
+        """
+        instrument_states = {}
+        for inst, state in self.instrument_state.items():
+            instrument_states[inst] = {
+                "fast_ma": float(state.get("fast_ma", 0.0)),
+                "medium_ma": float(state.get("medium_ma", 0.0)),
+                "slow_ma": float(state.get("slow_ma", 0.0)),
+                "adx_value": float(state.get("adx_value", 0.0)),
+                "plus_di": float(state.get("plus_di", 0.0)),
+                "minus_di": float(state.get("minus_di", 0.0)),
+                "sar_value": float(state.get("sar_value", 0.0)),
+                "sar_direction": int(state.get("sar_direction", 0)),
+                "current_trend": state.get("current_trend", "neutral"),
+                "trend_strength": float(state.get("trend_strength", 0.0)),
+                "trend_duration": int(state.get("trend_duration", 0)),
+                "ma_alignment": int(state.get("ma_alignment", 0)),
+                "support_levels": list(state.get("support_levels", []))[-5:],
+                "resistance_levels": list(state.get("resistance_levels", []))[-5:],
+                "trend_history": list(state.get("trend_history", []))[-20:],
+            }
+        
+        return {
+            "instrument_state": instrument_states,
+            "fast_ma": float(self.fast_ma),
+            "medium_ma": float(self.medium_ma),
+            "slow_ma": float(self.slow_ma),
+        }
+
+    def _set_custom_state(self, state: Dict[str, Any]) -> None:
+        """
+        Restore custom state from persistence.
+        """
+        if not state:
+            return
+        
+        # Restore per-instrument state
+        inst_states = state.get("instrument_state", {})
+        for inst, saved in inst_states.items():
+            if inst in self.instrument_state:
+                self.instrument_state[inst].update({
+                    "fast_ma": float(saved.get("fast_ma", 0.0)),
+                    "medium_ma": float(saved.get("medium_ma", 0.0)),
+                    "slow_ma": float(saved.get("slow_ma", 0.0)),
+                    "adx_value": float(saved.get("adx_value", 0.0)),
+                    "plus_di": float(saved.get("plus_di", 0.0)),
+                    "minus_di": float(saved.get("minus_di", 0.0)),
+                    "sar_value": float(saved.get("sar_value", 0.0)),
+                    "sar_direction": int(saved.get("sar_direction", 0)),
+                    "current_trend": saved.get("current_trend", "neutral"),
+                    "trend_strength": float(saved.get("trend_strength", 0.0)),
+                    "trend_duration": int(saved.get("trend_duration", 0)),
+                    "ma_alignment": int(saved.get("ma_alignment", 0)),
+                    "support_levels": list(saved.get("support_levels", [])),
+                    "resistance_levels": list(saved.get("resistance_levels", [])),
+                })
+                # Restore trend history as deque
+                hist = saved.get("trend_history", [])
+                self.instrument_state[inst]["trend_history"] = deque(hist, maxlen=100)
+        
+        # Restore legacy single-instrument state
+        self.fast_ma = float(state.get("fast_ma", 0.0))
+        self.medium_ma = float(state.get("medium_ma", 0.0))
+        self.slow_ma = float(state.get("slow_ma", 0.0))
+        
+        self.log_info(
+            f"📂 TrendExpert state restored | "
+            f"instruments={len(inst_states)}"
+        )
