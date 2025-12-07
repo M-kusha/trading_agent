@@ -311,14 +311,14 @@
             gap: 4px;
         }
 
-        .badge-long {
+        .badge-buy, .badge-long {
             background: linear-gradient(135deg, rgba(16, 185, 129, 0.2), rgba(16, 185, 129, 0.1));
             color: #34d399;
             border: 1px solid rgba(16, 185, 129, 0.3);
             box-shadow: 0 0 20px rgba(16, 185, 129, 0.2);
         }
 
-        .badge-short {
+        .badge-sell, .badge-short {
             background: linear-gradient(135deg, rgba(244, 63, 94, 0.2), rgba(244, 63, 94, 0.1));
             color: #fb7185;
             border: 1px solid rgba(244, 63, 94, 0.3);
@@ -386,25 +386,28 @@
             font-family: 'JetBrains Mono', monospace;
             font-weight: 600;
             background: linear-gradient(135deg, #e2e8f0, #94a3b8);
+            background-clip: text;
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
-            background-clip: text;
         }
 
         .metric-value.positive {
             background: linear-gradient(135deg, #34d399, #10b981);
+            background-clip: text;
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
         }
 
         .metric-value.negative {
             background: linear-gradient(135deg, #fb7185, #f43f5e);
+            background-clip: text;
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
         }
 
         .metric-value.accent {
             background: linear-gradient(135deg, #38bdf8, #3b82f6);
+            background-clip: text;
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
         }
@@ -556,10 +559,16 @@
 
     function normalizeDirection(raw, fallback = "hold") {
         if (raw === undefined || raw === null) return fallback;
-        if (typeof raw === "string") return raw.toLowerCase();
+        if (typeof raw === "string") {
+            const lower = raw.toLowerCase();
+            // Map long/short to buy/sell
+            if (lower === "long" || lower === "buy") return "buy";
+            if (lower === "short" || lower === "sell") return "sell";
+            return lower;
+        }
         if (typeof raw === "number") {
-            if (raw > 0) return "long";
-            if (raw < 0) return "short";
+            if (raw > 0) return "buy";
+            if (raw < 0) return "sell";
             return fallback;
         }
         if (typeof raw === "object") {
@@ -1061,10 +1070,11 @@
                             <div className="glass-card-inner p-4 rounded-2xl text-center">
                                 <div className="text-[0.6rem] text-slate-500 uppercase mb-2">Direction</div>
                                 <span className={`badge ${
-                                    normalizeDirection(finalDec.action) === "long" ? "badge-long" :
-                                    normalizeDirection(finalDec.action) === "short" ? "badge-short" : "badge-hold"
+                                    normalizeDirection(finalDec.action) === "buy" ? "badge-buy" :
+                                    normalizeDirection(finalDec.action) === "sell" ? "badge-sell" : "badge-hold"
                                 }`}>
-                                    {String(finalDec.action || "HOLD").toUpperCase()}
+                                    {normalizeDirection(finalDec.action) === "buy" ? "BUY" : 
+                                     normalizeDirection(finalDec.action) === "sell" ? "SELL" : "HOLD"}
                                 </span>
                             </div>
                             <div className="glass-card-inner p-4 rounded-2xl text-center">
@@ -1169,10 +1179,11 @@
                                         <td className="mono font-medium text-white">{sym}</td>
                                         <td>
                                             <span className={`badge ${
-                                                normalizeDirection(dec.direction) === "long" ? "badge-long" :
-                                                normalizeDirection(dec.direction) === "short" ? "badge-short" : "badge-hold"
+                                                normalizeDirection(dec.direction) === "buy" ? "badge-buy" :
+                                                normalizeDirection(dec.direction) === "sell" ? "badge-sell" : "badge-hold"
                                             }`}>
-                                                {String(dec.direction || "HOLD").toUpperCase()}
+                                                {normalizeDirection(dec.direction) === "buy" ? "BUY" :
+                                                 normalizeDirection(dec.direction) === "sell" ? "SELL" : "HOLD"}
                                             </span>
                                         </td>
                                         <td className="mono text-cyan-400">{fmtPct((dec.confidence ?? 0) * 100, 1)}</td>
@@ -1228,18 +1239,20 @@
                                         <td className="mono font-medium text-white">{r.symbol || "-"}</td>
                                         <td>
                                             <span className={`badge ${
-                                                normalizeDirection(r.action) === "long" ? "badge-long" :
-                                                normalizeDirection(r.action) === "short" ? "badge-short" : "badge-hold"
+                                                normalizeDirection(r.action) === "buy" ? "badge-buy" :
+                                                normalizeDirection(r.action) === "sell" ? "badge-sell" : "badge-hold"
                                             }`}>
-                                                {String(r.action || "").toUpperCase() || "N/A"}
+                                                {normalizeDirection(r.action) === "buy" ? "BUY" :
+                                                 normalizeDirection(r.action) === "sell" ? "SELL" : 
+                                                 String(r.action || "").toUpperCase() || "N/A"}
                                             </span>
                                         </td>
                                         <td className="mono">{fmtNum(r.volume ?? 0, 3)}</td>
                                         <td className="mono">{fmtNum(r.price ?? 0, 3)}</td>
                                         <td>
                                             <span className={`badge ${
-                                                String(r.status || "").toUpperCase().includes("FILLED") ? "badge-long" :
-                                                String(r.status || "").toUpperCase().includes("REJECT") ? "badge-short" : "badge-hold"
+                                                String(r.status || "").toUpperCase().includes("FILLED") ? "badge-buy" :
+                                                String(r.status || "").toUpperCase().includes("REJECT") ? "badge-sell" : "badge-hold"
                                             }`}>
                                                 {String(r.status || "").toUpperCase() || "-"}
                                             </span>
@@ -1340,10 +1353,11 @@
                         <div className="glass-card-inner p-4 rounded-xl">
                             <div className="flex items-center gap-3 mb-2">
                                 <span className={`badge ${
-                                    (ppo.final_decision?.action || "HOLD").toUpperCase() === "LONG" ? "badge-long" :
-                                    (ppo.final_decision?.action || "HOLD").toUpperCase() === "SHORT" ? "badge-short" : "badge-hold"
+                                    ["LONG", "BUY"].includes((ppo.final_decision?.action || "HOLD").toUpperCase()) ? "badge-buy" :
+                                    ["SHORT", "SELL"].includes((ppo.final_decision?.action || "HOLD").toUpperCase()) ? "badge-sell" : "badge-hold"
                                 }`}>
-                                    {(ppo.final_decision?.action || "HOLD").toUpperCase()}
+                                    {["LONG", "BUY"].includes((ppo.final_decision?.action || "HOLD").toUpperCase()) ? "BUY" :
+                                     ["SHORT", "SELL"].includes((ppo.final_decision?.action || "HOLD").toUpperCase()) ? "SELL" : "HOLD"}
                                 </span>
                                 <span className="mono text-xs text-slate-400">
                                     conf {fmtNum(ppo.final_decision?.confidence || 0, 2)}
@@ -1469,15 +1483,16 @@
                             <div className="space-y-3">
                                 {positions.map((p, idx) => {
                                     const dir = normalizeDirection(p.direction ?? p.side);
+                                    const displayDir = dir === "buy" ? "BUY" : (dir === "sell" ? "SELL" : "HOLD");
                                     const pnl = p.current_pnl || 0;
                                     return (
                                         <div key={idx} className="glass-card-inner p-4 rounded-xl">
                                             <div className="flex items-center justify-between mb-3">
                                                 <span className="font-semibold text-white">{p.symbol}</span>
                                                 <span className={`badge ${
-                                                    dir === "long" ? "badge-long" :
-                                                    dir === "short" ? "badge-short" : "badge-hold"
-                                                }`}>{dir}</span>
+                                                    dir === "buy" ? "badge-buy" :
+                                                    dir === "sell" ? "badge-sell" : "badge-hold"
+                                                }`}>{displayDir}</span>
                                             </div>
                                             <div className="grid grid-cols-3 gap-3 text-xs">
                                                 <div>
@@ -1511,19 +1526,20 @@
                             <div className="space-y-2">
                                 {recent.slice(-10).reverse().map((t, idx) => {
                                     const dir = normalizeDirection(t.direction ?? t.side);
+                                    const displayDir = dir === "buy" ? "BUY" : (dir === "sell" ? "SELL" : "HOLD");
                                     const pnl = t.pnl ?? t.profit ?? 0;
                                     return (
                                         <div key={idx} className="flex items-center justify-between py-2 border-b border-white/5 last:border-0">
                                             <div className="flex items-center gap-3">
                                                 <span className={`badge ${
-                                                    dir === "long" ? "badge-long" :
-                                                    dir === "short" ? "badge-short" : "badge-hold"
-                                                }`}>{dir}</span>
+                                                    dir === "buy" ? "badge-buy" :
+                                                    dir === "sell" ? "badge-sell" : "badge-hold"
+                                                }`}>{displayDir}</span>
                                                 <span className="text-sm text-white">{t.symbol || t.instrument || "?"}</span>
                                             </div>
                                             <div className="flex items-center gap-4">
                                                 <span className="mono text-xs text-slate-400">
-                                                    {t.entry_price != null ? fmtNum(Number(t.entry_price), 4) : "-"}
+                                                    {t.entry_price != null ? fmtNum(Number(t.entry_price), 5) : "-"}
                                                 </span>
                                                 <span className={`mono text-sm font-semibold ${pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                                                     {(pnl >= 0 ? "+" : "") + fmtNum(Number(pnl), 2)}
@@ -1724,7 +1740,9 @@
         const instruments = voting.instruments || {};
         const world   = data?.world_model || {};
 
-        const action = (voting.action || "HOLD").toUpperCase();
+        // Normalize action to BUY/SELL/HOLD
+        const rawAction = (voting.action || "HOLD").toUpperCase();
+        const action = rawAction === "LONG" ? "BUY" : (rawAction === "SHORT" ? "SELL" : rawAction);
 
         return (
             <div className="flex flex-col gap-5">
@@ -1745,8 +1763,8 @@
 
                         <div className="text-center py-6">
                             <div className={`text-5xl font-black mb-4 ${
-                                action === "LONG" ? "text-emerald-400" :
-                                action === "SHORT" ? "text-rose-400" : "text-slate-300"
+                                action === "BUY" ? "text-emerald-400" :
+                                action === "SELL" ? "text-rose-400" : "text-slate-300"
                             }`}>
                                 {action}
                             </div>
@@ -1771,22 +1789,23 @@
                                 <div className="text-[0.6rem] text-slate-500 uppercase mb-3">Per Instrument</div>
                                 <div className="space-y-3">
                                     {Object.entries(instruments).map(([symbol, d]) => {
-                                        const act = (d.action || "HOLD").toUpperCase();
+                                        const rawAct = (d.action || "HOLD").toUpperCase();
+                                        const act = rawAct === "LONG" ? "BUY" : (rawAct === "SHORT" ? "SELL" : rawAct);
                                         const conf = (d.confidence || 0) * 100;
                                         return (
                                             <div key={symbol} className="glass-card-inner p-4 rounded-xl">
                                                 <div className="flex items-center justify-between mb-2">
                                                     <span className="font-semibold text-white">{symbol}</span>
                                                     <span className={`badge ${
-                                                        act === "LONG" ? "badge-long" :
-                                                        act === "SHORT" ? "badge-short" : "badge-hold"
+                                                        act === "BUY" ? "badge-buy" :
+                                                        act === "SELL" ? "badge-sell" : "badge-hold"
                                                     }`}>{act}</span>
                                                 </div>
                                                 <div className="progress-bar">
                                                     <div
                                                         className={`h-full rounded-lg ${
-                                                            act === "LONG" ? "bg-emerald-500" :
-                                                            act === "SHORT" ? "bg-rose-500" : "bg-slate-500"
+                                                            act === "BUY" ? "bg-emerald-500" :
+                                                            act === "SELL" ? "bg-rose-500" : "bg-slate-500"
                                                         }`}
                                                         style={{ width: clamp(conf, 0, 100) + "%" }}
                                                     />
@@ -1864,14 +1883,15 @@
                                     {experts.map((v, idx) => {
                                         const dir = normalizeDirection(v.vote ?? v.action, "hold");
                                         const conf = (v.confidence ?? v.weight ?? 0) * 100;
+                                        const displayDir = dir === "buy" ? "BUY" : (dir === "sell" ? "SELL" : "HOLD");
                                         return (
                                             <div key={idx} className="flex items-center justify-between glass-card-inner px-4 py-3 rounded-xl">
                                                 <span className="font-medium text-white">{v.name}</span>
                                                 <div className="flex items-center gap-3">
                                                     <span className={`badge ${
-                                                        dir === "long" ? "badge-long" :
-                                                        dir === "short" ? "badge-short" : "badge-hold"
-                                                    }`}>{dir}</span>
+                                                        dir === "buy" ? "badge-buy" :
+                                                        dir === "sell" ? "badge-sell" : "badge-hold"
+                                                    }`}>{displayDir}</span>
                                                     <span className="mono text-sm text-slate-400">{fmtNum(conf, 0)}%</span>
                                                 </div>
                                             </div>

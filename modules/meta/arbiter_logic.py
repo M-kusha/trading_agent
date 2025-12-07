@@ -639,8 +639,10 @@ class ArbiterLogic:
         if strat.bias_position_multiplier < 0.99 and position_size > 0:
             old_size = position_size
             position_size *= strat.bias_position_multiplier
+            # FIXED: Ensure all bias items are strings before joining (was causing TypeError)
+            bias_strs = [str(b) if not isinstance(b, str) else b for b in strat.active_biases[:2]]
             strategy_reasons.append(
-                f"BIAS({strat.bias_position_multiplier:.2f}): {','.join(strat.active_biases[:2]) or 'psychological'}"
+                f"BIAS({strat.bias_position_multiplier:.2f}): {','.join(bias_strs) or 'psychological'}"
             )
         
         # Apply CurriculumPlannerPlus constraints

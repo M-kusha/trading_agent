@@ -64,6 +64,8 @@ class PlaybookComponent(MemoryComponent):
         # Local scaler to avoid contaminating/being contaminated by other components
         self._scaler = StandardScaler()
         self._scaler_fitted: bool = False
+        self._fitted_feature_dim: Optional[int] = None  # Track fitted dimension for validation
+        self._valid_feature_indices: List[int] = []  # Track valid indices after filtering
 
         # KNN model
         self.knn_model: Optional[NearestNeighbors] = None
@@ -336,14 +338,46 @@ class PlaybookComponent(MemoryComponent):
             if n < self.k_neighbors:
                 return
 
-            X = np.vstack(self.features)  # [N, F]
+            # FIXED: Ensure all features have consistent dimensions
+            # Get target feature dimension from most recent entries
+            target_dim = self.features[-1].shape[0] if self.features else 17
+            
+            # Filter features to only include those with matching dimensions
+            valid_indices = [i for i, f in enumerate(self.features) if f.shape[0] == target_dim]
+            
+            if len(valid_indices) < self.k_neighbors:
+                # Not enough consistent features - try to use all by padding/truncating
+                self._log_debug(
+                    "feature_dimension_mismatch",
+                    details={"target_dim": target_dim, "valid_count": len(valid_indices), "total": n},
+                )
+                # Normalize all features to target dimension
+                normalized_features = []
+                for f in self.features:
+                    if f.shape[0] == target_dim:
+                        normalized_features.append(f)
+                    elif f.shape[0] > target_dim:
+                        # Truncate to target dimension
+                        normalized_features.append(f[:target_dim])
+                    else:
+                        # Pad with zeros to target dimension
+                        padded = np.zeros(target_dim, dtype=np.float32)
+                        padded[:f.shape[0]] = f
+                        normalized_features.append(padded)
+                X = np.vstack(normalized_features)
+            else:
+                X = np.vstack([self.features[i] for i in valid_indices])
+                # Update internal tracking to only use valid indices
+                self._valid_feature_indices = valid_indices
 
-            # Fit scaler locally (fresh each fit to adapt to drift)
+            # Fit scaler locally (fresh each fit to adapt to drift and dimension changes)
+            self._scaler = StandardScaler()  # Re-create scaler for new dimensions
             X_scaled = self._scaler.fit_transform(X)
             self._scaler_fitted = True
+            self._fitted_feature_dim = target_dim  # Track what dimension we fitted on
 
             self.knn_model = NearestNeighbors(
-                n_neighbors=min(self.k_neighbors, n),
+                n_neighbors=min(self.k_neighbors, len(X)),
                 metric="euclidean",
             )
             self.knn_model.fit(X_scaled)
@@ -466,6 +500,23 @@ class PlaybookComponent(MemoryComponent):
                             query_features = self._create_query_features(market_context, prices)
 
             q = np.asarray(query_features, dtype=np.float32).reshape(1, -1)
+            
+            # FIXED: Handle dimension mismatch between query and fitted scaler
+            fitted_dim = getattr(self, '_fitted_feature_dim', None)
+            if fitted_dim is not None and q.shape[1] != fitted_dim:
+                self._log_debug(
+                    "query_dimension_mismatch",
+                    details={"query_dim": q.shape[1], "fitted_dim": fitted_dim},
+                )
+                if q.shape[1] > fitted_dim:
+                    # Truncate query to match fitted dimension
+                    q = q[:, :fitted_dim]
+                else:
+                    # Pad query with zeros to match fitted dimension
+                    padded = np.zeros((1, fitted_dim), dtype=np.float32)
+                    padded[:, :q.shape[1]] = q
+                    q = padded
+            
             q_scaled = self._scaler.transform(q)
 
             distances, indices = self.knn_model.kneighbors(q_scaled)

@@ -363,6 +363,16 @@ class ModernEnhancedTrainingCallback(BaseCallback):
             self.metrics_broadcaster = metrics_broadcaster
             
         self.use_beautiful_display = use_beautiful_display and VISUALIZER_AVAILABLE
+        # Avoid polluting live SmartInfoBus keys with training-only votes/consensus
+        self.publish_training_votes: bool = bool(
+            getattr(config, "publish_training_votes", False)
+            or os.getenv("TRAINING_PUBLISH_VOTES", "0") == "1"
+        )
+        # Avoid polluting live recent_trades; default off unless explicitly enabled
+        self.publish_training_trades: bool = bool(
+            getattr(config, "publish_training_trades", False)
+            or os.getenv("TRAINING_PUBLISH_TRADES", "0") == "1"
+        )
 
 
         # Runtime state
@@ -402,6 +412,25 @@ class ModernEnhancedTrainingCallback(BaseCallback):
             "approx_kl": 0.0,
         }
         self._last_ppo_update_step: int = 0  # Track when PPO last updated
+        
+        # ═══════════════════════════════════════════════════════════════
+        # PPO Decision & Trade Tracking (for training_metrics dashboard)
+        # ═══════════════════════════════════════════════════════════════
+        self._total_decisions: int = 0
+        self._trades_executed: int = 0
+        self._correct_predictions: int = 0
+        self._last_action: int = 0  # 0=HOLD, 1=BUY, 2=SELL
+        self._last_price: float = 0.0
+        self._action_entry_price: float = 0.0
+        self._recent_trades: Deque[Dict[str, Any]] = deque(maxlen=100)
+        self._last_decision_step: int = 0  # Throttle decision counting
+        
+        # Price caching to prevent glitches
+        self._cached_prices: Dict[str, float] = {"EURUSD": 0.0, "XAUUSD": 0.0}
+        
+        # Module health tracking (for dashboard System tab)
+        self._module_health: Dict[str, Dict[str, Any]] = {}
+        self._module_performance: Dict[str, Dict[str, Any]] = {}
 
         # Safe logger
         self.training_log = RotatingLogger_Cls(
@@ -511,6 +540,9 @@ class ModernEnhancedTrainingCallback(BaseCallback):
             if (now - self.last_print_time).total_seconds() >= update_interval:
                 
                 self.last_print_time = now
+            
+            # Track PPO decisions every step for accuracy metrics
+            self._track_ppo_decision()
 
             # Collect metrics every 10 steps
             if self.n_calls % 10 == 0:
@@ -788,8 +820,428 @@ class ModernEnhancedTrainingCallback(BaseCallback):
             self.smart_bus.set("current_drawdown", metrics.get("env_drawdown", 0),
                              module="TrainingCallback", thesis="Current drawdown %")
             
+            # ═══════════════════════════════════════════════════════════════
+            # PPO Decision Tracking (for dashboard PPO Accuracy section)
+            # ═══════════════════════════════════════════════════════════════
+            accuracy = (self._correct_predictions / max(self._total_decisions, 1)) * 100 if self._total_decisions > 0 else 0.0
+            self.smart_bus.set("training_metrics", {
+                "total_decisions": self._total_decisions,
+                "trades_executed": self._trades_executed,
+                "accuracy": accuracy,
+                "correct_predictions": self._correct_predictions,
+            }, module="TrainingCallback", thesis="PPO decision tracking metrics")
+            
+            # ═══════════════════════════════════════════════════════════════
+            # Recent Trades (for dashboard Trading Performance)
+            # ═══════════════════════════════════════════════════════════════
+            if self.publish_training_trades:
+                self.smart_bus.set(
+                    "recent_trades",
+                    list(self._recent_trades),
+                    module="TrainingCallback",
+                    thesis="Recent training trades",
+                )
+            
+            # ═══════════════════════════════════════════════════════════════
+            # Module Health (for dashboard System tab)
+            # ═══════════════════════════════════════════════════════════════
+            self._update_module_health_tracking()
+            self.smart_bus.set("module_health", self._module_health,
+                             module="TrainingCallback", thesis="Module health status")
+            self.smart_bus.set("module_performance", self._module_performance,
+                             module="TrainingCallback", thesis="Module performance metrics")
+            
+            # ═══════════════════════════════════════════════════════════════
+            # Market Data (for dashboard Market tab)
+            # ═══════════════════════════════════════════════════════════════
+            self._publish_market_data_to_bus()
+            
+            # ═══════════════════════════════════════════════════════════════
+            # Expert Votes (for dashboard Voting section)
+            # ═══════════════════════════════════════════════════════════════
+            self._publish_expert_votes_to_bus()
+            
         except Exception:
             pass  # Non-critical - dashboard just won't update
+
+    def _track_ppo_decision(self) -> None:
+        """Track PPO agent decisions for accuracy calculation.
+        
+        NOTE: This tracks PPO's action selections, NOT actual executed trades.
+        Trades are only counted when the environment reports actual execution.
+        """
+        try:
+            # Get action from locals
+            actions = self.locals.get("actions", None)
+            if actions is None:
+                return
+            
+            # Extract action (handle array/scalar)
+            if isinstance(actions, (list, tuple, np.ndarray)):
+                if len(actions) > 0:
+                    action_arr = np.asarray(actions).flatten()
+                    # For continuous action space, interpret: >0.5 = BUY, <-0.5 = SELL, else HOLD
+                    # Using 0.5 threshold to be more selective
+                    if len(action_arr) >= 2:
+                        direction_val = float(action_arr[0])
+                        if direction_val > 0.5:
+                            action = 1  # BUY
+                        elif direction_val < -0.5:
+                            action = 2  # SELL
+                        else:
+                            action = 0  # HOLD
+                    else:
+                        action = int(action_arr[0]) if abs(action_arr[0]) > 0.5 else 0
+                else:
+                    return
+            else:
+                action = int(actions) if abs(float(actions)) > 0.5 else 0
+            
+            # Get current prices from environment data for ALL instruments
+            env = None
+            try:
+                if hasattr(self.training_env, "get_attr"):
+                    envs = self.training_env.get_attr("unwrapped", indices=[0])
+                    env = envs[0] if envs else None
+                
+                if env:
+                    current_step = getattr(env, "current_step", 0)
+                    instruments = getattr(env, "instruments", ["EURUSD"])
+                    
+                    # Get prices for all instruments
+                    for instrument in instruments:
+                        if hasattr(env, "data") and instrument in env.data:
+                            for tf in ["M15", "H1", "H4", "D1"]:
+                                if tf in env.data[instrument]:
+                                    df = env.data[instrument][tf]
+                                    if current_step < len(df):
+                                        price = float(df["close"].iloc[current_step])
+                                        if price > 0:
+                                            # Normalize instrument name
+                                            norm_inst = instrument.replace("/", "").replace("_", "").upper()
+                                            self._cached_prices[norm_inst] = price
+                                        break
+                    
+                    # Publish all cached prices to InfoBus
+                    for inst, price in self._cached_prices.items():
+                        if price > 0:
+                            self.smart_bus.set(f"price_{inst}", price,
+                                             module="TrainingCallback", thesis=f"Current {inst} price")
+            except Exception:
+                pass
+            
+            # Get current price for primary instrument
+            primary_inst = "EURUSD"
+            current_price = self._cached_prices.get(primary_inst, 0.0)
+            
+            # Only count a decision if action changed AND enough steps passed (throttle)
+            # This prevents counting every step as a "decision"
+            if action != 0 and action != self._last_action:
+                # Only count if at least 10 steps since last decision
+                if self.n_calls - self._last_decision_step >= 10:
+                    self._total_decisions += 1
+                    self._last_decision_step = self.n_calls
+                    
+                    # Check if previous action was correct (simplified accuracy tracking)
+                    if self._last_action != 0 and self._last_price > 0 and current_price > 0:
+                        price_change = current_price - self._last_price
+                        was_correct = False
+                        
+                        if self._last_action == 1 and price_change > 0:  # BUY and price went up
+                            was_correct = True
+                        elif self._last_action == 2 and price_change < 0:  # SELL and price went down
+                            was_correct = True
+                        
+                        if was_correct:
+                            self._correct_predictions += 1
+            
+            # NOTE: We do NOT track "trades" here - trades are only real executed orders
+            # The PPO agent selecting BUY/SELL is just a decision, not a trade execution
+            # Real trades would come from the Executor module or environment's execution logic
+            
+            # Check for actual executed trades from environment info
+            infos = self.locals.get("infos", [])
+            if infos and len(infos) > 0:
+                info = infos[0] if isinstance(infos, list) else infos
+                if isinstance(info, dict):
+                    # Check if env reported an actual trade execution
+                    trade_executed = info.get("trade_executed", False)
+                    if trade_executed:
+                        self._trades_executed += 1
+                        trade_info = info.get("trade_info", {})
+                        if trade_info:
+                            self._recent_trades.append({
+                                "symbol": trade_info.get("symbol", "EURUSD"),
+                                "direction": trade_info.get("direction", "BUY"),
+                                "pnl": round(float(trade_info.get("pnl", 0)), 2),
+                                "entry_price": round(float(trade_info.get("entry_price", 0)), 5),
+                                "exit_price": round(float(trade_info.get("exit_price", 0)), 5),
+                                "timestamp": datetime.now().isoformat(),
+                            })
+            
+            self._last_action = action
+            if current_price > 0:
+                self._last_price = current_price
+            
+        except Exception:
+            pass  # Non-critical tracking
+
+    def _update_module_health_tracking(self) -> None:
+        """Update module health data from various sources."""
+        try:
+            # Key modules to track (matching dashboard expectations)
+            key_modules = ['PPOAgent', 'DynamicRiskController', 'UnifiedMemory', 'BiasAuditor', 
+                          'PositionManager', 'Executor', 'SlimVotingKernel', 'CommitteeCoordinator']
+            
+            # Get health from health monitor
+            if self.health_monitor:
+                health_data = self.health_monitor.check_system_health()
+                module_details = health_data.get("modules", {}).get("module_details", {})
+                
+                for name in key_modules:
+                    detail = module_details.get(name, {})
+                    self._module_health[name] = {
+                        "status": detail.get("status", "ok"),
+                        "last_run_ms": detail.get("last_run_ms", 0),
+                    }
+                    self._module_performance[name] = {
+                        "success_rate": detail.get("success_rate", 1.0),
+                    }
+            else:
+                # Default healthy status
+                for name in key_modules:
+                    if name not in self._module_health:
+                        self._module_health[name] = {"status": "ok", "last_run_ms": 0}
+                        self._module_performance[name] = {"success_rate": 1.0}
+        except Exception:
+            pass
+
+    def _publish_market_data_to_bus(self) -> None:
+        """Publish market data that dashboard expects."""
+        try:
+            # Try to get market regime from existing InfoBus data
+            regime = self.smart_bus.get("market_regime", "TrainingCallback", default=None)
+            if regime is None:
+                # Default based on env state
+                regime = "UNKNOWN"
+            
+            # Ensure market_regime is set
+            if isinstance(regime, dict):
+                regime = regime.get("regime", regime.get("value", "UNKNOWN"))
+            self.smart_bus.set("market_regime", regime,
+                             module="TrainingCallback", thesis="Current market regime")
+            
+            # World model predictions (default if not available)
+            predictions = self.smart_bus.get("market_predictions", "TrainingCallback", default=None)
+            if predictions is None:
+                # Get from env if available
+                try:
+                    env = None
+                    if hasattr(self.training_env, "get_attr"):
+                        envs = self.training_env.get_attr("unwrapped", indices=[0])
+                        env = envs[0] if envs else None
+                    
+                    if env and hasattr(env, "market_state"):
+                        ms = env.market_state
+                        volatility = float(getattr(ms, "volatility", 0.01))
+                        self.smart_bus.set("market_predictions", {
+                            "predicted_price_change": 0.0,
+                            "predicted_volatility": volatility,
+                            "scenario": "NEUTRAL",
+                        }, module="TrainingCallback", thesis="Market predictions")
+                        self.smart_bus.set("prediction_confidence", 0.5,
+                                         module="TrainingCallback", thesis="Prediction confidence")
+                except Exception:
+                    pass
+            
+            # Price data - use cached prices from _track_ppo_decision
+            # The cached prices contain all instruments (EURUSD, XAUUSD, etc.)
+            try:
+                for inst, price in self._cached_prices.items():
+                    if price > 0:
+                        self.smart_bus.set(f"price_{inst}", price,
+                                         module="TrainingCallback", thesis=f"{inst} price")
+                
+                # Also try to get fresh prices from env data (backup)
+                env = None
+                if hasattr(self.training_env, "get_attr"):
+                    envs = self.training_env.get_attr("unwrapped", indices=[0])
+                    env = envs[0] if envs else None
+                
+                if env and hasattr(env, "data"):
+                    current_step = getattr(env, "current_step", 0)
+                    instruments = getattr(env, "instruments", [])
+                    
+                    for instrument in instruments:
+                        norm_inst = instrument.replace("/", "").replace("_", "").upper()
+                        # Skip if already have cached price
+                        if norm_inst in self._cached_prices and self._cached_prices[norm_inst] > 0:
+                            continue
+                            
+                        if instrument in env.data:
+                            for tf in ["M15", "H1", "H4", "D1"]:
+                                if tf in env.data[instrument]:
+                                    df = env.data[instrument][tf]
+                                    if current_step < len(df):
+                                        price = float(df["close"].iloc[current_step])
+                                        if price > 0:
+                                            self._cached_prices[norm_inst] = price
+                                            self.smart_bus.set(f"price_{norm_inst}", price,
+                                                             module="TrainingCallback", thesis=f"{norm_inst} price")
+                                        break
+            except Exception:
+                pass
+                
+        except Exception:
+            pass
+
+    def _publish_expert_votes_to_bus(self) -> None:
+        """Publish expert votes for dashboard based on real market indicators."""
+        try:
+            # Generate expert votes based on real price data from environment
+            expert_votes = {}
+            
+            # Get environment data
+            env = None
+            if hasattr(self.training_env, "get_attr"):
+                envs = self.training_env.get_attr("unwrapped", indices=[0])
+                env = envs[0] if envs else None
+            
+            if env and hasattr(env, "data"):
+                current_step = getattr(env, "current_step", 0)
+                instruments = getattr(env, "instruments", ["EURUSD"])
+                instrument = instruments[0] if instruments else "EURUSD"
+                
+                # Calculate indicators for expert signals
+                trend_signal = 0.0
+                momentum_signal = 0.0
+                volatility_signal = 0.0
+                
+                if instrument in env.data:
+                    for tf in ["M15", "H1"]:
+                        if tf in env.data[instrument]:
+                            df = env.data[instrument][tf]
+                            if current_step >= 20 and current_step < len(df):
+                                close_prices = df["close"].iloc[max(0, current_step-20):current_step+1].values
+                                
+                                # Trend: Simple moving average crossover
+                                if len(close_prices) >= 20:
+                                    sma_fast = np.mean(close_prices[-5:])
+                                    sma_slow = np.mean(close_prices[-20:])
+                                    current_price = close_prices[-1]
+                                    
+                                    # Trend signal: price relative to SMAs
+                                    trend_signal = (sma_fast - sma_slow) / max(abs(sma_slow), 1e-8)
+                                    trend_signal = np.clip(trend_signal * 100, -1, 1)  # Scale
+                                    
+                                    # Momentum: rate of change
+                                    if len(close_prices) >= 10:
+                                        momentum_signal = (close_prices[-1] - close_prices[-10]) / max(abs(close_prices[-10]), 1e-8)
+                                        momentum_signal = np.clip(momentum_signal * 50, -1, 1)
+                                    
+                                    # Volatility for seasonality risk
+                                    volatility_signal = np.std(close_prices) / max(np.mean(close_prices), 1e-8)
+                                    volatility_signal = np.clip(volatility_signal * 100, 0, 1)
+                                break
+                
+                # TrendExpert - based on SMA crossover
+                trend_direction = "BUY" if trend_signal > 0.1 else ("SELL" if trend_signal < -0.1 else "HOLD")
+                trend_conf = min(abs(trend_signal), 1.0) * 0.5 + 0.3  # Scale to 0.3-0.8
+                expert_votes["TrendExpert"] = {
+                    "vote": trend_direction,
+                    "confidence": round(trend_conf, 2),
+                    "thesis": f"Trend signal: {trend_signal:.3f}",
+                }
+                
+                # MomentumExpert - based on rate of change  
+                mom_direction = "BUY" if momentum_signal > 0.1 else ("SELL" if momentum_signal < -0.1 else "HOLD")
+                mom_conf = min(abs(momentum_signal), 1.0) * 0.5 + 0.3
+                expert_votes["MomentumExpert"] = {
+                    "vote": mom_direction,
+                    "confidence": round(mom_conf, 2),
+                    "thesis": f"Momentum signal: {momentum_signal:.3f}",
+                }
+                
+                # ThemeExpert - follows trend with dampening
+                theme_signal = trend_signal * 0.7 + momentum_signal * 0.3
+                theme_direction = "BUY" if theme_signal > 0.1 else ("SELL" if theme_signal < -0.1 else "HOLD")
+                theme_conf = min(abs(theme_signal), 1.0) * 0.4 + 0.35
+                expert_votes["ThemeExpert"] = {
+                    "vote": theme_direction,
+                    "confidence": round(theme_conf, 2),
+                    "thesis": f"Theme signal: {theme_signal:.3f}",
+                }
+                
+                # SeasonalityRiskExpert - based on volatility (high vol = caution)
+                if volatility_signal > 0.5:
+                    season_direction = "HOLD"  # High volatility = be cautious
+                    season_conf = 0.6 + volatility_signal * 0.3
+                else:
+                    season_direction = trend_direction  # Low vol = follow trend
+                    season_conf = 0.4 + (1 - volatility_signal) * 0.4
+                expert_votes["SeasonalityRiskExpert"] = {
+                    "vote": season_direction,
+                    "confidence": round(min(season_conf, 0.95), 2),
+                    "thesis": f"Volatility: {volatility_signal:.3f}",
+                }
+            else:
+                # Fallback if no env data
+                expert_votes = {
+                    "TrendExpert": {"vote": "HOLD", "confidence": 0.5, "thesis": "No data"},
+                    "MomentumExpert": {"vote": "HOLD", "confidence": 0.5, "thesis": "No data"},
+                    "ThemeExpert": {"vote": "HOLD", "confidence": 0.5, "thesis": "No data"},
+                    "SeasonalityRiskExpert": {"vote": "HOLD", "confidence": 0.5, "thesis": "No data"},
+                }
+            
+            if self.publish_training_votes:
+                # Publish training-only votes to canonical keys (opt-in to avoid polluting live bus)
+                self.smart_bus.set(
+                    "committee_votes",
+                    expert_votes,
+                    module="TrainingCallback",
+                    thesis="Expert votes from indicators",
+                )
+                
+                # Also publish expert_votes array format for compatibility
+                expert_votes_array = [
+                    {"name": name, **vote} for name, vote in expert_votes.items()
+                ]
+                self.smart_bus.set(
+                    "expert_votes",
+                    expert_votes_array,
+                    module="TrainingCallback",
+                    thesis="Expert votes array format",
+                )
+                
+                # Calculate and publish overall consensus
+                votes = [v["vote"] for v in expert_votes.values()]
+                buy_count = sum(1 for v in votes if v == "BUY")
+                sell_count = sum(1 for v in votes if v == "SELL")
+                avg_conf = np.mean([v["confidence"] for v in expert_votes.values()])
+                
+                if buy_count > sell_count:
+                    consensus_action = "BUY"
+                    consensus_strength = buy_count / len(votes)
+                elif sell_count > buy_count:
+                    consensus_action = "SELL"
+                    consensus_strength = sell_count / len(votes)
+                else:
+                    consensus_action = "HOLD"
+                    consensus_strength = 0.5
+                
+                self.smart_bus.set(
+                    "committee_consensus",
+                    {
+                        "action": consensus_action,
+                        "confidence": round(avg_conf, 2),
+                        "consensus_score": round(consensus_strength, 2),
+                    },
+                    module="TrainingCallback",
+                    thesis="Committee consensus",
+                )
+            
+        except Exception:
+            pass
 
 
     def _extract_environment_metrics(self) -> Dict[str, Any]:

@@ -635,44 +635,57 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             # Extract market data from SmartInfoBus
             market_data = await self._extract_market_data(**inputs)
             
-            if not market_data:
+            # Check if we actually got meaningful market data
+            # The _extract_market_data method returns {} for market_data key if bus has no data
+            actual_market_data = market_data.get('market_data', {}) if market_data else {}
+            if not market_data or not actual_market_data:
                 return await self._handle_no_data_fallback()
+            
+            # Track what operations we've successfully completed
+            completed_operations = []
             
             # Update market context and features (budget-aware)
-            if remaining() <= 0:
-                return await self._handle_no_data_fallback()
-            context_result = await self._update_market_context_async(market_data)
+            context_result = {}
+            if remaining() > 0:
+                context_result = await self._update_market_context_async(market_data)
+                completed_operations.append('context')
             
             # Process market data and update history
-            if remaining() <= 0:
-                return await self._handle_no_data_fallback()
-            processing_result = await self._process_market_data_async(market_data)
+            processing_result = {}
+            if remaining() > 0:
+                processing_result = await self._process_market_data_async(market_data)
+                completed_operations.append('processing')
             
             # Generate predictions if model is ready
             prediction_result = {}
             if remaining() > 0 and self.is_trained and len(self.market_history) >= self.wm_config.sequence_length:
                 prediction_result = await self._generate_predictions_async(market_data)
+                completed_operations.append('predictions')
             
             # Train model if enough data and training is needed
+            # NOTE: Training takes longer than budget (seconds vs ms), so don't check remaining() AFTER training
             training_result = {}
             if remaining() > 0 and await self._should_trigger_training_async():
-                # Respect remaining budget for training chunk
                 training_result = await self._train_model_async()
+                completed_operations.append('training')
             
             # Generate scenarios if requested or periodically
             scenario_result = {}
             if remaining() > 0 and (inputs.get('generate_scenarios', False) or await self._should_generate_scenarios_async()):
                 scenario_result = await self._generate_scenarios_async(market_data)
+                completed_operations.append('scenarios')
             
-            # Update model performance metrics
-            if remaining() <= 0:
-                return await self._handle_no_data_fallback()
-            performance_result = await self._update_performance_metrics_async(market_data)
+            # Update model performance metrics - skip if budget exceeded but don't fail
+            performance_result = {}
+            if remaining() > 0:
+                performance_result = await self._update_performance_metrics_async(market_data)
+                completed_operations.append('performance')
             
-            # Update operational mode
-            if remaining() <= 0:
-                return await self._handle_no_data_fallback()
-            mode_result = await self._update_operational_mode_async(market_data)
+            # Update operational mode - skip if budget exceeded but don't fail
+            mode_result = {}
+            if remaining() > 0:
+                mode_result = await self._update_operational_mode_async(market_data)
+                completed_operations.append('mode')
             
             # Combine results
             result = {**context_result, **processing_result, **prediction_result,
@@ -2429,7 +2442,18 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
 
     async def _handle_no_data_fallback(self) -> Dict[str, Any]:
         """Handle case when no market data is available"""
-        self.logger.warning("No market data available - maintaining current state")
+        # FIXED: Reduce log noise - only warn every 100 calls during training
+        # This is expected behavior when running in gym environment without SmartInfoBus
+        if not hasattr(self, '_no_data_warn_count'):
+            self._no_data_warn_count = 0
+        self._no_data_warn_count += 1
+        
+        if self._no_data_warn_count == 1 or self._no_data_warn_count % 100 == 0:
+            self.logger.warning(
+                f"No market data available - maintaining current state "
+                f"(occurrences: {self._no_data_warn_count}, expected during training)"
+            )
+        
         thesis = "No market data available - maintaining current state"
 
         # Minimal but contract-compliant payload

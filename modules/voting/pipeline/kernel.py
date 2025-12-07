@@ -205,18 +205,28 @@ class SlimVotingKernel(VotingModuleBase):
             raw_proposals = self.bus_get("raw_proposals", default={}) or {}
             self._record_stage_timing(PipelineStage.COMMITTEE.name, stage_start)
 
+            # Check warmup status before warning about no votes
+            warmup_status = self.bus_get("warmup_status", default={}) or {}
+            is_warmup = not warmup_status.get('complete', False) if warmup_status else True
+
             if not committee_votes and not raw_proposals:
-                self.log_warning(
-                    "No votes available from committee - defaulting to ABSTAIN"
-                )
-                try:
-                    raw_keys = list(raw_proposals.keys()) if isinstance(raw_proposals, dict) else raw_proposals
-                    self.log_debug(
-                        f"[KERNEL][DATA] committee_votes_len={len(committee_votes)}, "
-                        f"raw_proposals_keys={raw_keys}"
+                # Only warn if NOT in warmup (warmup is expected to have no votes)
+                if not is_warmup:
+                    self.log_warning(
+                        "No votes available from committee - defaulting to ABSTAIN"
                     )
-                except Exception:
-                    pass
+                    try:
+                        raw_keys = list(raw_proposals.keys()) if isinstance(raw_proposals, dict) else raw_proposals
+                        self.log_debug(
+                            f"[KERNEL][DATA] committee_votes_len={len(committee_votes)}, "
+                            f"raw_proposals_keys={raw_keys}"
+                        )
+                    except Exception:
+                        pass
+                else:
+                    # During warmup, log debug instead of warning (expected behavior)
+                    warmup_pct = warmup_status.get('progress_pct', 0)
+                    self.log_debug(f"[WARMUP] Committee warming up ({warmup_pct:.0f}% complete)")
                 return self._make_abstain_result(
                     decision_id, "No votes from committee"
                 )

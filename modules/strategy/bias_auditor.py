@@ -474,20 +474,25 @@ class BiasAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
             factors = []
             
             # Pattern 1: Excessive entries during trending markets
-            if market_regime == 'trending':
+            # FIXED: Increased threshold from 3 to 8 trades to reduce false positives
+            # Also require 'trending' regime specifically (not just any regime)
+            if market_regime in ('trending', 'trending_up', 'trending_down'):
                 recent_entries = len(recent_trades)
-                if recent_entries > 3:
-                    entry_frequency = min(1.0, recent_entries / 10.0)
+                # Only flag if truly excessive (>8 trades in recent window)
+                if recent_entries > 8:
+                    entry_frequency = min(1.0, (recent_entries - 8) / 12.0)  # Scale from 8-20
                     factors.append('excessive_trend_chasing')
                     
             # Pattern 2: Late entries at unfavorable prices
+            # FIXED: Increased threshold from 0.5 to 0.7 (70% immediate losses)
             late_entries = self._analyze_entry_timing_quality(recent_trades)
-            if late_entries > 0.5:
+            if late_entries > 0.7:
                 factors.append('poor_entry_timing')
                 
             # Pattern 3: Abandoning strategy for hot markets
+            # FIXED: Increased threshold from 0.4 to 0.6 (60% instrument switches)
             strategy_abandonment = self._detect_strategy_abandonment(recent_trades)
-            if strategy_abandonment > 0.4:
+            if strategy_abandonment > 0.6:
                 factors.append('strategy_abandonment')
             
             strength = self._calculate_composite_bias_strength(factors, 'fomo')
@@ -543,11 +548,12 @@ class BiasAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
         factor_strength = len(factors) / 3.0  # Normalize to 3 factors max
         
         # Apply bias-specific weightings
+        # FIXED: Reduced FOMO weight from 1.3 to 1.0 to prevent over-triggering
         bias_weights = {
             'revenge': 1.2,    # Higher weight for revenge trading
             'fear': 0.8,       # Lower weight for fear (more gradual)
-            'greed': 1.1,      # High weight for greed
-            'fomo': 1.3,       # Highest weight for FOMO
+            'greed': 1.0,      # Balanced weight for greed (was 1.1)
+            'fomo': 1.0,       # Balanced weight for FOMO (was 1.3 - too aggressive)
             'anchoring': 0.7   # Lower weight for anchoring
         }
         

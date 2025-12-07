@@ -787,6 +787,8 @@ class PositionManagerBase(
             # Get committee data
             consensus = self.smart_bus.get("committee_consensus", "PositionManager")
             expert_votes = self.smart_bus.get("expert_votes", "PositionManager")
+            if not isinstance(expert_votes, list):
+                expert_votes = []
 
             # ═══════════════════════════════════════════════════════════════════
             # LAYER 1: RISK VETO CHECK
@@ -802,8 +804,14 @@ class PositionManagerBase(
                 ]
 
                 for vote in expert_votes:
+                    # Skip non-dict votes (defensive)
+                    if not isinstance(vote, dict):
+                        continue
                     expert = vote.get("expert", "")
-                    action = str(vote.get("vote", {}).get("action", "")).lower()
+                    vote_obj = vote.get("vote", {}) or {}
+                    if not isinstance(vote_obj, dict):
+                        vote_obj = {}
+                    action = str(vote_obj.get("action", "")).lower()
                     confidence = float(vote.get("confidence", 0.0) or 0.0)
 
                     if expert in risk_voters and action in RISK_BLOCK_ACTIONS and confidence > 0.5:
@@ -832,7 +840,13 @@ class PositionManagerBase(
 
             if isinstance(expert_votes, list):
                 for vote in expert_votes:
-                    action = str(vote.get("vote", {}).get("action", "")).lower()
+                    # Skip non-dict votes (defensive)
+                    if not isinstance(vote, dict):
+                        continue
+                    vote_obj = vote.get("vote", {}) or {}
+                    if not isinstance(vote_obj, dict):
+                        vote_obj = {}
+                    action = str(vote_obj.get("action", "")).lower()
                     confidence = float(vote.get("confidence", 0.0) or 0.0)
 
                     # Only count votes with meaningful confidence

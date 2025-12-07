@@ -47,7 +47,9 @@ class CollusionDetector(VotingModuleBase):
         # Configuration
         self.n_members = int(self.config.get("n_members", 5))
         self.window = int(self.config.get("window", 10))
-        self.base_threshold = float(self.config.get("threshold", 0.9))
+        # FIXED: Increased threshold from 0.9 to 0.95 - experts agreeing in trending
+        # markets is NORMAL behavior, not collusion. Only flag truly suspicious patterns.
+        self.base_threshold = float(self.config.get("threshold", 0.95))
         self.current_threshold = self.base_threshold
         self.adaptive_threshold = bool(self.config.get("adaptive_threshold", True))
 
@@ -268,10 +270,12 @@ class CollusionDetector(VotingModuleBase):
         suspicious_ratio = float(suspicious_count) / float(possible_pairs)
 
         # Collusion score = blend of max, avg, and suspicious ratio
+        # FIXED: Reduced weights on max_sim and avg_sim since expert agreement
+        # in trending markets is normal, not suspicious
         score = (
-            0.4 * max_sim +
-            0.3 * avg_sim +
-            0.3 * suspicious_ratio
+            0.25 * max_sim +     # Reduced from 0.4 - max similarity less important
+            0.25 * avg_sim +     # Reduced from 0.3 - average similarity less important
+            0.50 * suspicious_ratio  # Increased from 0.3 - focus on actual suspicious pairs
         )
         self.collusion_score = float(max(0.0, min(1.0, score)))
         self.collusion_history.append(self.collusion_score)
@@ -302,7 +306,9 @@ class CollusionDetector(VotingModuleBase):
 
         return {
             "collusion_score": self.collusion_score,
-            "collusion_detected": self.collusion_score > 0.7,
+            # FIXED: Increased detection threshold from 0.7 to 0.85
+            # Expert agreement in trending markets is normal, not collusion
+            "collusion_detected": self.collusion_score > 0.85,
             "suspicious_pair_count": suspicious_count,
             "avg_pair_similarity": avg_sim,
             "max_pair_similarity": max_sim,
@@ -374,11 +380,15 @@ class CollusionDetector(VotingModuleBase):
             else:
                 cosine = 0.5
 
+            # FIXED: Reduced weight of action_match from 0.4 to 0.15
+            # Experts agreeing on direction (all LONG or all SHORT) is NORMAL
+            # in trending markets. Focus more on suspicious patterns like
+            # identical confidence values or vector similarity.
             similarity = (
-                0.4 * action_match +
-                0.2 * conf_sim +
-                0.2 * signal_sim +
-                0.2 * cosine
+                0.15 * action_match +    # Reduced from 0.4 - direction agreement is normal
+                0.30 * conf_sim +        # Increased from 0.2 - identical confidence IS suspicious
+                0.25 * signal_sim +      # Increased from 0.2 - identical signals more suspicious
+                0.30 * cosine            # Increased from 0.2 - vector similarity matters more
             )
             return float(max(0.0, min(1.0, similarity)))
         except Exception:
