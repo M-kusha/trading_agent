@@ -461,6 +461,21 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             processing_time = (time.time() - start_time) * 1000
             self.performance_tracker.record_metric('ThesisEvolutionEngine', 'process_time', processing_time, True)
             
+            # Periodic status logging (every 50 calls)
+            self._process_count = getattr(self, '_process_count', 0) + 1
+            if self._process_count % 50 == 0:
+                best = self._get_best_performing_thesis()
+                diversity = analytics_results.get('diversity_score', 0.0)
+                self.logger.info(format_operator_message(
+                    icon="🧬",
+                    message="THESIS_EVOLUTION_STATUS",
+                    active_theses=len(self.theses),
+                    best_thesis=best.get('category', 'none') if best else 'none',
+                    diversity=f"{diversity:.1%}",
+                    generations=self.generation_count,
+                    calls=self._process_count,
+                ))
+            
             # Reset error count on successful processing
             self.error_count = 0
             

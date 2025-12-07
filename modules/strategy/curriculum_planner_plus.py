@@ -361,6 +361,20 @@ class CurriculumPlannerPlus(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             processing_time = (time.time() - start_time) * 1000
             self.performance_tracker.record_metric('CurriculumPlannerPlus', 'process_time', processing_time, True)
             
+            # Periodic status logging (every 50 calls)
+            self.learning_stats['process_calls'] = self.learning_stats.get('process_calls', 0) + 1
+            if self.learning_stats['process_calls'] % 50 == 0:
+                stage_info = self._get_current_stage_info()
+                competency = self._calculate_weighted_competency()
+                self.logger.info(format_operator_message(
+                    icon="📚",
+                    message="CURRICULUM_STATUS",
+                    stage=stage_info.get('name', self.current_stage),
+                    competency=f"{competency:.1%}",
+                    calls=self.learning_stats['process_calls'],
+                    trades_analyzed=self.learning_stats.get('trades_analyzed', 0),
+                ))
+            
             # Reset error count on successful processing
             self.error_count = 0
             

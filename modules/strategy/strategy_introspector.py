@@ -119,6 +119,14 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             'risk_assessment': 'moderate'
         }
         
+        # Log cooldown tracking (to prevent log spam)
+        self._last_logged = {
+            'drawdown_warning': 0.0,
+            'adaptation_warning': 0.0,
+            'style_info': 0.0,
+        }
+        self._log_cooldown_seconds = 60.0  # Only log same type once per minute
+        
         # Circuit breaker for error handling
         self.error_count = 0
         self.circuit_breaker_threshold = 5
@@ -603,8 +611,11 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             
             if len(recent_trades) >= 3:
                 # Calculate comprehensive performance metrics
-                pnls = [t.get('pnl', 0) for t in recent_trades]
-                durations = [t.get('duration', 30) for t in recent_trades if 'duration' in t]
+                # IMPORTANT: Filter to only CLOSED trades (non-zero pnl) to avoid false metrics
+                # Open fills have pnl=0 and would corrupt drawdown calculations
+                closed_trades = [t for t in recent_trades if t.get('pnl', 0) != 0]
+                pnls = [t.get('pnl', 0) for t in closed_trades] if closed_trades else [0.0]
+                durations = [t.get('duration', 30) for t in closed_trades if 'duration' in t]
                 
                 # Basic performance metrics
                 metrics = self._calculate_basic_performance_metrics(pnls, durations)
@@ -678,27 +689,40 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
         else:
             metrics['profit_factor'] = 1.0 if profits else 0.0
         
-        # Maximum drawdown (fixed to handle negative peaks properly)
-        cumulative_pnl = np.cumsum(pnls)
-        peak = cumulative_pnl[0]
+        # Maximum drawdown (FIXED: use capital-based calculation)
+        # Get initial capital from context or use default
+        initial_capital = 100000.0  # Standard prop firm starting capital
+        
+        # Calculate equity curve from PnLs
+        cumulative_pnl = np.cumsum(pnls) if len(pnls) > 0 else np.array([0.0])
+        equity_curve = initial_capital + cumulative_pnl
+        
+        # Calculate drawdown as percentage from peak equity
         max_drawdown = 0.0
-        for value in cumulative_pnl:
-            peak = max(peak, value)
-            # Proper drawdown calculation that handles negative peaks
-            # When peak > 0: standard drawdown = (peak - value) / peak
-            # When peak <= 0: we measure absolute distance as percentage of initial capital (assumed 10000)
-            if peak > 0:
-                drawdown = (peak - value) / peak if value < peak else 0.0
-            elif peak == 0:
-                drawdown = 0.0
+        peak_equity = initial_capital
+        
+        for equity in equity_curve:
+            peak_equity = max(peak_equity, equity)
+            if peak_equity > 0:
+                # Drawdown as percentage of peak equity
+                drawdown = (peak_equity - equity) / peak_equity
+                max_drawdown = max(max_drawdown, drawdown)
+        
+        # Sanity check: max_drawdown should not exceed actual loss percentage
+        total_pnl = sum(pnls) if pnls else 0
+        actual_pnl_pct = abs(min(0, total_pnl)) / initial_capital  # Only count losses
+        
+        # If we're profitable overall but showing high drawdown, something's wrong
+        if total_pnl > 0 and max_drawdown > 0.5:
+            # Profitable - drawdown should be capped at the max intermediate loss
+            min_cumulative = min(cumulative_pnl) if len(cumulative_pnl) > 0 else 0
+            if min_cumulative < 0:
+                max_drawdown = abs(min_cumulative) / initial_capital
             else:
-                # For negative peaks, cap drawdown at 1.0 (100%)
-                # This prevents unrealistic >100% drawdowns from negative compounding
-                drawdown = min(1.0, abs(value - peak) / 10000.0)
-            max_drawdown = max(max_drawdown, drawdown)
+                max_drawdown = 0.0
         
         # Ensure drawdown doesn't exceed 100% (which is account wipeout)
-        metrics['max_drawdown'] = min(max_drawdown, 1.0)
+        metrics['max_drawdown'] = min(max(0.0, max_drawdown), 1.0)
         
         # Consistency score
         if len(pnls) >= 5:
@@ -1236,8 +1260,11 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
                 'confidence_interval': 0.5
             }
             
-            if len(recent_trades) >= 6:
-                pnls = [t.get('pnl', 0) for t in recent_trades]
+            # Filter to only CLOSED trades (non-zero pnl) for accurate trend analysis
+            closed_trades = [t for t in recent_trades if t.get('pnl', 0) != 0]
+            
+            if len(closed_trades) >= 6:
+                pnls = [t.get('pnl', 0) for t in closed_trades]
                 
                 # Short-term trend (last 3 trades)
                 recent_avg = np.mean(pnls[-3:])
@@ -1254,7 +1281,7 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
                     trend_analysis['short_term_trend'] = 'stable'
                 
                 # Medium-term trend (if enough data)
-                if len(recent_trades) >= 12:
+                if len(closed_trades) >= 12:
                     very_recent = np.mean(pnls[-4:])
                     medium_term = np.mean(pnls[-12:-4])
                     
@@ -1338,46 +1365,53 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             adaptation_analysis = analysis.get('adaptation_analysis', {})
             behavioral_analysis = analysis.get('behavioral_analysis', {})
             performance_analysis = analysis.get('performance_analysis', {})
+            current_time = time.time()
             
-            # Log adaptation needs
+            # Log adaptation needs (with cooldown)
             if adaptation_analysis.get('adaptation_needed', False):
-                urgency = adaptation_analysis.get('urgency_level', 'low')
-                areas = adaptation_analysis.get('adaptation_areas', [])
-                
-                self.logger.warning(format_operator_message(
-                    icon="[ALERT]",
-                    message=f"Strategy adaptation needed - {urgency} urgency",
-                    areas=", ".join(areas[:3]),
-                    confidence=f"{adaptation_analysis.get('confidence_level', 0.5):.1%}"
-                ))
+                if current_time - self._last_logged.get('adaptation_warning', 0) > self._log_cooldown_seconds:
+                    urgency = adaptation_analysis.get('urgency_level', 'low')
+                    areas = adaptation_analysis.get('adaptation_areas', [])
+                    
+                    self.logger.warning(format_operator_message(
+                        icon="[ALERT]",
+                        message=f"Strategy adaptation needed - {urgency} urgency",
+                        areas=", ".join(areas[:3]),
+                        confidence=f"{adaptation_analysis.get('confidence_level', 0.5):.1%}"
+                    ))
+                    self._last_logged['adaptation_warning'] = current_time
             
-            # Log significant performance issues
+            # Log significant performance issues (with cooldown)
             max_drawdown = performance_analysis.get('max_drawdown', 0.0)
             # Ensure drawdown is within valid range [0.0, 1.0]
             max_drawdown = max(0.0, min(1.0, max_drawdown))
             
             if max_drawdown > 0.1:
-                severity = "CRITICAL" if max_drawdown > 0.5 else "HIGH" if max_drawdown > 0.3 else "MODERATE"
-                drawdown_info = {
-                    "drawdown": f"{max_drawdown:.1%}",
-                    "severity": severity,
-                    "action": "immediate_review_required" if max_drawdown > 0.5 else "review_recommended"
-                }
-                self.logger.error(format_operator_message(
-                    icon="📉",
-                    message="High drawdown detected",
-                    **drawdown_info
-                ))
+                if current_time - self._last_logged.get('drawdown_warning', 0) > self._log_cooldown_seconds:
+                    severity = "CRITICAL" if max_drawdown > 0.5 else "HIGH" if max_drawdown > 0.3 else "MODERATE"
+                    drawdown_info = {
+                        "drawdown": f"{max_drawdown:.1%}",
+                        "severity": severity,
+                        "action": "immediate_review_required" if max_drawdown > 0.5 else "review_recommended"
+                    }
+                    self.logger.error(format_operator_message(
+                        icon="📉",
+                        message="High drawdown detected",
+                        **drawdown_info
+                    ))
+                    self._last_logged['drawdown_warning'] = current_time
             
-            # Log interesting behavioral patterns
+            # Log interesting behavioral patterns (with cooldown)
             trading_style = behavioral_analysis.get('trading_style', '')
             if trading_style in ['high_frequency_scalping', 'high_risk_aggressive', 'ultra_conservative']:
-                self.logger.info(format_operator_message(
-                    icon="🎭",
-                    message="Distinctive trading style detected",
-                    style=trading_style,
-                    risk_preference=behavioral_analysis.get('risk_preference', 'unknown')
-                ))
+                if current_time - self._last_logged.get('style_info', 0) > self._log_cooldown_seconds:
+                    self.logger.info(format_operator_message(
+                        icon="🎭",
+                        message="Distinctive trading style detected",
+                        style=trading_style,
+                        risk_preference=behavioral_analysis.get('risk_preference', 'unknown')
+                    ))
+                    self._last_logged['style_info'] = current_time
                 
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "analysis_logging")

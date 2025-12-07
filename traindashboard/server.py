@@ -435,21 +435,36 @@ def get_dashboard_data() -> Dict[str, Any]:
     }
     
     # ═══════════════════════════════════════════════════════════════
-    # RECENT TRADES
+    # RECENT TRADES (fills from Executor)
     # ═══════════════════════════════════════════════════════════════
     recent_trades_raw = get("recent_trades", [])
     recent_trades = []
     if isinstance(recent_trades_raw, list):
         for t in recent_trades_raw[-10:]:
             if isinstance(t, dict):
+                # Handle direction: prefer string, convert int side to string
+                direction = t.get('direction', t.get('type', ''))
+                if not direction or direction == 'unknown':
+                    side = t.get('side', 0)
+                    if isinstance(side, (int, float)):
+                        direction = 'BUY' if side > 0 else 'SELL' if side < 0 else 'HOLD'
+                    else:
+                        direction = str(side) if side else 'unknown'
+                
+                # Get price (fills have 'price', not entry/exit)
+                price = safe_float(t.get('price', t.get('entry_price', t.get('exit_price', 0))))
+                
                 recent_trades.append({
                     "symbol": t.get('symbol', t.get('instrument', 'unknown')),
-                    "direction": t.get('direction', t.get('side', 'unknown')),
-                    "pnl": safe_float(t.get('pnl', t.get('profit', 0))),
-                    "entry_price": safe_float(t.get('entry_price', t.get('entry', 0))),
-                    "exit_price": safe_float(t.get('exit_price', t.get('exit', 0))),
-                    "timestamp": t.get('timestamp', t.get('close_time', '')),
-                    "duration_mins": safe_float(t.get('duration_mins', 0)),
+                    "direction": direction,
+                    "pnl": safe_float(t.get('pnl', t.get('realized_pnl', t.get('profit', 0)))),
+                    "price": price,
+                    "entry_price": price,  # For compatibility
+                    "exit_price": price,   # For compatibility  
+                    "action": t.get('action', t.get('comment', '')),
+                    "step": t.get('step', 0),
+                    "timestamp": t.get('timestamp', t.get('ts', t.get('close_time', ''))),
+                    "lots": safe_float(t.get('lots', t.get('volume', 0))),
                 })
     
     # ═══════════════════════════════════════════════════════════════

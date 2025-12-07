@@ -1002,47 +1002,71 @@ class BiasAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
             return 0.0
 
     def _analyze_entry_timing_quality(self, trades: List[Dict]) -> float:
-        """Analyze quality of entry timing (FOMO indicator if poor)"""
+        """Analyze quality of entry timing (FOMO indicator if poor)
+        
+        FIXED v3.1: Only count CLOSE fills (with realized PnL) not OPEN fills.
+        Open fills have pnl=0 which would skew the ratio incorrectly.
+        """
         try:
             if len(trades) < 5:
                 return 0.0
             
-            # FOMO indicator: high percentage of immediate losses after entry
-            recent = trades[-15:]
-            immediate_losses = 0
+            # Filter to only CLOSE fills (those with non-zero PnL indicate closed trades)
+            recent = trades[-20:]
+            closed_trades = [t for t in recent if abs(t.get('pnl', 0)) > 0.001 or 
+                            t.get('action', '').startswith('close') or
+                            t.get('comment', '') == 'close']
             
-            for t in recent:
-                # If trade closed at a loss quickly, might indicate chasing
-                pnl = t.get('pnl', 0)
-                if pnl < 0:
-                    immediate_losses += 1
+            if len(closed_trades) < 3:
+                return 0.0
             
-            loss_ratio = immediate_losses / len(recent)
+            # Count losses among closed trades
+            losing_trades = sum(1 for t in closed_trades if t.get('pnl', 0) < 0)
+            loss_ratio = losing_trades / len(closed_trades)
             
-            # High loss ratio suggests poor entry timing (chasing/FOMO)
-            return min(1.0, loss_ratio)
+            # FIXED: Require very high loss ratio (>80%) to indicate FOMO
+            # Normal trading has 40-60% win rate, so losses are expected
+            if loss_ratio > 0.8:
+                return min(1.0, (loss_ratio - 0.8) * 5)  # Scale 80-100% to 0-1
+            return 0.0
         except Exception:
             return 0.0
 
     def _detect_strategy_abandonment(self, trades: List[Dict]) -> float:
-        """Detect strategy abandonment patterns (FOMO indicator)"""
+        """Detect strategy abandonment patterns (FOMO indicator)
+        
+        FIXED v3.1: Multi-instrument trading (EUR_USD + XAU_USD) is NORMAL.
+        Only flag abandonment if there are rapid switches between >3 different instruments
+        within a short time window, which would indicate chasing different markets.
+        """
         try:
-            if len(trades) < 5:
+            if len(trades) < 8:
                 return 0.0
             
-            # Look for erratic trading patterns - rapid alternating between instruments
-            recent = trades[-10:]
+            # Look for erratic trading patterns
+            recent = trades[-15:]
             instruments = [t.get('instrument', t.get('symbol', '')) for t in recent]
             
-            if len(instruments) < 3:
+            if len(instruments) < 5:
                 return 0.0
             
-            # Count instrument switches
+            # Count unique instruments
+            unique_instruments = set(instruments)
+            
+            # FIXED: 2 instruments (EUR_USD + XAU_USD) is normal for this system
+            # Only flag if trading >3 different instruments rapidly
+            if len(unique_instruments) <= 2:
+                return 0.0
+            
+            # Count rapid switches (more than 3 instruments AND high switch rate)
             switches = sum(1 for i in range(1, len(instruments)) if instruments[i] != instruments[i-1])
             switch_ratio = switches / (len(instruments) - 1)
             
-            # High switch ratio suggests chasing different markets (strategy abandonment)
-            return min(1.0, switch_ratio)
+            # Only flag if BOTH conditions: many instruments AND high switch rate
+            if len(unique_instruments) >= 4 and switch_ratio > 0.7:
+                return min(1.0, (switch_ratio - 0.7) * 3.33)  # Scale 70-100% to 0-1
+            
+            return 0.0
         except Exception:
             return 0.0
 

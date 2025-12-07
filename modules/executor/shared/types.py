@@ -172,6 +172,9 @@ class TradeFill:
         cs = _contract_size_for_symbol(self.instrument)
         lots = u / cs if (u > 0.0 and cs > 0.0) else 0.0
 
+        # Direction string for dashboard display
+        direction = "BUY" if s > 0 else "SELL"
+
         out: Dict[str, Any] = {
             "id": self.id,
             "ts": float(_sf(self.ts, time.time())),
@@ -179,14 +182,19 @@ class TradeFill:
             "instrument": self.instrument,
             "symbol": self.instrument,        # alias
             "action": self.action,
+            "direction": direction,           # human-readable direction
+            "type": direction,                # alias for direction
             "side": int(s),
             "units": float(u),
             "price": float(px),
+            "entry_price": float(px),         # alias for dashboard compatibility
+            "exit_price": float(px),          # alias for dashboard (same as price for fills)
             "notional_eur": float(notional),
             "notional": float(notional),      # alias
             "realized_pnl": rpnl,
             "pnl": rpnl,                      # alias
             "pnl_eur": rpnl,                  # alias
+            "profit": rpnl,                   # alias for dashboard
             "origin_id": self.origin_id,
             "comment": self.comment,
 

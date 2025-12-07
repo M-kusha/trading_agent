@@ -1406,6 +1406,12 @@
         const positions = data?.position_data?.positions || [];
         const recent    = data?.recent_trades || [];
         const pnlPositive = (trading.pnl ?? 0) >= 0;
+        
+        // Pagination state for recent trades
+        const [tradePage, setTradePage] = React.useState(0);
+        const tradesPerPage = 6;
+        const totalTradePages = Math.max(1, Math.ceil(recent.length / tradesPerPage));
+        const paginatedTrades = recent.slice().reverse().slice(tradePage * tradesPerPage, (tradePage + 1) * tradesPerPage);
 
         return (
             <div className="flex flex-col gap-5">
@@ -1519,12 +1525,35 @@
 
                     {/* Recent Trades */}
                     <div className="glass-card p-5">
-                        <div className="section-header mb-4">Recent Trades</div>
+                        <div className="flex items-center justify-between mb-4">
+                            <div className="section-header">Recent Trades</div>
+                            {recent.length > tradesPerPage && (
+                                <div className="flex items-center gap-2">
+                                    <button 
+                                        onClick={() => setTradePage(p => Math.max(0, p - 1))}
+                                        disabled={tradePage === 0}
+                                        className="px-2 py-1 text-xs rounded bg-white/5 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+                                    >
+                                        ←
+                                    </button>
+                                    <span className="text-xs text-slate-400 mono">
+                                        {tradePage + 1}/{totalTradePages}
+                                    </span>
+                                    <button 
+                                        onClick={() => setTradePage(p => Math.min(totalTradePages - 1, p + 1))}
+                                        disabled={tradePage >= totalTradePages - 1}
+                                        className="px-2 py-1 text-xs rounded bg-white/5 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+                                    >
+                                        →
+                                    </button>
+                                </div>
+                            )}
+                        </div>
                         {recent.length === 0 ? (
                             <div className="text-sm text-slate-500 text-center py-8">No recent trades</div>
                         ) : (
                             <div className="space-y-2">
-                                {recent.slice(-10).reverse().map((t, idx) => {
+                                {paginatedTrades.map((t, idx) => {
                                     const dir = normalizeDirection(t.direction ?? t.side);
                                     const displayDir = dir === "buy" ? "BUY" : (dir === "sell" ? "SELL" : "HOLD");
                                     const pnl = t.pnl ?? t.profit ?? 0;
@@ -1548,6 +1577,11 @@
                                         </div>
                                     );
                                 })}
+                            </div>
+                        )}
+                        {recent.length > 0 && (
+                            <div className="text-xs text-slate-500 text-center mt-3">
+                                {recent.length} total fills
                             </div>
                         )}
                     </div>
