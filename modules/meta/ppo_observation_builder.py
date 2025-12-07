@@ -1064,10 +1064,24 @@ class PPOObservationBuilder:
     def _fetch_risk_state(self, bus: Any, module: str) -> Dict[str, Any]:
         """Fetch risk state from SmartInfoBus."""
         try:
+            risk_data = bus.get("risk_data", module) or {}
+            portfolio_risk = bus.get("portfolio_risk", module) or {}
+            
+            # FIX: Extract risk_budget from risk_data (PortfolioRiskSystem provides risk_budget_available)
+            # risk_budget_available is 0.0-1.0 representing remaining daily budget
+            risk_budget = 1.0
+            if isinstance(risk_data, dict):
+                # Prefer risk_budget_available if present
+                if "risk_budget_available" in risk_data:
+                    risk_budget = float(risk_data.get("risk_budget_available", 1.0))
+                elif "risk_budget_used" in risk_data:
+                    # Fallback: compute from used amount (daily budget - used)
+                    risk_budget = max(0.0, 1.0 - float(risk_data.get("risk_budget_used", 0.0)))
+            
             return {
-                "risk_data": bus.get("risk_data", module) or {},
-                "portfolio_risk": bus.get("portfolio_risk", module) or {},
-                "risk_budget": float(bus.get("risk_budget", module) or 1.0),
+                "risk_data": risk_data,
+                "portfolio_risk": portfolio_risk,
+                "risk_budget": risk_budget,
             }
         except Exception:
             return {}

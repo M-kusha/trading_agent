@@ -52,6 +52,7 @@ optuna_results/
 
 # Ignore scripts
 scripts/
+data/
 
 # Local settings
 settings.local.json

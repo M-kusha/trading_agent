@@ -181,18 +181,8 @@ class WebSocketMetricsBroadcaster:
             pass
 
 
-# Import beautiful visualizer
-try:
-    from train.training_visualizer import BeautifulTrainingVisualizer as _BeautifulTrainingVisualizer
-    VISUALIZER_AVAILABLE = True
-    BeautifulTrainingVisualizer: Any = _BeautifulTrainingVisualizer
-except Exception:
-    VISUALIZER_AVAILABLE = False
-    # Fallback class to avoid None type errors
-    class _FallbackVisualizer:
-        def __init__(self, **kwargs): pass
-        def render_complete_display(self, *args, **kwargs): pass
-    BeautifulTrainingVisualizer = _FallbackVisualizer
+# Visualizer disabled - using web dashboard instead (http://localhost:8765)
+VISUALIZER_AVAILABLE = False
 
 # ───────────────────────────────────────────────────────────────────
 # Resolve dependencies without type-identity collisions
@@ -374,14 +364,6 @@ class ModernEnhancedTrainingCallback(BaseCallback):
             
         self.use_beautiful_display = use_beautiful_display and VISUALIZER_AVAILABLE
 
-        # Initialize beautiful visualizer
-        self.visualizer = None
-        if self.use_beautiful_display:
-            try:
-                self.visualizer = BeautifulTrainingVisualizer(config=config, terminal_width=120)
-            except Exception as e:
-                print(f"[WARN] Failed to initialize visualizer: {e}")
-                self.use_beautiful_display = False
 
         # Runtime state
         self.start_time: datetime = datetime.now()
@@ -527,7 +509,7 @@ class ModernEnhancedTrainingCallback(BaseCallback):
             # Update display every 2 seconds for beautiful display, 10 seconds for basic
             update_interval = 2 if self.use_beautiful_display else 10
             if (now - self.last_print_time).total_seconds() >= update_interval:
-                self._print_enhanced_progress()
+                
                 self.last_print_time = now
 
             # Collect metrics every 10 steps
@@ -535,6 +517,7 @@ class ModernEnhancedTrainingCallback(BaseCallback):
                 metrics = self._collect_enhanced_metrics()
                 self._update_performance_tracking(metrics)
                 self._tb_log(metrics)
+                self._publish_metrics_to_bus(metrics)  # For web dashboard
                 if self.metrics_broadcaster:
                     try:
                         self.metrics_broadcaster.send_metrics(metrics)
@@ -641,25 +624,6 @@ class ModernEnhancedTrainingCallback(BaseCallback):
                 print("[OK] WebSocket metrics broadcaster closed")
             except Exception as e:
                 print(f"[WARN] Error closing WebSocket broadcaster: {e}")
-
-    # ── Telemetry helpers ───────────────────────────────────────────
-    def _print_enhanced_progress(self):
-        """Display beautiful training progress (or fallback to basic display)"""
-        # Use beautiful visualizer if available
-        if self.use_beautiful_display and self.visualizer:
-            try:
-                metrics = self._collect_enhanced_metrics()
-                self.visualizer.render_complete_display(self.smart_bus, metrics)
-            except Exception as e:
-                # Fallback to basic display on error
-                print(f"\n[WARN] Visualizer error: {e}")
-                import traceback
-                traceback.print_exc()
-                self.use_beautiful_display = False
-                self._print_basic_progress()
-        else:
-            # Fallback to basic progress display
-            self._print_basic_progress()
 
     def _print_basic_progress(self):
         """Basic text-based progress display (fallback)"""
@@ -777,6 +741,55 @@ class ModernEnhancedTrainingCallback(BaseCallback):
             pass
 
         return sanitize_metrics(m)
+
+    def _publish_metrics_to_bus(self, metrics: Dict[str, Any]) -> None:
+        """
+        Publish training metrics to SmartInfoBus for web dashboard consumption.
+        This enables real-time monitoring via the web dashboard.
+        """
+        try:
+            # Progress metrics
+            self.smart_bus.set("timestep", metrics.get("timestep", 0), 
+                             module="TrainingCallback", thesis="Current training step")
+            self.smart_bus.set("total_timesteps", metrics.get("total_timesteps", 100000),
+                             module="TrainingCallback", thesis="Total training steps")
+            self.smart_bus.set("episode", metrics.get("episodes", 0),
+                             module="TrainingCallback", thesis="Current episode")
+            self.smart_bus.set("steps_per_second", metrics.get("steps_per_second", 0),
+                             module="TrainingCallback", thesis="Training speed")
+            
+            # Learning metrics
+            self.smart_bus.set("policy_loss", metrics.get("policy_loss", 0),
+                             module="TrainingCallback", thesis="PPO policy loss")
+            self.smart_bus.set("value_loss", metrics.get("value_loss", 0),
+                             module="TrainingCallback", thesis="PPO value loss")
+            self.smart_bus.set("entropy_loss", metrics.get("entropy_loss", metrics.get("entropy", 0)),
+                             module="TrainingCallback", thesis="Policy entropy")
+            self.smart_bus.set("approx_kl", metrics.get("approx_kl", 0),
+                             module="TrainingCallback", thesis="KL divergence")
+            self.smart_bus.set("clip_fraction", metrics.get("clip_fraction", 0),
+                             module="TrainingCallback", thesis="PPO clip fraction")
+            self.smart_bus.set("explained_variance", metrics.get("explained_variance", 0),
+                             module="TrainingCallback", thesis="Value explained variance")
+            self.smart_bus.set("learning_rate", metrics.get("learning_rate", 3e-4),
+                             module="TrainingCallback", thesis="Current learning rate")
+            self.smart_bus.set("n_updates", metrics.get("n_updates", 0),
+                             module="TrainingCallback", thesis="Number of policy updates")
+            
+            # Reward metrics
+            self.smart_bus.set("current_episode_reward", metrics.get("current_episode_reward", 0),
+                             module="TrainingCallback", thesis="Current episode reward")
+            self.smart_bus.set("ep_rew_mean", metrics.get("episode_reward_mean", 0),
+                             module="TrainingCallback", thesis="Mean episode reward")
+            
+            # Trading metrics
+            self.smart_bus.set("balance", metrics.get("env_balance", 100000),
+                             module="TrainingCallback", thesis="Current balance")
+            self.smart_bus.set("current_drawdown", metrics.get("env_drawdown", 0),
+                             module="TrainingCallback", thesis="Current drawdown %")
+            
+        except Exception:
+            pass  # Non-critical - dashboard just won't update
 
 
     def _extract_environment_metrics(self) -> Dict[str, Any]:

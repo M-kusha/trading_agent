@@ -188,10 +188,10 @@ def set_voting_mode(mode: str) -> None:
     if mode not in ("LIVE", "TRAINING"):
         mode = "TRAINING"  # Default to exploratory mode
     _VOTING_MODE = mode
-    # Log mode changes for debugging
+    # Log mode changes at debug level to avoid noise
     import logging
     logger = logging.getLogger("voting.constants")
-    logger.warning(f"[VOTING MODE] Changed from {old_mode} → {_VOTING_MODE}")
+    logger.debug(f"[VOTING MODE] Changed from {old_mode} → {_VOTING_MODE}")
 
 
 def get_voting_mode() -> str:

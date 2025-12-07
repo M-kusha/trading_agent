@@ -918,13 +918,42 @@ class CommitteeCoordinator(VotingModuleBase):
                 price_changed = provider_status.get('price_changed', True)
                 if not price_changed:
                     # No price change - skip processing to save resources
+                    skip_decision_id = self.smart_bus.get('kernel_decision_id', name) or 'skip'
                     return {
                         'action': 'flat',
                         'confidence': 0.0,
                         'magnitude': 0.0,
-                        'decision_id': self.smart_bus.get('kernel_decision_id', name) or 'skip',
+                        'decision_id': skip_decision_id,
                         'reasoning': 'No price change detected - skipped voting',
                         'skipped': True,
+                        # Contract-required outputs
+                        VotingBusKeys.COMMITTEE_DECISION: {'action': 'flat', 'reason': 'no_price_change'},
+                        VotingBusKeys.COMMITTEE_CONSENSUS: {'consensus_exists': False, 'skipped': True},
+                        VotingBusKeys.COMMITTEE_CONFIDENCE: 0.0,
+                        VotingBusKeys.COMMITTEE_VOTES: [],
+                        VotingBusKeys.COMMITTEE_DECISION_ID: skip_decision_id,
+                        'committee_summary': {'decision': 'flat', 'skipped': True},
+                        'committee_proposal_vectors': [],
+                        'committee_decisions_by_instrument': {},
+                        'raw_proposals': {},
+                        'member_confidences': {},
+                        'voting_weights': {},
+                        'committee_member_confidences': {},
+                        'strategy_weights': {},
+                        'member_performance': {},
+                        VotingBusKeys.VOTES: [],
+                        VotingBusKeys.VOTING_SUMMARY: {'action': 'flat', 'skipped': True},
+                        VotingBusKeys.STRATEGY_ARBITER_WEIGHTS: {},
+                        'expert_votes': [],
+                        'expert_weights': {},
+                        'committee_analytics': {},
+                        'committee_members': [],
+                        'n_members': 0,
+                        'proposal_vectors': [],
+                        'time_of_day': 0,
+                        'trade_vote': {'action': 'flat', 'confidence': 0.0},
+                        'trade_vote_v2': {'action': 'flat', 'size': 0.0, 'confidence': 0.0, 'consensus_score': 0.0},
+                        '_thesis': 'No price change - skipped voting'
                     }
 
             # Track warmup progress
@@ -1105,6 +1134,8 @@ class CommitteeCoordinator(VotingModuleBase):
                 'committee_members': committee_members,
                 'n_members': n_members,
                 'proposal_vectors': proposal_vectors,
+                # FIX: Add committee_proposal_vectors (required by contracts.py provides)
+                'committee_proposal_vectors': proposal_vectors,
                 'decision_id': decision_id,
                 'time_of_day': time_of_day,
                 
@@ -1319,6 +1350,11 @@ class CommitteeCoordinator(VotingModuleBase):
                 'decision_id': decision_id,
                 'timestamp': datetime.datetime.now().isoformat()
             },
+            
+            # Contract-required outputs (v5.0)
+            'committee_proposal_vectors': [],
+            'committee_decisions_by_instrument': {},
+            
             '_thesis': warmup_thesis
         }
     
@@ -1356,6 +1392,11 @@ class CommitteeCoordinator(VotingModuleBase):
             # Trade vote outputs
             'trade_vote': {'action': 'abstain', 'confidence': 0.1},
             'trade_vote_v2': {'action': 'abstain', 'size': 0.0, 'confidence': 0.1, 'consensus_score': 0.0},
+            
+            # Contract-required outputs (v5.0)
+            'committee_proposal_vectors': [],
+            'committee_decisions_by_instrument': {},
+            
             '_thesis': f'Committee error: {error}'
         }
 

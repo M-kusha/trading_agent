@@ -1,0 +1,2149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PPO Training Control Room</title>
+
+    <!-- Tailwind (CDN for dev) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'system-ui', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace'],
+                    },
+                    animation: {
+                        'pulse-slow': 'pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+                        'glow': 'glow 2s ease-in-out infinite alternate',
+                        'float': 'float 6s ease-in-out infinite',
+                        'shimmer': 'shimmer 2s linear infinite',
+                    },
+                    keyframes: {
+                        glow: {
+                            '0%': { boxShadow: '0 0 20px rgba(56, 189, 248, 0.3)' },
+                            '100%': { boxShadow: '0 0 40px rgba(56, 189, 248, 0.6)' },
+                        },
+                        float: {
+                            '0%, 100%': { transform: 'translateY(0px)' },
+                            '50%': { transform: 'translateY(-10px)' },
+                        },
+                        shimmer: {
+                            '0%': { backgroundPosition: '-200% 0' },
+                            '100%': { backgroundPosition: '200% 0' },
+                        },
+                    },
+                },
+            },
+        }
+    </script>
+
+    <!-- React 18 UMD + Babel -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+    <style>
+        * {
+            font-family: 'Inter', system-ui, sans-serif;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        .mono {
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        :root {
+            --bg-primary: #030712;
+            --bg-secondary: #0a0f1a;
+            --accent-blue: #3b82f6;
+            --accent-cyan: #06b6d4;
+            --accent-emerald: #10b981;
+            --accent-violet: #8b5cf6;
+            --accent-rose: #f43f5e;
+            --accent-amber: #f59e0b;
+        }
+
+        body {
+            background: var(--bg-primary);
+            background-image: 
+                radial-gradient(ellipse 80% 50% at 50% -20%, rgba(59, 130, 246, 0.15), transparent),
+                radial-gradient(ellipse 60% 40% at 100% 100%, rgba(139, 92, 246, 0.1), transparent),
+                radial-gradient(ellipse 40% 30% at 0% 80%, rgba(6, 182, 212, 0.08), transparent);
+            color: #e5e7eb;
+            min-height: 100vh;
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: rgba(15, 23, 42, 0.5);
+            border-radius: 10px;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: rgba(59, 130, 246, 0.4);
+            border-radius: 10px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(59, 130, 246, 0.6);
+        }
+
+        .shell {
+            max-width: 1600px;
+            margin: 0 auto;
+            min-height: 100vh;
+            padding: 20px;
+            display: grid;
+            grid-template-columns: 280px minmax(0, 1fr);
+            gap: 24px;
+        }
+
+        @media (max-width: 1024px) {
+            .shell {
+                grid-template-columns: minmax(0, 1fr);
+                padding: 16px;
+            }
+        }
+
+        /* Glass Panels */
+        .glass-panel {
+            background: linear-gradient(135deg, 
+                rgba(15, 23, 42, 0.8) 0%, 
+                rgba(15, 23, 42, 0.6) 50%,
+                rgba(20, 30, 50, 0.7) 100%);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border-radius: 24px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            box-shadow: 
+                0 25px 50px -12px rgba(0, 0, 0, 0.5),
+                0 0 0 1px rgba(255, 255, 255, 0.05) inset,
+                0 1px 0 rgba(255, 255, 255, 0.1) inset;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .glass-panel::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 1px;
+            background: linear-gradient(90deg, 
+                transparent, 
+                rgba(255, 255, 255, 0.15) 20%,
+                rgba(255, 255, 255, 0.15) 80%,
+                transparent);
+        }
+
+        .glass-card {
+            background: linear-gradient(145deg, 
+                rgba(15, 23, 42, 0.9) 0%, 
+                rgba(10, 18, 35, 0.95) 100%);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            border: 1px solid rgba(59, 130, 246, 0.15);
+            box-shadow: 
+                0 10px 40px -10px rgba(0, 0, 0, 0.4),
+                0 0 0 1px rgba(255, 255, 255, 0.03) inset;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+        }
+
+        .glass-card:hover {
+            border-color: rgba(59, 130, 246, 0.3);
+            box-shadow: 
+                0 20px 50px -15px rgba(0, 0, 0, 0.5),
+                0 0 30px -5px rgba(59, 130, 246, 0.15),
+                0 0 0 1px rgba(255, 255, 255, 0.05) inset;
+            transform: translateY(-2px);
+        }
+
+        .glass-card-inner {
+            background: rgba(15, 23, 42, 0.6);
+            border-radius: 16px;
+            border: 1px solid rgba(255, 255, 255, 0.04);
+        }
+
+        /* Sidebar Tabs */
+        .side-tab {
+            border-radius: 14px;
+            font-size: 0.8rem;
+            padding: 0.65rem 1rem;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+            border: 1px solid transparent;
+            transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .side-tab::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(135deg, rgba(255,255,255,0.1), transparent);
+            opacity: 0;
+            transition: opacity 0.25s;
+        }
+
+        .side-tab:hover::before {
+            opacity: 1;
+        }
+
+        .side-tab-icon {
+            width: 28px;
+            height: 28px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 10px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            transition: all 0.25s;
+        }
+
+        .side-tab-active {
+            background: linear-gradient(135deg, #3b82f6 0%, #06b6d4 100%);
+            color: white;
+            border-color: rgba(255, 255, 255, 0.2);
+            box-shadow: 
+                0 8px 32px rgba(59, 130, 246, 0.4),
+                0 0 0 1px rgba(255, 255, 255, 0.1) inset;
+        }
+
+        .side-tab-active .side-tab-icon {
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        .side-tab-inactive {
+            background: rgba(15, 23, 42, 0.5);
+            color: #94a3b8;
+            border-color: rgba(255, 255, 255, 0.05);
+        }
+
+        .side-tab-inactive:hover {
+            background: rgba(30, 41, 59, 0.6);
+            color: #e2e8f0;
+            border-color: rgba(59, 130, 246, 0.3);
+        }
+
+        .side-tab-inactive .side-tab-icon {
+            background: rgba(30, 41, 59, 0.8);
+        }
+
+        /* Live Indicator */
+        .live-indicator {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 16px;
+            border-radius: 16px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            letter-spacing: 0.05em;
+        }
+
+        .live-indicator.connected {
+            background: linear-gradient(135deg, rgba(16, 185, 129, 0.15), rgba(6, 182, 212, 0.1));
+            border: 1px solid rgba(16, 185, 129, 0.3);
+        }
+
+        .live-indicator.disconnected {
+            background: rgba(244, 63, 94, 0.1);
+            border: 1px solid rgba(244, 63, 94, 0.3);
+        }
+
+        .live-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            position: relative;
+        }
+
+        .live-dot.active {
+            background: #10b981;
+            box-shadow: 0 0 12px rgba(16, 185, 129, 0.8);
+        }
+
+        .live-dot.active::after {
+            content: '';
+            position: absolute;
+            inset: -4px;
+            border-radius: 50%;
+            border: 2px solid rgba(16, 185, 129, 0.4);
+            animation: ping 1.5s cubic-bezier(0, 0, 0.2, 1) infinite;
+        }
+
+        .live-dot.inactive {
+            background: #f43f5e;
+            box-shadow: 0 0 12px rgba(244, 63, 94, 0.8);
+        }
+
+        @keyframes ping {
+            75%, 100% {
+                transform: scale(2);
+                opacity: 0;
+            }
+        }
+
+        /* Badges */
+        .badge {
+            border-radius: 10px;
+            font-size: 0.65rem;
+            padding: 0.25rem 0.65rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .badge-long {
+            background: linear-gradient(135deg, rgba(16, 185, 129, 0.2), rgba(16, 185, 129, 0.1));
+            color: #34d399;
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            box-shadow: 0 0 20px rgba(16, 185, 129, 0.2);
+        }
+
+        .badge-short {
+            background: linear-gradient(135deg, rgba(244, 63, 94, 0.2), rgba(244, 63, 94, 0.1));
+            color: #fb7185;
+            border: 1px solid rgba(244, 63, 94, 0.3);
+            box-shadow: 0 0 20px rgba(244, 63, 94, 0.2);
+        }
+
+        .badge-hold {
+            background: rgba(148, 163, 184, 0.1);
+            color: #94a3b8;
+            border: 1px solid rgba(148, 163, 184, 0.2);
+        }
+
+        /* Risk Bar */
+        .risk-bar-container {
+            position: relative;
+            height: 8px;
+            border-radius: 10px;
+            background: rgba(15, 23, 42, 0.8);
+            overflow: visible;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .risk-bar-fill {
+            height: 100%;
+            border-radius: 10px;
+            background: linear-gradient(90deg, #10b981 0%, #f59e0b 50%, #f43f5e 100%);
+            position: relative;
+        }
+
+        .risk-knob {
+            position: absolute;
+            top: 50%;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #1e293b, #0f172a);
+            border: 3px solid white;
+            box-shadow: 
+                0 4px 12px rgba(0, 0, 0, 0.5),
+                0 0 20px rgba(255, 255, 255, 0.1);
+            transform: translate(-50%, -50%);
+            transition: left 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        /* Progress Bar */
+        .progress-bar {
+            height: 8px;
+            border-radius: 10px;
+            background: rgba(15, 23, 42, 0.8);
+            overflow: hidden;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .progress-fill {
+            height: 100%;
+            border-radius: 10px;
+            background: linear-gradient(90deg, #3b82f6 0%, #06b6d4 50%, #10b981 100%);
+            background-size: 200% 100%;
+            animation: shimmer 3s linear infinite;
+            transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        /* Metric Cards */
+        .metric-value {
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 600;
+            background: linear-gradient(135deg, #e2e8f0, #94a3b8);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .metric-value.positive {
+            background: linear-gradient(135deg, #34d399, #10b981);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .metric-value.negative {
+            background: linear-gradient(135deg, #fb7185, #f43f5e);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .metric-value.accent {
+            background: linear-gradient(135deg, #38bdf8, #3b82f6);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        /* Section Headers */
+        .section-header {
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.15em;
+            color: #64748b;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .section-header::after {
+            content: '';
+            flex: 1;
+            height: 1px;
+            background: linear-gradient(90deg, rgba(100, 116, 139, 0.3), transparent);
+        }
+
+        /* Tables */
+        .data-table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0;
+        }
+
+        .data-table thead tr {
+            background: rgba(15, 23, 42, 0.5);
+        }
+
+        .data-table th {
+            padding: 12px 16px;
+            font-size: 0.65rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            color: #64748b;
+            text-align: left;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .data-table td {
+            padding: 12px 16px;
+            font-size: 0.8rem;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+            transition: background 0.2s;
+        }
+
+        .data-table tbody tr:hover td {
+            background: rgba(59, 130, 246, 0.05);
+        }
+
+        /* Logo Animation */
+        .logo-container {
+            position: relative;
+        }
+
+        .logo-glow {
+            position: absolute;
+            inset: -4px;
+            border-radius: 20px;
+            background: linear-gradient(135deg, #3b82f6, #06b6d4, #10b981);
+            opacity: 0.6;
+            filter: blur(12px);
+            animation: glow 2s ease-in-out infinite alternate;
+        }
+
+        /* Stat Cards Grid */
+        .stat-grid {
+            display: grid;
+            gap: 16px;
+        }
+
+        .stat-card {
+            background: linear-gradient(145deg, rgba(15, 23, 42, 0.9), rgba(10, 18, 35, 0.95));
+            border-radius: 16px;
+            padding: 16px 20px;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            transition: all 0.3s;
+        }
+
+        .stat-card:hover {
+            border-color: rgba(59, 130, 246, 0.2);
+            transform: translateY(-1px);
+        }
+
+        /* Mini Charts */
+        .mini-chart-bar {
+            height: 4px;
+            border-radius: 4px;
+            background: rgba(30, 41, 59, 0.8);
+            overflow: hidden;
+        }
+
+        .mini-chart-fill {
+            height: 100%;
+            border-radius: 4px;
+            transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        /* Floating Elements */
+        .float-card {
+            animation: float 6s ease-in-out infinite;
+        }
+
+        /* Dividers */
+        .divider {
+            height: 1px;
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.1), transparent);
+            margin: 16px 0;
+        }
+
+        /* Accent Lines */
+        .accent-line {
+            width: 40px;
+            height: 3px;
+            border-radius: 3px;
+            background: linear-gradient(90deg, #3b82f6, #06b6d4);
+        }
+    </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+    const { useState, useEffect } = React;
+
+    // ─────────────────────────────────────────────────────────────
+    // Helpers
+    // ─────────────────────────────────────────────────────────────
+
+    function fmtPct(x, digits = 2) {
+        if (x == null || isNaN(x)) return "0.00%";
+        return x.toFixed(digits) + "%";
+    }
+
+    function fmtNum(x, digits = 2) {
+        if (x == null || isNaN(x)) return "0.00";
+        return x.toFixed(digits);
+    }
+
+    function clamp(x, lo, hi) {
+        return Math.min(hi, Math.max(lo, x));
+    }
+
+    function normalizeDirection(raw, fallback = "hold") {
+        if (raw === undefined || raw === null) return fallback;
+        if (typeof raw === "string") return raw.toLowerCase();
+        if (typeof raw === "number") {
+            if (raw > 0) return "long";
+            if (raw < 0) return "short";
+            return fallback;
+        }
+        if (typeof raw === "object") {
+            if (raw.direction !== undefined) return normalizeDirection(raw.direction, fallback);
+            if (raw.side !== undefined) return normalizeDirection(raw.side, fallback);
+            if (raw.label !== undefined) return String(raw.label).toLowerCase();
+            if (typeof raw.value === "string") return raw.value.toLowerCase();
+        }
+        return fallback;
+    }
+
+    function buildTrainingNarrative(data) {
+        if (!data) {
+            return {
+                summary: "Awaiting live data stream from the PPO training loop…",
+                stabilityLabel: "INIT",
+                regimeLabel: "UNKNOWN",
+                riskLabel: "UNSET",
+            };
+        }
+
+        const progress = data.progress || {};
+        const learning = data.learning || {};
+        const trading = data.trading || {};
+        const risk = data.risk || {};
+        const memory = data.memory || {};
+        const strategy = data.strategy || {};
+        const market = data.market || {};
+
+        const pct        = progress.progress_pct || 0;
+        const totalSteps = progress.total_timesteps || 0;
+        const explained  = learning.explained_variance ?? 0;
+        const pnlPct     = trading.pnl_pct ?? 0;
+        const winRate    = trading.win_rate ?? 0;
+        const riskLevel  = (risk.level || risk.risk_level || "UNKNOWN").toString().toUpperCase();
+        const riskScale  = risk.scale ?? risk.risk_scale ?? 1;
+        const memGate    = typeof memory.gate === "number" ? memory.gate : 1;
+        const curriculum = strategy.curriculum || {};
+        const stage      = (curriculum.stage || curriculum.current_stage || "UNKNOWN").toString();
+        const mastery    = (curriculum.mastery ?? curriculum.mastery_score ?? 0);
+        const regime     = market.regime || "UNKNOWN";
+
+        let stability;
+        if (explained >= 0.7)      stability = "stable";
+        else if (explained >= 0.4) stability = "consolidating";
+        else                       stability = "exploring";
+
+        let perf;
+        if (pnlPct > 5 && winRate > 55)       perf = "profit-seeking";
+        else if (pnlPct < -5 && winRate < 45) perf = "drawdown-defense";
+        else                                  perf = "neutral-discovery";
+
+        let riskText;
+        if (riskLevel === "LOW") riskText = "conservative";
+        else if (["HIGH","EXTREME"].includes(riskLevel)) riskText = "aggressive";
+        else riskText = "balanced";
+
+        const lines = [
+            `Training is at ${pct.toFixed(1)}% of ${totalSteps.toLocaleString()} planned steps, with the policy currently in a ${stability} regime (explained variance ${fmtNum(explained, 2)}).`,
+            `Realised return sits at ${fmtNum(pnlPct, 2)}%, with a win rate of ${fmtNum(winRate, 1)}% across executed trades.`,
+            `Risk control is operating in a ${riskText} posture (level ${riskLevel}, scale ${fmtNum(riskScale, 2)}), while the memory gate at ${fmtNum(memGate, 2)} is filtering patterns for the ${regime} regime.`,
+            `The curriculum is at stage "${stage}" with an estimated mastery of ${(mastery * 100).toFixed(0)}% over the current skill set.`
+        ];
+
+        return {
+            summary: lines.join(" "),
+            stabilityLabel: stability.toUpperCase(),
+            regimeLabel: perf.toUpperCase(),
+            riskLabel: riskText.toUpperCase(),
+        };
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Icon Components
+    // ─────────────────────────────────────────────────────────────
+
+    const Icons = {
+        Overview: () => (
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/>
+            </svg>
+        ),
+        Decisions: () => (
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>
+            </svg>
+        ),
+        Learning: () => (
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/>
+            </svg>
+        ),
+        Trading: () => (
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/>
+            </svg>
+        ),
+        Risk: () => (
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+            </svg>
+        ),
+        Voting: () => (
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/>
+            </svg>
+        ),
+        System: () => (
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+            </svg>
+        ),
+    };
+
+    // ─────────────────────────────────────────────────────────────
+    // Sidebar
+    // ─────────────────────────────────────────────────────────────
+
+    function Sidebar({ activeTab, setActiveTab, data, connected, updateRate }) {
+        const tabs = [
+            { id: "Overview",       label: "Overview",       Icon: Icons.Overview },
+            { id: "Decisions",      label: "Decisions",      Icon: Icons.Decisions },
+            { id: "Learning",       label: "Learning",       Icon: Icons.Learning },
+            { id: "Trading",        label: "Trading",        Icon: Icons.Trading },
+            { id: "Risk & Memory",  label: "Risk & Memory",  Icon: Icons.Risk },
+            { id: "Voting & Market",label: "Voting & Market",Icon: Icons.Voting },
+            { id: "System",         label: "System",         Icon: Icons.System },
+        ];
+
+        const episode  = data?.progress?.episode || 0;
+        const timestep = data?.progress?.timestep || 0;
+        const speed    = data?.progress?.steps_per_second || 0;
+
+        return (
+            <aside className="glass-panel flex flex-col p-5 space-y-5">
+                {/* Brand */}
+                <div className="flex items-center gap-4">
+                    <div className="logo-container">
+                        <div className="logo-glow"></div>
+                        <div className="relative w-12 h-12 rounded-2xl bg-gradient-to-br from-blue-500 via-cyan-400 to-emerald-400 flex items-center justify-center shadow-xl">
+                            <span className="mono font-bold text-lg text-white">RL</span>
+                        </div>
+                    </div>
+                    <div>
+                        <div className="text-[0.65rem] uppercase tracking-[0.2em] text-cyan-400 font-semibold">
+                            Trading Agent
+                        </div>
+                        <div className="text-sm font-semibold text-white mt-0.5">
+                            PPO Control Room
+                        </div>
+                    </div>
+                </div>
+
+                {/* Live Status */}
+                <div className={`live-indicator ${connected ? 'connected' : 'disconnected'}`}>
+                    <div className={`live-dot ${connected ? 'active' : 'inactive'}`}></div>
+                    <span className="mono text-xs">
+                        {connected ? "LIVE STREAM" : "RECONNECTING"}
+                    </span>
+                    <span className="ml-auto mono text-xs text-slate-300">
+                        {updateRate.toFixed(1)}/s
+                    </span>
+                </div>
+
+                {/* Training Stats */}
+                <div className="glass-card-inner px-4 py-3">
+                    <div className="grid grid-cols-3 gap-3 text-center">
+                        <div>
+                            <div className="text-[0.6rem] text-slate-500 uppercase tracking-wider font-medium">Episode</div>
+                            <div className="mono text-sm font-semibold text-white mt-1">
+                                {episode.toLocaleString()}
+                            </div>
+                        </div>
+                        <div>
+                            <div className="text-[0.6rem] text-slate-500 uppercase tracking-wider font-medium">Step</div>
+                            <div className="mono text-sm font-semibold text-white mt-1">
+                                {timestep.toLocaleString()}
+                            </div>
+                        </div>
+                        <div>
+                            <div className="text-[0.6rem] text-slate-500 uppercase tracking-wider font-medium">Speed</div>
+                            <div className="mono text-sm font-semibold text-emerald-400 mt-1">
+                                {fmtNum(speed, 0)}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                {/* Navigation */}
+                <div className="divider"></div>
+                <div className="flex-1">
+                    <div className="text-[0.6rem] uppercase text-slate-500 tracking-[0.2em] font-semibold mb-3 px-1">
+                        Navigation
+                    </div>
+                    <div className="flex flex-col gap-2">
+                        {tabs.map(t => (
+                            <button
+                                key={t.id}
+                                onClick={() => setActiveTab(t.id)}
+                                className={`side-tab ${activeTab === t.id ? "side-tab-active" : "side-tab-inactive"}`}
+                            >
+                                <span className="side-tab-icon">
+                                    <t.Icon />
+                                </span>
+                                <span>{t.label}</span>
+                            </button>
+                        ))}
+                    </div>
+                </div>
+
+                {/* Footer */}
+                <div className="pt-4 border-t border-white/5">
+                    <div className="text-[0.65rem] text-slate-500">
+                        Connected to InfoBus
+                    </div>
+                    <div className="mono text-[0.6rem] text-slate-600 mt-1">
+                        {new Date().toLocaleString()}
+                    </div>
+                </div>
+            </aside>
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Overview Tab
+    // ─────────────────────────────────────────────────────────────
+
+    function OverviewTab({ data }) {
+        const progress = data?.progress || {};
+        const learning = data?.learning || {};
+        const trading  = data?.trading || {};
+        const risk     = data?.risk || {};
+        const market   = data?.market || {};
+        const summary  = buildTrainingNarrative(data);
+
+        const pnlPositive = (trading.pnl ?? 0) >= 0;
+        const riskLevel = (risk.level || risk.risk_level || "UNKNOWN").toString().toUpperCase();
+        const riskScale = risk.scale ?? risk.risk_scale ?? 1;
+        const normalized = clamp((riskScale - 0.3) / (2.0 - 0.3), 0, 1);
+
+        return (
+            <div className="flex flex-col gap-5">
+                {/* Narrative Card */}
+                <section className="glass-panel p-6">
+                    <div className="flex flex-col lg:flex-row gap-6">
+                        <div className="flex-1">
+                            <div className="flex items-center gap-3 mb-4">
+                                <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-blue-500 to-cyan-400 flex items-center justify-center shadow-lg shadow-blue-500/30">
+                                    <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/>
+                                    </svg>
+                                </div>
+                                <div>
+                                    <div className="text-[0.65rem] uppercase tracking-[0.2em] text-cyan-400 font-semibold">
+                                        Training Storyline
+                                    </div>
+                                    <div className="accent-line mt-1"></div>
+                                </div>
+                            </div>
+                            <p className="text-sm text-slate-300 leading-relaxed">
+                                {summary.summary}
+                            </p>
+                        </div>
+                        <div className="grid grid-cols-3 gap-3 lg:min-w-[280px]">
+                            <div className="stat-card text-center">
+                                <div className="text-[0.55rem] text-slate-500 uppercase tracking-wider font-medium">Stability</div>
+                                <div className="mono text-sm font-bold text-cyan-400 mt-2">
+                                    {summary.stabilityLabel}
+                                </div>
+                            </div>
+                            <div className="stat-card text-center">
+                                <div className="text-[0.55rem] text-slate-500 uppercase tracking-wider font-medium">Perf Regime</div>
+                                <div className="mono text-sm font-bold text-violet-400 mt-2">
+                                    {summary.regimeLabel}
+                                </div>
+                            </div>
+                            <div className="stat-card text-center">
+                                <div className="text-[0.55rem] text-slate-500 uppercase tracking-wider font-medium">Risk Posture</div>
+                                <div className="mono text-sm font-bold text-emerald-400 mt-2">
+                                    {summary.riskLabel}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                {/* Stats Grid */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+                    {/* Training Progress */}
+                    <div className="glass-card p-5">
+                        <div className="section-header mb-4">Training Progress</div>
+                        <div className="grid grid-cols-3 gap-3 mb-4">
+                            <div>
+                                <div className="text-[0.6rem] text-slate-500 uppercase">Episode</div>
+                                <div className="mono text-lg font-semibold text-white">
+                                    {(progress.episode || 0).toLocaleString()}
+                                </div>
+                            </div>
+                            <div>
+                                <div className="text-[0.6rem] text-slate-500 uppercase">Step</div>
+                                <div className="mono text-lg font-semibold text-white">
+                                    {(progress.timestep || 0).toLocaleString()}
+                                </div>
+                            </div>
+                            <div>
+                                <div className="text-[0.6rem] text-slate-500 uppercase">Speed</div>
+                                <div className="mono text-lg font-semibold text-emerald-400">
+                                    {fmtNum(progress.steps_per_second || 0, 0)}
+                                </div>
+                            </div>
+                        </div>
+                        <div className="progress-bar">
+                            <div className="progress-fill" style={{ width: (progress.progress_pct || 0) + "%" }}/>
+                        </div>
+                        <div className="flex justify-between text-[0.65rem] text-slate-500 mt-2">
+                            <span>Target: {progress.total_timesteps?.toLocaleString?.() || "-"}</span>
+                            <span className="mono text-cyan-400 font-semibold">
+                                {(progress.progress_pct || 0).toFixed(1)}%
+                            </span>
+                        </div>
+                    </div>
+
+                    {/* Learning Snapshot */}
+                    <div className="glass-card p-5">
+                        <div className="section-header mb-4">Learning Metrics</div>
+                        <div className="grid grid-cols-2 gap-4">
+                            <div>
+                                <div className="text-[0.6rem] text-slate-500 uppercase">Policy Loss</div>
+                                <div className="mono text-lg font-semibold metric-value accent">
+                                    {fmtNum(learning.policy_loss || 0, 4)}
+                                </div>
+                            </div>
+                            <div>
+                                <div className="text-[0.6rem] text-slate-500 uppercase">Expl. Variance</div>
+                                <div className="mono text-lg font-semibold text-violet-400">
+                                    {fmtNum(learning.explained_variance || 0, 2)}
+                                </div>
+                            </div>
+                            <div>
+                                <div className="text-[0.6rem] text-slate-500 uppercase">Entropy</div>
+                                <div className="mono text-sm font-medium text-slate-300">
+                                    {fmtNum(learning.entropy || 0, 2)}
+                                </div>
+                            </div>
+                            <div>
+                                <div className="text-[0.6rem] text-slate-500 uppercase">KL Div</div>
+                                <div className="mono text-sm font-medium text-slate-300">
+                                    {fmtNum(learning.kl_divergence || 0, 5)}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Risk & PnL */}
+                    <div className="glass-card p-5">
+                        <div className="section-header mb-4">Risk & PnL</div>
+                        <div className="grid grid-cols-3 gap-3 mb-4">
+                            <div>
+                                <div className="text-[0.6rem] text-slate-500 uppercase">Balance</div>
+                                <div className="mono text-sm font-semibold text-white">
+                                    ${(trading.balance || 100000).toLocaleString(undefined,{maximumFractionDigits:0})}
+                                </div>
+                            </div>
+                            <div>
+                                <div className="text-[0.6rem] text-slate-500 uppercase">P&L</div>
+                                <div className={`mono text-sm font-semibold ${pnlPositive ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                    {(trading.pnl >= 0 ? "+" : "") + (trading.pnl || 0).toLocaleString(undefined,{maximumFractionDigits:0})}
+                                </div>
+                            </div>
+                            <div>
+                                <div className="text-[0.6rem] text-slate-500 uppercase">Win Rate</div>
+                                <div className="mono text-sm font-semibold text-cyan-400">
+                                    {fmtNum(trading.win_rate || 0, 1)}%
+                                </div>
+                            </div>
+                        </div>
+                        <div className="flex items-center gap-3">
+                            <div className="flex-1">
+                                <div className="risk-bar-container">
+                                    <div className="risk-bar-fill"></div>
+                                    <div className="risk-knob" style={{ left: (normalized * 100) + "%" }}/>
+                                </div>
+                            </div>
+                            <span className="badge badge-hold text-[0.6rem]">{riskLevel}</span>
+                            <span className="mono text-xs text-amber-400">{fmtNum(trading.drawdown || 0, 2)}%</span>
+                        </div>
+                    </div>
+                </div>
+
+                {/* Market & Mode */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                    <div className="glass-card p-5">
+                        <div className="section-header mb-4">Market Context</div>
+                        <div className="grid grid-cols-2 gap-4">
+                            <div className="glass-card-inner p-3 rounded-xl">
+                                <div className="text-[0.6rem] text-slate-500 uppercase">Regime</div>
+                                <div className="mono text-sm font-semibold text-violet-400 mt-1">
+                                    {market.regime || "UNKNOWN"}
+                                </div>
+                            </div>
+                            <div className="glass-card-inner p-3 rounded-xl">
+                                <div className="text-[0.6rem] text-slate-500 uppercase">Trend</div>
+                                <div className="mono text-sm font-semibold text-slate-200 mt-1">
+                                    {market.trend_direction || "NEUTRAL"}
+                                </div>
+                            </div>
+                            <div className="glass-card-inner p-3 rounded-xl">
+                                <div className="text-[0.6rem] text-slate-500 uppercase">Volatility</div>
+                                <div className="mono text-sm font-semibold text-slate-200 mt-1">
+                                    {market.volatility_level || "MEDIUM"}
+                                </div>
+                            </div>
+                            <div className="glass-card-inner p-3 rounded-xl">
+                                <div className="text-[0.6rem] text-slate-500 uppercase">Liquidity</div>
+                                <div className="mono text-sm font-semibold text-slate-200 mt-1">
+                                    {fmtNum(market.liquidity_score ?? 0.5, 2)}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div className="glass-card p-5">
+                        <div className="section-header mb-4">Training Mode</div>
+                        <div className="grid grid-cols-2 gap-4">
+                            <div className="glass-card-inner p-3 rounded-xl">
+                                <div className="text-[0.6rem] text-slate-500 uppercase">Mode</div>
+                                <div className="mono text-sm font-semibold text-cyan-400 mt-1">
+                                    {(data?.trading_mode?.current || "NORMAL").toString().toUpperCase()}
+                                </div>
+                            </div>
+                            <div className="glass-card-inner p-3 rounded-xl">
+                                <div className="text-[0.6rem] text-slate-500 uppercase">Risk Mult</div>
+                                <div className="mono text-sm font-semibold text-slate-200 mt-1">
+                                    {fmtNum(data?.trading_mode?.risk_multiplier ?? 1, 2)}
+                                </div>
+                            </div>
+                            <div className="glass-card-inner p-3 rounded-xl">
+                                <div className="text-[0.6rem] text-slate-500 uppercase">Max Pos</div>
+                                <div className="mono text-sm font-semibold text-slate-200 mt-1">
+                                    {data?.trading_mode?.max_positions ?? 3}
+                                </div>
+                            </div>
+                            <div className="glass-card-inner p-3 rounded-xl">
+                                <div className="text-[0.6rem] text-slate-500 uppercase">Pending</div>
+                                <div className="mono text-sm font-semibold text-slate-200 mt-1">
+                                    {data?.executor?.pending_orders ?? 0}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Decisions Tab
+    // ─────────────────────────────────────────────────────────────
+
+    function DecisionsTab({ data }) {
+        const ppo      = data?.ppo || {};
+        const finalDec = ppo.final_decision || {};
+        const multi    = ppo.multi_decisions || {};
+        const reward   = data?.reward || {};
+        const exec     = data?.executor || {};
+        const execList = exec.decisions || [];
+        const rewardComponents = reward.components || {};
+
+        return (
+            <div className="flex flex-col gap-5">
+                <div className="grid lg:grid-cols-2 gap-5">
+                    {/* PPO Final Decision */}
+                    <section className="glass-panel p-6">
+                        <div className="flex items-center justify-between mb-5">
+                            <div className="flex items-center gap-3">
+                                <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center shadow-lg shadow-violet-500/30">
+                                    <Icons.Decisions />
+                                </div>
+                                <div>
+                                    <div className="text-[0.65rem] uppercase tracking-[0.2em] text-violet-400 font-semibold">
+                                        PPO Arbiter Decision
+                                    </div>
+                                    <div className="text-xs text-slate-400 mt-0.5">
+                                        Why the RL agent chose this direction
+                                    </div>
+                                </div>
+                            </div>
+                            <div className="flex flex-col items-end gap-1">
+                                <span className={`badge ${ppo.gate_passed ? 'badge-long' : 'badge-short'}`}>
+                                    Gate: {ppo.gate_passed ? "OPEN" : "BLOCKED"}
+                                </span>
+                                <span className="mono text-xs text-slate-400">
+                                    Size: {fmtNum(ppo.position_size || 0, 3)}
+                                </span>
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-3 gap-3 mb-5">
+                            <div className="glass-card-inner p-4 rounded-2xl text-center">
+                                <div className="text-[0.6rem] text-slate-500 uppercase mb-2">Direction</div>
+                                <span className={`badge ${
+                                    normalizeDirection(finalDec.action) === "long" ? "badge-long" :
+                                    normalizeDirection(finalDec.action) === "short" ? "badge-short" : "badge-hold"
+                                }`}>
+                                    {String(finalDec.action || "HOLD").toUpperCase()}
+                                </span>
+                            </div>
+                            <div className="glass-card-inner p-4 rounded-2xl text-center">
+                                <div className="text-[0.6rem] text-slate-500 uppercase mb-2">Confidence</div>
+                                <div className="mono text-lg font-bold text-cyan-400">
+                                    {fmtPct((finalDec.confidence ?? 0) * 100, 1)}
+                                </div>
+                            </div>
+                            <div className="glass-card-inner p-4 rounded-2xl text-center">
+                                <div className="text-[0.6rem] text-slate-500 uppercase mb-2">Trust</div>
+                                <div className="mono text-lg font-bold text-emerald-400">
+                                    {fmtNum(finalDec.trust_score ?? 0, 2)}
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="glass-card-inner p-4 rounded-2xl">
+                            <div className="text-[0.6rem] text-slate-500 uppercase mb-2">Reasoning</div>
+                            <p className="text-sm text-slate-300 leading-relaxed">
+                                {finalDec.reasoning || "No reasoning published yet from PPO agent."}
+                            </p>
+                        </div>
+                    </section>
+
+                    {/* Reward Decomposition */}
+                    <section className="glass-panel p-6">
+                        <div className="flex items-center justify-between mb-5">
+                            <div className="flex items-center gap-3">
+                                <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center shadow-lg shadow-amber-500/30">
+                                    <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                                    </svg>
+                                </div>
+                                <div>
+                                    <div className="text-[0.65rem] uppercase tracking-[0.2em] text-amber-400 font-semibold">
+                                        Reward Decomposition
+                                    </div>
+                                    <div className="text-xs text-slate-400 mt-0.5">
+                                        How the environment rewarded this step
+                                    </div>
+                                </div>
+                            </div>
+                            <div className="text-right">
+                                <div className="mono text-xs text-slate-400">Step: {fmtNum(reward.step_reward ?? 0, 3)}</div>
+                                <div className="mono text-xs text-slate-400">Episode: {fmtNum(reward.episode_reward ?? 0, 2)}</div>
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-3">
+                            {Object.entries(rewardComponents).map(([name, val]) => (
+                                <div key={name} className="glass-card-inner p-3 rounded-xl">
+                                    <div className="flex justify-between items-center mb-2">
+                                        <span className="text-[0.65rem] uppercase text-slate-500 font-medium">{name}</span>
+                                        <span className={`mono text-sm font-semibold ${(val ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                            {fmtNum(val ?? 0, 3)}
+                                        </span>
+                                    </div>
+                                    <div className="mini-chart-bar">
+                                        <div
+                                            className={`mini-chart-fill ${(val ?? 0) >= 0 ? 'bg-emerald-500' : 'bg-rose-500'}`}
+                                            style={{ width: `${clamp(Math.abs(val ?? 0) * 100, 0, 100)}%` }}
+                                        />
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </section>
+                </div>
+
+                {/* Per-Instrument Decisions */}
+                <section className="glass-panel p-6">
+                    <div className="flex items-center justify-between mb-5">
+                        <div className="section-header">Per-Instrument Decisions</div>
+                        <span className="mono text-xs text-slate-500">
+                            Total: {ppo.stats?.total_decisions || 0}
+                        </span>
+                    </div>
+                    <div className="overflow-x-auto rounded-2xl">
+                        <table className="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Symbol</th>
+                                    <th>Action</th>
+                                    <th>Confidence</th>
+                                    <th>Size</th>
+                                    <th>Gate</th>
+                                    <th>Trust</th>
+                                    <th>Regime</th>
+                                    <th>Reasoning</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {Object.keys(multi).length === 0 && (
+                                    <tr>
+                                        <td colSpan="8" className="text-center text-slate-500 py-8">
+                                            No per-instrument decisions published yet
+                                        </td>
+                                    </tr>
+                                )}
+                                {Object.entries(multi).map(([sym, dec]) => (
+                                    <tr key={sym}>
+                                        <td className="mono font-medium text-white">{sym}</td>
+                                        <td>
+                                            <span className={`badge ${
+                                                normalizeDirection(dec.direction) === "long" ? "badge-long" :
+                                                normalizeDirection(dec.direction) === "short" ? "badge-short" : "badge-hold"
+                                            }`}>
+                                                {String(dec.direction || "HOLD").toUpperCase()}
+                                            </span>
+                                        </td>
+                                        <td className="mono text-cyan-400">{fmtPct((dec.confidence ?? 0) * 100, 1)}</td>
+                                        <td className="mono">{fmtNum(dec.position_size ?? 0, 3)}</td>
+                                        <td>
+                                            <span className={dec.gate_passed ? 'text-emerald-400' : 'text-rose-400'}>
+                                                {dec.gate_passed ? "OPEN" : "BLOCKED"}
+                                            </span>
+                                        </td>
+                                        <td className="mono">{fmtNum(dec.trust_score ?? 0, 2)}</td>
+                                        <td className="text-slate-400">{String(dec.regime || "").toUpperCase() || "-"}</td>
+                                        <td className="text-slate-400 max-w-xs truncate">{dec.reasoning || "-"}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+
+                {/* Executor Decision Log */}
+                <section className="glass-panel p-6">
+                    <div className="flex items-center justify-between mb-5">
+                        <div className="section-header">Executor Decision Log</div>
+                        <span className="mono text-xs text-slate-500">
+                            Executions: {exec.execution_count || 0}
+                        </span>
+                    </div>
+                    <div className="overflow-x-auto rounded-2xl">
+                        <table className="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Time</th>
+                                    <th>Symbol</th>
+                                    <th>Action</th>
+                                    <th>Volume</th>
+                                    <th>Price</th>
+                                    <th>Status</th>
+                                    <th>Reason</th>
+                                    <th>Risk</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {execList.length === 0 && (
+                                    <tr>
+                                        <td colSpan="8" className="text-center text-slate-500 py-8">
+                                            No executor reports published yet
+                                        </td>
+                                    </tr>
+                                )}
+                                {execList.map((r, idx) => (
+                                    <tr key={idx}>
+                                        <td className="mono text-slate-400">{r.timestamp || "-"}</td>
+                                        <td className="mono font-medium text-white">{r.symbol || "-"}</td>
+                                        <td>
+                                            <span className={`badge ${
+                                                normalizeDirection(r.action) === "long" ? "badge-long" :
+                                                normalizeDirection(r.action) === "short" ? "badge-short" : "badge-hold"
+                                            }`}>
+                                                {String(r.action || "").toUpperCase() || "N/A"}
+                                            </span>
+                                        </td>
+                                        <td className="mono">{fmtNum(r.volume ?? 0, 3)}</td>
+                                        <td className="mono">{fmtNum(r.price ?? 0, 3)}</td>
+                                        <td>
+                                            <span className={`badge ${
+                                                String(r.status || "").toUpperCase().includes("FILLED") ? "badge-long" :
+                                                String(r.status || "").toUpperCase().includes("REJECT") ? "badge-short" : "badge-hold"
+                                            }`}>
+                                                {String(r.status || "").toUpperCase() || "-"}
+                                            </span>
+                                        </td>
+                                        <td className="text-slate-400 max-w-xs truncate">{r.reason || "-"}</td>
+                                        <td className="text-slate-500 max-w-xs truncate">{r.gate_reason || r.risk_reason || "-"}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+            </div>
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Learning Tab
+    // ─────────────────────────────────────────────────────────────
+
+    function LearningTab({ data }) {
+        const learning = data?.learning || {};
+        const ppo      = data?.ppo || {};
+
+        return (
+            <div className="flex flex-col gap-5">
+                <section className="glass-panel p-6">
+                    <div className="flex items-center justify-between mb-5">
+                        <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-yellow-500 to-amber-600 flex items-center justify-center shadow-lg shadow-yellow-500/30">
+                                <Icons.Learning />
+                            </div>
+                            <div>
+                                <div className="text-[0.65rem] uppercase tracking-[0.2em] text-yellow-400 font-semibold">
+                                    PPO Learning Metrics
+                                </div>
+                                <div className="accent-line mt-1"></div>
+                            </div>
+                        </div>
+                        <div className="text-xs text-slate-500">
+                            LR <span className="mono text-cyan-400 font-semibold">{fmtNum(learning.learning_rate || 0.0003, 6)}</span>
+                        </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                        {[
+                            { label: "Policy Loss", value: learning.policy_loss || 0, digits: 4, color: "text-cyan-400" },
+                            { label: "Value Loss", value: learning.value_loss || 0, digits: 4, color: "text-slate-200" },
+                            { label: "Entropy", value: learning.entropy || 0, digits: 2, color: "text-slate-200" },
+                            { label: "KL Divergence", value: learning.kl_divergence || 0, digits: 5, color: "text-slate-200" },
+                            { label: "Clip Fraction", value: learning.clip_fraction || 0, digits: 3, color: "text-slate-200" },
+                        ].map((m, idx) => (
+                            <div key={idx} className="glass-card p-5">
+                                <div className="text-[0.6rem] text-slate-500 uppercase tracking-wider font-medium">{m.label}</div>
+                                <div className={`mono text-2xl font-bold ${m.color} mt-2`}>
+                                    {fmtNum(m.value, m.digits)}
+                                </div>
+                            </div>
+                        ))}
+                        <div className="glass-card p-5">
+                            <div className="text-[0.6rem] text-slate-500 uppercase tracking-wider font-medium">Explained Variance</div>
+                            <div className="mono text-2xl font-bold text-violet-400 mt-2">
+                                {fmtNum(learning.explained_variance || 0, 2)}
+                            </div>
+                            <div className="progress-bar mt-3">
+                                <div
+                                    className="h-full rounded-lg bg-gradient-to-r from-violet-500 via-purple-500 to-fuchsia-500"
+                                    style={{ width: ((learning.explained_variance || 0) * 100) + "%" }}
+                                />
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                    <div className="glass-card p-5">
+                        <div className="section-header mb-4">PPO Decision</div>
+                        <div className="grid grid-cols-3 gap-4 mb-4">
+                            <div className="text-center">
+                                <div className="text-[0.6rem] text-slate-500 uppercase">Gate</div>
+                                <div className={`mono text-lg font-semibold mt-1 ${ppo.gate_passed ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                    {ppo.gate_passed ? "YES" : "NO"}
+                                </div>
+                            </div>
+                            <div className="text-center">
+                                <div className="text-[0.6rem] text-slate-500 uppercase">Size</div>
+                                <div className="mono text-lg font-semibold text-emerald-400 mt-1">
+                                    {fmtNum(ppo.position_size || 0, 2)}
+                                </div>
+                            </div>
+                            <div className="text-center">
+                                <div className="text-[0.6rem] text-slate-500 uppercase">Updates</div>
+                                <div className="mono text-lg font-semibold text-cyan-400 mt-1">
+                                    {(learning.n_updates || 0).toLocaleString()}
+                                </div>
+                            </div>
+                        </div>
+                        <div className="glass-card-inner p-4 rounded-xl">
+                            <div className="flex items-center gap-3 mb-2">
+                                <span className={`badge ${
+                                    (ppo.final_decision?.action || "HOLD").toUpperCase() === "LONG" ? "badge-long" :
+                                    (ppo.final_decision?.action || "HOLD").toUpperCase() === "SHORT" ? "badge-short" : "badge-hold"
+                                }`}>
+                                    {(ppo.final_decision?.action || "HOLD").toUpperCase()}
+                                </span>
+                                <span className="mono text-xs text-slate-400">
+                                    conf {fmtNum(ppo.final_decision?.confidence || 0, 2)}
+                                </span>
+                            </div>
+                            {ppo.final_decision?.reasoning && (
+                                <p className="text-xs text-slate-400">{ppo.final_decision.reasoning}</p>
+                            )}
+                        </div>
+                    </div>
+
+                    <div className="glass-card p-5">
+                        <div className="section-header mb-4">PPO Accuracy</div>
+                        <div className="grid grid-cols-3 gap-4">
+                            <div className="glass-card-inner p-4 rounded-xl text-center">
+                                <div className="text-[0.6rem] text-slate-500 uppercase">Decisions</div>
+                                <div className="mono text-xl font-semibold text-white mt-2">
+                                    {(ppo.stats?.total_decisions || 0).toLocaleString()}
+                                </div>
+                            </div>
+                            <div className="glass-card-inner p-4 rounded-xl text-center">
+                                <div className="text-[0.6rem] text-slate-500 uppercase">Trades</div>
+                                <div className="mono text-xl font-semibold text-white mt-2">
+                                    {(ppo.stats?.trades_executed || 0).toLocaleString()}
+                                </div>
+                            </div>
+                            <div className="glass-card-inner p-4 rounded-xl text-center">
+                                <div className="text-[0.6rem] text-slate-500 uppercase">Accuracy</div>
+                                <div className="mono text-xl font-semibold text-emerald-400 mt-2">
+                                    {fmtNum(ppo.stats?.accuracy || 0, 2)}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Trading Tab
+    // ─────────────────────────────────────────────────────────────
+
+    function TradingTab({ data }) {
+        const trading   = data?.trading || {};
+        const positions = data?.position_data?.positions || [];
+        const recent    = data?.recent_trades || [];
+        const pnlPositive = (trading.pnl ?? 0) >= 0;
+
+        return (
+            <div className="flex flex-col gap-5">
+                <section className="glass-panel p-6">
+                    <div className="flex items-center gap-3 mb-5">
+                        <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shadow-lg shadow-emerald-500/30">
+                            <Icons.Trading />
+                        </div>
+                        <div>
+                            <div className="text-[0.65rem] uppercase tracking-[0.2em] text-emerald-400 font-semibold">
+                                Trading Performance
+                            </div>
+                            <div className="accent-line mt-1"></div>
+                        </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-5">
+                        <div className="glass-card p-5">
+                            <div className="text-[0.6rem] text-slate-500 uppercase">Balance</div>
+                            <div className="mono text-2xl font-bold text-white mt-2">
+                                ${(trading.balance || 100000).toLocaleString(undefined,{maximumFractionDigits:0})}
+                            </div>
+                        </div>
+                        <div className="glass-card p-5">
+                            <div className="text-[0.6rem] text-slate-500 uppercase">P&L</div>
+                            <div className={`mono text-2xl font-bold mt-2 ${pnlPositive ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                {(trading.pnl >= 0 ? "+" : "") + (trading.pnl || 0).toLocaleString(undefined,{maximumFractionDigits:0})}
+                            </div>
+                        </div>
+                        <div className="glass-card p-5">
+                            <div className="text-[0.6rem] text-slate-500 uppercase">Return</div>
+                            <div className="mono text-2xl font-bold text-cyan-400 mt-2">
+                                {fmtNum(trading.pnl_pct || 0, 2)}%
+                            </div>
+                        </div>
+                        <div className="glass-card p-5">
+                            <div className="text-[0.6rem] text-slate-500 uppercase">Drawdown</div>
+                            <div className="mono text-2xl font-bold text-amber-400 mt-2">
+                                {fmtNum(trading.drawdown || 0, 2)}%
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="flex flex-wrap gap-6 text-sm">
+                        <span className="flex items-center gap-2">
+                            <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
+                            <span className="text-emerald-400 font-semibold">{trading.wins || 0}</span>
+                            <span className="text-slate-500">wins</span>
+                        </span>
+                        <span className="flex items-center gap-2">
+                            <span className="w-2 h-2 rounded-full bg-rose-400"></span>
+                            <span className="text-rose-400 font-semibold">{trading.losses || 0}</span>
+                            <span className="text-slate-500">losses</span>
+                        </span>
+                        <span className="flex items-center gap-2">
+                            <span className="w-2 h-2 rounded-full bg-slate-400"></span>
+                            <span className="text-white font-semibold">{trading.total_trades || 0}</span>
+                            <span className="text-slate-500">total</span>
+                        </span>
+                        <span className="flex items-center gap-2">
+                            <span className="w-2 h-2 rounded-full bg-cyan-400"></span>
+                            <span className="text-cyan-400 font-semibold">{fmtNum(trading.win_rate || 0, 1)}%</span>
+                            <span className="text-slate-500">win rate</span>
+                        </span>
+                    </div>
+                </section>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                    {/* Positions */}
+                    <div className="glass-card p-5">
+                        <div className="section-header mb-4">Open Positions</div>
+                        {positions.length === 0 ? (
+                            <div className="text-sm text-slate-500 text-center py-8">No open positions</div>
+                        ) : (
+                            <div className="space-y-3">
+                                {positions.map((p, idx) => {
+                                    const dir = normalizeDirection(p.direction ?? p.side);
+                                    const pnl = p.current_pnl || 0;
+                                    return (
+                                        <div key={idx} className="glass-card-inner p-4 rounded-xl">
+                                            <div className="flex items-center justify-between mb-3">
+                                                <span className="font-semibold text-white">{p.symbol}</span>
+                                                <span className={`badge ${
+                                                    dir === "long" ? "badge-long" :
+                                                    dir === "short" ? "badge-short" : "badge-hold"
+                                                }`}>{dir}</span>
+                                            </div>
+                                            <div className="grid grid-cols-3 gap-3 text-xs">
+                                                <div>
+                                                    <div className="text-[0.6rem] text-slate-500 uppercase">Size</div>
+                                                    <div className="mono font-medium">{fmtNum(p.size ?? 0, 2)}</div>
+                                                </div>
+                                                <div>
+                                                    <div className="text-[0.6rem] text-slate-500 uppercase">Entry</div>
+                                                    <div className="mono font-medium">{fmtNum(p.entry_price ?? 0, 4)}</div>
+                                                </div>
+                                                <div>
+                                                    <div className="text-[0.6rem] text-slate-500 uppercase">P&L</div>
+                                                    <div className={`mono font-semibold ${pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                                        {(pnl >= 0 ? "+" : "") + fmtNum(pnl, 2)}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Recent Trades */}
+                    <div className="glass-card p-5">
+                        <div className="section-header mb-4">Recent Trades</div>
+                        {recent.length === 0 ? (
+                            <div className="text-sm text-slate-500 text-center py-8">No recent trades</div>
+                        ) : (
+                            <div className="space-y-2">
+                                {recent.slice(-10).reverse().map((t, idx) => {
+                                    const dir = normalizeDirection(t.direction ?? t.side);
+                                    const pnl = t.pnl ?? t.profit ?? 0;
+                                    return (
+                                        <div key={idx} className="flex items-center justify-between py-2 border-b border-white/5 last:border-0">
+                                            <div className="flex items-center gap-3">
+                                                <span className={`badge ${
+                                                    dir === "long" ? "badge-long" :
+                                                    dir === "short" ? "badge-short" : "badge-hold"
+                                                }`}>{dir}</span>
+                                                <span className="text-sm text-white">{t.symbol || t.instrument || "?"}</span>
+                                            </div>
+                                            <div className="flex items-center gap-4">
+                                                <span className="mono text-xs text-slate-400">
+                                                    {t.entry_price != null ? fmtNum(Number(t.entry_price), 4) : "-"}
+                                                </span>
+                                                <span className={`mono text-sm font-semibold ${pnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                                    {(pnl >= 0 ? "+" : "") + fmtNum(Number(pnl), 2)}
+                                                </span>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        )}
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Risk & Memory Tab
+    // ─────────────────────────────────────────────────────────────
+
+    function RiskMemoryTab({ data }) {
+        const risk    = data?.risk || {};
+        const memory  = data?.memory || {};
+        const danger  = memory.danger_zones || {};
+        const play    = memory.playbook || {};
+        const strategy = data?.strategy || {};
+        const bias    = strategy.bias || {};
+        const curr    = strategy.curriculum || {};
+        const neural  = memory.neural_risk_hint ?? 0.5;
+
+        const riskLevel = (risk.level || risk.risk_level || "UNKNOWN").toString().toUpperCase();
+        const riskScale = risk.scale ?? risk.risk_scale ?? 1;
+        const normalized = clamp((riskScale - 0.3) / (2.0 - 0.3), 0, 1);
+        const alerts = risk.alerts || [];
+
+        return (
+            <div className="flex flex-col gap-5">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                    {/* Risk Controller */}
+                    <section className="glass-panel p-6">
+                        <div className="flex items-center gap-3 mb-5">
+                            <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-rose-500 to-pink-600 flex items-center justify-center shadow-lg shadow-rose-500/30">
+                                <Icons.Risk />
+                            </div>
+                            <div>
+                                <div className="text-[0.65rem] uppercase tracking-[0.2em] text-rose-400 font-semibold">
+                                    Dynamic Risk Controller
+                                </div>
+                                <div className="accent-line mt-1"></div>
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-3 gap-3 mb-5">
+                            <div className="glass-card-inner p-4 rounded-xl text-center">
+                                <div className="text-[0.6rem] text-slate-500 uppercase">Level</div>
+                                <div className={`badge mt-2 ${
+                                    riskLevel === "LOW" ? "badge-long" :
+                                    ["HIGH","EXTREME"].includes(riskLevel) ? "badge-short" : "badge-hold"
+                                }`}>
+                                    {riskLevel}
+                                </div>
+                            </div>
+                            <div className="glass-card-inner p-4 rounded-xl text-center">
+                                <div className="text-[0.6rem] text-slate-500 uppercase">Scale</div>
+                                <div className="mono text-xl font-bold text-white mt-2">
+                                    {fmtNum(riskScale, 2)}
+                                </div>
+                            </div>
+                            <div className="glass-card-inner p-4 rounded-xl text-center">
+                                <div className="text-[0.6rem] text-slate-500 uppercase">Score</div>
+                                <div className="mono text-xl font-bold text-cyan-400 mt-2">
+                                    {fmtNum(risk.score ?? 0.5, 2)}
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="mb-5">
+                            <div className="flex justify-between text-[0.65rem] text-slate-500 mb-2">
+                                <span>Low Risk</span>
+                                <span>High Risk</span>
+                            </div>
+                            <div className="risk-bar-container">
+                                <div className="risk-bar-fill"></div>
+                                <div className="risk-knob" style={{ left: (normalized * 100) + "%" }}/>
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-4 gap-2">
+                            {[
+                                { label: "Vol", value: risk.volatility ?? 0, digits: 3 },
+                                { label: "Trend", value: risk.trend_strength ?? 0, digits: 2 },
+                                { label: "Fragility", value: risk.fragility ?? 0.5, digits: 2 },
+                                { label: "Neural", value: neural, digits: 2 },
+                            ].map((m, idx) => (
+                                <div key={idx} className="glass-card-inner p-3 rounded-xl text-center">
+                                    <div className="text-[0.55rem] text-slate-500 uppercase">{m.label}</div>
+                                    <div className="mono text-sm font-medium text-slate-200 mt-1">
+                                        {fmtNum(m.value, m.digits)}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+
+                        {alerts.length > 0 && (
+                            <div className="mt-4 space-y-2">
+                                {alerts.map((a, idx) => (
+                                    <div key={idx} className="flex items-center gap-2 px-3 py-2 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs">
+                                        <span>⚠️</span>
+                                        <span>{a}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </section>
+
+                    {/* Memory & Bias */}
+                    <section className="glass-panel p-6">
+                        <div className="flex items-center gap-3 mb-5">
+                            <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center shadow-lg shadow-indigo-500/30">
+                                <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/>
+                                </svg>
+                            </div>
+                            <div>
+                                <div className="text-[0.65rem] uppercase tracking-[0.2em] text-indigo-400 font-semibold">
+                                    Memory & Bias
+                                </div>
+                                <div className="accent-line mt-1"></div>
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-3 mb-5">
+                            <div className="glass-card-inner p-4 rounded-xl">
+                                <div className="text-[0.6rem] text-slate-500 uppercase">Memory Gate</div>
+                                <div className="mono text-xl font-bold text-emerald-400 mt-1">
+                                    {fmtNum(memory.gate ?? 1, 2)}
+                                </div>
+                            </div>
+                            <div className="glass-card-inner p-4 rounded-xl">
+                                <div className="text-[0.6rem] text-slate-500 uppercase">Danger Zones</div>
+                                <div className="mono text-xl font-bold text-white mt-1">
+                                    {danger.active || 0}
+                                    <span className="text-sm text-slate-400 ml-1">
+                                        (max {fmtNum(danger.severity ?? 0, 2)})
+                                    </span>
+                                </div>
+                            </div>
+                            <div className="glass-card-inner p-4 rounded-xl">
+                                <div className="text-[0.6rem] text-slate-500 uppercase">Playbook Match</div>
+                                <div className="text-sm font-medium text-slate-200 mt-1">
+                                    {play.match_found ? `"${play.pattern || play.pattern_name || ""}"` : "None"}
+                                </div>
+                            </div>
+                            <div className="glass-card-inner p-4 rounded-xl">
+                                <div className="text-[0.6rem] text-slate-500 uppercase">Intuition</div>
+                                <div className="mono text-xl font-bold text-cyan-400 mt-1">
+                                    {fmtNum(memory.intuition_score ?? 0.5, 2)}
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="glass-card-inner p-4 rounded-xl">
+                            <div className="text-[0.65rem] text-slate-400 font-semibold uppercase mb-2">Bias & Curriculum</div>
+                            <p className="text-sm text-slate-300 mb-2">
+                                Bias detector sees <span className="text-amber-400 font-semibold">{bias.detected || 0}</span> active biases 
+                                with severity <span className="mono text-amber-400">{fmtNum(bias.severity ?? 0, 2)}</span> and{" "}
+                                <span className="text-emerald-400 font-semibold">{bias.corrections_applied || 0}</span> corrections applied.
+                            </p>
+                            <p className="text-sm text-slate-300">
+                                Curriculum stage{" "}
+                                <span className="text-violet-400 font-semibold">"{curr.stage || curr.current_stage || "UNKNOWN"}"</span>{" "}
+                                with mastery{" "}
+                                <span className="mono text-violet-400">{((curr.mastery ?? curr.mastery_score ?? 0) * 100).toFixed(0)}%</span>
+                            </p>
+                        </div>
+
+                        {memory.rationale && (
+                            <div className="glass-card-inner p-4 rounded-xl mt-3">
+                                <div className="text-[0.65rem] text-slate-400 font-semibold uppercase mb-2">Memory Rationale</div>
+                                <p className="text-sm text-slate-300">{String(memory.rationale)}</p>
+                            </div>
+                        )}
+                    </section>
+                </div>
+            </div>
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Voting & Market Tab
+    // ─────────────────────────────────────────────────────────────
+
+    function VotingMarketTab({ data }) {
+        const voting  = data?.voting || {};
+        const market  = data?.market || {};
+        const prices  = data?.prices || {};
+        const experts = voting.expert_votes || [];
+        const instruments = voting.instruments || {};
+        const world   = data?.world_model || {};
+
+        const action = (voting.action || "HOLD").toUpperCase();
+
+        return (
+            <div className="flex flex-col gap-5">
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                    {/* Committee Decision */}
+                    <section className="glass-panel p-6">
+                        <div className="flex items-center gap-3 mb-5">
+                            <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center shadow-lg shadow-blue-500/30">
+                                <Icons.Voting />
+                            </div>
+                            <div>
+                                <div className="text-[0.65rem] uppercase tracking-[0.2em] text-blue-400 font-semibold">
+                                    Committee Decision
+                                </div>
+                                <div className="accent-line mt-1"></div>
+                            </div>
+                        </div>
+
+                        <div className="text-center py-6">
+                            <div className={`text-5xl font-black mb-4 ${
+                                action === "LONG" ? "text-emerald-400" :
+                                action === "SHORT" ? "text-rose-400" : "text-slate-300"
+                            }`}>
+                                {action}
+                            </div>
+                            <div className="flex justify-center gap-8">
+                                <div>
+                                    <div className="text-[0.6rem] text-slate-500 uppercase">Confidence</div>
+                                    <div className="mono text-3xl font-bold text-cyan-400">
+                                        {fmtNum((voting.confidence || 0) * 100, 0)}%
+                                    </div>
+                                </div>
+                                <div>
+                                    <div className="text-[0.6rem] text-slate-500 uppercase">Consensus</div>
+                                    <div className="mono text-3xl font-bold text-violet-400">
+                                        {fmtNum((voting.consensus_score || 0) * 100, 0)}%
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        {Object.keys(instruments).length > 0 && (
+                            <div className="mt-4">
+                                <div className="text-[0.6rem] text-slate-500 uppercase mb-3">Per Instrument</div>
+                                <div className="space-y-3">
+                                    {Object.entries(instruments).map(([symbol, d]) => {
+                                        const act = (d.action || "HOLD").toUpperCase();
+                                        const conf = (d.confidence || 0) * 100;
+                                        return (
+                                            <div key={symbol} className="glass-card-inner p-4 rounded-xl">
+                                                <div className="flex items-center justify-between mb-2">
+                                                    <span className="font-semibold text-white">{symbol}</span>
+                                                    <span className={`badge ${
+                                                        act === "LONG" ? "badge-long" :
+                                                        act === "SHORT" ? "badge-short" : "badge-hold"
+                                                    }`}>{act}</span>
+                                                </div>
+                                                <div className="progress-bar">
+                                                    <div
+                                                        className={`h-full rounded-lg ${
+                                                            act === "LONG" ? "bg-emerald-500" :
+                                                            act === "SHORT" ? "bg-rose-500" : "bg-slate-500"
+                                                        }`}
+                                                        style={{ width: clamp(conf, 0, 100) + "%" }}
+                                                    />
+                                                </div>
+                                                <div className="flex justify-between text-[0.6rem] text-slate-500 mt-1">
+                                                    <span>Confidence {fmtNum(conf, 0)}%</span>
+                                                    <span>Consensus {fmtNum((d.consensus || 0) * 100, 0)}%</span>
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                        )}
+                    </section>
+
+                    {/* Market & Experts */}
+                    <section className="glass-panel p-6">
+                        <div className="flex items-center gap-3 mb-5">
+                            <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-teal-500 to-cyan-600 flex items-center justify-center shadow-lg shadow-teal-500/30">
+                                <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                                </svg>
+                            </div>
+                            <div>
+                                <div className="text-[0.65rem] uppercase tracking-[0.2em] text-teal-400 font-semibold">
+                                    Market & Experts
+                                </div>
+                                <div className="accent-line mt-1"></div>
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-3 mb-5">
+                            <div className="glass-card-inner p-4 rounded-xl">
+                                <div className="text-[0.6rem] text-slate-500 uppercase">Regime</div>
+                                <div className="mono text-lg font-bold text-violet-400 mt-1">
+                                    {market.regime || "UNKNOWN"}
+                                </div>
+                                <div className="text-xs text-slate-400 mt-2">
+                                    Trend: {market.trend_direction || "NEUTRAL"}
+                                </div>
+                            </div>
+                            <div className="glass-card-inner p-4 rounded-xl">
+                                <div className="text-[0.6rem] text-slate-500 uppercase">World Model</div>
+                                <div className="mono text-lg font-bold text-cyan-400 mt-1">
+                                    {(world.scenario || "NEUTRAL").toString().toUpperCase()}
+                                </div>
+                                <div className="text-xs text-slate-400 mt-2">
+                                    Conf: {fmtNum(world.confidence ?? 0, 2)}
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-3 mb-5">
+                            <div className="glass-card-inner p-4 rounded-xl text-center">
+                                <div className="text-[0.6rem] text-slate-500 uppercase">EUR/USD</div>
+                                <div className="mono text-2xl font-bold text-white mt-2">
+                                    {prices.EURUSD ? prices.EURUSD.toFixed(5) : "-"}
+                                </div>
+                            </div>
+                            <div className="glass-card-inner p-4 rounded-xl text-center">
+                                <div className="text-[0.6rem] text-slate-500 uppercase">XAU/USD</div>
+                                <div className="mono text-2xl font-bold text-white mt-2">
+                                    {prices.XAUUSD ? prices.XAUUSD.toFixed(2) : "-"}
+                                </div>
+                            </div>
+                        </div>
+
+                        <div>
+                            <div className="text-[0.6rem] text-slate-500 uppercase mb-3">Expert Votes</div>
+                            {(!experts || experts.length === 0) ? (
+                                <div className="text-sm text-slate-500 text-center py-4">No votes recorded</div>
+                            ) : (
+                                <div className="space-y-2">
+                                    {experts.map((v, idx) => {
+                                        const dir = normalizeDirection(v.vote ?? v.action, "hold");
+                                        const conf = (v.confidence ?? v.weight ?? 0) * 100;
+                                        return (
+                                            <div key={idx} className="flex items-center justify-between glass-card-inner px-4 py-3 rounded-xl">
+                                                <span className="font-medium text-white">{v.name}</span>
+                                                <div className="flex items-center gap-3">
+                                                    <span className={`badge ${
+                                                        dir === "long" ? "badge-long" :
+                                                        dir === "short" ? "badge-short" : "badge-hold"
+                                                    }`}>{dir}</span>
+                                                    <span className="mono text-sm text-slate-400">{fmtNum(conf, 0)}%</span>
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            )}
+                        </div>
+                    </section>
+                </div>
+            </div>
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // System Tab
+    // ─────────────────────────────────────────────────────────────
+
+    function SystemTab({ data }) {
+        const modules  = data?.modules || [];
+        const mode     = data?.trading_mode || {};
+        const executor = data?.executor || {};
+
+        return (
+            <div className="flex flex-col gap-5">
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                    {/* Module Health */}
+                    <section className="glass-panel p-6">
+                        <div className="flex items-center gap-3 mb-5">
+                            <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-slate-500 to-gray-600 flex items-center justify-center shadow-lg shadow-slate-500/30">
+                                <Icons.System />
+                            </div>
+                            <div>
+                                <div className="text-[0.65rem] uppercase tracking-[0.2em] text-slate-400 font-semibold">
+                                    Module Health
+                                </div>
+                                <div className="accent-line mt-1"></div>
+                            </div>
+                        </div>
+
+                        {modules.length === 0 ? (
+                            <div className="text-sm text-slate-500 text-center py-8">No module health data</div>
+                        ) : (
+                            <div className="space-y-3">
+                                {modules.map((m, idx) => {
+                                    const status = (m.status || "unknown").toString().toLowerCase();
+                                    const isHealthy = status === "ok" || status === "healthy";
+                                    const isDegraded = status === "degraded";
+                                    
+                                    return (
+                                        <div key={idx} className="flex items-center justify-between glass-card-inner px-4 py-3 rounded-xl">
+                                            <div className="flex items-center gap-3">
+                                                <span className={`w-3 h-3 rounded-full ${
+                                                    isHealthy ? 'bg-emerald-400 shadow-lg shadow-emerald-400/50' :
+                                                    isDegraded ? 'bg-amber-400 shadow-lg shadow-amber-400/50' :
+                                                    'bg-rose-400 shadow-lg shadow-rose-400/50'
+                                                }`}></span>
+                                                <span className="font-medium text-white">{m.name}</span>
+                                            </div>
+                                            <div className="flex items-center gap-4 text-xs">
+                                                <span className={`font-semibold ${
+                                                    isHealthy ? 'text-emerald-400' :
+                                                    isDegraded ? 'text-amber-400' : 'text-rose-400'
+                                                }`}>{status}</span>
+                                                <span className="mono text-slate-400">{(m.last_run_ms ?? 0).toFixed(1)}ms</span>
+                                                <span className="mono text-slate-400">{fmtNum((m.success_rate ?? 1) * 100, 0)}%</span>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        )}
+                    </section>
+
+                    {/* Executor & Mode */}
+                    <section className="glass-panel p-6">
+                        <div className="flex items-center gap-3 mb-5">
+                            <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-orange-500 to-red-600 flex items-center justify-center shadow-lg shadow-orange-500/30">
+                                <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                                </svg>
+                            </div>
+                            <div>
+                                <div className="text-[0.65rem] uppercase tracking-[0.2em] text-orange-400 font-semibold">
+                                    Executor & Mode
+                                </div>
+                                <div className="accent-line mt-1"></div>
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-3 mb-5">
+                            <div className="glass-card-inner p-4 rounded-xl">
+                                <div className="text-[0.6rem] text-slate-500 uppercase">Trading Mode</div>
+                                <div className="mono text-lg font-bold text-cyan-400 mt-1">
+                                    {(mode.current || "NORMAL").toString().toUpperCase()}
+                                </div>
+                            </div>
+                            <div className="glass-card-inner p-4 rounded-xl">
+                                <div className="text-[0.6rem] text-slate-500 uppercase">Risk Mult</div>
+                                <div className="mono text-lg font-bold text-white mt-1">
+                                    {fmtNum(mode.risk_multiplier ?? 1, 2)}
+                                </div>
+                            </div>
+                            <div className="glass-card-inner p-4 rounded-xl">
+                                <div className="text-[0.6rem] text-slate-500 uppercase">Max Positions</div>
+                                <div className="mono text-lg font-bold text-white mt-1">
+                                    {mode.max_positions ?? 3}
+                                </div>
+                            </div>
+                            <div className="glass-card-inner p-4 rounded-xl">
+                                <div className="text-[0.6rem] text-slate-500 uppercase">Pending</div>
+                                <div className="mono text-lg font-bold text-white mt-1">
+                                    {executor.pending_orders ?? 0}
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="glass-card-inner p-4 rounded-xl mb-4">
+                            <div className="text-[0.65rem] text-slate-400 font-semibold uppercase mb-2">Mode Thesis</div>
+                            <p className="text-sm text-slate-300">
+                                {mode.thesis || "No explicit thesis configured for this mode."}
+                            </p>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-3">
+                            <div className="glass-card-inner p-3 rounded-xl">
+                                <div className="text-[0.55rem] text-slate-500 uppercase">Last Action</div>
+                                <div className="mono text-sm font-medium text-white mt-1">
+                                    {(executor.last_action || "NONE").toString().toUpperCase()}
+                                </div>
+                            </div>
+                            <div className="glass-card-inner p-3 rounded-xl">
+                                <div className="text-[0.55rem] text-slate-500 uppercase">Last Result</div>
+                                <div className="mono text-sm font-medium text-white mt-1">
+                                    {(executor.last_result || "N/A").toString()}
+                                </div>
+                            </div>
+                            <div className="glass-card-inner p-3 rounded-xl">
+                                <div className="text-[0.55rem] text-slate-500 uppercase">Exec Count</div>
+                                <div className="mono text-sm font-medium text-white mt-1">
+                                    {executor.execution_count ?? 0}
+                                </div>
+                            </div>
+                            <div className="glass-card-inner p-3 rounded-xl">
+                                <div className="text-[0.55rem] text-slate-500 uppercase">Account Equity</div>
+                                <div className="mono text-sm font-medium text-emerald-400 mt-1">
+                                    {executor.account?.equity != null ? executor.account.equity.toFixed(2) : "-"}
+                                </div>
+                            </div>
+                        </div>
+                    </section>
+                </div>
+            </div>
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // App Shell
+    // ─────────────────────────────────────────────────────────────
+
+    function App() {
+        const [data, setData] = useState(null);
+        const [connected, setConnected] = useState(false);
+        const [activeTab, setActiveTab] = useState("Overview");
+        const [updateRate, setUpdateRate] = useState(0);
+        const [lastUpdate, setLastUpdate] = useState(null);
+
+        useEffect(() => {
+            let ws;
+            let updates = 0;
+            let lastTick = Date.now();
+            const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+            const url = `${protocol}://${window.location.host}/ws`;
+
+            function connect() {
+                ws = new WebSocket(url);
+
+                ws.onopen = () => setConnected(true);
+
+                ws.onmessage = (event) => {
+                    try {
+                        const payload = JSON.parse(event.data);
+                        setData(payload);
+                        updates += 1;
+                        setLastUpdate(new Date());
+                        const now = Date.now();
+                        const dt = (now - lastTick) / 1000;
+                        if (dt >= 1) {
+                            setUpdateRate(updates / dt);
+                            updates = 0;
+                            lastTick = now;
+                        }
+                    } catch (e) {
+                        console.error("parse error", e);
+                    }
+                };
+
+                ws.onclose = () => {
+                    setConnected(false);
+                    setTimeout(connect, 1000);
+                };
+
+                ws.onerror = (err) => console.error("ws error", err);
+            }
+
+            connect();
+            return () => { if (ws) ws.close(); };
+        }, []);
+
+        const contentProps = { data };
+
+        return (
+            <div className="shell">
+                <Sidebar
+                    activeTab={activeTab}
+                    setActiveTab={setActiveTab}
+                    data={data}
+                    connected={connected}
+                    updateRate={updateRate}
+                />
+
+                <div className="flex flex-col gap-5">
+                    {/* Header */}
+                    <header className="flex items-center justify-between">
+                        <div>
+                            <h1 className="text-xl font-bold text-white">
+                                {activeTab}
+                            </h1>
+                            <p className="text-sm text-slate-500 mt-1">
+                                Streaming decisions, risk and trading performance from the training loop
+                            </p>
+                        </div>
+                        <div className="text-right">
+                            <div className="text-[0.65rem] text-slate-500 uppercase tracking-wider">Last Update</div>
+                            <div className="mono text-sm text-white">
+                                {lastUpdate ? lastUpdate.toLocaleTimeString() : "-"}
+                            </div>
+                        </div>
+                    </header>
+
+                    {/* Content */}
+                    <main className="flex-1">
+                        {!data && (
+                            <div className="glass-panel p-8 text-center">
+                                <div className="w-16 h-16 mx-auto mb-4 rounded-3xl bg-gradient-to-br from-blue-500/20 to-cyan-500/20 flex items-center justify-center">
+                                    <svg className="w-8 h-8 text-cyan-400 animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+                                    </svg>
+                                </div>
+                                <div className="text-lg font-semibold text-white mb-2">Awaiting Connection</div>
+                                <div className="text-sm text-slate-500">Waiting for first data snapshot from InfoBus…</div>
+                            </div>
+                        )}
+                        {data && (
+                            <>
+                                {activeTab === "Overview"        && <OverviewTab {...contentProps} />}
+                                {activeTab === "Decisions"       && <DecisionsTab {...contentProps} />}
+                                {activeTab === "Learning"        && <LearningTab {...contentProps} />}
+                                {activeTab === "Trading"         && <TradingTab {...contentProps} />}
+                                {activeTab === "Risk & Memory"   && <RiskMemoryTab {...contentProps} />}
+                                {activeTab === "Voting & Market" && <VotingMarketTab {...contentProps} />}
+                                {activeTab === "System"          && <SystemTab {...contentProps} />}
+                            </>
+                        )}
+                    </main>
+                </div>
+            </div>
+        );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<App />);
+</script>
+</body>
+</html>

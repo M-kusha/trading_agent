@@ -140,6 +140,17 @@ class TradingModeManager:
             logger.debug("Could not import set_reward_mode from reward config")
         except Exception as e:
             logger.warning(f"Failed to set reward mode: {e}")
+        
+        # 4. InfoBus staleness mode
+        try:
+            from modules.utils.info_bus import InfoBusManager
+            bus = InfoBusManager.get_instance()
+            if hasattr(bus, 'set_live_mode'):
+                bus.set_live_mode(mode == "LIVE")
+        except ImportError:
+            logger.debug("Could not import InfoBusManager")
+        except Exception as e:
+            logger.warning(f"Failed to set InfoBus live mode: {e}")
     
     @classmethod
     def get_mode(cls) -> TradingMode:

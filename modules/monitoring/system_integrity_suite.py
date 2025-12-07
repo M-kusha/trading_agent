@@ -405,12 +405,24 @@ class SystemIntegritySuite:
             "trade_vote_v2",       # VotingKernel provides after first process()
             "consensus_score",     # ConsensusDetector provides after first process()
             "voting_consensus",    # VotingKernel provides after first process()
+            # v4.4.0: Additional inter-stage dependencies that resolve after first cycle
+            "committee_proposal_vectors",      # CommitteeCoordinator -> ConsensusAnalyzer, CollusionDetector
+            "committee_decisions_by_instrument",  # CommitteeCoordinator -> UncertaintySampler, FinalArbiter
+            "kernel_consensus_score",          # SlimVotingKernel -> RiskAdjustedReward
+            "risk_budget",                     # Not provided by any module (uses risk_data.risk_budget_used instead)
+            "actions",                         # Training loop provides, not bus-driven
+            "observations",                    # Training loop provides, not bus-driven
         }
         
         # Rate limiting for provider change warnings
         self._provider_change_times: Dict[str, float] = {}  # key -> last warning time
         self._provider_change_interval = 120.0  # seconds between warnings per key
         self._provider_change_counts: Dict[str, int] = {}  # key -> suppressed count
+        
+        # Rate limiting for BUS GET BLOCKED warnings (CRITICAL: prevents log explosion)
+        self._blocked_warn_times: Dict[str, float] = {}  # key:requester -> last warning time
+        self._blocked_warn_interval = 60.0  # seconds between warnings per key:requester pair
+        self._blocked_warn_counts: Dict[str, int] = {}  # key:requester -> suppressed count
 
         self._d("Debug enabled")  # initial debug note
         self._i("🧭", "SystemIntegritySuite initialized")
@@ -960,8 +972,30 @@ class SystemIntegritySuite:
             self._module_stats[requester]["get_blocked"] += 1
         if provider:
             self._module_stats[provider]["served_stale"] += 1
-        self._w("⛔", "BUS GET BLOCKED", key=key, requester=requester,
-                provider=provider, reason=reason, age=f"{age:.2f}s")
+        
+        # Skip logging during startup grace period
+        if now - self._init_time < self._startup_grace_period:
+            return
+        
+        # Skip write-once keys (they're intentionally static)
+        if self._is_write_once(str(key)):
+            return
+        
+        # Rate-limited warning to prevent log spam (CRITICAL FIX)
+        blocked_key = f"{key}:{requester}"
+        last_warn = self._blocked_warn_times.get(blocked_key, 0.0)
+        if now - last_warn >= self._blocked_warn_interval:
+            suppressed = self._blocked_warn_counts.get(blocked_key, 0)
+            if suppressed > 0:
+                self._w("⛔", "BUS GET BLOCKED", key=key, requester=requester,
+                        provider=provider, reason=reason, age=f"{age:.2f}s", suppressed=suppressed)
+            else:
+                self._w("⛔", "BUS GET BLOCKED", key=key, requester=requester,
+                        provider=provider, reason=reason, age=f"{age:.2f}s")
+            self._blocked_warn_times[blocked_key] = now
+            self._blocked_warn_counts[blocked_key] = 0
+        else:
+            self._blocked_warn_counts[blocked_key] = self._blocked_warn_counts.get(blocked_key, 0) + 1
 
     def _on_set(self, evt: Dict[str, Any]) -> None:
         key = evt.get("key")

@@ -17,6 +17,10 @@ Observation Schema (PPO_OBS_SIZE = 64):
 - Uses unified observation builder from modules.meta.ppo_observation_builder
 - Same 64-dim schema in training (here) and live (PPOAgentShell)
 - v4.0 adds world model predictions (8 dims) and trading mode state (8 dims)
+
+Dashboard:
+- Starts web dashboard on http://localhost:8765 automatically
+- Shares same InfoBus instance for real-time data
 """
 
 from __future__ import annotations
@@ -113,6 +117,18 @@ except Exception:
 
 # Enhanced callback
 from train.enhanced_training_callback import ModernEnhancedTrainingCallback
+
+# Dashboard server (runs in background thread, shares InfoBus instance)
+try:
+    from traindashboard.server import start_dashboard_server
+    import webbrowser
+    DASHBOARD_AVAILABLE = True
+except ImportError:
+    DASHBOARD_AVAILABLE = False
+    webbrowser = None
+    def start_dashboard_server(*args, **kwargs):
+        print("[WARN] Dashboard not available - traindashboard package not found")
+        return None
 
 # ───────────────────────────────────────────────────────────────────
 # Helpers
@@ -605,6 +621,7 @@ def main():
     p.add_argument("--pretrained", type=str)
     p.add_argument("--auto-pretrained", action="store_true")
     p.add_argument("--debug", action="store_true")
+    p.add_argument("--no-dashboard", action="store_true", help="Disable web dashboard")
     p.add_argument(
         "--data-source",
         choices=["auto", "files", "orchestrator"],
@@ -623,6 +640,32 @@ def main():
         orchestrator = ModuleOrchestrator.get_instance()
         orchestrator.initialize()
 
+        # Enable staleness checking for training mode (default config has it off for dashboard)
+        try:
+            bus = InfoBusManager.get_instance()
+            if hasattr(bus, 'set_staleness_check_enabled'):
+                bus.set_staleness_check_enabled(True)
+            if hasattr(bus, 'set_live_mode'):
+                bus.set_live_mode(False)  # Training mode = relaxed threshold (2hrs)
+        except Exception:
+            pass
+    
+    # ═══════════════════════════════════════════════════════════════
+    # START WEB DASHBOARD (shares same InfoBus instance)
+    # ═══════════════════════════════════════════════════════════════
+    dashboard_thread = None
+    if DASHBOARD_AVAILABLE and not args.no_dashboard:
+        try:
+            dashboard_thread = start_dashboard_server(port=8765)
+            print("\n[DASHBOARD] Web dashboard running at http://localhost:8765")
+            # Auto-open in browser
+            if webbrowser:
+                webbrowser.open("http://localhost:8765")
+            print("")
+        except Exception as e:
+            print(f"[WARN] Could not start dashboard: {e}")
+    
+    if not exploration_mode:
         # Bus observability (optional; keep types as Any to avoid arg-type mismatches)
         try:
             if DependencyInspector_Cls is not None and ENHANCED_LOGGING:
@@ -761,18 +804,7 @@ def main():
     print(f"Data Source: {args.data_source}")
 
     # Bus visibility (non-fatal if fallback)
-    try:
-        bus = InfoBusManager.get_instance()
-        print("[BUS] instance:", bus)
-        store_keys = sorted(getattr(bus, "_data_store", {}).keys())
-        print("[BUS] keys:", store_keys)
-        for k in ("market_overview", "market_thesis", "time_risk_health", "regime_matrix_health"):
-            try:
-                print(f"[BUS] {k} =", bus.get(k, module="TrainingScript"))
-            except Exception as e:
-                print(f"[BUS] {k} <error: {e}>")
-    except Exception:
-        pass
+    # Debug prints removed - bus info available in logs if needed
 
     try:
         train_modern_ppo(config, data_source=args.data_source, pretrained_model_path=pretrained_path)

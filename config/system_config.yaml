@@ -713,11 +713,15 @@ info_bus:
   persist_write_interval_seconds: 0.5
   persistence_file: "state/infobus_data.json"
 
-  # Treat this deployment as "live" from the bus perspective so
-  # staleness checks use the configured max_data_age_seconds and
-  # do NOT relax to multi-hour windows.
-  live_mode: true
-  max_data_age_seconds: 30    # Reject data older than ~30s by default
+  # Staleness checking - set to false for dashboard/monitoring mode where
+  # orchestrator is not running a step loop. Set to true for training/live.
+  staleness_check_enabled: false  # Default OFF - safe for dashboard viewing
+  
+  # live_mode controls staleness threshold when staleness_check_enabled=true:
+  # - false: Training mode - staleness threshold extended to 2 hours  
+  # - true: Live trading mode - strict staleness checking with max_data_age_seconds
+  live_mode: false
+  max_data_age_seconds: 30   # Used in LIVE mode when staleness_check_enabled=true
 
   # Keys to persist for frontend visibility. Only these keys will be
   # written to and loaded from the persistence file; all other keys

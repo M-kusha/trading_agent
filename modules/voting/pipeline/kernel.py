@@ -677,5 +677,10 @@ class SlimVotingKernel(VotingModuleBase):
                 "tick_ts": tick_ts,
             },
             "fragility": result.get("fragility", 0.5),
+            # Contract-required outputs
+            "pipeline_result": result,
+            "kernel_consensus_score": consensus_score,
+            "kernel_instrument_signals": result.get("instrument_signals", {}),
+            "arbiter_instrument_signals": result.get("arbiter_signals", {}),
             "_thesis": f"Voting pipeline completed with action {final.get('action', 'ABSTAIN')}",
         }

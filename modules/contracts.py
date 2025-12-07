@@ -461,7 +461,9 @@ CONTRACTS: Dict[str, ModuleContract] = {
             'ThemeExpert_voting_proposal', 'ThemeExpert_confidence',
             'ThemeExpert_per_instrument_votes',  # NEW: Per-instrument votes
             'theme_voting_proposal', 'theme_confidence',
-            'theme_analysis', 'agreement_score',
+            'theme_analysis',
+            # NOTE: 'agreement_score' removed - ConsensusAnalyzer is the authoritative provider
+            # ThemeExpert still outputs it internally but shouldn't overwrite consensus
             'theme_volatility_regime', 'theme_trend_regime',
             'theme_risk_regime', 'theme_composite_score',
             'theme_expert_analysis', 'theme_expert_thesis'  # backward compat aliases
@@ -532,6 +534,9 @@ CONTRACTS: Dict[str, ModuleContract] = {
             'committee_member_confidences',
             # FIX: Add strategy_weights and member_performance (requested by StrategyIntrospector)
             'strategy_weights', 'member_performance',
+            # FIX: Add per-instrument outputs (used by downstream stages - ensures correct execution order)
+            'committee_proposal_vectors',           # Used by ConsensusAnalyzer, CollusionDetector, UncertaintySampler
+            'committee_decisions_by_instrument',    # Used by HorizonAligner, UncertaintySampler, FinalArbiter
             # Backward compatibility
             'committee_decision', 'committee_confidence', 'votes', 'voting_summary',
             'strategy_arbiter_weights', 'committee_consensus'
@@ -561,8 +566,9 @@ CONTRACTS: Dict[str, ModuleContract] = {
             'consensus_score', 'consensus_components', 'consensus_quality',
             'directional_consensus', 'magnitude_consensus', 'consensus_decision_id'
         ],
+        # FIX: Added committee_proposal_vectors for correct topological ordering
         requires=['committee_votes', 'raw_proposals', 'member_confidences', 'voting_weights',
-                  'market_regime', 'volatility_data'],
+                  'committee_proposal_vectors', 'market_regime', 'volatility_data'],
         meta={'thesis_required': True, 'explainable': True, 'health_monitoring': True,
               'performance_tracking': True, 'category': 'voting', 'version': '5.0.0'}
     ),
@@ -577,8 +583,9 @@ CONTRACTS: Dict[str, ModuleContract] = {
             # Backward compatibility
             'collusion_alerts', 'member_independence_scores', 'collusion_decision_id'
         ],
+        # FIX: Added committee_proposal_vectors for correct topological ordering
         requires=['committee_votes', 'raw_proposals', 'member_confidences',
-                  'agreement_score', 'market_regime'],
+                  'committee_proposal_vectors', 'agreement_score', 'market_regime'],
         meta={'thesis_required': True, 'explainable': True, 'health_monitoring': True,
               'performance_tracking': True, 'category': 'voting', 'version': '5.0.0'}
     ),
@@ -593,7 +600,9 @@ CONTRACTS: Dict[str, ModuleContract] = {
             'horizon_distances', 'horizon_multipliers', 'alignment_quality',
             'adaptation_status', 'horizon_decision_id'
         ],
-        requires=['voting_weights', 'market_regime', 'session_type', 'volatility_data'],
+        # FIX: Added committee_decisions_by_instrument for correct topological ordering
+        requires=['voting_weights', 'committee_decisions_by_instrument',
+                  'market_regime', 'session_type', 'volatility_data'],
         meta={'thesis_required': True, 'explainable': True, 'health_monitoring': True,
               'performance_tracking': True, 'category': 'voting', 'version': '5.0.0'}
     ),
@@ -611,7 +620,9 @@ CONTRACTS: Dict[str, ModuleContract] = {
             'alternative_samples', 'confidence_bounds', 'diversity_score',
             'sampling_decision_id', 'sampling_fragility', 'fragility'
         ],
+        # FIX: Added committee_proposal_vectors and committee_decisions_by_instrument for correct topological ordering
         requires=['committee_votes', 'consensus_result', 'agreement_score',
+                  'committee_proposal_vectors', 'committee_decisions_by_instrument',
                   'market_regime', 'volatility_data'],
         meta={'thesis_required': True, 'explainable': True, 'health_monitoring': True,
               'performance_tracking': True, 'category': 'voting', 'version': '5.0.0'}
@@ -628,8 +639,10 @@ CONTRACTS: Dict[str, ModuleContract] = {
             'arbiter_recommendations', 'instrument_signals', 'voting_quality',
             'member_weights', 'arbiter_decision_id'
         ],
+        # FIX: Added committee_decisions_by_instrument for correct topological ordering
         requires=['consensus_result', 'collusion_result', 'uncertainty_result',
-                  'horizon_alignment', 'market_regime', 'volatility_data',
+                  'horizon_alignment', 'committee_decisions_by_instrument',
+                  'market_regime', 'volatility_data',
                   'memory_gate', 'danger_zones', 'instrument_fragility'],
         meta={'thesis_required': True, 'explainable': True, 'health_monitoring': True,
               'performance_tracking': True, 'category': 'voting', 'version': '5.0.0'}
@@ -644,9 +657,11 @@ CONTRACTS: Dict[str, ModuleContract] = {
             'kernel_decision', 'trade_vote_v2', 'decision_bundle',
             'voting_consensus', 'consensus_summary', 'voting_metrics',
             'decision_id', 'tick_ts', 'kernel_decision_id', 'kernel_tick_ts',
-            'pipeline_status', 'pipeline_thesis',
+            'pipeline_status', 'pipeline_thesis', 'pipeline_result',
+            'kernel_consensus_score', 'kernel_instrument_signals', 'arbiter_instrument_signals',
             # Backward compatibility
-            'decision_coordination', 'fragility'
+            'decision_coordination'
+            # NOTE: 'fragility' removed - SlimVotingKernel READS it from UncertaintySampler, doesn't provide it
         ],
         requires=[
             # Market data (portfolio_state removed to avoid circular dep with PositionManager)

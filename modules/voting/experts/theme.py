@@ -535,7 +535,8 @@ class ThemeExpert(VotingExpertBase):
                     "theme_voting_proposal": proposal,  # alias
                     "theme_confidence": global_confidence,
                     "theme_analysis": theme_analysis,
-                    "agreement_score": global_confidence,
+                    # NOTE: Renamed from 'agreement_score' to avoid conflict with ConsensusAnalyzer
+                    "theme_agreement_score": global_confidence,
                     "theme_expert_analysis": {
                         "volatility_regime": global_analysis.get(
                             "volatility_regime", "unknown"
@@ -1485,7 +1486,8 @@ class ThemeExpert(VotingExpertBase):
             "theme_voting_proposal": proposal,
             "theme_confidence": confidence,
             "theme_analysis": theme_analysis,
-            "agreement_score": confidence,
+            # NOTE: Renamed from 'agreement_score' to avoid conflict with ConsensusAnalyzer
+            "theme_agreement_score": confidence,
             "theme_expert_analysis": {
                 "volatility_regime": "unknown",
                 "trend_regime": "unknown",

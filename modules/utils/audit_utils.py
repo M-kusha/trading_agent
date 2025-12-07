@@ -562,25 +562,47 @@ class RotatingLogger:
                 print(f"ERROR: Failed to write log: {e}", file=sys.stderr)
 
     def _rotate_log(self):
+        """Rotate the underlying log file safely.
+
+        NOTE: This method must never attempt to join the current thread.
+        Rotation is triggered from within the logger's own write path and
+        potentially from background threads; any internal threading mistakes
+        can surface as "cannot join current thread" warnings. We keep the
+        rotation logic single-threaded and side-effect free beyond closing
+        and reopening files.
+        """
         try:
             if self.current_handle and self.current_handle not in (sys.stderr, sys.stdout):
                 # footer
-                self.current_handle.write(self._create_log_footer() + "\n")
-                self.current_handle.flush()
-                self.current_handle.close()
-            # SmartBus notify
-            if self.smart_bus:
-                self.smart_bus.set(
-                    f"log_rotation_{self.name}",
-                    {"file": str(self.current_file), "lines": self.current_lines, "timestamp": time.time()},
-                    module=f"Logger_{self.name}",
-                    thesis=f"Log file rotated after {self.current_lines} lines",
-                )
+                try:
+                    self.current_handle.write(self._create_log_footer() + "\n")
+                    self.current_handle.flush()
+                except Exception:
+                    # footer failures should never break rotation
+                    pass
+                try:
+                    self.current_handle.close()
+                except Exception:
+                    pass
+
+            # SmartBus notify (best-effort; ignore failures)
+            try:
+                if self.smart_bus:
+                    self.smart_bus.set(
+                        f"log_rotation_{self.name}",
+                        {"file": str(self.current_file), "lines": self.current_lines, "timestamp": time.time()},
+                        module=f"Logger_{self.name}",
+                        thesis=f"Log file rotated after {self.current_lines} lines",
+                    )
+            except Exception:
+                pass
+
+            # Cleanup and reopen
             self._cleanup_old_files()
-            # reset counter and open new file
             self.performance_metrics["rotations"] += 1
             self._initialize_logging()
         except Exception as e:
+            # Hardening: never allow rotation failures to crash callers
             print(f"ERROR: Failed to rotate log: {e}", file=sys.stderr)
 
     def _cleanup_old_files(self):

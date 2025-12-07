@@ -133,7 +133,8 @@ class InfoBusConfig:
     default_namespace: Optional[str] = None  # e.g. "core"
 
     # Operating mode - affects staleness checks
-    live_mode: bool = False  # When False (training), staleness warnings are suppressed
+    live_mode: bool = False  # When False (training), staleness threshold is relaxed
+    staleness_check_enabled: bool = True  # Set to False to disable staleness checks entirely (dashboard mode)
 
     # [FIXED] New contract enforcement flags from audit
     enforce_single_writer: bool = True
@@ -579,6 +580,8 @@ class SmartInfoBus:
                             ),
                             persistence_file=bus_cfg.get("persistence_file", "state/infobus_data.json"),
                             persist_keys=bus_cfg.get("persist_keys"),  # None means persist all
+                            # Staleness checking control
+                            staleness_check_enabled=bool(bus_cfg.get("staleness_check_enabled", True)),
                             # Optional live-mode + staleness overrides
                             live_mode=bool(bus_cfg.get("live_mode", False)),
                             max_data_age_seconds=int(bus_cfg.get("max_data_age_seconds", 600)),
@@ -695,6 +698,25 @@ class SmartInfoBus:
             )
             self._audit_system = AuditSystem("SmartInfoBus") if self.config.audit_enabled else None
 
+            # Log startup mode clearly for operators
+            staleness_enabled = getattr(self.config, 'staleness_check_enabled', True)
+            if not staleness_enabled:
+                self.logger.info(
+                    f"[BUS][STARTUP] Staleness checking DISABLED (dashboard/monitoring mode)"
+                )
+            else:
+                # Note: TradingModeManager is the source of truth, config.live_mode is just a hint
+                is_live = self._is_live_mode()
+                if is_live:
+                    self.logger.warning(
+                        f"[BUS][STARTUP] Running in LIVE MODE - strict staleness checking enabled "
+                        f"(max_data_age_seconds={self.config.max_data_age_seconds})"
+                    )
+                else:
+                    self.logger.info(
+                        f"[BUS][STARTUP] Running in TRAINING MODE - staleness threshold extended to 2 hours"
+                    )
+
             # Middleware & validators
             self._pre_set_hooks: List[Callable[[str, Any, Dict[str, Any]], Any]] = []
             self._post_set_hooks: List[Callable[[str, DataVersion], None]] = []
@@ -788,6 +810,48 @@ class SmartInfoBus:
 
             # Load persisted data on startup
             self._load_persisted_data()
+
+    # ──────────────────────────────────────────────────────────────
+    # Live Mode Detection (uses TradingModeManager as source of truth)
+    # ──────────────────────────────────────────────────────────────
+    def _is_live_mode(self) -> bool:
+        """
+        Check if the system is in LIVE trading mode.
+        Uses TradingModeManager as the single source of truth, with config as fallback.
+        """
+        try:
+            from modules.core.trading_mode import TradingModeManager
+            return TradingModeManager.is_live()
+        except ImportError:
+            # Fallback to config if TradingModeManager is not available
+            return getattr(self.config, 'live_mode', False)
+        except Exception:
+            return getattr(self.config, 'live_mode', False)
+
+    def set_live_mode(self, is_live: bool) -> None:
+        """
+        Set the live mode for staleness checking.
+        Called by TradingModeManager when mode changes.
+        """
+        self.config.live_mode = is_live
+        # Also enable staleness checking when entering live/training mode
+        self.config.staleness_check_enabled = True
+        mode_str = "LIVE" if is_live else "TRAINING"
+        threshold = self.config.max_data_age_seconds if is_live else 7200
+        self.logger.info(
+            f"[BUS][MODE] Switched to {mode_str} mode - "
+            f"staleness checking ENABLED, threshold: {threshold}s"
+        )
+
+    def set_staleness_check_enabled(self, enabled: bool) -> None:
+        """
+        Enable or disable staleness checking.
+        Disable for dashboard/monitoring mode where no orchestrator loop runs.
+        Enable for training/live trading where data freshness matters.
+        """
+        self.config.staleness_check_enabled = enabled
+        status = "ENABLED" if enabled else "DISABLED"
+        self.logger.info(f"[BUS][STALENESS] Staleness checking {status}")
 
     # ──────────────────────────────────────────────────────────────
     # Cross-Process Persistence
@@ -1687,15 +1751,22 @@ class SmartInfoBus:
                     return default
 
                 age_seconds = data.age_seconds()
-                # Defensive: callers sometimes pass default as positional 3rd arg, which binds to max_age.
-                # Ensure max_age_check is numeric; otherwise fall back to configured max age and warn once.
-                if isinstance(max_age, (int, float)):
-                    max_age_check = float(max_age)
-                else:
-                    max_age_check = float(self.config.max_data_age_seconds)
-                    # In training mode, use a much higher threshold (or disable)
-                    if not getattr(self.config, 'live_mode', False):
-                        max_age_check = max(max_age_check, 7200.0)  # 2 hours for training
+                
+                # Skip staleness check entirely if disabled (dashboard/monitoring mode)
+                staleness_enabled = getattr(self.config, 'staleness_check_enabled', True)
+                
+                if staleness_enabled:
+                    # Defensive: callers sometimes pass default as positional 3rd arg, which binds to max_age.
+                    # Ensure max_age_check is numeric; otherwise fall back to configured max age and warn once.
+                    if isinstance(max_age, (int, float)):
+                        max_age_check = float(max_age)
+                    else:
+                        max_age_check = float(self.config.max_data_age_seconds)
+                        # In training mode, use a much higher threshold (or disable)
+                        # Use TradingModeManager as source of truth for live vs training mode
+                        is_live = self._is_live_mode()
+                        if not is_live:
+                            max_age_check = max(max_age_check, 7200.0)  # 2 hours for training
                     if max_age is not None and not isinstance(max_age, (int, float)):
                         try:
                             self.logger.warning(
@@ -1704,15 +1775,16 @@ class SmartInfoBus:
                             )
                         except Exception:
                             pass
-                if age_seconds > max_age_check:
-                    self._emit('stale_data_warning', {'key': full_key, 'age': age_seconds, 'module': module, 'max_age': max_age_check})
-                    self.logger.warning(f"Stale data: {full_key} is {age_seconds:.1f}s old (max: {max_age_check}s)")
-                    try:
-                        self._emit_get_event(full_key, module, data, reason="stale")
-                    except Exception:
-                        pass
-                    self._apply_post_get(full_key, module, default, {"blocked": "stale"})
-                    return default
+                    
+                    if age_seconds > max_age_check:
+                        self._emit('stale_data_warning', {'key': full_key, 'age': age_seconds, 'module': module, 'max_age': max_age_check})
+                        self.logger.warning(f"Stale data: {full_key} is {age_seconds:.1f}s old (max: {max_age_check}s)")
+                        try:
+                            self._emit_get_event(full_key, module, data, reason="stale")
+                        except Exception:
+                            pass
+                        self._apply_post_get(full_key, module, default, {"blocked": "stale"})
+                        return default
 
                 if data.confidence < min_confidence:
                     self.logger.warning(f"Low confidence: {full_key} has {data.confidence:.2f} (min: {min_confidence:.2f})")
