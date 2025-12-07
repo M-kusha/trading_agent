@@ -469,11 +469,11 @@ class ModernEnhancedTrainingCallback(BaseCallback):
         mode_str = "LIVE" if getattr(config, "live_mode", False) else "OFFLINE"
         print(f"\n[ROCKET] ENHANCED TRAINING CALLBACK READY")
         print(f"[STATS] Total timesteps: {total_timesteps:,}")
-        print(f"🔗 SmartInfoBus v4.0: {'ENABLED' if SMARTINFOBUS_AVAILABLE else 'FALLBACK'}")
+        print(f"[LINK] SmartInfoBus v4.0: {'ENABLED' if SMARTINFOBUS_AVAILABLE else 'FALLBACK'}")
         print(f"[CHART] Monitoring: {'ENHANCED' if MONITORING_AVAILABLE else 'BASIC'}")
-        print(f"🎨 Beautiful Display: {'ENABLED' if self.use_beautiful_display else 'DISABLED'}")
+        print(f"[DISPLAY] Beautiful Display: {'ENABLED' if self.use_beautiful_display else 'DISABLED'}")
         print(f"[CHART] Mode: {mode_str}")
-        print("─" * 60)
+        print("-" * 60)
 
         self._tb_ready = False  # set at _on_training_start
 

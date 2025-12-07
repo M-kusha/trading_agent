@@ -47,7 +47,7 @@ execution:
       # Meta / analysis
       MetaAgent: 5000
       EnhancedAnomalyDetector: 8000
-      EnhancedWorldModel: 6000
+      EnhancedWorldModel: 15000  # Increased - training can take 3-16s
 
       # Reward - reduced for faster training (was 30000)
       RiskAdjustedReward: 8000

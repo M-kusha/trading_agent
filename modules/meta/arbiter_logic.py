@@ -8,14 +8,17 @@ This module contains the domain-specific arbiter logic that:
 - Builds per-instrument observations
 - Applies gating logic (risk/memory)
 - Produces structured InstrumentDecision objects
+- **Adaptive PPO Autonomy**: Dynamically transitions leadership from experts to PPO
 
 It sits between PPOCore (pure RL) and PPOAgentShell (SmartInfoBus gateway).
 
-Version: 3.0.0 (Multi-instrument architecture)
+Version: 3.1.0 (Adaptive Autonomy Architecture)
 """
 
 from __future__ import annotations
 
+from collections import deque
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -32,6 +35,294 @@ from modules.meta.ppo_types import (
     PRIMARY_INSTRUMENT,
 )
 from modules.meta.ppo_core import PPOCore
+
+
+# ═══════════════════════════════════════════════════════════════════
+# ADAPTIVE PPO AUTONOMY SYSTEM
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass
+class PPOAutonomyState:
+    """
+    Tracks PPO's learning progress and determines appropriate autonomy level.
+    
+    Phases (automatic transitions based on performance):
+    1. EXPERT_LED: Experts make decisions, PPO observes and learns
+    2. BLENDED: PPO and experts share decision making (weighted average)
+    3. PPO_LED: PPO takes lead, experts provide safety checks
+    4. FULL_AUTONOMY: PPO has full control with minimal expert intervention
+    """
+    # Current autonomy level (0.0 = experts lead, 1.0 = PPO leads)
+    autonomy_level: float = 0.0
+    
+    # Phase name for readability
+    phase: str = "EXPERT_LED"
+    
+    # PPO performance metrics (rolling window)
+    ppo_win_rate: float = 0.0
+    ppo_profit_factor: float = 0.0
+    ppo_consistency: float = 0.0  # Low variance = high consistency
+    ppo_confidence_accuracy: float = 0.0  # How accurate are PPO's confidence estimates
+    
+    # Expert agreement tracking
+    ppo_expert_agreement_rate: float = 0.0  # How often PPO agrees with experts
+    ppo_override_success_rate: float = 0.0  # Success rate when PPO overrides experts
+    
+    # Learning velocity
+    learning_velocity: float = 0.0  # Rate of improvement
+    steps_at_current_phase: int = 0
+    
+    # Phase thresholds (configurable)
+    expert_to_blended_threshold: float = 0.45  # Win rate needed to move to blended
+    blended_to_ppo_threshold: float = 0.55     # Win rate + consistency for PPO lead
+    ppo_to_autonomy_threshold: float = 0.65    # High performance for full autonomy
+    
+    # Safety bounds
+    min_trades_for_evaluation: int = 20
+    
+    def get_ppo_weight(self) -> float:
+        """Get PPO's decision weight based on current autonomy level."""
+        return self.autonomy_level
+    
+    def get_expert_weight(self) -> float:
+        """Get experts' decision weight (complement of PPO weight)."""
+        return 1.0 - self.autonomy_level
+
+
+class PPOAutonomyTracker:
+    """
+    Automatically tracks PPO's performance and adjusts its autonomy level.
+    
+    The system starts with experts leading (Phase 1) and gradually gives
+    more control to PPO as it proves its competence through:
+    - Consistent win rate improvement
+    - Profitable trade execution
+    - Alignment with (or successful override of) expert signals
+    - Stable confidence calibration
+    """
+    
+    def __init__(
+        self,
+        window_size: int = 50,
+        adaptation_rate: float = 0.02,
+        min_trades: int = 20,
+    ):
+        self.window_size = window_size
+        self.adaptation_rate = adaptation_rate
+        self.min_trades = min_trades
+        
+        # State
+        self.state = PPOAutonomyState()
+        
+        # Rolling performance tracking
+        self._trade_outcomes: deque = deque(maxlen=window_size)  # (ppo_direction, expert_direction, actual_outcome, ppo_conf)
+        self._ppo_decisions: deque = deque(maxlen=window_size)
+        self._override_outcomes: deque = deque(maxlen=window_size)  # When PPO disagreed with experts
+        
+        # Cumulative stats
+        self._total_trades = 0
+        self._ppo_led_wins = 0
+        self._ppo_led_losses = 0
+        self._expert_led_wins = 0
+        self._expert_led_losses = 0
+    
+    def record_trade_outcome(
+        self,
+        ppo_direction: str,
+        expert_direction: str,
+        actual_outcome: float,  # PnL or +1/-1
+        ppo_confidence: float,
+        was_ppo_led: bool,
+    ) -> None:
+        """Record the outcome of a trade for autonomy evaluation."""
+        self._total_trades += 1
+        
+        win = actual_outcome > 0
+        
+        self._trade_outcomes.append({
+            "ppo_dir": ppo_direction,
+            "expert_dir": expert_direction,
+            "outcome": actual_outcome,
+            "ppo_conf": ppo_confidence,
+            "ppo_led": was_ppo_led,
+            "win": win,
+            "agreed": ppo_direction == expert_direction,
+        })
+        
+        # Track override outcomes
+        if ppo_direction != expert_direction:
+            self._override_outcomes.append({
+                "ppo_dir": ppo_direction,
+                "expert_dir": expert_direction,
+                "outcome": actual_outcome,
+                "win": win,
+            })
+        
+        # Update cumulative stats
+        if was_ppo_led:
+            if win:
+                self._ppo_led_wins += 1
+            else:
+                self._ppo_led_losses += 1
+        else:
+            if win:
+                self._expert_led_wins += 1
+            else:
+                self._expert_led_losses += 1
+        
+        # Recalculate autonomy
+        self._update_autonomy_level()
+    
+    def _update_autonomy_level(self) -> None:
+        """Recalculate autonomy level based on recent performance."""
+        if len(self._trade_outcomes) < self.min_trades:
+            # Not enough data - stay at current level
+            self.state.steps_at_current_phase += 1
+            return
+        
+        outcomes = list(self._trade_outcomes)
+        
+        # Calculate PPO win rate
+        ppo_led_trades = [t for t in outcomes if t["ppo_led"]]
+        if ppo_led_trades:
+            self.state.ppo_win_rate = sum(1 for t in ppo_led_trades if t["win"]) / len(ppo_led_trades)
+        else:
+            self.state.ppo_win_rate = 0.0
+        
+        # Calculate profit factor
+        wins = [t["outcome"] for t in outcomes if t["win"] and t["ppo_led"]]
+        losses = [abs(t["outcome"]) for t in outcomes if not t["win"] and t["ppo_led"]]
+        if losses and sum(losses) > 0:
+            self.state.ppo_profit_factor = sum(wins) / sum(losses) if wins else 0.0
+        else:
+            self.state.ppo_profit_factor = sum(wins) if wins else 0.0
+        
+        # Calculate consistency (inverse of outcome variance)
+        if len(outcomes) > 5:
+            outcome_values = [t["outcome"] for t in outcomes]
+            variance = float(np.var(outcome_values))
+            self.state.ppo_consistency = 1.0 / (1.0 + variance)  # Bounded 0-1
+        
+        # Calculate agreement rate
+        self.state.ppo_expert_agreement_rate = sum(1 for t in outcomes if t["agreed"]) / len(outcomes)
+        
+        # Calculate override success rate
+        overrides = list(self._override_outcomes)
+        if overrides:
+            self.state.ppo_override_success_rate = sum(1 for o in overrides if o["win"]) / len(overrides)
+        
+        # Calculate confidence accuracy (how well PPO's confidence predicts success)
+        high_conf_trades = [t for t in outcomes if t["ppo_conf"] > 0.6 and t["ppo_led"]]
+        if high_conf_trades:
+            high_conf_accuracy = sum(1 for t in high_conf_trades if t["win"]) / len(high_conf_trades)
+            self.state.ppo_confidence_accuracy = high_conf_accuracy
+        
+        # Determine target autonomy level based on performance
+        target_autonomy = self._calculate_target_autonomy()
+        
+        # Smooth transition (don't jump instantly)
+        delta = target_autonomy - self.state.autonomy_level
+        self.state.autonomy_level += delta * self.adaptation_rate
+        self.state.autonomy_level = float(np.clip(self.state.autonomy_level, 0.0, 1.0))
+        
+        # Update phase name
+        self._update_phase_name()
+        
+        # Track learning velocity
+        if hasattr(self, "_prev_autonomy"):
+            self.state.learning_velocity = self.state.autonomy_level - self._prev_autonomy
+        self._prev_autonomy = self.state.autonomy_level
+    
+    def _calculate_target_autonomy(self) -> float:
+        """Calculate target autonomy based on comprehensive performance metrics."""
+        # Base score from win rate
+        win_rate_score = self.state.ppo_win_rate
+        
+        # Bonus for consistency
+        consistency_bonus = self.state.ppo_consistency * 0.2
+        
+        # Bonus for successful overrides (shows PPO can beat experts)
+        override_bonus = 0.0
+        if self.state.ppo_override_success_rate > 0.5:
+            override_bonus = (self.state.ppo_override_success_rate - 0.5) * 0.3
+        
+        # Bonus for confidence calibration
+        confidence_bonus = 0.0
+        if self.state.ppo_confidence_accuracy > 0.6:
+            confidence_bonus = (self.state.ppo_confidence_accuracy - 0.6) * 0.2
+        
+        # Profit factor bonus
+        pf_bonus = 0.0
+        if self.state.ppo_profit_factor > 1.0:
+            pf_bonus = min(0.2, (self.state.ppo_profit_factor - 1.0) * 0.1)
+        
+        # Calculate composite score
+        composite = win_rate_score + consistency_bonus + override_bonus + confidence_bonus + pf_bonus
+        
+        # Map to autonomy level with phase thresholds
+        if composite < self.state.expert_to_blended_threshold:
+            # Stay in expert-led phase
+            return composite / self.state.expert_to_blended_threshold * 0.25
+        elif composite < self.state.blended_to_ppo_threshold:
+            # Blended phase
+            progress = (composite - self.state.expert_to_blended_threshold) / \
+                       (self.state.blended_to_ppo_threshold - self.state.expert_to_blended_threshold)
+            return 0.25 + progress * 0.35  # 0.25 to 0.60
+        elif composite < self.state.ppo_to_autonomy_threshold:
+            # PPO-led phase
+            progress = (composite - self.state.blended_to_ppo_threshold) / \
+                       (self.state.ppo_to_autonomy_threshold - self.state.blended_to_ppo_threshold)
+            return 0.60 + progress * 0.25  # 0.60 to 0.85
+        else:
+            # Full autonomy
+            excess = composite - self.state.ppo_to_autonomy_threshold
+            return min(1.0, 0.85 + excess * 0.5)
+    
+    def _update_phase_name(self) -> None:
+        """Update human-readable phase name."""
+        level = self.state.autonomy_level
+        if level < 0.25:
+            new_phase = "EXPERT_LED"
+        elif level < 0.60:
+            new_phase = "BLENDED"
+        elif level < 0.85:
+            new_phase = "PPO_LED"
+        else:
+            new_phase = "FULL_AUTONOMY"
+        
+        if new_phase != self.state.phase:
+            self.state.steps_at_current_phase = 0
+        else:
+            self.state.steps_at_current_phase += 1
+        
+        self.state.phase = new_phase
+    
+    def get_decision_weights(self) -> Tuple[float, float]:
+        """
+        Get (ppo_weight, expert_weight) for blending decisions.
+        
+        Returns:
+            Tuple of (ppo_weight, expert_weight) that sum to 1.0
+        """
+        return self.state.get_ppo_weight(), self.state.get_expert_weight()
+    
+    def get_state_summary(self) -> Dict[str, Any]:
+        """Get summary of current autonomy state for logging/bus."""
+        return {
+            "phase": self.state.phase,
+            "autonomy_level": round(self.state.autonomy_level, 3),
+            "ppo_weight": round(self.state.get_ppo_weight(), 3),
+            "expert_weight": round(self.state.get_expert_weight(), 3),
+            "ppo_win_rate": round(self.state.ppo_win_rate, 3),
+            "ppo_profit_factor": round(self.state.ppo_profit_factor, 3),
+            "ppo_consistency": round(self.state.ppo_consistency, 3),
+            "ppo_confidence_accuracy": round(self.state.ppo_confidence_accuracy, 3),
+            "agreement_rate": round(self.state.ppo_expert_agreement_rate, 3),
+            "override_success_rate": round(self.state.ppo_override_success_rate, 3),
+            "learning_velocity": round(self.state.learning_velocity, 4),
+            "total_trades_evaluated": self._total_trades,
+            "steps_at_phase": self.state.steps_at_current_phase,
+        }
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -415,6 +706,10 @@ class ArbiterLogic:
     - SmartInfoBus (that's PPOAgentShell's job)
     - Module lifecycle
     - Health monitoring
+    
+    New in v3.1.0:
+    - PPOAutonomyTracker for adaptive expert/PPO leadership
+    - Automatic phase transitions based on PPO performance
     """
     
     def __init__(
@@ -439,6 +734,15 @@ class ArbiterLogic:
         self._decision_history: Dict[str, List[InstrumentDecision]] = {
             inst: [] for inst in self.instruments
         }
+        
+        # ═══════════════════════════════════════════════════════════════
+        # ADAPTIVE AUTONOMY: PPO/Expert leadership tracking
+        # ═══════════════════════════════════════════════════════════════
+        self.autonomy_tracker = PPOAutonomyTracker(
+            window_size=50,
+            adaptation_rate=0.02,
+            min_trades=20,
+        )
     
     # ─────────────────────────────────────────────────────────────
     # Main Decision Method
@@ -512,7 +816,10 @@ class ArbiterLogic:
             # Record statistics
             self.stats_tracker.record_decision(decision)
         
-        # Global metadata with strategy, trading mode, and world model integration
+        # Get current autonomy state
+        autonomy_state = self.autonomy_tracker.get_state_summary()
+        
+        # Global metadata with strategy, trading mode, world model, and autonomy integration
         global_meta = {
             "timestamp": datetime.now().isoformat(),
             "instruments_processed": len(instruments),
@@ -546,6 +853,19 @@ class ArbiterLogic:
                 "regime_prediction": wm_info.regime_prediction,
                 "volatility": wm_info.volatility_prediction,
                 "directional_bias": wm_info.get_directional_bias(),
+            },
+            # PPO Autonomy metadata (ADAPTIVE)
+            "ppo_autonomy": {
+                "phase": autonomy_state["phase"],
+                "autonomy_level": autonomy_state["autonomy_level"],
+                "ppo_weight": autonomy_state["ppo_weight"],
+                "expert_weight": autonomy_state["expert_weight"],
+                "ppo_win_rate": autonomy_state["ppo_win_rate"],
+                "ppo_profit_factor": autonomy_state["ppo_profit_factor"],
+                "ppo_consistency": autonomy_state["ppo_consistency"],
+                "override_success_rate": autonomy_state["override_success_rate"],
+                "learning_velocity": autonomy_state["learning_velocity"],
+                "total_trades_evaluated": autonomy_state["total_trades_evaluated"],
             },
         }
         
@@ -801,50 +1121,104 @@ class ArbiterLogic:
         """
         Interpret trust_score to determine direction and confidence.
         
-        Rules:
-        - trust_score > 0.3: Trust committee
-        - trust_score < -0.3: Override committee (go flat)
-        - Otherwise: Uncertain, follow with reduced confidence
+        Uses ADAPTIVE AUTONOMY system:
+        - PPO autonomy mode adjusts based on performance (win rate, agreement, consistency)
+        - Phases: EXPERT_LED -> BLENDED -> PPO_LED -> FULL_AUTONOMY
+        - Weights shift dynamically from experts to PPO as PPO proves itself
         
         Returns:
             (direction, confidence, reasoning)
         """
-        if trust_score > 0.3:
-            # Trust committee
-            if committee_action in ("long", "buy", "bullish"):
-                direction = "long"
-            elif committee_action in ("short", "sell", "bearish"):
-                direction = "short"
-            else:
-                direction = "flat"
-            
-            confidence = committee_confidence * (0.7 + 0.3 * min(trust_score, 1.0))
-            reasoning = f"PPO trusts committee ({trust_score:.2f}): {committee_action}"
-            
-            # Boost if aligned with expert consensus
-            if direction == expert_consensus and expert_confidence > 0.5:
-                confidence = min(1.0, confidence * 1.15)
-                reasoning += " | ALIGNED with experts"
+        # Get adaptive weights based on PPO's tracked performance
+        ppo_weight, expert_weight = self.autonomy_tracker.get_decision_weights()
+        autonomy_summary = self.autonomy_tracker.get_state_summary()
+        phase = autonomy_summary["phase"]
+        autonomy_level = autonomy_summary["autonomy_level"]
+        ppo_win_rate = autonomy_summary["ppo_win_rate"]
         
-        elif trust_score < -0.3:
-            # Override committee - go flat
-            direction = "flat"
-            confidence = 0.3
-            reasoning = f"PPO overrides committee ({trust_score:.2f}): forcing FLAT"
-        
+        # Parse committee direction
+        if committee_action in ("long", "buy", "bullish"):
+            committee_dir = "long"
+        elif committee_action in ("short", "sell", "bearish"):
+            committee_dir = "short"
         else:
-            # Uncertain - follow committee with reduced confidence
-            if committee_action in ("long", "buy", "bullish"):
-                direction = "long"
-            elif committee_action in ("short", "sell", "bearish"):
-                direction = "short"
-            else:
-                direction = "flat"
-            
-            confidence = committee_confidence * 0.5
-            reasoning = f"PPO uncertain ({trust_score:.2f}): following committee cautiously"
+            committee_dir = "flat"
         
-        return direction, confidence, reasoning
+        # Parse expert consensus direction  
+        if expert_consensus in ("long", "buy", "bullish"):
+            expert_dir = "long"
+        elif expert_consensus in ("short", "sell", "bearish"):
+            expert_dir = "short"
+        else:
+            expert_dir = "flat"
+        
+        # Determine PPO's preferred direction from trust_score
+        if trust_score > 0.3:
+            ppo_dir = committee_dir  # PPO agrees with committee
+            ppo_conf = abs(trust_score)
+        elif trust_score < -0.3:
+            ppo_dir = "flat"  # PPO wants to override
+            ppo_conf = abs(trust_score)
+        else:
+            ppo_dir = committee_dir  # PPO uncertain, lean committee
+            ppo_conf = 0.3
+        
+        # Adaptive blending based on autonomy phase
+        if phase == "EXPERT_LED":
+            # Experts dominate - PPO just learning
+            direction = expert_dir if expert_confidence > 0.3 else committee_dir
+            confidence = expert_confidence * expert_weight + ppo_conf * ppo_weight
+            reasoning = f"[{phase}] Experts lead ({expert_weight:.0%}): {direction}"
+            
+        elif phase == "BLENDED":
+            # 60/40 split - PPO starting to contribute
+            if expert_dir == ppo_dir:
+                direction = expert_dir
+                confidence = (expert_confidence * expert_weight + ppo_conf * ppo_weight) * 1.1
+                reasoning = f"[{phase}] Agreement: {direction} (PPO+experts aligned)"
+            else:
+                # Disagreement - favor experts but note conflict
+                direction = expert_dir
+                confidence = expert_confidence * 0.7
+                reasoning = f"[{phase}] Conflict - experts say {expert_dir}, PPO says {ppo_dir}"
+                
+        elif phase == "PPO_LED":
+            # PPO gaining trust - 40/60 toward PPO
+            if ppo_dir == expert_dir:
+                direction = ppo_dir
+                confidence = (ppo_conf * ppo_weight + expert_confidence * expert_weight) * 1.15
+                reasoning = f"[{phase}] PPO-led agreement: {direction}"
+            elif trust_score > 0.5:
+                # PPO confident - follow PPO
+                direction = ppo_dir
+                confidence = ppo_conf * 0.85
+                reasoning = f"[{phase}] PPO confident ({trust_score:.2f}): {direction}"
+            else:
+                # PPO uncertain - defer to experts
+                direction = expert_dir
+                confidence = expert_confidence * 0.6
+                reasoning = f"[{phase}] PPO uncertain, defer to experts: {direction}"
+                
+        else:  # FULL_AUTONOMY
+            # PPO leads - earned through performance
+            if trust_score > 0.2:
+                direction = ppo_dir
+                confidence = ppo_conf * 0.95
+                reasoning = f"[{phase}] PPO autonomous: {direction} (trust={trust_score:.2f})"
+            elif trust_score < -0.2:
+                direction = "flat"
+                confidence = 0.4
+                reasoning = f"[{phase}] PPO override: FLAT (trust={trust_score:.2f})"
+            else:
+                # Even autonomous PPO defers when uncertain
+                direction = expert_dir if expert_confidence > 0.4 else "flat"
+                confidence = expert_confidence * 0.5
+                reasoning = f"[{phase}] PPO uncertain, checking experts: {direction}"
+        
+        # Add autonomy metrics to reasoning
+        reasoning += f" | Score={autonomy_level:.2f}, WR={ppo_win_rate:.0%}"
+        
+        return direction, float(np.clip(confidence, 0.0, 1.0)), reasoning
     
     # ─────────────────────────────────────────────────────────────
     # Expert Signal Processing
@@ -1170,3 +1544,60 @@ class ArbiterLogic:
         """Get recent decision history for an instrument."""
         history = self._decision_history.get(instrument, [])
         return [d.to_dict() for d in history[-n:]]
+
+    # ─────────────────────────────────────────────────────────────
+    # Adaptive Autonomy Methods
+    # ─────────────────────────────────────────────────────────────
+    
+    def record_trade_outcome(
+        self,
+        instrument: str,
+        ppo_direction: str,
+        expert_direction: str,
+        pnl: float,
+        ppo_confidence: float,
+        was_ppo_led: bool,
+    ) -> None:
+        """
+        Record a trade outcome for autonomy tracking.
+        
+        Call this when a trade closes to update the adaptive autonomy system.
+        The autonomy tracker will use this to adjust PPO's decision weight.
+        
+        Args:
+            instrument: Trading instrument (e.g., "EURUSD")
+            ppo_direction: Direction PPO wanted (long/short/flat)
+            expert_direction: Direction experts recommended
+            pnl: Trade profit/loss
+            ppo_confidence: PPO's confidence at entry
+            was_ppo_led: Whether PPO led the decision (based on autonomy phase)
+        """
+        # Update autonomy tracker
+        self.autonomy_tracker.record_trade_outcome(
+            ppo_direction=ppo_direction,
+            expert_direction=expert_direction,
+            actual_outcome=pnl,
+            ppo_confidence=ppo_confidence,
+            was_ppo_led=was_ppo_led,
+        )
+        
+        # Also update stats tracker
+        self.stats_tracker.record_trade_result(instrument, pnl)
+    
+    def get_autonomy_state(self) -> Dict[str, Any]:
+        """
+        Get the current PPO autonomy state for dashboard/logging.
+        
+        Returns:
+            Dict with autonomy phase, level, weights, and performance metrics.
+        """
+        return self.autonomy_tracker.get_state_summary()
+    
+    def get_ppo_decision_weights(self) -> Tuple[float, float]:
+        """
+        Get current PPO/expert decision weights.
+        
+        Returns:
+            (ppo_weight, expert_weight) tuple that sums to 1.0
+        """
+        return self.autonomy_tracker.get_decision_weights()

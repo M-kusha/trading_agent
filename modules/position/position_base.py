@@ -161,6 +161,15 @@ class ProfitTracker:
     def last(self, instrument: str) -> float:
         return float(self._last_pnl[instrument])
 
+    def reset(self, instrument: str) -> None:
+        """
+        Reset peak tracking for an instrument when position is closed.
+        CRITICAL: Must be called when a position closes to prevent stale peaks
+        from affecting new positions on the same instrument.
+        """
+        self._peak[instrument] = 0.0
+        self._last_pnl[instrument] = 0.0
+
     def should_trail_close(
         self,
         instrument: str,

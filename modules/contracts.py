@@ -195,6 +195,10 @@ CONTRACTS: Dict[str, ModuleContract] = {
         # 1. Whether to trade (GO/NO-GO) per instrument
         # 2. Position sizing based on confidence
         # 3. Override committee when it detects danger
+        #
+        # PPO AUTONOMY: Leadership transitions automatically from experts to PPO
+        # based on performance (win rate, consistency, override success rate).
+        # Phases: EXPERT_LED -> BLENDED -> PPO_LED -> FULL_AUTONOMY
         provides=['agent_performance', 'policy_actions', 'policy_gradients', 'rewards',
               'training_data', 'training_metrics', 'training_signals',
                   # Final decision outputs (consumed by Executor)
@@ -202,6 +206,8 @@ CONTRACTS: Dict[str, ModuleContract] = {
                   # Multi-instrument outputs (v3.0)
                   'ppo_multi_decision',      # Dict with per-instrument decisions
                   'ppo_instrument_stats',    # Per-instrument statistics
+                  # PPO Autonomy state (v3.1.0)
+                  'ppo_autonomy_state',      # Adaptive leadership: phase, level, weights, metrics
                   # Legacy voting outputs (for committee, but with low weight)
                   'PPOAgent_voting_proposal', 'PPOAgent_confidence'],
         # Runs AFTER committee consensus to make informed final decision
@@ -320,7 +326,7 @@ CONTRACTS: Dict[str, ModuleContract] = {
         name='CurriculumPlannerPlus',
         file='strategy/curriculum_planner_plus.py',
         provides=['competency_scores', 'curriculum_initialization', 'curriculum_stage', 'learning_constraints', 'learning_recommendations', 'mastery_assessment', 'stage_advancement', 'stage_progression'],
-        requires=['episode_summary', 'market_context', 'performance_data', 'recent_trades', 'risk_metrics', 'trading_session'],
+        requires=['episode_summary', 'market_context', 'performance_data', 'closed_positions', 'risk_metrics', 'trading_session'],
         meta={'thesis_required': 'True', 'explainable': 'True', 'health_monitoring': 'True', 'performance_tracking': 'True', 'category': 'strategy', 'version': '3.0.0'}
     ),
 
@@ -829,6 +835,8 @@ CONTRACTS: Dict[str, ModuleContract] = {
                   'trade_data', 'market_state', 'position_data',
                   'current_positions', 'pnl_data', 'closed_positions',
                   'live_adapter_status', 'pending_orders', 'account_state'],
+        # NOTE: trade_outcome_for_autonomy is published opportunistically when trades close
+        # It's not in provides[] because it's event-driven, not every-cycle
         # FIX v5.1.0: Removed optional dependencies that caused circular deps:
         #   - bias_adjustments, learning_constraints, curriculum_stage (from BiasAuditor/CurriculumPlanner)
         #   - risk_assessment, risk_level (from DynamicRiskController)
@@ -851,6 +859,8 @@ CONTRACTS: Dict[str, ModuleContract] = {
             # Original required keys
             'market_context', 'market_regime', 'positions', 'recent_trades', 'risk_metrics',
             'session_metrics', 'strategy_performance', 'trading_performance', 'volatility_data', 'votes',
+            # CRITICAL: closed_positions for accurate win rate (not recent_trades which double-counts)
+            'closed_positions',
             # Enhanced integrations (optional but beneficial)
             'execution_quality', 'risk_alerts', 'anomaly_detection', 'portfolio_risk', 'drawdown_risk',
             'risk_scaling', 'anomaly_score', 'consensus_score', 'consensus_quality', 'committee_confidence',

@@ -43,6 +43,20 @@ class MemoryGateInfo:
     @classmethod
     def from_bus_data(cls, memory_gate: Any, danger_zones: Any) -> "MemoryGateInfo":
         """Construct from SmartInfoBus data."""
+        # Helper to convert reason items to strings (reasons can be dicts or strings)
+        def _reason_to_str(r: Any) -> str:
+            if isinstance(r, str):
+                return r
+            if isinstance(r, dict):
+                # Extract meaningful text from dict reason
+                return (
+                    r.get("message")
+                    or r.get("reason")
+                    or r.get("label")
+                    or f"{r.get('type', 'unknown')}: {r.get('similarity', r.get('consecutive_losses', ''))}"
+                )
+            return str(r)
+        
         # Parse memory_gate
         if isinstance(memory_gate, dict):
             risk_mult = float(memory_gate.get("risk_multiplier", 1.0))
@@ -50,7 +64,9 @@ class MemoryGateInfo:
             risk_score = float(memory_gate.get("risk_score", 0.0))
             danger_sim = float(memory_gate.get("danger_similarity", 0.0))
             loss_prob = float(memory_gate.get("loss_prob", 0.0))
-            reasons = list(memory_gate.get("reasons", []))
+            raw_reasons = memory_gate.get("reasons", [])
+            # Convert any dict reasons to strings
+            reasons = [_reason_to_str(r) for r in raw_reasons] if raw_reasons else []
         elif memory_gate is not None:
             try:
                 risk_mult = float(memory_gate)

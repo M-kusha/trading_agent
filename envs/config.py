@@ -307,8 +307,6 @@ class TradingConfig:
     model_dir: str = "models"
     tensorboard_dir: str = "logs/tensorboard"
 
-    # InfoBus-specific directories
-    info_bus_log_dir: str = "logs/info_bus"
     audit_log_dir: str = "logs/audit"
     operator_log_dir: str = "logs/operator"
 
@@ -382,7 +380,6 @@ class TradingConfig:
             self.model_dir,
             self.tensorboard_dir,
             self.data_dir,
-            self.info_bus_log_dir,
             self.audit_log_dir,
             self.operator_log_dir,
         ]
@@ -397,7 +394,6 @@ class TradingConfig:
             "logs/memory",
             "logs/voting",
             "logs/position",
-            "logs/features",
             "logs/meta",
         ]
         for directory in module_log_dirs:
@@ -519,7 +515,6 @@ class TradingConfig:
             "enabled": bool(self.info_bus_enabled),
             "audit_level": str(self.info_bus_audit_level),
             "validation": bool(self.info_bus_validation),
-            "log_dir": str(self.info_bus_log_dir),
             "rotation_lines": int(self.log_rotation_lines),
         }
 

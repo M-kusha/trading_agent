@@ -30,6 +30,14 @@ from modules.position.smart_position_manager import (
     PositionAction,
 )
 
+# Exit Engine for peak reset on position close
+try:
+    from modules.position.exit_engine import get_exit_engine
+    EXIT_ENGINE_AVAILABLE = True
+except ImportError:
+    get_exit_engine = None  # type: ignore
+    EXIT_ENGINE_AVAILABLE = False
+
 
 @dataclass
 class ExecutorConfig:
@@ -1153,6 +1161,50 @@ class Executor(BaseModule):
             return float(size_eur / price)
         return 0.0
 
+    def _get_decision_context(self, instrument: str) -> Dict[str, Any]:
+        """
+        Get current PPO and expert decision context for autonomy tracking.
+        
+        Returns:
+            Dict with ppo_direction, expert_direction, ppo_confidence, was_ppo_led
+        """
+        context = {
+            "ppo_direction": None,
+            "expert_direction": None,
+            "ppo_confidence": None,
+            "was_ppo_led": False,
+        }
+        
+        try:
+            # Get PPO's decision
+            ppo_decision = self.bus.get("ppo_final_decision", "Executor", default={}) or {}
+            if isinstance(ppo_decision, dict):
+                ppo_dir = ppo_decision.get("direction", "flat")
+                context["ppo_direction"] = ppo_dir if ppo_dir in ("long", "short", "flat") else "flat"
+                context["ppo_confidence"] = float(ppo_decision.get("confidence", 0.0) or 0.0)
+            
+            # Get PPO autonomy state to determine if PPO-led
+            autonomy_state = self.bus.get("ppo_autonomy_state", "Executor", default={}) or {}
+            if isinstance(autonomy_state, dict):
+                phase = autonomy_state.get("phase", "EXPERT_LED")
+                # PPO leads in PPO_LED or FULL_AUTONOMY phases
+                context["was_ppo_led"] = phase in ("PPO_LED", "FULL_AUTONOMY")
+            
+            # Get expert consensus from committee decision
+            committee = self.bus.get("committee_decision", "Executor", default={}) or {}
+            if isinstance(committee, dict):
+                committee_action = str(committee.get("action", "hold")).lower()
+                if committee_action in ("long", "buy", "bullish"):
+                    context["expert_direction"] = "long"
+                elif committee_action in ("short", "sell", "bearish"):
+                    context["expert_direction"] = "short"
+                else:
+                    context["expert_direction"] = "flat"
+        except Exception:
+            pass  # Use defaults if bus access fails
+        
+        return context
+
     def _track_closed_position(self, position: "PositionSnap", close_price: float, realized_pnl: float, close_reason: str) -> None:
         """Track a fully closed position for win rate and analytics (sim only)."""
         closed_record = {
@@ -1173,6 +1225,59 @@ class Executor(BaseModule):
         # Keep only last 500 closed positions to avoid memory bloat
         if len(self.closed_positions) > 500:
             self.closed_positions = self.closed_positions[-500:]
+        
+        # CRITICAL: Reset exit engine peak tracking for this instrument
+        # This prevents stale peaks from previous positions causing premature exits on new positions
+        try:
+            if EXIT_ENGINE_AVAILABLE and get_exit_engine:
+                exit_engine = get_exit_engine()
+                exit_engine.reset_peak(position.instrument)
+                self.logger.debug(f"[Executor] Reset exit peak for {position.instrument} after close")
+        except Exception as e:
+            self.logger.debug(f"[Executor] Failed to reset exit peak: {e}")
+        
+        # Notify PPO Autonomy Tracker of trade outcome
+        self._notify_ppo_autonomy(position, realized_pnl)
+
+    def _notify_ppo_autonomy(self, position: "PositionSnap", realized_pnl: float) -> None:
+        """
+        Notify the PPO Autonomy Tracker about a closed trade outcome.
+        
+        This enables adaptive leadership transition based on PPO's performance.
+        """
+        try:
+            # Get decision context that was stored at entry
+            ppo_direction = getattr(position, "ppo_direction", None)
+            expert_direction = getattr(position, "expert_direction", None)
+            ppo_confidence = getattr(position, "ppo_confidence", None)
+            was_ppo_led = getattr(position, "was_ppo_led", False)
+            
+            # Skip if we don't have entry decision context
+            if ppo_direction is None and expert_direction is None:
+                return
+            
+            # Publish trade outcome for PPO autonomy tracking
+            # The PPOAgentShell will pick this up and update the autonomy tracker
+            trade_outcome = {
+                "instrument": position.instrument,
+                "ppo_direction": ppo_direction or "flat",
+                "expert_direction": expert_direction or "flat",
+                "pnl": realized_pnl,
+                "ppo_confidence": ppo_confidence or 0.0,
+                "was_ppo_led": bool(was_ppo_led),
+                "timestamp": time.time(),
+            }
+            
+            self.bus.set(
+                "trade_outcome_for_autonomy",
+                trade_outcome,
+                module="Executor",
+                thesis=f"Trade closed: {position.instrument} PnL={realized_pnl:.2f}, PPO={ppo_direction}, Expert={expert_direction}",
+            )
+            
+        except Exception as e:
+            # Don't let autonomy tracking errors break execution
+            self.logger.debug(f"Failed to notify PPO autonomy: {e}")
 
     def _execute_sim(self, intents: List[Dict[str, Any]], *, want_breakdown: bool = False) -> Tuple[List[Dict[str, Any]], float, float, float]:
         fills: List[Dict[str, Any]] = []
@@ -1223,11 +1328,17 @@ class Executor(BaseModule):
 
                 if add_units > 0:
                     notional = add_units * price
+                    # Get decision context for autonomy tracking
+                    ctx = self._get_decision_context(inst)
                     self.positions[inst] = PositionSnap(
                         inst, side_from_action, add_units, price,
                         notional_eur=notional,
                         open_time=time.time(),
                         entry_step=self.step_idx,
+                        ppo_direction=ctx["ppo_direction"],
+                        expert_direction=ctx["expert_direction"],
+                        ppo_confidence=ctx["ppo_confidence"],
+                        was_ppo_led=ctx["was_ppo_led"],
                     )
                     fill = TradeFill(
                         id=f"fill-{uuid.uuid4().hex[:10]}",
@@ -1251,11 +1362,17 @@ class Executor(BaseModule):
                     continue
                 if inst not in self.positions:
                     notional = add_units * price
+                    # Get decision context for autonomy tracking
+                    ctx = self._get_decision_context(inst)
                     self.positions[inst] = PositionSnap(
                         inst, +1, add_units, price,
                         notional_eur=notional,
                         open_time=time.time(),
                         entry_step=self.step_idx,
+                        ppo_direction=ctx["ppo_direction"],
+                        expert_direction=ctx["expert_direction"],
+                        ppo_confidence=ctx["ppo_confidence"],
+                        was_ppo_led=ctx["was_ppo_led"],
                     )
                     fill = TradeFill(
                         id=f"fill-{uuid.uuid4().hex[:10]}",
@@ -2298,6 +2415,12 @@ class Executor(BaseModule):
 
         # CRITICAL: also publish current step fills for memory system
         self.bus.set("current_fills", exec_fills, thesis="Current step fills (executor)")
+        
+        # CRITICAL FIX: Publish closed_positions for accurate win rate tracking
+        # This contains only COMPLETED trades (position opens don't count as trades)
+        # Used by TradingModeManager and other modules for performance metrics
+        self.bus.set("closed_positions", list(self.closed_positions), thesis="Closed positions for win rate (executor)")
+        
         try:
             self.bus.set("trade_data", trade_ledger, thesis="alias: trade_data (executor)")
         except Exception:

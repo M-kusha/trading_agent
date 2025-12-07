@@ -71,6 +71,12 @@ class PositionSnap:
     open_time: Optional[Union[str, int, float]] = None
     peak_unrealized: float = 0.0          # optional, some UIs use this
     entry_step: Optional[int] = None      # optional step index (sim)
+    
+    # Decision context at entry (for PPO autonomy tracking)
+    ppo_direction: Optional[str] = None       # PPO's direction at entry: "long"/"short"/"flat"
+    expert_direction: Optional[str] = None    # Expert consensus at entry
+    ppo_confidence: Optional[float] = None    # PPO's confidence at entry
+    was_ppo_led: Optional[bool] = None        # Was PPO leading when this trade was opened?
 
     def as_bus(
         self,

@@ -559,13 +559,19 @@ class CurriculumPlannerPlus(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
     async def _get_comprehensive_learning_data(self) -> Dict[str, Any]:
         """Get comprehensive learning data using modern SmartInfoBus patterns"""
         try:
+            # Use closed_positions for accurate trade counting (not recent_trades which includes opens)
+            closed_positions = self.smart_bus.get('closed_positions', 'CurriculumPlannerPlus') or []
+            
+            # Update trades_analyzed counter based on actual closed trades
+            self.learning_stats['trades_analyzed'] = len(closed_positions)
+            
             return {
                 'performance_data': self.smart_bus.get('performance_data', 'CurriculumPlannerPlus') or {},
                 'episode_summary': self.smart_bus.get('episode_summary', 'CurriculumPlannerPlus') or {},
                 'risk_metrics': self.smart_bus.get('risk_metrics', 'CurriculumPlannerPlus') or {},
                 'trading_session': self.smart_bus.get('trading_session', 'CurriculumPlannerPlus') or {},
                 'market_conditions': self.smart_bus.get('market_conditions', 'CurriculumPlannerPlus') or {},
-                'recent_trades': self.smart_bus.get('recent_trades', 'CurriculumPlannerPlus') or [],
+                'closed_positions': closed_positions,  # Use closed_positions instead of recent_trades
                 'learning_context': self.smart_bus.get('learning_context', 'CurriculumPlannerPlus') or {}
             }
         except Exception as e:
@@ -1396,8 +1402,32 @@ class CurriculumPlannerPlus(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         return summary.get('pnl', 0) > 0
 
     async def _update_learning_statistics(self, summary: Dict[str, Any]):
-        """Update learning statistics"""
-        pass
+        """Update learning statistics with trade data from episode summary"""
+        try:
+            # Track trades analyzed from episode summary
+            total_trades = summary.get('total_trades', 0)
+            if total_trades > 0:
+                self.learning_stats['trades_analyzed'] = self.learning_stats.get('trades_analyzed', 0) + total_trades
+                
+            # Track win rate over time
+            win_rate = summary.get('win_rate', 0)
+            if 'win_rate_history' not in self.learning_stats:
+                self.learning_stats['win_rate_history'] = []
+            self.learning_stats['win_rate_history'].append(win_rate)
+            # Keep only last 20 entries
+            if len(self.learning_stats['win_rate_history']) > 20:
+                self.learning_stats['win_rate_history'] = self.learning_stats['win_rate_history'][-20:]
+                
+            # Track PnL progression
+            pnl = summary.get('pnl', 0)
+            if 'pnl_history' not in self.learning_stats:
+                self.learning_stats['pnl_history'] = []
+            self.learning_stats['pnl_history'].append(pnl)
+            if len(self.learning_stats['pnl_history']) > 20:
+                self.learning_stats['pnl_history'] = self.learning_stats['pnl_history'][-20:]
+                
+        except Exception as e:
+            self.logger.warning(f"Failed to update learning statistics: {e}")
 
     async def _handle_learning_plateau_advanced(self):
         """Handle learning plateau with advanced intervention"""
@@ -1516,7 +1546,7 @@ class CurriculumPlannerPlus(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             'risk_metrics': {},
             'trading_session': {},
             'market_conditions': {},
-            'recent_trades': [],
+            'closed_positions': [],  # Use closed_positions instead of recent_trades
             'learning_context': {}
         }
 

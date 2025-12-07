@@ -25,7 +25,7 @@ import os
 from pathlib import Path
 from typing import (
     Dict, Any, Optional, List, Tuple, DefaultDict, Set, Deque,
-    Callable, Iterable, Protocol, runtime_checkable, Type
+    Callable, Iterable, Protocol, runtime_checkable, Type, get_type_hints
 )
 from typing import get_origin, get_args
 from collections import defaultdict, deque
@@ -2306,6 +2306,25 @@ class ModuleOrchestrator:
     @staticmethod
     def _extract_config_dataclass_type(module_class: Type[BaseModule]) -> Optional[Type[Any]]:
         try:
+            # First try using get_type_hints which resolves string annotations
+            try:
+                hints = get_type_hints(module_class.__init__)
+                ann = hints.get('config')
+                if ann is not None:
+                    origin = get_origin(ann)
+                    if origin is None:
+                        if isinstance(ann, type) and is_dataclass(ann):
+                            return ann
+                    else:
+                        args = [a for a in get_args(ann) if a is not type(None)]  # noqa: E721
+                        if args:
+                            t = args[0]
+                            if isinstance(t, type) and is_dataclass(t):
+                                return t
+            except Exception:
+                pass  # Fall back to signature-based approach
+            
+            # Fallback: signature-based approach (doesn't handle string annotations)
             sig = inspect.signature(module_class.__init__)
             param = sig.parameters.get('config')
             if not param or param.annotation is inspect._empty:
@@ -2368,7 +2387,10 @@ class ModuleOrchestrator:
 
             module_config = {}
             if hasattr(self, 'config_manager') and self.config_manager:
-                module_config = self.config_manager.get_module_config(name)
+                # Use metadata.name (contract name) for config lookup, not class name
+                # e.g., PPOAgentShell's metadata.name is "PPOAgent"
+                config_name = metadata.name if hasattr(metadata, 'name') else name
+                module_config = self.config_manager.get_module_config(config_name)
 
             try:
                 config_obj: Optional[Any] = self._normalize_module_config(module_class, module_config)

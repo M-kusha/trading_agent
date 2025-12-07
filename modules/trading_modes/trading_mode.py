@@ -553,6 +553,8 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 'recent_trades': self.smart_bus.get('recent_trades', 'TradingModeManager') or [],
                 'trades': self.smart_bus.get('trades', 'TradingModeManager') or [],
                 'current_fills': self.smart_bus.get('current_fills', 'TradingModeManager') or [],
+                # CRITICAL: closed_positions for accurate win rate (completed round-trips only)
+                'closed_positions': self.smart_bus.get('closed_positions', 'TradingModeManager') or [],
                 'risk_metrics': self.smart_bus.get('risk_metrics', 'TradingModeManager') or {},
                 'portfolio_metrics': self.smart_bus.get('portfolio_metrics', 'TradingModeManager') or {},
                 'votes': self.smart_bus.get('votes', 'TradingModeManager') or [],
@@ -736,47 +738,56 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         """Extract comprehensive performance data with enhanced analytics"""
         try:
             performance_data: Dict[str, Any] = {}
-            # Trades - try multiple sources for robustness
+            
+            # CRITICAL FIX: Use closed_positions for win rate calculation
+            # recent_trades contains ALL fills (opens + closes), which double-counts
+            # closed_positions contains only COMPLETED trades (proper win rate)
+            closed_positions = market_data.get('closed_positions', []) or []
+            
+            # Fallback to recent_trades only for backward compatibility
+            # But filter to only include trades with realized PnL (actual closes)
             recent_trades = market_data.get('recent_trades', []) or []
 
             # Debug: Log what sources are available
             if self.debug:
                 sources_available = {
+                    'closed_positions': len(closed_positions) if isinstance(closed_positions, list) else 'not_list',
                     'recent_trades': len(recent_trades) if isinstance(recent_trades, list) else 'not_list',
                     'trades': len(market_data.get('trades', [])) if isinstance(market_data.get('trades'), list) else 'not_list',
                     'current_fills': len(market_data.get('current_fills', [])) if isinstance(market_data.get('current_fills'), list) else 'not_list',
                 }
                 self.logger.debug(f"Trade sources available: {sources_available}")
 
-            # Fallback: if recent_trades empty, try other sources
-            if not recent_trades:
-                # Try full trade ledger
-                all_trades = market_data.get('trades', []) or []
-                if all_trades:
-                    # Take last 50 trades as "recent"
-                    recent_trades = all_trades[-50:] if len(all_trades) > 50 else all_trades
-                    if self.debug and recent_trades:
-                        self.logger.debug(f"Using {len(recent_trades)} trades from full ledger")
+            # Use closed_positions as the primary source for trade counting (accurate win rate)
+            # These represent actual completed round-trip trades
+            if closed_positions:
+                actual_trades = closed_positions
+                if self.debug:
+                    self.logger.debug(f"Using {len(actual_trades)} closed_positions for performance calc")
+            else:
+                # Fallback: filter recent_trades to only include closes (where realized_pnl != 0)
+                # This filters out position opens which have realized_pnl = 0
+                actual_trades = [
+                    t for t in recent_trades 
+                    if (t.get('realized_pnl', 0) != 0 or t.get('pnl', 0) != 0 or 
+                        'close' in str(t.get('action', '')).lower() or
+                        'reduce' in str(t.get('action', '')).lower())
+                ]
+                if self.debug and actual_trades:
+                    self.logger.debug(f"Filtered to {len(actual_trades)} actual closes from {len(recent_trades)} fills")
 
-                # Try current_fills (for very recent trades)
-                if not recent_trades:
-                    current_fills = market_data.get('current_fills', []) or []
-                    if current_fills:
-                        recent_trades = current_fills
-                        if self.debug:
-                            self.logger.debug(f"Using {len(recent_trades)} trades from current_fills")
-
-            performance_data['recent_trades'] = recent_trades
-            performance_data['trade_count'] = len(recent_trades)
-            performance_data['total_trades'] = len(recent_trades)  # Alias for logging compatibility
+            performance_data['recent_trades'] = actual_trades
+            performance_data['trade_count'] = len(actual_trades)
+            performance_data['total_trades'] = len(actual_trades)  # Alias for logging compatibility
 
             # Debug: Log final trade count
             if self.debug:
-                self.logger.debug(f"Final trade count for performance calculation: {len(recent_trades)}")
+                self.logger.debug(f"Final trade count for performance calculation: {len(actual_trades)}")
 
-            if recent_trades:
-                # Extract realized P&L from trades
-                realized_pnls = [float(trade.get('pnl', 0) or trade.get('realized_pnl', 0) or 0) for trade in recent_trades]
+            if actual_trades:
+                # Extract realized P&L from actual trades (closed positions)
+                # These are the true completed trades with real profit/loss
+                realized_pnls = [float(trade.get('pnl', 0) or trade.get('profit', 0) or trade.get('realized_pnl', 0) or 0) for trade in actual_trades]
 
                 # CRITICAL FIX: Also get unrealized P&L from open positions
                 # Trades show realized_pnl=0.0 for position opens, but positions have unrealized_pnl

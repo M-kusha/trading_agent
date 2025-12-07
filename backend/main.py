@@ -657,6 +657,7 @@ async def live_trading_loop(config: LiveTradingConfig, connector: Any) -> None:
 
                 if time.time() - last_balance_update > 30:
                     _update_balance_from_broker()
+                    _sync_trade_performance_from_bus()  # CRITICAL: Sync accurate trade metrics
                     last_balance_update = time.time()
 
                 if time.time() - last_health_check > 60:
@@ -796,6 +797,49 @@ def _update_balance_from_broker() -> None:
 
     except Exception as e:
         state.add_error(f"Balance update error: {e}", "mt5")
+
+
+def _sync_trade_performance_from_bus() -> None:
+    """
+    Sync trade performance metrics from InfoBus closed_positions.
+    
+    CRITICAL FIX: Use closed_positions for accurate win rate calculation.
+    The recent_trades/trades keys contain ALL fills (opens + closes) which double-counts.
+    closed_positions contains only completed round-trip trades.
+    """
+    try:
+        closed_positions = get_bus_value_with_fallback("closed_positions", "BackendAPI", default=[]) or []
+        
+        if not closed_positions:
+            # No closed positions yet - don't overwrite metrics
+            return
+        
+        total_trades = len(closed_positions)
+        winning_trades = sum(1 for t in closed_positions if (t.get("pnl", 0) or t.get("profit", 0) or 0) > 0)
+        losing_trades = sum(1 for t in closed_positions if (t.get("pnl", 0) or t.get("profit", 0) or 0) < 0)
+        
+        # Calculate win rate from actual closed trades
+        win_rate = winning_trades / max(1, total_trades)
+        
+        # Update state metrics
+        state.performance_metrics["total_trades"] = total_trades
+        state.performance_metrics["winning_trades"] = winning_trades
+        state.performance_metrics["losing_trades"] = losing_trades
+        state.performance_metrics["win_rate"] = win_rate
+        
+        # Calculate profit factor from closed positions
+        total_wins = sum(float(t.get("pnl", 0) or t.get("profit", 0) or 0) for t in closed_positions if (t.get("pnl", 0) or t.get("profit", 0) or 0) > 0)
+        total_losses = abs(sum(float(t.get("pnl", 0) or t.get("profit", 0) or 0) for t in closed_positions if (t.get("pnl", 0) or t.get("profit", 0) or 0) < 0))
+        
+        if total_losses > 0:
+            state.performance_metrics["profit_factor"] = total_wins / total_losses
+        elif total_wins > 0:
+            state.performance_metrics["profit_factor"] = 999.0  # All wins, no losses
+        else:
+            state.performance_metrics["profit_factor"] = 1.0  # No trades with P&L
+            
+    except Exception as e:
+        logger.debug(f"Trade performance sync from bus failed (may be normal during startup): {e}")
 
 
 def _perform_health_checks() -> None:
@@ -1338,6 +1382,8 @@ async def _performance_tracker() -> None:
                 pass
             if state.mt5_connected and state.system_status == "TRADING":
                 _update_balance_from_broker()
+            # Always sync trade performance from bus (works for both sim and live)
+            _sync_trade_performance_from_bus()
             await asyncio.sleep(30)
         except Exception as e:
             logger.error(f"Performance tracking error: {e}")

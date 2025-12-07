@@ -930,52 +930,98 @@ class TrendExpert(VotingExpertBase):
                     highs = list(state.get("high_history", prices))
                     lows = list(state.get("low_history", prices))
 
-                    fast_ma, medium_ma, slow_ma, ma_alignment = self._calculate_triple_ma(
-                        prices
-                    )
-                    adx_value, plus_di, minus_di = self._calculate_adx(
-                        highs, lows, prices
-                    )
-                    sar_value, sar_direction = self._calculate_parabolic_sar(
-                        highs, lows
-                    )
-                    trend_slope = self._calculate_trend_slope(prices, 20)
-                    support_levels, resistance_levels = self._find_support_resistance(
-                        highs, lows
-                    )
-                    near_support, near_resistance = self._check_sr_proximity(
-                        current_price, support_levels, resistance_levels
-                    )
-
-                    ma_spread_fast_medium = (
-                        (fast_ma - medium_ma) / medium_ma if medium_ma else 0.0
-                    )
-                    ma_spread_medium_slow = (
-                        (medium_ma - slow_ma) / slow_ma if slow_ma else 0.0
-                    )
-                    price_vs_fast = (
-                        (current_price - fast_ma) / fast_ma if fast_ma else 0.0
-                    )
-                    price_vs_slow = (
-                        (current_price - slow_ma) / slow_ma if slow_ma else 0.0
-                    )
-
-                    bullish_score, bearish_score, total_weight = (
-                        self._calculate_trend_confluence(
-                            ma_alignment,
-                            ma_spread_fast_medium,
-                            ma_spread_medium_slow,
-                            price_vs_fast,
-                            price_vs_slow,
-                            adx_value,
-                            plus_di,
-                            minus_di,
-                            sar_direction,
-                            trend_slope,
-                            near_support,
-                            near_resistance,
+                    # ═══════════════════════════════════════════════════════════════
+                    # PERFORMANCE CACHE: Skip expensive indicator calculations if data unchanged
+                    # ═══════════════════════════════════════════════════════════════
+                    cached = self._get_cached_indicators(inst_norm, prices)
+                    if cached is not None:
+                        # Cache hit - use cached indicator values
+                        fast_ma = cached.get('fast_ma', 0.0)
+                        medium_ma = cached.get('medium_ma', 0.0)
+                        slow_ma = cached.get('slow_ma', 0.0)
+                        ma_alignment = cached.get('ma_alignment', 0)
+                        adx_value = cached.get('adx_value', 0.0)
+                        plus_di = cached.get('plus_di', 0.0)
+                        minus_di = cached.get('minus_di', 0.0)
+                        sar_value = cached.get('sar_value', 0.0)
+                        sar_direction = cached.get('sar_direction', 0)
+                        trend_slope = cached.get('trend_slope', 0.0)
+                        support_levels = cached.get('support_levels', [])
+                        resistance_levels = cached.get('resistance_levels', [])
+                        near_support = cached.get('near_support', False)
+                        near_resistance = cached.get('near_resistance', False)
+                        bullish_score = cached.get('bullish_score', 0.0)
+                        bearish_score = cached.get('bearish_score', 0.0)
+                        total_weight = cached.get('total_weight', 1.0)
+                    else:
+                        # Cache miss - calculate all indicators
+                        fast_ma, medium_ma, slow_ma, ma_alignment = self._calculate_triple_ma(
+                            prices
                         )
-                    )
+                        adx_value, plus_di, minus_di = self._calculate_adx(
+                            highs, lows, prices
+                        )
+                        sar_value, sar_direction = self._calculate_parabolic_sar(
+                            highs, lows
+                        )
+                        trend_slope = self._calculate_trend_slope(prices, 20)
+                        support_levels, resistance_levels = self._find_support_resistance(
+                            highs, lows
+                        )
+                        near_support, near_resistance = self._check_sr_proximity(
+                            current_price, support_levels, resistance_levels
+                        )
+
+                        ma_spread_fast_medium = (
+                            (fast_ma - medium_ma) / medium_ma if medium_ma else 0.0
+                        )
+                        ma_spread_medium_slow = (
+                            (medium_ma - slow_ma) / slow_ma if slow_ma else 0.0
+                        )
+                        price_vs_fast = (
+                            (current_price - fast_ma) / fast_ma if fast_ma else 0.0
+                        )
+                        price_vs_slow = (
+                            (current_price - slow_ma) / slow_ma if slow_ma else 0.0
+                        )
+
+                        bullish_score, bearish_score, total_weight = (
+                            self._calculate_trend_confluence(
+                                ma_alignment,
+                                ma_spread_fast_medium,
+                                ma_spread_medium_slow,
+                                price_vs_fast,
+                                price_vs_slow,
+                                adx_value,
+                                plus_di,
+                                minus_di,
+                                sar_direction,
+                                trend_slope,
+                                near_support,
+                                near_resistance,
+                            )
+                        )
+
+                        # Store in cache
+                        self._set_cached_indicators(inst_norm, prices, {
+                            'fast_ma': fast_ma,
+                            'medium_ma': medium_ma,
+                            'slow_ma': slow_ma,
+                            'ma_alignment': ma_alignment,
+                            'adx_value': adx_value,
+                            'plus_di': plus_di,
+                            'minus_di': minus_di,
+                            'sar_value': sar_value,
+                            'sar_direction': sar_direction,
+                            'trend_slope': trend_slope,
+                            'support_levels': support_levels,
+                            'resistance_levels': resistance_levels,
+                            'near_support': near_support,
+                            'near_resistance': near_resistance,
+                            'bullish_score': bullish_score,
+                            'bearish_score': bearish_score,
+                            'total_weight': total_weight,
+                        })
 
                     bullish_confluence = (
                         bullish_score / total_weight if total_weight > 0 else 0.0

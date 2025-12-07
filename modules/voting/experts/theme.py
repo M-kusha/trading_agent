@@ -305,16 +305,58 @@ class ThemeExpert(VotingExpertBase):
                         }
                         continue
 
-                    # ── Regime components ─────────────────────────────────────
-                    vol_regime, vol_score = self._analyze_volatility_regime(
-                        close_prices, high_prices, low_prices
-                    )
-                    trend_regime, trend_score = self._analyze_trend_regime(
-                        close_prices, high_prices, low_prices
-                    )
-                    corr_regime, corr_score = self._analyze_correlation_regime(
-                        close_prices, inst_market
-                    )
+                    # ═══════════════════════════════════════════════════════════════
+                    # PERFORMANCE CACHE: Skip expensive regime calculations if data unchanged
+                    # ═══════════════════════════════════════════════════════════════
+                    prices_list = list(close_prices) if hasattr(close_prices, '__iter__') else []
+                    cached = self._get_cached_indicators(inst_norm, prices_list)
+                    
+                    if cached is not None:
+                        # Cache hit - use cached indicator values
+                        vol_regime = cached.get('vol_regime', 'unknown')
+                        vol_score = cached.get('vol_score', 0.5)
+                        trend_regime = cached.get('trend_regime', 'unknown')
+                        trend_score = cached.get('trend_score', 0.0)
+                        corr_regime = cached.get('corr_regime', 'unknown')
+                        corr_score = cached.get('corr_score', 0.0)
+                        breadth_score = cached.get('breadth_score', 0.5)
+                        momentum_score = cached.get('momentum_score', 0.0)
+                        composite_score = cached.get('composite_score', 0.5)
+                    else:
+                        # Cache miss - calculate all regime components
+                        vol_regime, vol_score = self._analyze_volatility_regime(
+                            close_prices, high_prices, low_prices
+                        )
+                        trend_regime, trend_score = self._analyze_trend_regime(
+                            close_prices, high_prices, low_prices
+                        )
+                        corr_regime, corr_score = self._analyze_correlation_regime(
+                            close_prices, inst_market
+                        )
+                        breadth_score = self._calculate_market_breadth(
+                            close_prices, high_prices, low_prices
+                        )
+                        momentum_score = self._calculate_momentum_score(close_prices)
+                        composite_score = self._calculate_composite_sentiment(
+                            vol_score,
+                            trend_score,
+                            corr_score,
+                            breadth_score,
+                            momentum_score,
+                        )
+                        
+                        # Store in cache (before MTF adjustment)
+                        self._set_cached_indicators(inst_norm, prices_list, {
+                            'vol_regime': vol_regime,
+                            'vol_score': vol_score,
+                            'trend_regime': trend_regime,
+                            'trend_score': trend_score,
+                            'corr_regime': corr_regime,
+                            'corr_score': corr_score,
+                            'breadth_score': breadth_score,
+                            'momentum_score': momentum_score,
+                            'composite_score': composite_score,
+                        })
                     
                     # ── MTF confirmation for trend/vol regimes ───────────────
                     # M15-PRIMARY: M15 generates direction, context TFs only modify confidence
@@ -340,18 +382,6 @@ class ThemeExpert(VotingExpertBase):
                             vol_score = vol_score * 0.95  # Slight adjustment for consistency
                         
                         trend_score = float(np.clip(trend_score, -1, 1))
-                    breadth_score = self._calculate_market_breadth(
-                        close_prices, high_prices, low_prices
-                    )
-                    momentum_score = self._calculate_momentum_score(close_prices)
-
-                    composite_score = self._calculate_composite_sentiment(
-                        vol_score,
-                        trend_score,
-                        corr_score,
-                        breadth_score,
-                        momentum_score,
-                    )
 
                     asset_class = self.asset_classes.get(inst_norm, "forex")
                     risk_regime = self._determine_risk_regime(

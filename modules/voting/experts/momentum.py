@@ -1076,53 +1076,97 @@ class MomentumExpert(VotingExpertBase):
             lows = list(state.get("low_history", prices))
             vols = list(state.get("volume_history", [1.0] * len(prices)))
             
-            roc_values = self._calculate_multi_period_roc(prices)
-            weighted_roc = sum(
-                roc_values.get(p, 0.0) * w
-                for p, w in zip(self.roc_periods, self.roc_weights)
-            )
-            
-            rsi_value = self._calculate_rsi(prices, self.rsi_period)
-            macd_line, macd_signal_line, macd_histogram = (
-                self._calculate_macd_for_instrument(prices, state)
-            )
-            stoch_k, stoch_d = self._calculate_stochastic(prices, highs, lows)
-            obv = self._calculate_obv(prices, vols)
-            
-            obv_history = state.setdefault("obv_history", deque(maxlen=50))
-            obv_history.append(obv)
-            obv_momentum = 0.0
-            if len(obv_history) > 5:
-                obv_recent = list(obv_history)[-5:]
-                obv_momentum = (obv_recent[-1] - obv_recent[0]) / (
-                    abs(obv_recent[0]) + 1e-10
+            # ═══════════════════════════════════════════════════════════════
+            # PERFORMANCE CACHE: Skip expensive indicator calculations if data unchanged
+            # ═══════════════════════════════════════════════════════════════
+            cached = self._get_cached_indicators(inst_norm, prices)
+            if cached is not None:
+                # Cache hit - use cached indicator values
+                roc_values = cached.get('roc_values', {})
+                weighted_roc = cached.get('weighted_roc', 0.0)
+                rsi_value = cached.get('rsi_value', 50.0)
+                macd_line = cached.get('macd_line', 0.0)
+                macd_signal_line = cached.get('macd_signal_line', 0.0)
+                macd_histogram = cached.get('macd_histogram', 0.0)
+                stoch_k = cached.get('stoch_k', 50.0)
+                stoch_d = cached.get('stoch_d', 50.0)
+                obv = cached.get('obv', 0.0)
+                obv_momentum = cached.get('obv_momentum', 0.0)
+                volume_confirmation = cached.get('volume_confirmation', 0.5)
+                divergence_signal = cached.get('divergence_signal')
+                bullish_score = cached.get('bullish_score', 0.0)
+                bearish_score = cached.get('bearish_score', 0.0)
+                total_weight = cached.get('total_weight', 1.0)
+            else:
+                # Cache miss - calculate all indicators
+                roc_values = self._calculate_multi_period_roc(prices)
+                weighted_roc = sum(
+                    roc_values.get(p, 0.0) * w
+                    for p, w in zip(self.roc_periods, self.roc_weights)
                 )
+                
+                rsi_value = self._calculate_rsi(prices, self.rsi_period)
+                macd_line, macd_signal_line, macd_histogram = (
+                    self._calculate_macd_for_instrument(prices, state)
+                )
+                stoch_k, stoch_d = self._calculate_stochastic(prices, highs, lows)
+                obv = self._calculate_obv(prices, vols)
+                
+                obv_history = state.setdefault("obv_history", deque(maxlen=50))
+                obv_history.append(obv)
+                obv_momentum = 0.0
+                if len(obv_history) > 5:
+                    obv_recent = list(obv_history)[-5:]
+                    obv_momentum = (obv_recent[-1] - obv_recent[0]) / (
+                        abs(obv_recent[0]) + 1e-10
+                    )
+                
+                volume_confirmation = self._calculate_volume_confirmation(prices, vols)
+                
+                rsi_history = state.setdefault("rsi_history", deque(maxlen=50))
+                rsi_history.append(rsi_value)
+                divergence_signal = self._detect_divergence(
+                    prices[-len(rsi_history) :], list(rsi_history)
+                )
+                
+                bullish_score, bearish_score, total_weight = (
+                    self._calculate_confluence_scores(
+                        weighted_roc,
+                        rsi_value,
+                        macd_line,
+                        macd_signal_line,
+                        macd_histogram,
+                        stoch_k,
+                        obv_momentum,
+                        divergence_signal,
+                        volume_confirmation,
+                    )
+                )
+                
+                # Store in cache
+                self._set_cached_indicators(inst_norm, prices, {
+                    'roc_values': roc_values,
+                    'weighted_roc': weighted_roc,
+                    'rsi_value': rsi_value,
+                    'macd_line': macd_line,
+                    'macd_signal_line': macd_signal_line,
+                    'macd_histogram': macd_histogram,
+                    'stoch_k': stoch_k,
+                    'stoch_d': stoch_d,
+                    'obv': obv,
+                    'obv_momentum': obv_momentum,
+                    'volume_confirmation': volume_confirmation,
+                    'divergence_signal': divergence_signal,
+                    'bullish_score': bullish_score,
+                    'bearish_score': bearish_score,
+                    'total_weight': total_weight,
+                })
             
-            volume_confirmation = self._calculate_volume_confirmation(prices, vols)
-            
-            rsi_history = state.setdefault("rsi_history", deque(maxlen=50))
-            rsi_history.append(rsi_value)
-            divergence_signal = self._detect_divergence(
-                prices[-len(rsi_history) :], list(rsi_history)
-            )
+            # Track divergence counts
             if divergence_signal == "bullish":
                 self.bullish_divergence_count += 1
             elif divergence_signal == "bearish":
                 self.bearish_divergence_count += 1
-            
-            bullish_score, bearish_score, total_weight = (
-                self._calculate_confluence_scores(
-                    weighted_roc,
-                    rsi_value,
-                    macd_line,
-                    macd_signal_line,
-                    macd_histogram,
-                    stoch_k,
-                    obv_momentum,
-                    divergence_signal,
-                    volume_confirmation,
-                )
-            )
             
             bullish_confluence = (
                 bullish_score / total_weight if total_weight > 0 else 0.0

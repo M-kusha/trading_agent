@@ -113,6 +113,12 @@ class VotingExpertBase(VotingModuleBase):
         self._max_consecutive_errors = int(self.config.get('max_consecutive_errors', 5))
         self._circuit_reset_seconds = float(self.config.get('circuit_reset_seconds', 60.0))
         
+        # ════════════════════════════════════════════════════════════════
+        # INDICATOR CACHE: Skip expensive recalculations when data unchanged
+        # ════════════════════════════════════════════════════════════════
+        self._indicator_cache: Dict[str, Dict[str, Any]] = {}  # {instrument: {hash, results, timestamp}}
+        self._cache_ttl_seconds = float(self.config.get('indicator_cache_ttl', 5.0))  # Cache valid for 5s
+        
         # Call subclass-specific initialization
         self._expert_specific_init()
     
@@ -162,6 +168,48 @@ class VotingExpertBase(VotingModuleBase):
     def _record_success(self) -> None:
         """Record a successful operation, reset error count."""
         self._consecutive_errors = 0
+    
+    # ────────────────────────────────────────────────────────────────
+    # Indicator Cache (Performance Optimization)
+    # ────────────────────────────────────────────────────────────────
+    
+    def _compute_price_hash(self, prices: list) -> str:
+        """Compute a fast hash of price data for cache invalidation."""
+        if not prices:
+            return ""
+        # Use last price + length + sum of last 5 prices for fast, unique-enough hash
+        last_5 = prices[-5:] if len(prices) >= 5 else prices
+        return f"{len(prices)}:{prices[-1]:.5f}:{sum(last_5):.5f}"
+    
+    def _get_cached_indicators(self, instrument: str, prices: list) -> Optional[Dict[str, Any]]:
+        """
+        Get cached indicator results if data hasn't changed.
+        
+        Returns None if cache miss or expired, otherwise the cached results dict.
+        """
+        cache_entry = self._indicator_cache.get(instrument)
+        if not cache_entry:
+            return None
+        
+        # Check TTL
+        cached_time = cache_entry.get('timestamp', 0)
+        if time.time() - cached_time > self._cache_ttl_seconds:
+            return None
+        
+        # Check price hash
+        price_hash = self._compute_price_hash(prices)
+        if cache_entry.get('hash') != price_hash:
+            return None
+        
+        return cache_entry.get('results')
+    
+    def _set_cached_indicators(self, instrument: str, prices: list, results: Dict[str, Any]) -> None:
+        """Cache indicator calculation results for an instrument."""
+        self._indicator_cache[instrument] = {
+            'hash': self._compute_price_hash(prices),
+            'results': results,
+            'timestamp': time.time(),
+        }
     
     # ────────────────────────────────────────────────────────────────
     # Market context

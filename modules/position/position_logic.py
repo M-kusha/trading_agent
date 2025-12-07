@@ -362,9 +362,12 @@ class PositionManager(PositionManagerBase):
                 rationale["stage"] = "emergency"
                 rationale["factors"].append("Emergency conditions detected")
 
-                # Reset exit engine peak because position will be force-closed.
+                # Reset BOTH peak trackers when position will be force-closed.
+                # CRITICAL: Both ExitEngine._profit_peaks and PositionManager._profit_tracker
+                # must be reset to prevent stale peaks affecting new positions.
                 try:
                     exit_engine.reset_peak(instrument)
+                    self._profit_tracker.reset(instrument)
                 except Exception:
                     pass
 
@@ -492,9 +495,12 @@ class PositionManager(PositionManagerBase):
                 rationale["exit_details"] = exit_decision.to_dict()
                 close_notional = self._get_position_notional_eur(instrument)
 
-                # Reset exit engine peak tracking for this instrument
+                # Reset BOTH peak trackers when position is closed.
+                # CRITICAL: Both ExitEngine._profit_peaks and PositionManager._profit_tracker
+                # must be reset to prevent stale peaks affecting new positions.
                 try:
                     exit_engine.reset_peak(instrument)
+                    self._profit_tracker.reset(instrument)
                 except Exception:
                     pass
 

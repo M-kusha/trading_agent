@@ -237,6 +237,48 @@ class PPOAgentShell(
         monitor_thread = threading.Thread(target=monitoring_loop, daemon=True)
         monitor_thread.start()
     
+    def _check_trade_outcomes_for_autonomy(self) -> None:
+        """
+        Check for trade outcomes from Executor and update PPO autonomy tracker.
+        
+        This enables adaptive leadership transition based on PPO's actual trading performance.
+        """
+        try:
+            outcome = self.smart_bus.get("trade_outcome_for_autonomy", "PPOAgentShell", default=None)
+            if not outcome or not isinstance(outcome, dict):
+                return
+            
+            # Check if this is a new outcome (avoid double-counting)
+            outcome_ts = outcome.get("timestamp", 0)
+            last_processed = getattr(self, "_last_autonomy_outcome_ts", 0)
+            if outcome_ts <= last_processed:
+                return
+            
+            # Update the arbiter's autonomy tracker
+            self.arbiter.record_trade_outcome(
+                instrument=outcome.get("instrument", "UNKNOWN"),
+                ppo_direction=outcome.get("ppo_direction", "flat"),
+                expert_direction=outcome.get("expert_direction", "flat"),
+                pnl=float(outcome.get("pnl", 0.0)),
+                ppo_confidence=float(outcome.get("ppo_confidence", 0.0)),
+                was_ppo_led=bool(outcome.get("was_ppo_led", False)),
+            )
+            
+            # Mark as processed
+            self._last_autonomy_outcome_ts = outcome_ts
+            
+            # Log the autonomy update
+            state = self.arbiter.get_autonomy_state()
+            self.logger.info(
+                f"PPO Autonomy updated: Phase={state['phase']}, "
+                f"Level={state['autonomy_level']:.2f}, "
+                f"WinRate={state['ppo_win_rate']:.1%}, "
+                f"Trades={state['total_trades_evaluated']}"
+            )
+            
+        except Exception as e:  # noqa: BLE001
+            self.logger.debug(f"Failed to process trade outcome for autonomy: {e}")
+    
     # ─────────────────────────────────────────────────────────────
     # Main Process Method
     # ─────────────────────────────────────────────────────────────
@@ -255,6 +297,9 @@ class PPOAgentShell(
         start_time = time.time()
         
         try:
+            # 0) Check for trade outcomes and update autonomy tracker
+            self._check_trade_outcomes_for_autonomy()
+            
             # 1) Gather all signals from bus
             committee_data = self._gather_committee_consensus()
             expert_signals = self._gather_expert_signals()
@@ -659,6 +704,9 @@ class PPOAgentShell(
                 # Multi-instrument data
                 "ppo_multi_decision": multi_decision.to_dict(),
                 "ppo_instrument_stats": self.arbiter.get_instrument_stats(),
+                
+                # PPO Autonomy state (ADAPTIVE LEADERSHIP)
+                "ppo_autonomy_state": self.arbiter.get_autonomy_state(),
 
                 # Agent performance diagnostics
                 "agent_performance": agent_perf,
@@ -686,6 +734,7 @@ class PPOAgentShell(
                 "ppo_position_size": 0.0,
                 "ppo_multi_decision": multi_decision.to_dict(),
                 "ppo_instrument_stats": self.arbiter.get_instrument_stats(),
+                "ppo_autonomy_state": self.arbiter.get_autonomy_state(),
                 "agent_performance": agent_perf,
                 "PPOAgent_voting_proposal": {},
                 "PPOAgent_confidence": 0.0,
@@ -767,6 +816,15 @@ class PPOAgentShell(
                 self.arbiter.get_instrument_stats(),
                 module="PPOAgent",
                 thesis="Per-instrument statistics",
+            )
+            
+            # PPO Autonomy state (ADAPTIVE LEADERSHIP)
+            autonomy_state = self.arbiter.get_autonomy_state()
+            self.smart_bus.set(
+                "ppo_autonomy_state",
+                autonomy_state,
+                module="PPOAgent",
+                thesis=f"Autonomy: {autonomy_state['phase']} (level={autonomy_state['autonomy_level']:.2f}, WR={autonomy_state['ppo_win_rate']:.0%})",
             )
             
             # Legacy voting
@@ -922,6 +980,36 @@ class PPOAgentShell(
         if self._last_multi_decision is not None:
             fallback_multi = self._last_multi_decision.to_dict()
         
+        # Contract-required training outputs (empty/safe fallbacks)
+        policy_actions: Dict[str, Any] = {
+            "action": [0.0],  # hold
+            "log_prob": 0.0,
+            "value_estimate": 0.0,
+            "action_std": [1.0],
+            "exploration_level": 0.0,
+        }
+        policy_gradients: Dict[str, Any] = {
+            "gradient_norm": 0.0,
+            "policy_loss": 0.0,
+            "value_loss": 0.0,
+        }
+        training_data: Dict[str, Any] = {
+            "total_steps": 0,
+            "episodes": 0,
+            "mode": "error_fallback",
+        }
+        training_metrics: Dict[str, Any] = {
+            "avg_reward": 0.0,
+            "avg_episode_length": 0,
+            "explained_variance": 0.0,
+        }
+        training_signals: Dict[str, Any] = {
+            "gradient_norm": 0.0,
+            "explained_variance": 0.0,
+            "policy_loss": 0.0,
+            "value_loss": 0.0,
+        }
+        
         return {
             "ppo_final_decision": {
                 "direction": "hold",
@@ -934,6 +1022,7 @@ class PPOAgentShell(
             "_thesis": f"Error in PPOAgentShell: {error}",
             "ppo_multi_decision": fallback_multi,
             "ppo_instrument_stats": self.arbiter.get_instrument_stats(),
+            "ppo_autonomy_state": self.arbiter.get_autonomy_state(),
             "agent_performance": {
                 "decisions_made": self._performance_metrics["total_decisions"],
                 "avg_processing_time_ms": self._performance_metrics["avg_processing_time_ms"],
@@ -942,6 +1031,13 @@ class PPOAgentShell(
             },
             "PPOAgent_voting_proposal": {},
             "PPOAgent_confidence": 0.0,
+            # Contract-required training outputs
+            "policy_actions": policy_actions,
+            "policy_gradients": policy_gradients,
+            "rewards": [],
+            "training_data": training_data,
+            "training_metrics": training_metrics,
+            "training_signals": training_signals,
         }
     
     # ─────────────────────────────────────────────────────────────

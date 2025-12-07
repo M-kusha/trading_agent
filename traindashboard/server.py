@@ -241,15 +241,43 @@ def get_dashboard_data() -> Dict[str, Any]:
     pnl_pct = ((balance / initial_balance) - 1) * 100 if initial_balance > 0 else 0
     drawdown = safe_float(get("current_drawdown", get("env_drawdown", 0)))
     
+    # CRITICAL FIX: Use closed_positions for accurate trade count and win rate
+    # The 'trades' key contains ALL fills (opens + closes), which double-counts
+    # 'closed_positions' contains only COMPLETED round-trip trades
+    closed_positions = get("closed_positions", [])
     trades = get("trades", get("trade_data", []))
-    if isinstance(trades, list):
-        total_trades = len(trades)
-        wins = sum(1 for t in trades if isinstance(t, dict) and safe_float(t.get('pnl', t.get('profit', 0))) > 0)
-        losses = sum(1 for t in trades if isinstance(t, dict) and safe_float(t.get('pnl', t.get('profit', 0))) < 0)
+    
+    # Prefer closed_positions if available (accurate count)
+    if isinstance(closed_positions, list) and len(closed_positions) > 0:
+        total_trades = len(closed_positions)
+        wins = sum(1 for t in closed_positions if isinstance(t, dict) and safe_float(t.get('pnl', t.get('profit', 0))) > 0)
+        losses = sum(1 for t in closed_positions if isinstance(t, dict) and safe_float(t.get('pnl', t.get('profit', 0))) < 0)
+    elif isinstance(trades, list):
+        # Fallback: filter trades to only include closes (where pnl != 0 or action contains 'close')
+        actual_trades = [
+            t for t in trades 
+            if isinstance(t, dict) and (
+                safe_float(t.get('pnl', t.get('realized_pnl', t.get('profit', 0)))) != 0 or
+                'close' in str(t.get('action', '')).lower() or
+                'reduce' in str(t.get('action', '')).lower()
+            )
+        ]
+        total_trades = len(actual_trades)
+        wins = sum(1 for t in actual_trades if safe_float(t.get('pnl', t.get('realized_pnl', t.get('profit', 0)))) > 0)
+        losses = sum(1 for t in actual_trades if safe_float(t.get('pnl', t.get('realized_pnl', t.get('profit', 0)))) < 0)
     elif isinstance(trades, dict):
-        total_trades = len(trades)
-        wins = sum(1 for t in trades.values() if isinstance(t, dict) and safe_float(t.get('pnl', t.get('profit', 0))) > 0)
-        losses = sum(1 for t in trades.values() if isinstance(t, dict) and safe_float(t.get('pnl', t.get('profit', 0))) < 0)
+        # Fallback for dict format - filter to closes only
+        actual_trades = [
+            t for t in trades.values() 
+            if isinstance(t, dict) and (
+                safe_float(t.get('pnl', t.get('realized_pnl', t.get('profit', 0)))) != 0 or
+                'close' in str(t.get('action', '')).lower() or
+                'reduce' in str(t.get('action', '')).lower()
+            )
+        ]
+        total_trades = len(actual_trades)
+        wins = sum(1 for t in actual_trades if safe_float(t.get('pnl', t.get('realized_pnl', t.get('profit', 0)))) > 0)
+        losses = sum(1 for t in actual_trades if safe_float(t.get('pnl', t.get('realized_pnl', t.get('profit', 0)))) < 0)
     else:
         total_trades = int(safe_float(get("total_trades", 0)))
         wins = 0
@@ -435,37 +463,75 @@ def get_dashboard_data() -> Dict[str, Any]:
     }
     
     # ═══════════════════════════════════════════════════════════════
-    # RECENT TRADES (fills from Executor)
+    # RECENT TRADES (CLOSED positions from Executor - not all fills)
     # ═══════════════════════════════════════════════════════════════
+    # CRITICAL FIX: Use closed_positions for trade history, not recent_trades
+    # recent_trades contains ALL fills (opens + closes), which is confusing
+    # closed_positions contains only completed round-trip trades with actual P&L
+    closed_positions_raw = get("closed_positions", [])
     recent_trades_raw = get("recent_trades", [])
+    
     recent_trades = []
-    if isinstance(recent_trades_raw, list):
-        for t in recent_trades_raw[-10:]:
+    
+    # Prefer closed_positions (accurate trade history)
+    if isinstance(closed_positions_raw, list) and len(closed_positions_raw) > 0:
+        for t in closed_positions_raw[-10:]:
             if isinstance(t, dict):
-                # Handle direction: prefer string, convert int side to string
-                direction = t.get('direction', t.get('type', ''))
-                if not direction or direction == 'unknown':
-                    side = t.get('side', 0)
-                    if isinstance(side, (int, float)):
-                        direction = 'BUY' if side > 0 else 'SELL' if side < 0 else 'HOLD'
-                    else:
-                        direction = str(side) if side else 'unknown'
-                
-                # Get price (fills have 'price', not entry/exit)
-                price = safe_float(t.get('price', t.get('entry_price', t.get('exit_price', 0))))
+                # Handle direction from side
+                side = t.get('side', 0)
+                if isinstance(side, (int, float)):
+                    direction = 'BUY' if side > 0 else 'SELL' if side < 0 else 'HOLD'
+                else:
+                    direction = str(side) if side else 'unknown'
                 
                 recent_trades.append({
                     "symbol": t.get('symbol', t.get('instrument', 'unknown')),
                     "direction": direction,
-                    "pnl": safe_float(t.get('pnl', t.get('realized_pnl', t.get('profit', 0)))),
-                    "price": price,
-                    "entry_price": price,  # For compatibility
-                    "exit_price": price,   # For compatibility  
-                    "action": t.get('action', t.get('comment', '')),
-                    "step": t.get('step', 0),
-                    "timestamp": t.get('timestamp', t.get('ts', t.get('close_time', ''))),
-                    "lots": safe_float(t.get('lots', t.get('volume', 0))),
+                    "pnl": safe_float(t.get('pnl', t.get('profit', 0))),
+                    "price": safe_float(t.get('close_price', t.get('exit_price', 0))),
+                    "entry_price": safe_float(t.get('entry_price', 0)),
+                    "exit_price": safe_float(t.get('close_price', t.get('exit_price', 0))),
+                    "action": t.get('close_reason', 'close'),
+                    "step": t.get('close_step', t.get('step', 0)),
+                    "timestamp": t.get('close_time', t.get('timestamp', '')),
+                    "lots": safe_float(t.get('lots', t.get('units', 0))),
                 })
+    elif isinstance(recent_trades_raw, list):
+        # Fallback: filter recent_trades to only show closes (pnl != 0)
+        for t in recent_trades_raw[-20:]:  # Check more to find actual closes
+            if isinstance(t, dict):
+                pnl_val = safe_float(t.get('pnl', t.get('realized_pnl', t.get('profit', 0))))
+                action = str(t.get('action', t.get('comment', ''))).lower()
+                
+                # Only include actual closes (has realized P&L or action indicates close)
+                if pnl_val != 0 or 'close' in action or 'reduce' in action:
+                    # Handle direction: prefer string, convert int side to string
+                    direction = t.get('direction', t.get('type', ''))
+                    if not direction or direction == 'unknown':
+                        side = t.get('side', 0)
+                        if isinstance(side, (int, float)):
+                            direction = 'BUY' if side > 0 else 'SELL' if side < 0 else 'HOLD'
+                        else:
+                            direction = str(side) if side else 'unknown'
+                    
+                    # Get price (fills have 'price', not entry/exit)
+                    price = safe_float(t.get('price', t.get('entry_price', t.get('exit_price', 0))))
+                    
+                    recent_trades.append({
+                        "symbol": t.get('symbol', t.get('instrument', 'unknown')),
+                        "direction": direction,
+                        "pnl": pnl_val,
+                        "price": price,
+                        "entry_price": price,  # For compatibility
+                        "exit_price": price,   # For compatibility  
+                        "action": t.get('action', t.get('comment', '')),
+                        "step": t.get('step', 0),
+                        "timestamp": t.get('timestamp', t.get('ts', t.get('close_time', ''))),
+                        "lots": safe_float(t.get('lots', t.get('volume', 0))),
+                    })
+                    
+                    if len(recent_trades) >= 10:
+                        break
     
     # ═══════════════════════════════════════════════════════════════
     # VOTING & CONSENSUS

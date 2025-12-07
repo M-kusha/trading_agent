@@ -391,7 +391,7 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
         
         # Step-based throttling for performance (skip expensive components most steps)
         self._step_count = 0
-        self._throttle_interval = 5  # Run expensive components every 5 steps
+        self._throttle_interval = 10  # Run expensive components every 10 steps (was 5)
         self._cached_component_results: Dict[str, Dict[str, Any]] = {}
         self._cached_unified_result: Optional[Dict[str, Any]] = None
 
@@ -707,7 +707,13 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
         self._cache_stats["misses"] += 1
 
         # Get trades from multiple sources for robustness
-        trades = self.smart_bus.get("trades", "UnifiedMemory") or []
+        # CRITICAL FIX: Prefer closed_positions for accurate trade history
+        # trades/recent_trades contains ALL fills (opens + closes), which double-counts
+        trades = self.smart_bus.get("closed_positions", "UnifiedMemory") or []
+        
+        # Fallback to trades/current_fills if closed_positions not available
+        if not trades:
+            trades = self.smart_bus.get("trades", "UnifiedMemory") or []
 
         # Also try current_fills and recent_trades as fallbacks
         if not trades:

@@ -1405,28 +1405,35 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             self.logger.warning(f"Prediction performance tracking failed: {e}")
 
     async def _should_trigger_training_async(self) -> bool:
-        """Determine if model training should be triggered"""
+        """Determine if model training should be triggered
+        
+        PERFORMANCE FIX: Reduced training frequency to prevent blocking pipeline
+        - Was: every 200 samples (too frequent, causing 3-16 second delays)
+        - Now: every 1000 samples or when quality drops significantly
+        """
         try:
             # Check if we have enough data
             if len(self.market_history) < self.wm_config.min_training_samples:
                 return False
             
-            # Check if model needs retraining
+            # Check if model needs initial training
             if not self.is_trained:
                 return True
             
-            # Check prediction quality
-            if self.prediction_quality < self.wm_config.min_prediction_quality:
+            # Check prediction quality - only retrain if quality is VERY low
+            if self.prediction_quality < self.wm_config.min_prediction_quality * 0.7:  # 30% below threshold
                 return True
             
-            # Check if enough time has passed since last training
+            # Check if enough time has passed since last training (reduced from 1 hour to 30 min)
             if self.last_training_time:
                 time_since_training = datetime.datetime.now() - self.last_training_time
-                if time_since_training.total_seconds() > 3600:  # 1 hour
+                # Only train if quality is also below threshold
+                if time_since_training.total_seconds() > 1800 and self.prediction_quality < self.wm_config.min_prediction_quality:
                     return True
             
-            # Check if enough new data has been collected
-            if len(self.market_history) % 200 == 0:  # Every 200 new samples
+            # PERFORMANCE FIX: Increased from 200 to 1000 to reduce training frequency
+            # This prevents the 3-16 second training delays every 200 steps
+            if len(self.market_history) % 1000 == 0:
                 return True
             
             return False
@@ -1475,11 +1482,12 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
                 pin_memory=True if self.device.type == 'cuda' else False
             )
             
-            # Training parameters
-            epochs = min(20, max(5, len(train_X) // 50))
+            # Training parameters - PERFORMANCE FIX: Reduced max epochs from 20 to 5
+            # This reduces training time from 3-16 seconds to ~1-3 seconds
+            epochs = min(5, max(3, len(train_X) // 100))  # 3-5 epochs max
             best_val_loss = float('inf')
             patience_counter = 0
-            patience = 5
+            patience = 2  # Reduced patience for faster early stopping
             
             self.train()
             training_losses: List[float] = []

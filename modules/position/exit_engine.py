@@ -285,7 +285,22 @@ class ExitStrategyEngine:
         # Update peak tracking first
         self._update_peak(ctx)
         peak_key = self._peak_key(ctx)
-        ctx_peak = max(ctx.peak_pnl, self._profit_peaks.get(peak_key, ctx.unrealized_pnl))
+        
+        # Get tracked peak, but validate it's not stale from a previous position
+        # A peak is likely stale if: position just opened (low age), current PnL near zero,
+        # but tracked peak is large. This happens when peak wasn't reset on position close.
+        tracked_peak = self._profit_peaks.get(peak_key, ctx.unrealized_pnl)
+        
+        # Sanity check: if position is very new (< 5 minutes) and current PnL is near zero
+        # but tracked peak is significantly positive, the peak is stale - reset it
+        if (ctx.age_seconds < 300 and  # Less than 5 minutes old
+            abs(ctx.unrealized_pnl) < 50.0 and  # Current PnL near zero (within €50)
+            tracked_peak > 100.0):  # But tracked peak is substantial (> €100)
+            # Stale peak detected - reset and use current PnL
+            self._profit_peaks[peak_key] = ctx.unrealized_pnl
+            tracked_peak = ctx.unrealized_pnl
+        
+        ctx_peak = max(ctx.peak_pnl, tracked_peak)
 
         # Get regime-adjusted thresholds
         cfg = self._regime_adjusted_config(ctx)
@@ -377,7 +392,16 @@ class ExitStrategyEngine:
         """
         self._update_peak(ctx)
         peak_key = self._peak_key(ctx)
-        ctx_peak = max(ctx.peak_pnl, self._profit_peaks.get(peak_key, ctx.unrealized_pnl))
+        
+        # Same stale peak detection as in evaluate()
+        tracked_peak = self._profit_peaks.get(peak_key, ctx.unrealized_pnl)
+        if (ctx.age_seconds < 300 and
+            abs(ctx.unrealized_pnl) < 50.0 and
+            tracked_peak > 100.0):
+            self._profit_peaks[peak_key] = ctx.unrealized_pnl
+            tracked_peak = ctx.unrealized_pnl
+        
+        ctx_peak = max(ctx.peak_pnl, tracked_peak)
         cfg = self._regime_adjusted_config(ctx)
 
         results: Dict[str, ExitDecision] = {}
