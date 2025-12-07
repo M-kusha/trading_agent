@@ -465,19 +465,19 @@ modules:
     - risk_analytics
     - risk_factors
     - risk_scaling
+    - risk_level
+    - risk_scale
+    - risk_assessment
     - DynamicRiskController_voting_proposal
     - DynamicRiskController_confidence
+    # FIX v4.3.0: Reduced requires to break circular deps
     requires:
-    - anomaly_detection
-    - compliance
-    - execution_quality
     - market_context
     - market_data
     - market_regime
-    - performance_data
-    - portfolio_risk
     - position_data
-    - risk_data
+    - memory_gate
+    - danger_zones
   EnhancedAnomalyDetector:
     category: risk
     file_path: modules\risk\anomaly_detector.py
@@ -513,12 +513,10 @@ modules:
     - quality_metrics
     - ExecutionQualityMonitor_voting_proposal
     - ExecutionQualityMonitor_confidence
+    # FIX v4.1.0: Reduced requires to break circular deps with Executor
     requires:
-    - execution_data
     - market_context
     - market_data
-    - order_data
-    - trade_data
   ExplanationGenerator:
     category: strategy
     file_path: modules\strategy\explanation_generator.py
@@ -543,23 +541,27 @@ modules:
     - risk_data
     - session_metrics
     - system_alerts
-  MetaAgent:
-    category: meta
-    file_path: modules\meta\meta_agent.py
-    module_path: modules.meta.meta_agent
-    provides:
-    - automation_decisions
-    - automation_metrics
-    - meta_performance
-    - system_mode
-    - MetaAgent_voting_proposal
-    - MetaAgent_confidence
-    requires:
-    - market_context
-    - risk_signals
-    - system_performance
-    - time_risk_analysis
-    - training_metrics
+
+  # ═══════════════════════════ LEGACY META MODULES ═══════════════════════════
+  # DEPRECATED - Moved to modules/meta/legacy/, code commented out
+  # MetaAgent:
+  #   category: meta
+  #   file_path: modules\meta\legacy\meta_agent.py
+  #   module_path: modules.meta.legacy.meta_agent
+  #   deprecated: true
+  #   provides:
+  #   - automation_decisions
+  #   - automation_metrics
+  #   - meta_performance
+  #   - system_mode
+  #   - MetaAgent_voting_proposal
+  #   - MetaAgent_confidence
+  #   requires:
+  #   - market_context
+  #   - risk_signals
+  #   - system_performance
+  #   - time_risk_analysis
+  #   - training_metrics
 
   # DISABLED - Zero consumers
   # MetaCognitivePlanner:
@@ -581,24 +583,27 @@ modules:
   #   - trades
   #   - volatility_adjustment
 
-  MetaRLController:
-    category: meta
-    file_path: modules\meta\metar_rl_controller.py
-    module_path: modules.meta.metar_rl_controller
-    provides:
-    - agent_decisions
-    - agents_performance
-    - automation_status
-    - controller_status
-    - controller_training_overview
-    - meta_signals
-    - trading_signal
-    - trading_signals
-    requires:
-    - actions
-    - market_data
-    - trades
-    - training_signals
+  # DEPRECATED - Moved to modules/meta/legacy/, code commented out
+  # MetaRLController:
+  #   category: meta
+  #   file_path: modules\meta\legacy\meta_rl_controller.py
+  #   module_path: modules.meta.legacy.meta_rl_controller
+  #   deprecated: true
+  #   provides:
+  #   - agent_decisions
+  #   - agents_performance
+  #   - automation_status
+  #   - controller_status
+  #   - controller_training_overview
+  #   - meta_signals
+  #   - trading_signal
+  #   - trading_signals
+  #   requires:
+  #   - actions
+  #   - market_data
+  #   - trades
+  #   - training_signals
+
   MultiScaleFeatureEngine:
     category: features
     file_path: modules\features\multiscale_feature_engine.py
@@ -714,24 +719,52 @@ modules:
     - danger_zones
     - mistake_avoidance
     - position_limits  # FIX: Ensures PortfolioRiskSystem runs first for dynamic limits
+
+  # ═══════════════════════════ PPO AGENT v3.0 ═══════════════════════════
+  # New 3-layer architecture: PPOAgentShell -> ArbiterLogic -> PPOCore
   PPOAgent:
     category: meta
-    file_path: modules\meta\ppo_agent.py
-    module_path: modules.meta.ppo_agent
+    file_path: modules\meta\ppo_agent_shell.py
+    module_path: modules.meta.ppo_agent_shell
     provides:
-    - actions
     - agent_performance
-    - observations
+    # Training-related outputs (populated during training, defaults in inference)
     - policy_actions
     - policy_gradients
     - rewards
     - training_data
     - training_metrics
     - training_signals
+    # Final decision outputs (consumed by Executor)
+    - ppo_final_decision
+    - ppo_gate_passed
+    - ppo_position_size
+    # Multi-instrument outputs (v3.0)
+    - ppo_multi_decision
+    - ppo_instrument_stats
+    # Legacy voting outputs
     - PPOAgent_voting_proposal
     - PPOAgent_confidence
+    # FIX v5.1.0: Minimal requires - other inputs consumed via bus.get() with defaults
     requires:
     - market_data
+    - market_regime
+    # Committee consensus
+    - committee_decision
+    - committee_confidence
+    - consensus_score
+    # Risk/memory signals
+    - fragility
+    - memory_gate
+    - danger_zones
+
+  # DEPRECATED - Legacy PPOAgent (moved to modules/meta/legacy/, code commented out)
+  # PPOAgentLegacy:
+  #   category: meta
+  #   file_path: modules\meta\legacy\ppo_agent.py
+  #   module_path: modules.meta.legacy.ppo_agent
+  #   deprecated: true
+
   RiskAdjustedReward:
     category: reward
     file_path: modules\reward\risk_adjusted_reward.py
@@ -1020,14 +1053,12 @@ modules:
     - memory_rationale
     - neural_risk_hint
     requires:
-    - actions
+    # FIX: Removed training-only requirements (actions, observations, rewards)
     - episode_data
     - features
     - market_context
     - market_data
-    - observations
     - prices
-    - rewards
     - time_risk_analysis
     - trades
   # VotingKernel - DEPRECATED, replaced by SlimVotingKernel (see v5.0.0 voting modules)

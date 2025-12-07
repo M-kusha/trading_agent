@@ -40,6 +40,17 @@ class CompressionComponent(MemoryComponent):
         # Memory buffers (store tuples (features: np.ndarray, weight: float))
         self.profit_memory: List[tuple[np.ndarray, float]] = []
         self.loss_memory: List[tuple[np.ndarray, float]] = []
+        
+        # NEW: Per-instrument memory buffers
+        # Maps instrument -> {profit: [(features, weight)], loss: [(features, weight)]}
+        self.memory_by_instrument: Dict[str, Dict[str, List[tuple[np.ndarray, float]]]] = {}
+        
+        # NEW: Per-instrument PCA models and directions
+        # Maps instrument -> {profit_pca, loss_pca, profit_direction, loss_direction, intuition_vector, ...}
+        self.compression_by_instrument: Dict[str, Dict[str, Any]] = {}
+        
+        # Track which instruments have sufficient data for compression
+        self.instruments_with_data: set = set()
 
         # Compressed representations (always length n_components; padded as needed)
         self.intuition_vector: np.ndarray = np.zeros(self.n_components, dtype=np.float32)
@@ -101,7 +112,7 @@ class CompressionComponent(MemoryComponent):
     # -------------------------------------------------------------------------
 
     def _update_memory_buffers(self, memory_data: List[Dict[str, Any]], trades: List[Dict[str, Any]]) -> None:
-        """Update profit and loss buffers from store data and recent trades."""
+        """Update profit and loss buffers from store data and recent trades (global + per-instrument)."""
         # From memory_data (already structured experiences)
         for entry in memory_data:
             pnl = entry.get("pnl")
@@ -111,10 +122,16 @@ class CompressionComponent(MemoryComponent):
             features = self._to_feature_vector(feats)
             if features is None:
                 continue
+            
+            # Extract instrument
+            instrument = self._extract_instrument(entry)
+            
             if pnl > self.replay_profit_threshold:
                 self.profit_memory.append((features, float(pnl)))
+                self._add_to_instrument_buffer(instrument, "profit", features, float(pnl))
             elif pnl < -self.replay_profit_threshold / 2.0:
                 self.loss_memory.append((features, float(abs(pnl))))
+                self._add_to_instrument_buffer(instrument, "loss", features, float(abs(pnl)))
 
         # From latest trades (derive features via extractor)
         for trade in trades[-10:]:
@@ -125,17 +142,26 @@ class CompressionComponent(MemoryComponent):
             features = self._to_feature_vector(derived)
             if features is None:
                 continue
+            
+            # Extract instrument from trade
+            instrument = self._extract_instrument(trade)
+            
             if pnl > self.replay_profit_threshold:
                 self.profit_memory.append((features, pnl))
+                self._add_to_instrument_buffer(instrument, "profit", features, pnl)
             elif pnl < -self.replay_profit_threshold / 2.0:
                 self.loss_memory.append((features, float(abs(pnl))))
+                self._add_to_instrument_buffer(instrument, "loss", features, float(abs(pnl)))
 
-        # Bound memory sizes
+        # Bound global memory sizes
         max_size = int(self.max_memory_size * self._BUFFER_FRACTION)
         if len(self.profit_memory) > max_size:
             self.profit_memory = self.profit_memory[-max_size:]
         if len(self.loss_memory) > max_size:
             self.loss_memory = self.loss_memory[-max_size:]
+        
+        # Bound per-instrument buffers
+        self._bound_instrument_buffers(max_size // 2)  # Half of global per instrument
 
         self._log_debug(
             "buffers_updated",
@@ -143,8 +169,48 @@ class CompressionComponent(MemoryComponent):
                 "profit_len": len(self.profit_memory),
                 "loss_len": len(self.loss_memory),
                 "max_size": max_size,
+                "instruments_tracked": list(self.instruments_with_data),
             },
         )
+    
+    def _extract_instrument(self, entry: Dict[str, Any]) -> str:
+        """Extract instrument from entry."""
+        instrument = (
+            entry.get("instrument") or
+            entry.get("symbol") or
+            entry.get("metadata", {}).get("instrument") or
+            entry.get("context", {}).get("instrument") or
+            "UNKNOWN"
+        )
+        return str(instrument).upper().replace("/", "").replace("_", "")
+    
+    def _add_to_instrument_buffer(
+        self, instrument: str, stream: str, features: np.ndarray, weight: float
+    ) -> None:
+        """
+        Add to per-instrument buffer.
+        
+        This ensures XAUUSD and EURUSD have separate PCA compression,
+        learning distinct profit/loss patterns for each instrument.
+        """
+        if instrument not in self.memory_by_instrument:
+            self.memory_by_instrument[instrument] = {"profit": [], "loss": []}
+        
+        self.memory_by_instrument[instrument][stream].append((features, weight))
+        
+        # Track instruments with enough data for compression
+        inst_data = self.memory_by_instrument[instrument]
+        total = len(inst_data["profit"]) + len(inst_data["loss"])
+        if total >= self._MIN_PCA_SAMPLES * 2:
+            self.instruments_with_data.add(instrument)
+    
+    def _bound_instrument_buffers(self, max_per_instrument: int) -> None:
+        """Bound per-instrument buffers to prevent memory bloat."""
+        for instrument, data in self.memory_by_instrument.items():
+            if len(data["profit"]) > max_per_instrument:
+                data["profit"] = data["profit"][-max_per_instrument:]
+            if len(data["loss"]) > max_per_instrument:
+                data["loss"] = data["loss"][-max_per_instrument:]
 
     def _first_linear_in_features(self, model) -> Optional[int]:
         """Find the first module that exposes `in_features` (typically nn.Linear)."""
@@ -268,17 +334,199 @@ class CompressionComponent(MemoryComponent):
         return len(self.profit_memory) >= max(self._MIN_PCA_SAMPLES, self.n_components)
 
     def _perform_compression(self) -> Dict[str, Any]:
-        """Run PCA compression for profit and loss memories (if available)."""
+        """Run PCA compression for profit and loss memories (global + per-instrument)."""
         results: Dict[str, Any] = {"compression_performed": True}
 
+        # Global compression (backward compatibility)
         if len(self.profit_memory) >= self._MIN_PCA_SAMPLES:
             results.update(self._compress_stream(self.profit_memory, stream="profit"))
 
         if len(self.loss_memory) >= self._MIN_PCA_SAMPLES:
             results.update(self._compress_stream(self.loss_memory, stream="loss"))
+        
+        # Per-instrument compression
+        per_instrument_results: Dict[str, Dict[str, Any]] = {}
+        for instrument in self.instruments_with_data:
+            inst_result = self._compress_instrument(instrument)
+            if inst_result:
+                per_instrument_results[instrument] = inst_result
+        
+        results["per_instrument_compression"] = per_instrument_results
 
         self.compression_count += 1
         return results
+    
+    def _compress_instrument(self, instrument: str) -> Optional[Dict[str, Any]]:
+        """
+        Run PCA compression for a specific instrument.
+        
+        This creates instrument-specific intuition vectors, allowing the system
+        to learn distinct patterns for XAUUSD vs EURUSD.
+        """
+        if instrument not in self.memory_by_instrument:
+            return None
+        
+        inst_data = self.memory_by_instrument[instrument]
+        profit_mem = inst_data["profit"]
+        loss_mem = inst_data["loss"]
+        
+        if len(profit_mem) < self._MIN_PCA_SAMPLES and len(loss_mem) < self._MIN_PCA_SAMPLES:
+            return None
+        
+        # Initialize compression state for this instrument if needed
+        if instrument not in self.compression_by_instrument:
+            self.compression_by_instrument[instrument] = {
+                "profit_scaler": StandardScaler(),
+                "loss_scaler": StandardScaler(),
+                "profit_scaler_fitted": False,
+                "loss_scaler_fitted": False,
+                "profit_pca": None,
+                "loss_pca": None,
+                "profit_pca_fitted": False,
+                "loss_pca_fitted": False,
+                "profit_direction": np.zeros(self.n_components, dtype=np.float32),
+                "loss_direction": np.zeros(self.n_components, dtype=np.float32),
+                "intuition_vector": np.zeros(self.n_components, dtype=np.float32),
+            }
+        
+        comp = self.compression_by_instrument[instrument]
+        result: Dict[str, Any] = {"instrument": instrument}
+        
+        try:
+            # Compress profit stream for this instrument
+            if len(profit_mem) >= self._MIN_PCA_SAMPLES:
+                profit_result = self._compress_stream_with_state(
+                    profit_mem, 
+                    comp["profit_scaler"], 
+                    comp["profit_scaler_fitted"],
+                    "profit"
+                )
+                if "direction" in profit_result:
+                    comp["profit_direction"] = profit_result["direction"]
+                    comp["profit_pca"] = profit_result.get("pca")
+                    comp["profit_pca_fitted"] = True
+                    comp["profit_scaler_fitted"] = True
+                    result["profit"] = {
+                        "samples": profit_result["samples"],
+                        "explained_variance": profit_result["explained_variance"],
+                        "strength": float(np.linalg.norm(comp["profit_direction"])),
+                    }
+            
+            # Compress loss stream for this instrument
+            if len(loss_mem) >= self._MIN_PCA_SAMPLES:
+                loss_result = self._compress_stream_with_state(
+                    loss_mem,
+                    comp["loss_scaler"],
+                    comp["loss_scaler_fitted"],
+                    "loss"
+                )
+                if "direction" in loss_result:
+                    comp["loss_direction"] = loss_result["direction"]
+                    comp["loss_pca"] = loss_result.get("pca")
+                    comp["loss_pca_fitted"] = True
+                    comp["loss_scaler_fitted"] = True
+                    result["loss"] = {
+                        "samples": loss_result["samples"],
+                        "explained_variance": loss_result["explained_variance"],
+                        "strength": float(np.linalg.norm(comp["loss_direction"])),
+                    }
+            
+            # Update intuition vector for this instrument
+            self._update_instrument_intuition(instrument)
+            result["intuition_strength"] = float(np.linalg.norm(comp["intuition_vector"]))
+            
+            return result
+            
+        except Exception as e:
+            self.log_error(f"Instrument compression failed for {instrument}", e)
+            return None
+    
+    def _compress_stream_with_state(
+        self, 
+        mem: List[tuple[np.ndarray, float]], 
+        scaler: StandardScaler,
+        scaler_fitted: bool,
+        stream: str
+    ) -> Dict[str, Any]:
+        """
+        Compress a memory stream with provided scaler state.
+        Returns direction, PCA model, and stats.
+        """
+        try:
+            feats = np.stack([m[0] for m in mem], axis=0)
+            weights_raw = np.asarray([m[1] for m in mem], dtype=np.float32)
+            
+            w_sum = float(weights_raw.sum())
+            if w_sum <= 0.0 or not np.isfinite(w_sum):
+                weights = np.ones_like(weights_raw, dtype=np.float32)
+            else:
+                weights = weights_raw / w_sum
+            
+            weighted = feats * weights[:, None]
+            
+            if not scaler_fitted:
+                standardized = scaler.fit_transform(weighted)
+            else:
+                standardized = scaler.transform(weighted)
+            
+            n_samples, n_features = standardized.shape
+            n_eff = max(1, min(self.n_components, n_samples, n_features))
+            
+            pca = PCA(n_components=n_eff, svd_solver="auto", random_state=0)
+            pca.fit(standardized)
+            compressed = pca.transform(standardized)
+            
+            direction_eff = np.average(compressed, axis=0, weights=weights).astype(np.float32)
+            direction_full = self._pad_or_trim(direction_eff, self.n_components)
+            
+            explained = float(np.sum(pca.explained_variance_ratio_))
+            
+            return {
+                "direction": direction_full,
+                "pca": pca,
+                "samples": n_samples,
+                "explained_variance": explained,
+            }
+            
+        except Exception as e:
+            self.log_error(f"{stream.capitalize()} compression with state failed", e)
+            return {}
+    
+    def _update_instrument_intuition(self, instrument: str) -> None:
+        """Update intuition vector for a specific instrument."""
+        if instrument not in self.compression_by_instrument:
+            return
+        
+        comp = self.compression_by_instrument[instrument]
+        profit_dir = comp["profit_direction"]
+        loss_dir = comp["loss_direction"]
+        
+        profit_strength = float(np.linalg.norm(profit_dir))
+        loss_strength = float(np.linalg.norm(loss_dir))
+        
+        if profit_strength > 0.0 and loss_strength > 0.0:
+            profit_component = profit_dir * 2.0
+            loss_component = -loss_dir * 1.5
+            combined = profit_component + loss_component
+            
+            learning_rate = 0.10
+            current = comp["intuition_vector"]
+            vec = (1.0 - learning_rate) * current + learning_rate * combined
+            norm = float(np.linalg.norm(vec))
+            comp["intuition_vector"] = (vec / norm).astype(np.float32) if norm > 1e-8 else vec.astype(np.float32)
+        elif profit_strength > 0.0:
+            comp["intuition_vector"] = profit_dir.astype(np.float32, copy=True)
+    
+    def get_instrument_intuition(self, instrument: str) -> Optional[np.ndarray]:
+        """
+        Get the intuition vector for a specific instrument.
+        
+        Use this for per-instrument decision making.
+        """
+        instrument = str(instrument).upper().replace("/", "").replace("_", "")
+        if instrument in self.compression_by_instrument:
+            return self.compression_by_instrument[instrument]["intuition_vector"].copy()
+        return None
 
     def _compress_stream(self, mem: List[tuple[np.ndarray, float]], *, stream: str) -> Dict[str, Any]:
         """
@@ -410,6 +658,17 @@ class CompressionComponent(MemoryComponent):
                 "explained_variance_ratio": self.profit_pca.explained_variance_ratio_.tolist(),
                 "n_features": int(getattr(self.profit_pca, "n_features_in_", 0)),
             }
+        
+        # Per-instrument stats
+        per_instrument_stats: Dict[str, Dict[str, Any]] = {}
+        for inst, comp in self.compression_by_instrument.items():
+            per_instrument_stats[inst] = {
+                "profit_strength": float(np.linalg.norm(comp["profit_direction"])),
+                "loss_strength": float(np.linalg.norm(comp["loss_direction"])),
+                "intuition_strength": float(np.linalg.norm(comp["intuition_vector"])),
+                "profit_samples": len(self.memory_by_instrument.get(inst, {}).get("profit", [])),
+                "loss_samples": len(self.memory_by_instrument.get(inst, {}).get("loss", [])),
+            }
 
         return {
             "compressed_patterns": {
@@ -418,6 +677,7 @@ class CompressionComponent(MemoryComponent):
                 "profit_strength": float(np.linalg.norm(self.profit_direction)),
                 "loss_strength": float(np.linalg.norm(self.loss_direction)),
                 "compression_count": int(self.compression_count),
+                "instruments_tracked": list(self.instruments_with_data),
             },
             "feature_importance": feature_importance,
             "intuition_vector": {
@@ -425,6 +685,10 @@ class CompressionComponent(MemoryComponent):
                 "strength": float(np.linalg.norm(self.intuition_vector)),
                 "components": int(self.n_components),
                 "last_updated": time.time(),
+                "per_instrument": {
+                    inst: comp["intuition_vector"].tolist() 
+                    for inst, comp in self.compression_by_instrument.items()
+                },
             },
             "memory_compression": {
                 "total_memories": int(len(self.profit_memory) + len(self.loss_memory)),
@@ -432,6 +696,7 @@ class CompressionComponent(MemoryComponent):
                 "loss_memories": int(len(self.loss_memory)),
                 "compression_efficiency": float(self.compression_efficiency),
                 "last_compression": int(self.compression_count),
+                "per_instrument_stats": per_instrument_stats,
             },
         }
 

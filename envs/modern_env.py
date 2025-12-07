@@ -3,13 +3,13 @@
 Modern SmartInfoBus Trading Environment (Unified, Bus-First)
 
 Key ideas:
-- **Bus-first**: the env consumes market data, features, rewards & limits from SmartInfoBus
+- Bus-first: the env consumes market data, features, rewards & limits from SmartInfoBus
   when present; it falls back to local logic only when needed.
-- **No duplication**: if MarketDataProvider (or any other module) is publishing market_data,
+- No duplication: if MarketDataProvider (or any other module) is publishing market_data,
   the env avoids republishing those keys.
-- **Execution is external**: another module owns positions/trades/fills/portfolio metrics.
+- Execution is external: another module owns positions/trades/fills/portfolio metrics.
   This env does NOT publish execution or portfolio keys.
-- **Soft coupling**: everything bus-related is optional and guarded; the env works offline.
+- Soft coupling: everything bus-related is optional and guarded; the env works offline.
 
 Gymnasium v0.26+ API (step returns obs, reward, terminated, truncated, info).
 """
@@ -21,7 +21,7 @@ import warnings
 import asyncio
 import threading
 import time
-from typing import Any, Dict, Optional, Tuple, List, Set, cast
+from typing import Any, Dict, Optional, Tuple, List, Set, cast, TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
@@ -49,6 +49,28 @@ except Exception:
     ModuleOrchestrator = None  # type: ignore
     MODULE_SYSTEM_AVAILABLE = False
 
+# Unified PPO observation builder (v4.0)
+# Ensures training (SB3 PPO) and live (PPOAgentShell) use identical observation schemas
+# The 64-dim observation includes market, account, risk, consensus, world model, and trading mode signals
+try:
+    from modules.meta.ppo_observation_builder import (
+        PPOObservationBuilder,
+        PPO_OBS_SIZE,
+        PPO_OBS_VERSION,
+        get_ppo_observation_builder,
+    )
+    PPO_OBS_BUILDER_AVAILABLE = True
+except ImportError:
+    PPOObservationBuilder = None  # type: ignore
+    PPO_OBS_SIZE = 64  # Must match modules.meta.ppo_observation_builder v4.0
+    PPO_OBS_VERSION = "4.0"
+    get_ppo_observation_builder = None  # type: ignore
+    PPO_OBS_BUILDER_AVAILABLE = False
+
+if TYPE_CHECKING:
+    # Expose the builder type to static type checkers without importing at runtime
+    from modules.meta.ppo_observation_builder import PPOObservationBuilder  # type: ignore
+
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 
@@ -72,13 +94,28 @@ class ModernTradingEnv(gym.Env):
 
         # Defaults to avoid init failures
         self.config = config or TradingConfig()
-        self._default_obs_size = int(getattr(self.config, "environment_observation_size", 256) or 256)
-        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(self._default_obs_size,), dtype=np.float32)
+
+        # Observation size: use PPO_OBS_SIZE (64) for unified training/live schema (v4.0)
+        # config.environment_observation_size is legacy; PPO_OBS_SIZE takes precedence
+        self._default_obs_size = PPO_OBS_SIZE  # 64 dims (unified PPO schema v4.0)
+        self.observation_space = spaces.Box(
+            low=-np.inf,
+            high=np.inf,
+            shape=(self._default_obs_size,),
+            dtype=np.float32,
+        )
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
         self.action_dim = int(np.prod(self.action_space.shape)) if self.action_space.shape else 0
 
+        # Unified PPO observation builder (v4.0)
+        # Observation builder instance (may be None if builder unavailable)
+        self.obs_builder = None
+        if PPO_OBS_BUILDER_AVAILABLE and get_ppo_observation_builder is not None:
+            self.obs_builder = get_ppo_observation_builder()
+
         # Execution config (fallbacks — modules may override via bus)
-        self.primary_timeframe = getattr(self.config, "primary_timeframe", "H1") or "H1"
+        # M15 is the primary trading/decision timeframe; uses config.primary_timeframe which defaults to M15
+        self.primary_timeframe = getattr(self.config, "primary_timeframe", "M15") or "M15"
         self.default_spread = float(getattr(self.config, "default_spread", 0.0) or 0.0)
         self.slippage_pts = float(getattr(self.config, "slippage_pts", 0.0) or 0.0)
         self.commission_per_million = float(getattr(self.config, "commission_per_million", 0.0) or 0.0)
@@ -135,8 +172,7 @@ class ModernTradingEnv(gym.Env):
 
         # Track minimum available data length across all instruments/timeframes
         try:
-            # Build diagnostic mapping for troubleshooting
-            data_lengths = {}
+            data_lengths: Dict[str, int] = {}
             for inst in self.instruments:
                 for tf, df in self.data[inst].items():
                     data_lengths[f"{inst}/{tf}"] = len(df)
@@ -168,7 +204,12 @@ class ModernTradingEnv(gym.Env):
 
         # Market/account anchors (env-internal; env no longer publishes execution or portfolio keys)
         initial_balance = float(self.config.initial_balance)
-        self.market_state = MarketState(balance=initial_balance, peak_balance=initial_balance, current_step=0, current_drawdown=0.0)
+        self.market_state = MarketState(
+            balance=initial_balance,
+            peak_balance=initial_balance,
+            current_step=0,
+            current_drawdown=0.0,
+        )
         self.balance: float = float(initial_balance)
         self.equity: float = float(initial_balance)
         self._last_equity: float = self.equity
@@ -179,7 +220,12 @@ class ModernTradingEnv(gym.Env):
         self.episode_metrics = EpisodeMetrics()
 
         # Finalize spaces
-        self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(2 * len(self.instruments),), dtype=np.float32)
+        self.action_space = spaces.Box(
+            low=-1.0,
+            high=1.0,
+            shape=(2 * len(self.instruments),),
+            dtype=np.float32,
+        )
         self.action_dim = int(np.prod(self.action_space.shape)) if self.action_space.shape else 0
         self.observation_space = self._get_observation_space()
 
@@ -189,12 +235,11 @@ class ModernTradingEnv(gym.Env):
         # Setup env context
         self._setup_environment()
 
-        # Only publish local market windows if provider is NOT active
+        # Only capture local market windows if provider is NOT active
         if not self._bus_data_active:
             self._store_market_data_local()
 
         # CRITICAL FIX: If data is too short for meaningful training, raise an error
-        # This prevents silent failures where episodes end after just a few steps
         min_required_bars = int(getattr(self.config, "min_required_data_bars", 50))
         if self._min_data_len < min_required_bars:
             raise ValueError(
@@ -211,7 +256,9 @@ class ModernTradingEnv(gym.Env):
             )
 
         modules = len(self.orchestrator.modules) if (self.orchestrator and hasattr(self.orchestrator, "modules")) else 0
-        self.logger.info(f"🚀 MODERN_ENV_INITIALIZED: {len(self.instruments)} instruments, {modules} modules - Bus-first")
+        self.logger.info(
+            f"🚀 MODERN_ENV_INITIALIZED: {len(self.instruments)} instruments, {modules} modules - Bus-first"
+        )
 
     # ──────────────────────────────────────────────────────────────
     # Logging
@@ -227,10 +274,12 @@ class ModernTradingEnv(gym.Env):
                     operator_mode=True,
                 )
             import logging
+
             lg = logging.getLogger("ModernTradingEnv")
             if not lg.handlers:
                 h = logging.StreamHandler()
                 import logging as _L
+
                 fmt = _L.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
                 h.setFormatter(fmt)
                 lg.addHandler(h)
@@ -244,6 +293,7 @@ class ModernTradingEnv(gym.Env):
                 def warning(self, m): print(f"[WARN] {m}")
                 def error(self, m): print(f"[ERROR] {m}")
                 def debug(self, m): print(f"[DBG] {m}")
+
             return Fallback()
 
     # ──────────────────────────────────────────────────────────────
@@ -382,7 +432,6 @@ class ModernTradingEnv(gym.Env):
     def _setup_environment(self):
         try:
             if self.smart_bus:
-                # 1) Do not publish provider-owned environment_config from Environment
                 env_cfg = {
                     "instruments": self.instruments,
                     "initial_balance": float(self.config.initial_balance),
@@ -391,22 +440,19 @@ class ModernTradingEnv(gym.Env):
                     "bus_data_active": bool(self._bus_data_active),
                     "mode": "live" if getattr(self.config, "live_mode", False) else "sim",
                 }
-                # Keep a local copy for diagnostics if needed
                 try:
                     self._env_environment_config = env_cfg
                 except Exception:
                     pass
-
-                # 2) Provide execution_mode only if nobody else has
-                # Execution mode is published elsewhere; avoid writing from Environment
-
         except Exception:
             pass
 
     def _store_market_data_local(self):
         """
-        Publish local market windows ONLY when MarketDataProvider is not active.
-        This prevents duplicate market_data feeds on the bus.
+        Capture local market windows ONLY when MarketDataProvider is not active.
+
+        This is strictly for diagnostics / fallback; we do NOT publish provider-owned
+        keys like 'market_data' to the bus from the Environment.
         """
         if not self.smart_bus or self._bus_data_active:
             return
@@ -425,11 +471,11 @@ class ModernTradingEnv(gym.Env):
                     w = min(100, step + 1)
                     s = max(0, step - w + 1)
                     ohlcv = {
-                        "open": df["open"].iloc[s:step + 1].values,
-                        "high": df["high"].iloc[s:step + 1].values,
-                        "low": df["low"].iloc[s:step + 1].values,
-                        "close": df["close"].iloc[s:step + 1].values,
-                        "volume": df["volume"].iloc[s:step + 1].values,
+                        "open": df["open"].iloc[s : step + 1].values,
+                        "high": df["high"].iloc[s : step + 1].values,
+                        "low": df["low"].iloc[s : step + 1].values,
+                        "close": df["close"].iloc[s : step + 1].values,
+                        "volume": df["volume"].iloc[s : step + 1].values,
                         "step": step,
                         "instrument": instrument,
                         "timeframe": timeframe,
@@ -468,19 +514,22 @@ class ModernTradingEnv(gym.Env):
             self._min_data_len = 0
 
         initial_balance = float(self.config.initial_balance)
-        self.market_state = MarketState(balance=initial_balance, peak_balance=initial_balance, current_step=self._select_starting_step(), current_drawdown=0.0)
+        self.market_state = MarketState(
+            balance=initial_balance,
+            peak_balance=initial_balance,
+            current_step=self._select_starting_step(),
+            current_drawdown=0.0,
+        )
         self.current_step = int(self.market_state.current_step)
 
         self.balance = float(initial_balance)
         self.equity = float(initial_balance)
         self._last_equity = float(initial_balance)
 
-        # Avoid publishing environment_config / execution_mode from the Environment; canonical owners handle these.
-
         # Detect provider each reset (hot-reload)
         self._bus_data_active = self._detect_bus_data_active()
 
-        # Publish local market windows only if provider is NOT active
+        # Capture local market windows only if provider is NOT active
         if not self._bus_data_active:
             self._store_market_data_local()
 
@@ -500,7 +549,11 @@ class ModernTradingEnv(gym.Env):
         # Publish observation or fallback
         try:
             if self.smart_bus:
-                existing = self.smart_bus.get("environment_observation", "Environment") if self.prefer_bus_features else None
+                existing = (
+                    self.smart_bus.get("environment_observation", "Environment")
+                    if self.prefer_bus_features
+                    else None
+                )
                 if self.prefer_bus_features and existing is not None:
                     self.smart_bus.set(
                         "environment_observation_fallback",
@@ -532,11 +585,9 @@ class ModernTradingEnv(gym.Env):
         """Remove completed futures from tracking to prevent memory accumulation"""
         try:
             with self._pend_lock:
-                # Remove completed futures
                 completed = {f for f in self._pending_futures if f.done()}
                 self._pending_futures -= completed
 
-                # Warn if accumulating
                 pending_count = len(self._pending_futures)
                 if pending_count > 10:
                     self.logger.warning(
@@ -549,7 +600,11 @@ class ModernTradingEnv(gym.Env):
         # normalize action
         if not isinstance(action, np.ndarray):
             action = np.asarray(action, dtype=np.float32)
-        action = action.astype(np.float32).reshape(self.action_dim,) if self.action_dim > 0 else action.astype(np.float32)
+        action = (
+            action.astype(np.float32).reshape(self.action_dim,)
+            if self.action_dim > 0
+            else action.astype(np.float32)
+        )
 
         self.current_step += 1
         self.market_state.current_step = int(self.current_step)
@@ -561,15 +616,22 @@ class ModernTradingEnv(gym.Env):
         # publish action & legacy alias
         try:
             if self.smart_bus:
-                self.smart_bus.set("agent_action", action, module="Environment", thesis=f"Agent action at step {self.current_step}")
-                self.smart_bus.set("final_trading_action", action, module="Environment", thesis="Environment echo of action")
+                self.smart_bus.set(
+                    "agent_action",
+                    action,
+                    module="Environment",
+                    thesis=f"Agent action at step {self.current_step}",
+                )
+                self.smart_bus.set(
+                    "final_trading_action",
+                    action,
+                    module="Environment",
+                    thesis="Environment echo of action",
+                )
         except Exception:
             pass
 
-        # Refresh environment_config + execution_mode every step (owner refresh to avoid TTL)
-        # No refresh of environment_config / execution_mode from Environment; canonical owners handle these keys.
-
-        # Update market snapshots only if provider isn't active
+        # Update local market snapshots only if provider isn't active
         if not self._bus_data_active:
             self._store_market_data_local()
 
@@ -622,11 +684,15 @@ class ModernTradingEnv(gym.Env):
                     df = self.data[inst][tf]
                     s = max(0, self.current_step - 50)
                     e = min(self.current_step, len(df) - 1)
-                    window = df["close"].iloc[s:e+1].to_numpy(dtype=np.float64)
+                    window = df["close"].iloc[s : e + 1].to_numpy(dtype=np.float64)
                     if window.size >= 2:
                         ret = np.diff(window) / np.maximum(window[:-1], 1e-12)
                         vol = float(np.std(ret))
-                        slope = float(np.polyfit(np.arange(window.size), window, 1)[0]) if window.size >= 5 else 0.0
+                        slope = (
+                            float(np.polyfit(np.arange(window.size), window, 1)[0])
+                            if window.size >= 5
+                            else 0.0
+                        )
                     else:
                         vol, slope = 0.0, 0.0
 
@@ -643,9 +709,12 @@ class ModernTradingEnv(gym.Env):
                     if vol_level in ("high", "extreme") and abs(slope) < 1e-12:
                         regime = "volatile"
 
-                    # Do not publish provider-owned 'market_context' from Environment; keep locally for diagnostics
                     try:
-                        self._env_market_context = {"regime": regime, "volatility_level": vol_level, "consensus": 0.5}
+                        self._env_market_context = {
+                            "regime": regime,
+                            "volatility_level": vol_level,
+                            "consensus": 0.5,
+                        }
                     except Exception:
                         pass
             except Exception:
@@ -654,7 +723,10 @@ class ModernTradingEnv(gym.Env):
         # Non-blocking orchestrator execution (with simple backpressure)
         if self.orchestrator_enabled and self.orchestrator and hasattr(self.orchestrator, "execute_step"):
             try:
-                interval = int(getattr(self.config, "orchestrator_step_interval", self._orch_step_interval) or self._orch_step_interval)
+                interval = int(
+                    getattr(self.config, "orchestrator_step_interval", self._orch_step_interval)
+                    or self._orch_step_interval
+                )
             except Exception:
                 interval = self._orch_step_interval
 
@@ -665,7 +737,13 @@ class ModernTradingEnv(gym.Env):
                 try:
                     with self._pend_lock:
                         inflight = len(self._pending_futures)
-                    limit = max(1, int(getattr(self.config, "orchestrator_max_inflight", self._orch_inflight_limit) or self._orch_inflight_limit))
+                    limit = max(
+                        1,
+                        int(
+                            getattr(self.config, "orchestrator_max_inflight", self._orch_inflight_limit)
+                            or self._orch_inflight_limit
+                        ),
+                    )
                     can_schedule = inflight < limit
                 except Exception:
                     can_schedule = True  # be permissive if check fails
@@ -688,8 +766,7 @@ class ModernTradingEnv(gym.Env):
             except Exception:
                 pass
 
-        # FIX: Sync balance/equity from Executor's account_state after orchestrator runs
-        # This ensures market_state reflects actual P&L from executed trades
+        # Sync balance/equity from Executor's account_state after orchestrator runs
         try:
             if self.smart_bus:
                 account_state = self.smart_bus.get("account_state", "Environment", default=None)
@@ -715,18 +792,16 @@ class ModernTradingEnv(gym.Env):
                     reward = float(sr)
         except Exception:
             pass
-        
-        # Fallback: If no shaped reward from bus, compute simple PnL-based reward
-        # This ensures the RL agent always gets SOME learning signal
+
+        # Fallback: simple PnL-based reward (always provide some learning signal)
         if reward is None:
             try:
-                # FIX: Use actual balance from market_state (now synced from Executor)
                 current_balance = float(self.market_state.balance)
-                pnl_delta = current_balance - float(self._last_equity if hasattr(self, '_last_equity') else current_balance)
-                # Normalize by initial balance to keep reward in reasonable range
-                initial = float(getattr(self.config, 'initial_balance', 3000.0) or 3000.0)
-                reward = pnl_delta / max(initial, 1.0) * 10.0  # Scale factor for learning
-                reward = float(np.clip(reward, -1.0, 1.0))  # Clip to prevent extreme values
+                prev_equity = float(getattr(self, "_last_equity", current_balance))
+                pnl_delta = current_balance - prev_equity
+                initial = float(getattr(self.config, "initial_balance", 3000.0) or 3000.0)
+                reward = pnl_delta / max(initial, 1.0) * 10.0
+                reward = float(np.clip(reward, -1.0, 1.0))
                 self._last_equity = current_balance
             except Exception:
                 reward = 0.0
@@ -737,13 +812,19 @@ class ModernTradingEnv(gym.Env):
             self.market_state.current_drawdown = 0.0
         else:
             denom = max(self.market_state.peak_balance, 1e-12)
-            self.market_state.current_drawdown = (self.market_state.peak_balance - self.market_state.balance) / denom
+            self.market_state.current_drawdown = (
+                self.market_state.peak_balance - self.market_state.balance
+            ) / denom
 
         # Observation (bus-first consumption; avoid overriding provider output)
         obs = self._get_observation()
         try:
             if self.smart_bus:
-                existing = self.smart_bus.get("environment_observation", "Environment") if self.prefer_bus_features else None
+                existing = (
+                    self.smart_bus.get("environment_observation", "Environment")
+                    if self.prefer_bus_features
+                    else None
+                )
                 if self.prefer_bus_features and existing is not None:
                     self.smart_bus.set(
                         "environment_observation_fallback",
@@ -772,7 +853,6 @@ class ModernTradingEnv(gym.Env):
             "terminated": terminated,
             "truncated": truncated,
         }
-        # Emit a brief end-of-episode note to help diagnose fast resets
         if terminated or truncated:
             try:
                 reason = "unknown"
@@ -784,7 +864,9 @@ class ModernTradingEnv(gym.Env):
                     reason = "bankrupt"
                 else:
                     reason = "drawdown_or_limit"
-                self.logger.info(f"[EPISODE_END] episode={self.episode_count} steps={self.current_step} reason={reason}")
+                self.logger.info(
+                    f"[EPISODE_END] episode={self.episode_count} steps={self.current_step} reason={reason}"
+                )
             except Exception:
                 pass
         return obs, float(reward), terminated, truncated, info
@@ -826,7 +908,10 @@ class ModernTradingEnv(gym.Env):
     def _select_starting_step(self) -> int:
         if not self.instruments:
             return 0
-        min_len = min((len(df) for inst in self.instruments for df in self.data[inst].values()), default=0)
+        min_len = min(
+            (len(df) for inst in self.instruments for df in self.data[inst].values()),
+            default=0,
+        )
         if min_len < 100:
             return 0
         max_start = max(50, int(min_len) - int(self.config.max_steps) - 50)
@@ -835,12 +920,91 @@ class ModernTradingEnv(gym.Env):
         return int(np.random.randint(50, max_start))
 
     # ──────────────────────────────────────────────────────────────
-    # Observation creation
+    # Observation creation (Unified PPO schema, bus-first)
     # ──────────────────────────────────────────────────────────────
     def _get_observation(self) -> np.ndarray:
-        expected = self.observation_space.shape[0] if self.observation_space.shape else self._default_obs_size
+        """
+        Build observation using the unified PPO observation builder (v3.0).
 
-        # Prefer bus-provided observation if policy says so
+        Bus-first semantics:
+        - If MarketDataProvider is active on SmartInfoBus AND prefer_bus_data=True,
+          let PPOObservationBuilder pull OHLC/multi-timeframe data directly from
+          the bus (exactly like PPOAgentShell in live trading).
+        - Otherwise, fall back to local CSV data via _prepare_market_data_for_obs().
+
+        The same 48-dim observation schema is used in both:
+        - Training (SB3 PPO via ModernTradingEnv)
+        - Live trading (PPOAgentShell via SmartInfoBus)
+        """
+        expected = (
+            self.observation_space.shape[0]
+            if self.observation_space.shape
+            else self._default_obs_size
+        )
+
+        # If unified observation builder is available, use it
+        if self.obs_builder is not None:
+            try:
+                use_bus_market_data = (
+                    self.smart_bus_enabled
+                    and self.smart_bus is not None
+                    and bool(getattr(self, "_bus_data_active", False))
+                    and bool(getattr(self, "prefer_bus_data", True))
+                )
+
+                if use_bus_market_data:
+                    # MarketDataProvider owns OHLC/multi-TF data; builder will read from bus
+                    market_data = None
+                else:
+                    # Fallback: build market_data from local CSVs
+                    market_data = self._prepare_market_data_for_obs()
+
+                # Prepare account state (env anchor; Executor may override via bus)
+                account_state = {
+                    "balance": float(self.market_state.balance),
+                    "initial_balance": float(self.config.initial_balance),
+                    "current_drawdown": float(self.market_state.current_drawdown),
+                    "current_step": int(self.current_step),
+                    "max_steps": int(self.config.max_steps),
+                    # The following are placeholders because env does not own execution.
+                    # PPOObservationBuilder is designed to tolerate these defaults and will
+                    # prefer richer account_state from SmartInfoBus if available.
+                    "episode_return": 0.0,
+                    "position_direction": 0.0,
+                    "position_size": 0.0,
+                    "unrealized_pnl": 0.0,
+                    "time_in_position": 0,
+                    "trades_today": 0,
+                    "last_action": 0.0,
+                    "win_rate": 0.5,
+                    "pnl_trend": 0.0,
+                }
+
+                obs = self.obs_builder.build(
+                    market_data=market_data,
+                    account_state=account_state,
+                    smart_bus=self.smart_bus if self.smart_bus_enabled else None,
+                    module_name="Environment",
+                )
+
+                # Shape normalization: always end up with a flat float32 vector
+                if isinstance(obs, np.ndarray):
+                    flat = obs.astype(np.float32).flatten()
+                else:
+                    flat = np.asarray(obs, dtype=np.float32).flatten()
+
+                if flat.size < expected:
+                    out = np.zeros(expected, dtype=np.float32)
+                    out[: flat.size] = flat
+                    return out
+                return flat[:expected]
+
+            except Exception as e:
+                self.logger.warning(
+                    f"[ENV] Unified obs builder failed: {e}, using fallback observation"
+                )
+
+        # Fallback: try bus-provided observation
         if self.smart_bus and self.prefer_bus_features:
             try:
                 obs = self.smart_bus.get("environment_observation", "Environment")
@@ -862,20 +1026,54 @@ class ModernTradingEnv(gym.Env):
                 if flat is not None:
                     if flat.size < expected:
                         out = np.zeros(expected, dtype=np.float32)
-                        out[:flat.size] = flat
+                        out[: flat.size] = flat
                         return out
                     return flat[:expected]
 
-        # fallback engineered obs (scale-free features)
+        # Legacy numeric fallback (only if builder + bus are unavailable)
         return self._create_fallback_observation(expected)
+
+    def _prepare_market_data_for_obs(self) -> Dict[str, Any]:
+        """
+        Prepare market data from local DataFrame for the observation builder.
+
+        Returns data structured as: {symbol: {timeframe: {open, high, low, close, volume}}}
+        """
+        result: Dict[str, Dict[str, Dict[str, Any]]] = {}
+
+        for instrument in self.instruments:
+            result[instrument] = {}
+            for timeframe in ["M15", "H1", "H4", "D1"]:  # M15 first (primary)
+                if timeframe not in self.data[instrument]:
+                    continue
+                df = self.data[instrument][timeframe]
+                if self.current_step >= len(df):
+                    continue
+
+                # Get rolling window (up to 100 bars)
+                lookback = min(100, self.current_step + 1)
+                start_idx = max(0, self.current_step - lookback + 1)
+                end_idx = self.current_step + 1
+
+                result[instrument][timeframe] = {
+                    "open": df["open"].iloc[start_idx:end_idx].values,
+                    "high": df["high"].iloc[start_idx:end_idx].values,
+                    "low": df["low"].iloc[start_idx:end_idx].values,
+                    "close": df["close"].iloc[start_idx:end_idx].values,
+                    "volume": df["volume"].iloc[start_idx:end_idx].values,
+                }
+
+        return result
 
     def _create_fallback_observation(self, expected_size: int) -> np.ndarray:
         feats: List[float] = []
-        feats.extend([
-            float(self.market_state.balance) / max(float(self.config.initial_balance), 1e-9),
-            float(self.market_state.current_drawdown),
-            float(self.current_step) / max(1.0, float(self.config.max_steps)),
-        ])
+        feats.extend(
+            [
+                float(self.market_state.balance) / max(float(self.config.initial_balance), 1e-9),
+                float(self.market_state.current_drawdown),
+                float(self.current_step) / max(1.0, float(self.config.max_steps)),
+            ]
+        )
 
         for instrument in self.instruments:
             for timeframe in ["M15", "H1", "H4", "D1"]:
@@ -889,8 +1087,16 @@ class ModernTradingEnv(gym.Env):
                         vol_ = float(df["volume"].iloc[self.current_step])
 
                         s = max(0, self.current_step - 50)
-                        m_close = float(np.mean(df["close"].iloc[s:self.current_step+1])) if self.current_step >= s else close_
-                        m_vol = float(np.mean(df["volume"].iloc[s:self.current_step+1])) if self.current_step >= s else max(vol_, 1.0)
+                        m_close = (
+                            float(np.mean(df["close"].iloc[s : self.current_step + 1]))
+                            if self.current_step >= s
+                            else close_
+                        )
+                        m_vol = (
+                            float(np.mean(df["volume"].iloc[s : self.current_step + 1]))
+                            if self.current_step >= s
+                            else max(vol_, 1.0)
+                        )
 
                         close_rel = (close_ / max(m_close, 1e-12)) - 1.0
                         range_rel = (high_ - low_) / max(abs(close_), 1e-12)
@@ -904,8 +1110,13 @@ class ModernTradingEnv(gym.Env):
                             mom5 = 0.0
 
                         if self.current_step >= 20:
-                            recent = df["close"].iloc[self.current_step - 19:self.current_step + 1].to_numpy(dtype=np.float64)
-                            v = float(np.std(recent, dtype=np.float64) / max(abs(float(np.mean(recent, dtype=np.float64))), 1e-12))
+                            recent = df["close"].iloc[self.current_step - 19 : self.current_step + 1].to_numpy(
+                                dtype=np.float64
+                            )
+                            v = float(
+                                np.std(recent, dtype=np.float64)
+                                / max(abs(float(np.mean(recent, dtype=np.float64))), 1e-12)
+                            )
                         else:
                             v = 0.01
 
@@ -919,21 +1130,38 @@ class ModernTradingEnv(gym.Env):
             m15 = h1 = h4 = d1 = 0.0
             if "M15" in self.data[instrument] and 5 <= self.current_step < len(self.data[instrument]["M15"]):
                 df = self.data[instrument]["M15"]
-                cur, past = float(df["close"].iloc[self.current_step]), float(df["close"].iloc[self.current_step - 5])
+                cur, past = float(df["close"].iloc[self.current_step]), float(
+                    df["close"].iloc[self.current_step - 5]
+                )
                 m15 = (cur - past) / max(abs(past), 1e-12)
             if "H1" in self.data[instrument] and 5 <= self.current_step < len(self.data[instrument]["H1"]):
                 df = self.data[instrument]["H1"]
-                cur, past = float(df["close"].iloc[self.current_step]), float(df["close"].iloc[self.current_step - 5])
+                cur, past = float(df["close"].iloc[self.current_step]), float(
+                    df["close"].iloc[self.current_step - 5]
+                )
                 h1 = (cur - past) / max(abs(past), 1e-12)
             if "H4" in self.data[instrument] and 5 <= self.current_step < len(self.data[instrument]["H4"]):
                 df = self.data[instrument]["H4"]
-                cur, past = float(df["close"].iloc[self.current_step]), float(df["close"].iloc[self.current_step - 5])
+                cur, past = float(df["close"].iloc[self.current_step]), float(
+                    df["close"].iloc[self.current_step - 5]
+                )
                 h4 = (cur - past) / max(abs(past), 1e-12)
             if "D1" in self.data[instrument] and 5 <= self.current_step < len(self.data[instrument]["D1"]):
                 df = self.data[instrument]["D1"]
-                cur, past = float(df["close"].iloc[self.current_step]), float(df["close"].iloc[self.current_step - 5])
+                cur, past = float(df["close"].iloc[self.current_step]), float(
+                    df["close"].iloc[self.current_step - 5]
+                )
                 d1 = (cur - past) / max(abs(past), 1e-12)
-            feats.extend([m15, h1, h4, d1, 1.0 if (m15 > 0 and h1 > 0 and h4 > 0 and d1 > 0) else 0.0, 1.0 if (m15 < 0 and h1 < 0 and h4 < 0 and d1 < 0) else 0.0])
+            feats.extend(
+                [
+                    m15,
+                    h1,
+                    h4,
+                    d1,
+                    1.0 if (m15 > 0 and h1 > 0 and h4 > 0 and d1 > 0) else 0.0,
+                    1.0 if (m15 < 0 and h1 < 0 and h4 < 0 and d1 < 0) else 0.0,
+                ]
+            )
 
         # Add prop firm features (AI needs to see how close to limits)
         prop_firm_feats = self._get_prop_firm_observation_features()
@@ -946,65 +1174,65 @@ class ModernTradingEnv(gym.Env):
         arr = np.asarray(feats, dtype=np.float32)
         if arr.size < expected_size:
             out = np.zeros(expected_size, dtype=np.float32)
-            out[:arr.size] = arr
+            out[: arr.size] = arr
             return out
         return arr[:expected_size]
 
     def _get_prop_firm_observation_features(self) -> List[float]:
         """
         Get prop firm-related features for observation.
-        
+
         These help the AI understand:
         1. How close to daily DD limit (0-1, 1=at limit)
-        2. How close to max DD limit (0-1, 1=at limit)  
+        2. How close to max DD limit (0-1, 1=at limit)
         3. Profit progress toward target (0-1, 1=target reached)
         4. Can trade flag (0 or 1)
         """
-        # Default values (safe to trade, no progress)
         daily_dd_ratio = 0.0
         max_dd_ratio = 0.0
         profit_progress = 0.0
         can_trade = 1.0
-        
+
         try:
             if self.smart_bus:
                 prop_status = self.smart_bus.get("prop_firm_status", "Environment")
                 if isinstance(prop_status, dict):
-                    # Daily DD used ratio (0 to 1+)
-                    daily_limit = prop_status.get("daily_dd_remaining", 0.05) + prop_status.get("daily_dd_used", 0.0)
+                    daily_limit = prop_status.get("daily_dd_remaining", 0.05) + prop_status.get(
+                        "daily_dd_used", 0.0
+                    )
                     if daily_limit > 0:
                         daily_dd_ratio = prop_status.get("daily_dd_used", 0.0) / daily_limit
-                    
-                    # Max DD used ratio (0 to 1+)
-                    max_limit = prop_status.get("max_dd_remaining", 0.10) + prop_status.get("max_dd_used", 0.0)
+
+                    max_limit = prop_status.get("max_dd_remaining", 0.10) + prop_status.get(
+                        "max_dd_used", 0.0
+                    )
                     if max_limit > 0:
                         max_dd_ratio = prop_status.get("max_dd_used", 0.0) / max_limit
-                    
-                    # Can trade (0 or 1)
+
                     can_trade = 1.0 if prop_status.get("can_trade", True) else 0.0
-            
+
             # Calculate profit progress from balance
             initial = float(self.config.initial_balance)
             current = float(self.market_state.balance)
-            profit_target = float(getattr(self.config, "profit_target", 0.10))  # From risk_policy.yaml
-            
+            profit_target = float(getattr(self.config, "profit_target", 0.10))
+
             if initial > 0 and profit_target > 0:
                 current_profit = (current - initial) / initial
                 profit_progress = max(0.0, current_profit / profit_target)
         except Exception:
             pass
-        
+
         return [
-            float(np.clip(daily_dd_ratio, 0.0, 1.5)),    # Daily DD ratio (allow >1 to show breach)
-            float(np.clip(max_dd_ratio, 0.0, 1.5)),      # Max DD ratio
-            float(np.clip(profit_progress, 0.0, 2.0)),   # Profit progress (allow >1 for over-target)
-            can_trade,                                     # Can trade flag
+            float(np.clip(daily_dd_ratio, 0.0, 1.5)),  # Daily DD ratio (allow >1 to show breach)
+            float(np.clip(max_dd_ratio, 0.0, 1.5)),  # Max DD ratio
+            float(np.clip(profit_progress, 0.0, 2.0)),  # Profit progress (allow >1 for over-target)
+            can_trade,  # Can trade flag
         ]
 
     def _get_memory_observation_features(self) -> List[float]:
         """
         Get memory-related features for observation.
-        
+
         These help the AI learn from memory signals:
         1. risk_multiplier: 0-1, lower = memory thinks setup is riskier
         2. danger_similarity: 0-1, how similar to past losing trades
@@ -1014,11 +1242,10 @@ class ModernTradingEnv(gym.Env):
         6. playbook_confidence: 0-1, confidence in playbook recall
         7. consecutive_losses_norm: 0-1, normalized loss streak (0=none, 1=5+)
         8. neural_risk_hint: 0-1, attention-based risk estimate
-        
+
         NOTE: The hard veto is still applied in PPO arbiter - these features
         let the AI LEARN from memory, but memory can still override if certain.
         """
-        # Default neutral values (no memory influence)
         risk_multiplier = 1.0
         danger_similarity = 0.0
         loss_prob = 0.0
@@ -1027,36 +1254,31 @@ class ModernTradingEnv(gym.Env):
         playbook_confidence = 0.5
         consecutive_losses_norm = 0.0
         neural_risk_hint = 0.5
-        
+
         try:
             if self.smart_bus:
-                # Memory gate (main risk signal)
                 memory_gate = self.smart_bus.get("memory_gate", "Environment")
                 if isinstance(memory_gate, dict):
                     risk_multiplier = float(memory_gate.get("risk_multiplier", 1.0))
                     danger_similarity = float(memory_gate.get("danger_similarity", 0.0))
                     loss_prob = float(memory_gate.get("loss_prob", 0.0))
                     veto_active = 1.0 if memory_gate.get("veto", False) else 0.0
-                    
-                    # Per-instrument info (sum vetoed instruments)
+
                     vetoed = memory_gate.get("vetoed_instruments", [])
                     if isinstance(vetoed, list) and len(vetoed) > 0:
-                        veto_active = max(veto_active, len(vetoed) / 2.0)  # 0-1 scale
-                    
-                    # Consecutive losses (normalize: 5+ = 1.0)
+                        veto_active = max(veto_active, len(vetoed) / 2.0)
+
                     consec = memory_gate.get("consecutive_losses_by_instrument", {})
                     if isinstance(consec, dict) and consec:
                         max_streak = max(consec.values()) if consec.values() else 0
                         consecutive_losses_norm = min(1.0, max_streak / 5.0)
-                
-                # Memory vote (playbook signal)
+
                 memory_vote = self.smart_bus.get("memory_vote", "Environment")
                 if isinstance(memory_vote, dict):
                     signed_bias = float(memory_vote.get("signed_bias", 0.0))
                     playbook_confidence = float(memory_vote.get("confidence", 0.5))
                     neural_risk_hint = float(memory_vote.get("neural_risk_hint", 0.5))
-                
-                # Fallback: try neural_risk_hint directly from bus
+
                 if neural_risk_hint == 0.5:
                     direct_hint = self.smart_bus.get("neural_risk_hint", "Environment")
                     if direct_hint is not None:
@@ -1064,19 +1286,19 @@ class ModernTradingEnv(gym.Env):
                             neural_risk_hint = float(direct_hint)
                         except (TypeError, ValueError):
                             pass
-                            
+
         except Exception:
             pass
-        
+
         return [
-            float(np.clip(risk_multiplier, 0.0, 1.0)),       # 1: Risk multiplier (inverted: 0=risky, 1=safe)
-            float(np.clip(danger_similarity, 0.0, 1.0)),     # 2: Danger zone similarity
-            float(np.clip(loss_prob, 0.0, 1.0)),             # 3: Neural P(loss)
-            float(np.clip(veto_active, 0.0, 1.0)),           # 4: Memory veto active
-            float(np.clip(signed_bias, -1.0, 1.0)),          # 5: Playbook directional bias
-            float(np.clip(playbook_confidence, 0.0, 1.0)),   # 6: Playbook confidence
-            float(np.clip(consecutive_losses_norm, 0.0, 1.0)), # 7: Loss streak (normalized)
-            float(np.clip(neural_risk_hint, 0.0, 1.0)),      # 8: Neural attention risk
+            float(np.clip(risk_multiplier, 0.0, 1.0)),  # 1: Risk multiplier (inverted: 0=risky, 1=safe)
+            float(np.clip(danger_similarity, 0.0, 1.0)),  # 2: Danger zone similarity
+            float(np.clip(loss_prob, 0.0, 1.0)),  # 3: Neural P(loss)
+            float(np.clip(veto_active, 0.0, 1.0)),  # 4: Memory veto active
+            float(np.clip(signed_bias, -1.0, 1.0)),  # 5: Playbook directional bias
+            float(np.clip(playbook_confidence, 0.0, 1.0)),  # 6: Playbook confidence
+            float(np.clip(consecutive_losses_norm, 0.0, 1.0)),  # 7: Loss streak (normalized)
+            float(np.clip(neural_risk_hint, 0.0, 1.0)),  # 8: Neural attention risk
         ]
 
     # ──────────────────────────────────────────────────────────────
@@ -1091,7 +1313,7 @@ class ModernTradingEnv(gym.Env):
                 if isinstance(em, dict):
                     if bool(em.get("halt", False)) or bool(em.get("active", False)):
                         return True, False
-                elif isinstance(em, (int, float)) and em:  # non-zero interpreted as active
+                elif isinstance(em, (int, float)) and em:
                     return True, False
                 elif isinstance(em, bool) and em:
                     return True, False
@@ -1103,11 +1325,8 @@ class ModernTradingEnv(gym.Env):
             try:
                 prop_firm_status = self.smart_bus.get("prop_firm_status", "Environment")
                 if isinstance(prop_firm_status, dict):
-                    # Must close all = prop firm rule breach (hard termination)
                     if bool(prop_firm_status.get("must_close_all", False)):
                         return True, False
-                    # Can't trade = at daily limit but not breached yet
-                    # Don't terminate, but lot calculator will block new trades
             except Exception:
                 pass
 
@@ -1141,7 +1360,6 @@ class ModernTradingEnv(gym.Env):
         # 4) Apply limits and step bounds
         if self.market_state.current_drawdown > dd_limit:
             return True, False
-        # Respect dataset boundary to avoid premature resets when max_steps is large
         try:
             if self._min_data_len and int(self.current_step) >= int(self._min_data_len) - 1:
                 return False, True
@@ -1162,9 +1380,8 @@ class ModernTradingEnv(gym.Env):
                 self._store = {}
                 self._lock = threading.Lock()
                 self._module_disabled = set()
-                self._data_store = self._store  # for external status probes
+                self._data_store = self._store
                 self._is_fallback = True
-                # Track owners for compatibility with real SmartInfoBus API
                 self._owners = {}
 
             def set(self, key, value, module=None, thesis=None):
@@ -1178,15 +1395,10 @@ class ModernTradingEnv(gym.Env):
             def register_provider(self, module, keys): return True
             def register_consumer(self, module, keys): return True
 
-            def declare_owner(self, key: str, module: str):  # mimic real bus API (no-op semantics here)
-                """Declare an owning module for a key (fallback no-op).
-
-                We just record the owner and pre-create the key if absent so that
-                upstream code guarded by hasattr(declare_owner) passes static analysis.
-                """
+            def declare_owner(self, key: str, module: str):
+                """Declare an owning module for a key (fallback no-op)."""
                 with self._lock:
                     if key not in self._store:
-                        # Pre-create placeholder so later .set overrides it cleanly
                         self._store[key] = None
                     self._owners[key] = module
                 return True
@@ -1198,29 +1410,45 @@ class ModernTradingEnv(gym.Env):
                         "data_keys": len(self._store),
                         "disabled_modules": list(self._module_disabled),
                     }
+
         return FallbackSmartBus()
 
     def _start_post_init_monitor(self):
         def monitor():
             try:
                 if not self._bus_ready.is_set():
-                    self._bus_ready.wait(timeout=max(1.0, float(getattr(self.config, "info_bus_init_timeout", 2.0)) * 5))
+                    self._bus_ready.wait(
+                        timeout=max(
+                            1.0,
+                            float(getattr(self.config, "info_bus_init_timeout", 2.0)) * 5,
+                        )
+                    )
                 if self._bus_ready.is_set() and getattr(self.smart_bus, "_is_fallback", False):
                     try:
-                        real_bus = InfoBusManager.get_instance() if (SMARTINFOBUS_AVAILABLE and InfoBusManager) else None
+                        real_bus = (
+                            InfoBusManager.get_instance()
+                            if (SMARTINFOBUS_AVAILABLE and InfoBusManager)
+                            else None
+                        )
                         if real_bus is not None:
                             self.smart_bus = real_bus
-                            self.logger.info("SmartInfoBus is ready - switched from fallback to real bus")
+                            self.logger.info(
+                                "SmartInfoBus is ready - switched from fallback to real bus"
+                            )
                     except Exception as e:
                         self.logger.warning(f"Failed switching to real SmartInfoBus: {e}")
 
                 if not self._orch_ready.is_set():
-                    wait_time = float(getattr(self.config, "orchestrator_init_timeout", 2.0)) * (3 if bool(getattr(self.config, "orchestrator_async_init", True)) else 1)
+                    wait_time = float(
+                        getattr(self.config, "orchestrator_init_timeout", 2.0)
+                    ) * (3 if bool(getattr(self.config, "orchestrator_async_init", True)) else 1)
                     self._orch_ready.wait(timeout=max(2.0, wait_time))
 
                 if self._orch_ready.is_set() and self.orchestrator and not self.orchestrator_enabled:
                     self.orchestrator_enabled = True
-                    self.logger.info("ModuleOrchestrator is ready - enabling orchestrator execution")
+                    self.logger.info(
+                        "ModuleOrchestrator is ready - enabling orchestrator execution"
+                    )
             except Exception as e:
                 self.logger.warning(f"Post-init monitor error: {e}")
 
@@ -1230,7 +1458,11 @@ class ModernTradingEnv(gym.Env):
     # Diagnostics & rendering
     # ──────────────────────────────────────────────────────────────
     def get_smartinfobus_status(self) -> Dict[str, Any]:
-        modules_active = len(self.orchestrator.modules) if self.orchestrator and hasattr(self.orchestrator, "modules") else 0
+        modules_active = (
+            len(self.orchestrator.modules)
+            if self.orchestrator and hasattr(self.orchestrator, "modules")
+            else 0
+        )
         bus = self.smart_bus
         data_keys = len(getattr(bus, "_data_store", {})) if bus else 0
         disabled = list(getattr(bus, "_module_disabled", [])) if bus else []
@@ -1262,12 +1494,7 @@ class ModernTradingEnv(gym.Env):
         except Exception:
             pass
 
-        # IMPORTANT: Do not shutdown the global orchestrator singleton here.
-        # Multiple environments may share the same ModuleOrchestrator via get_instance().
-        # Shutting it down here clears module registries and causes KeyError on next step
-        # (e.g., 'SessionManager' missing). If a full process shutdown is required, call
-        # ModuleOrchestrator.get_instance().shutdown() explicitly from the top-level runner.
-        # Keeping the orchestrator alive avoids repeated boot sequences and preserves state.
+        # Do not shutdown the global orchestrator singleton here.
 
         loop = self._aio_loop
         try:
@@ -1302,7 +1529,6 @@ class ModernTradingEnv(gym.Env):
         self._aio_loop = None
         self._aio_thread = None
 
-        # Do NOT touch order_queue or any execution feeds on close
         self.smart_bus = None
 
     # ──────────────────────────────────────────────────────────────

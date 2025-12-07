@@ -43,10 +43,17 @@ class NeuralComponent(MemoryComponent):
         # Device (match shared encoder if present, else CPU)
         self._device = self._infer_device()
 
-        # Memory buffer & side data
+        # Memory buffer & side data (global - for backward compatibility)
         self.buffer: torch.Tensor = torch.zeros((0, self.embed_dim), dtype=torch.float32, device=self._device)
         self.importance_scores: torch.Tensor = torch.zeros(0, dtype=torch.float32, device=self._device)
         self.memory_metadata: List[Dict[str, Any]] = []
+        
+        # NEW: Per-instrument neural buffers
+        # Maps instrument -> {buffer: Tensor, importance_scores: Tensor, metadata: List}
+        self.buffers_by_instrument: Dict[str, Dict[str, Any]] = {}
+        
+        # Track which instruments we have sufficient data for
+        self.instruments_with_data: set = set()
 
         # Neural submodules
         self._init_neural_networks()
@@ -164,10 +171,16 @@ class NeuralComponent(MemoryComponent):
         try:
             storage_result = await self._store_experiences(context)
 
-            # Optional retrieval
+            # Optional retrieval - now supports per-instrument
             query = context.get("query")
             if query is not None:
-                retrieval_result = await self._perform_retrieval(query, top_k=int(context.get("top_k", self._DEFAULT_TOPK)))
+                # Extract instrument for per-instrument retrieval
+                instrument = self._extract_instrument_from_context(context)
+                retrieval_result = await self._perform_retrieval(
+                    query, 
+                    top_k=int(context.get("top_k", self._DEFAULT_TOPK)),
+                    instrument=instrument
+                )
                 storage_result.update(retrieval_result)
 
             # Periodic decay and metric updates
@@ -178,15 +191,29 @@ class NeuralComponent(MemoryComponent):
         except Exception as e:
             self.log_error("Neural processing failed", e)
             return self._get_fallback_output()
+    
+    def _extract_instrument_from_context(self, context: Dict[str, Any]) -> Optional[str]:
+        """Extract current instrument from context for per-instrument retrieval."""
+        market_ctx = context.get("market_context", {}) or {}
+        instrument = (
+            market_ctx.get("instrument") or
+            market_ctx.get("symbol") or
+            context.get("instrument") or
+            context.get("symbol")
+        )
+        if instrument:
+            return str(instrument).upper().replace("/", "").replace("_", "")
+        return None
 
     # -------------------------------------------------------------------------
     # Storage
     # -------------------------------------------------------------------------
 
     async def _store_experiences(self, context: Dict[str, Any]) -> Dict[str, Any]:
-        """Store new experiences in neural memory."""
+        """Store new experiences in neural memory (both global and per-instrument)."""
         experiences = context.get("experiences", []) or []
         stored_count = 0
+        stored_by_instrument: Dict[str, int] = {}
 
         for exp in experiences[-10:]:  # process latest batch
             if not isinstance(exp, dict):
@@ -195,18 +222,29 @@ class NeuralComponent(MemoryComponent):
             features = self._extract_experience_features(exp, context)
             if features is None:
                 continue
+            
+            # Extract instrument from experience or context
+            instrument = self._extract_instrument(exp, context)
 
             encoded = await self._encode_experience(features)  # [E]
             importance = await self._calculate_importance(encoded, exp)
 
             if importance > self.importance_threshold:
+                # Store in global buffer (backward compatibility)
                 await self._add_to_buffer(encoded, importance, exp)
+                
+                # Store in per-instrument buffer
+                await self._add_to_instrument_buffer(instrument, encoded, importance, exp)
+                
                 stored_count += 1
+                stored_by_instrument[instrument] = stored_by_instrument.get(instrument, 0) + 1
 
         return {
             "storage_performed": stored_count > 0,
             "memories_stored": stored_count,
             "buffer_size": int(self.buffer.shape[0]),
+            "stored_by_instrument": stored_by_instrument,
+            "instruments_tracked": list(self.instruments_with_data),
         }
 
     def _extract_experience_features(self, exp: Dict[str, Any], context: Dict[str, Any]) -> Optional[np.ndarray]:
@@ -287,7 +325,7 @@ class NeuralComponent(MemoryComponent):
             return 0.0
 
     async def _add_to_buffer(self, encoded: torch.Tensor, importance: float, exp: Dict[str, Any]) -> None:
-        """Append to neural memory and prune if needed."""
+        """Append to global neural memory and prune if needed."""
         try:
             # Append vectors
             self.buffer = torch.cat([self.buffer, encoded.unsqueeze(0)], dim=0)  # [N+1, E]
@@ -309,6 +347,104 @@ class NeuralComponent(MemoryComponent):
             self._update_importance_metrics(importance)
         except Exception as e:
             self.log_error("Buffer addition failed", e)
+    
+    async def _add_to_instrument_buffer(
+        self, instrument: str, encoded: torch.Tensor, importance: float, exp: Dict[str, Any]
+    ) -> None:
+        """
+        Add to per-instrument neural buffer.
+        
+        This ensures XAUUSD and EURUSD have separate attention memories,
+        preventing cross-contamination of learned patterns.
+        """
+        try:
+            # Initialize instrument buffer if needed
+            if instrument not in self.buffers_by_instrument:
+                self.buffers_by_instrument[instrument] = {
+                    "buffer": torch.zeros((0, self.embed_dim), dtype=torch.float32, device=self._device),
+                    "importance_scores": torch.zeros(0, dtype=torch.float32, device=self._device),
+                    "metadata": [],
+                }
+            
+            inst_data = self.buffers_by_instrument[instrument]
+            
+            # Append to instrument buffer
+            inst_data["buffer"] = torch.cat([inst_data["buffer"], encoded.unsqueeze(0)], dim=0)
+            inst_data["importance_scores"] = torch.cat(
+                [inst_data["importance_scores"], torch.tensor([importance], dtype=torch.float32, device=self._device)]
+            )
+            inst_data["metadata"].append({
+                "timestamp": time.time(),
+                "importance": float(importance),
+                "type": str(exp.get("type", "unknown")),
+                "instrument": instrument,
+            })
+            
+            # Track instruments with sufficient data
+            if inst_data["buffer"].shape[0] >= 5:
+                self.instruments_with_data.add(instrument)
+            
+            # Prune per-instrument buffer if needed (use same fraction of max_buffer_size)
+            max_per_inst = max(100, self.max_buffer_size // 2)  # At least 100, or half of global
+            if inst_data["buffer"].shape[0] > max_per_inst:
+                await self._prune_instrument_buffer(instrument, max_per_inst)
+                
+        except Exception as e:
+            self.log_error(f"Instrument buffer addition failed for {instrument}", e)
+    
+    async def _prune_instrument_buffer(self, instrument: str, max_size: int) -> None:
+        """Prune per-instrument buffer keeping most important and recent."""
+        try:
+            if instrument not in self.buffers_by_instrument:
+                return
+            
+            inst_data = self.buffers_by_instrument[instrument]
+            n = inst_data["buffer"].shape[0]
+            if n <= max_size:
+                return
+            
+            n_keep = int(max(1, max_size * 0.8))
+            scores = inst_data["importance_scores"]
+            
+            # Top by importance
+            top_imp = torch.topk(scores, k=min(n_keep // 2, n)).indices
+            
+            # Most recent
+            recent_start = max(0, n - (n_keep - len(top_imp)))
+            recent = torch.arange(recent_start, n, device=self._device, dtype=torch.long)
+            
+            keep = torch.unique(torch.cat([top_imp, recent], dim=0)).sort().values
+            
+            inst_data["buffer"] = inst_data["buffer"].index_select(0, keep)
+            inst_data["importance_scores"] = inst_data["importance_scores"].index_select(0, keep)
+            
+            keep_set = set(keep.tolist())
+            inst_data["metadata"] = [m for i, m in enumerate(inst_data["metadata"]) if i in keep_set]
+            
+        except Exception as e:
+            self.log_error(f"Instrument buffer pruning failed for {instrument}", e)
+    
+    def _extract_instrument(self, exp: Dict[str, Any], context: Dict[str, Any]) -> str:
+        """Extract instrument from experience or context."""
+        # Try experience first
+        instrument = (
+            exp.get("instrument") or
+            exp.get("symbol") or
+            exp.get("metadata", {}).get("instrument")
+        )
+        
+        # Fall back to context
+        if not instrument:
+            market_ctx = context.get("market_context", {}) or {}
+            instrument = (
+                market_ctx.get("instrument") or
+                market_ctx.get("symbol") or
+                context.get("instrument") or
+                "UNKNOWN"
+            )
+        
+        # Normalize
+        return str(instrument).upper().replace("/", "").replace("_", "")
 
     async def _prune_buffer(self) -> None:
         """Prune to capacity, keeping most important and most recent items."""
@@ -341,9 +477,28 @@ class NeuralComponent(MemoryComponent):
     # Retrieval
     # -------------------------------------------------------------------------
 
-    async def _perform_retrieval(self, query: Any, *, top_k: int) -> Dict[str, Any]:
-        """Attention-based retrieval for a query."""
+    async def _perform_retrieval(self, query: Any, *, top_k: int, instrument: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Attention-based retrieval for a query.
+        
+        Per-instrument retrieval: If instrument is specified and has sufficient data,
+        retrieval is performed against that instrument's buffer only. This prevents
+        XAUUSD patterns from influencing EURUSD decisions.
+        
+        Falls back to global buffer if per-instrument data is insufficient.
+        """
         try:
+            # Try per-instrument retrieval first
+            if instrument:
+                instrument = str(instrument).upper().replace("/", "").replace("_", "")
+                if instrument in self.instruments_with_data:
+                    result = await self._perform_instrument_retrieval(query, instrument, top_k)
+                    if result.get("retrieval_performed"):
+                        result["retrieval_type"] = "per_instrument"
+                        result["instrument"] = instrument
+                        return result
+            
+            # Fall back to global buffer
             if int(self.buffer.shape[0]) == 0:
                 return {"retrieval_performed": False, "reason": "empty_buffer"}
 
@@ -399,6 +554,7 @@ class NeuralComponent(MemoryComponent):
 
             return {
                 "retrieval_performed": True,
+                "retrieval_type": "global",
                 "retrieved_memories": retrieved,
                 "similarity_scores": sim_scores,
                 "attention_weights": weights.detach().cpu().numpy().tolist(),
@@ -408,6 +564,88 @@ class NeuralComponent(MemoryComponent):
             }
         except Exception as e:
             self.log_error("Retrieval failed", e)
+            return {"retrieval_performed": False, "error": str(e)}
+    
+    async def _perform_instrument_retrieval(
+        self, query: Any, instrument: str, top_k: int
+    ) -> Dict[str, Any]:
+        """
+        Perform retrieval using only the specified instrument's buffer.
+        
+        This ensures attention patterns learned from XAUUSD don't influence
+        EURUSD decisions and vice versa.
+        """
+        try:
+            if instrument not in self.buffers_by_instrument:
+                return {"retrieval_performed": False, "reason": f"no_buffer_for_{instrument}"}
+            
+            inst_data = self.buffers_by_instrument[instrument]
+            buffer = inst_data["buffer"]
+            
+            if buffer.shape[0] == 0:
+                return {"retrieval_performed": False, "reason": "empty_instrument_buffer"}
+            
+            q = self._process_query(query)
+            if q is None:
+                return {"retrieval_performed": False, "reason": "invalid_query"}
+            
+            # Encode query
+            with torch.no_grad():
+                q_enc = self.memory_encoder(q.unsqueeze(0)).squeeze(0)
+            
+            # Attention computation
+            query_batch = q_enc.unsqueeze(0).unsqueeze(0)  # [1, 1, E]
+            memory_batch = buffer.unsqueeze(0)              # [1, N, E]
+            
+            with torch.no_grad():
+                attn_out, attn_weights = self.attention(query_batch, memory_batch, memory_batch)
+                weights = attn_weights.squeeze(0).squeeze(0)
+                weights = torch.clamp(weights, min=0.0)
+                if float(weights.sum()) <= self._EPS:
+                    weights = torch.full_like(weights, 1.0 / max(1, weights.numel()))
+                else:
+                    weights = weights / (weights.sum() + self._EPS)
+            
+            # Top-K selection
+            k = int(min(max(1, top_k), buffer.shape[0]))
+            top_vals, top_idx = torch.topk(weights, k=k, largest=True, sorted=True)
+            
+            retrieved: List[Dict[str, Any]] = []
+            sim_scores: List[float] = []
+            metadata_list = inst_data["metadata"]
+            importance_scores = inst_data["importance_scores"]
+            
+            for idx, w in zip(top_idx.tolist(), top_vals.tolist()):
+                item = {
+                    "embedding": buffer[idx].detach().cpu().numpy().tolist(),
+                    "importance": float(importance_scores[idx].item()),
+                    "metadata": metadata_list[idx] if idx < len(metadata_list) else {},
+                    "attention_weight": float(w),
+                    "instrument": instrument,
+                }
+                retrieved.append(item)
+                sim_scores.append(float(w))
+            
+            # Neural risk hint
+            max_attention = float(weights.max().item()) if weights.numel() > 0 else 0.0
+            neural_risk_hint = 1.0 - max_attention
+            
+            # Boost confidence for per-instrument retrieval (more reliable)
+            max_attention = min(1.0, max_attention * 1.1)
+            neural_risk_hint = max(0.0, neural_risk_hint * 0.9)
+            
+            return {
+                "retrieval_performed": True,
+                "retrieved_memories": retrieved,
+                "similarity_scores": sim_scores,
+                "attention_weights": weights.detach().cpu().numpy().tolist(),
+                "neural_risk_hint": neural_risk_hint,
+                "max_attention": max_attention,
+                "instrument_buffer_size": buffer.shape[0],
+            }
+            
+        except Exception as e:
+            self.log_error(f"Instrument retrieval failed for {instrument}", e)
             return {"retrieval_performed": False, "error": str(e)}
 
     def _process_query(self, query: Any) -> Optional[torch.Tensor]:
@@ -487,6 +725,24 @@ class NeuralComponent(MemoryComponent):
         else:
             avg = mx = mn = std = 0.0
             total = 0
+        
+        # Per-instrument stats
+        instrument_stats: Dict[str, Dict[str, Any]] = {}
+        for inst, data in self.buffers_by_instrument.items():
+            buf = data["buffer"]
+            scores = data["importance_scores"]
+            if scores.numel() > 0:
+                instrument_stats[inst] = {
+                    "buffer_size": buf.shape[0],
+                    "avg_importance": float(scores.mean().item()),
+                    "max_importance": float(scores.max().item()),
+                }
+            else:
+                instrument_stats[inst] = {
+                    "buffer_size": 0,
+                    "avg_importance": 0.0,
+                    "max_importance": 0.0,
+                }
 
         return {
             "attention_retrieval": {
@@ -494,6 +750,7 @@ class NeuralComponent(MemoryComponent):
                 "similarity_scores": result.get("similarity_scores", []),
                 "top_k": self._DEFAULT_TOPK,
                 "attention_heads": int(self.num_heads),
+                "retrieval_type": result.get("retrieval_type", "none"),
             },
             "importance_scoring": {
                 "average_importance": avg,
@@ -507,6 +764,7 @@ class NeuralComponent(MemoryComponent):
                 "total_embeddings": int(self.buffer.shape[0]),
                 "importance_threshold": float(self.importance_threshold),
                 "decay_rate": float(self.memory_decay),
+                "instruments_tracked": list(self.instruments_with_data),
             },
             "neural_memory": {
                 "buffer_size": int(self.buffer.shape[0]),
@@ -514,6 +772,7 @@ class NeuralComponent(MemoryComponent):
                 "average_importance": float(self.avg_importance),
                 "neural_performance_score": float(self._calculate_performance_score()),
                 "last_updated": time.time(),
+                "per_instrument_stats": instrument_stats,
             },
             # Include retrieval signals for memory_vote composition
             "neural_risk_hint": float(result.get("neural_risk_hint", 0.5)),

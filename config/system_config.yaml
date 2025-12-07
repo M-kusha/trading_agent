@@ -118,6 +118,69 @@ execution:
       enable_technical_indicators: true
       timeout_ms: 5000  # Generous timeout for data loading and processing
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# DECISION MODE CONFIGURATION
+# ═══════════════════════════════════════════════════════════════════════════════
+# Controls who makes the primary trading decision: PPO agent vs Voting Committee
+#
+# Mode 0 - SHADOW:    Committee trades, PPO runs in parallel but cannot affect trades.
+#                     Used for validating PPO offline before trusting it.
+#
+# Mode 1 - COMMITTEE: Committee is primary decision maker, PPO can veto/advise.
+#                     Use when PPO is untrusted or in early training.
+#
+# Mode 2 - BLENDED:   Decision is a weighted blend of PPO and Committee.
+#                     If PPO confidence is high → closer to PPO decision.
+#                     If PPO confidence is low → closer to Committee decision.
+#                     Good for transition phase.
+#
+# Mode 3 - PPO:       PPO is the primary decision maker.
+#                     Committee outputs are features in PPO observation + safety hints.
+#                     Risk/compliance modules always sit after and can veto.
+#                     Use when PPO model is well-tested and trusted.
+#
+decision_mode:
+  # Global default mode (can be overridden per-instrument below)
+  # Options: "shadow", "committee", "blended", "ppo"
+  mode: "ppo"
+  
+  # Per-instrument overrides (optional)
+  # per_instrument:
+  #   XAU_USD: "ppo"       # Trust PPO for gold
+  #   EUR_USD: "blended"   # Still blending for forex
+  
+  # Blended mode configuration
+  blended:
+    # How to weight PPO vs Committee when both have signals
+    # "confidence_weighted": higher confidence source gets more weight
+    # "fixed": use fixed weights below
+    strategy: "confidence_weighted"
+    
+    # Fixed weights (only used if strategy="fixed")
+    ppo_weight: 0.6
+    committee_weight: 0.4
+    
+    # Minimum confidence thresholds
+    ppo_min_confidence: 0.3       # PPO needs at least 30% confidence to contribute
+    committee_min_confidence: 0.3  # Committee needs at least 30% confidence
+    
+    # Conflict resolution: what to do when PPO and Committee disagree
+    # "higher_confidence": go with whoever is more confident
+    # "abstain": don't trade if they disagree
+    # "ppo_priority": PPO wins ties
+    # "committee_priority": Committee wins ties
+    conflict_resolution: "higher_confidence"
+  
+  # Safety overrides (apply in all modes except shadow)
+  safety:
+    # Committee can force abstain if unanimous and PPO confidence is low
+    committee_unanimous_veto: true
+    committee_unanimous_threshold: 0.8  # 80%+ of experts agree in opposite direction
+    ppo_low_confidence_threshold: 0.4   # PPO confidence below this triggers check
+    
+    # Always log what PPO would have done (useful for Mode 0-1)
+    log_ppo_shadow_decisions: true
+
 # Optional preflight policy (keeps your current warning non-blocking)
 preflight:
   required_bus_keys:
@@ -393,22 +456,39 @@ modules:
       max_processing_time_ms: 300
       timeout_ms: 3000
 
-  MetaRLController:
-    config:
-      learning_rate: 0.001
-      batch_size: 64
-      replay_buffer_size: 10000
-      target_update_frequency: 100
-      exploration_rate: 0.1
-      timeout_ms: 500
+  # DEPRECATED - Moved to modules/meta/legacy/, code commented out
+  # MetaRLController:
+  #   config:
+  #     learning_rate: 0.001
+  #     batch_size: 64
+  #     replay_buffer_size: 10000
+  #     target_update_frequency: 100
+  #     exploration_rate: 0.1
+  #     timeout_ms: 500
 
+  # PPO Agent v3.0 (3-layer architecture)
   PPOAgent:
     config:
+      # Core PPO settings
       learning_rate: 0.0003
       clip_eps: 0.2
       value_coeff: 0.5
       entropy_coeff: 0.01
-      timeout_ms: 300
+      gae_lambda: 0.95
+      gamma: 0.99
+      max_grad_norm: 0.5
+      ppo_epochs: 4
+      batch_size: 64
+      # Network architecture
+      obs_size: 48
+      act_size: 2
+      hidden_size: 128
+      # Performance settings
+      timeout_ms: 500
+      max_processing_time_ms: 500
+      circuit_breaker_threshold: 3
+      # Debug
+      debug: false
 
   # Memory
   UnifiedMemory:

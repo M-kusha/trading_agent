@@ -383,9 +383,11 @@ class MarketDataConfig:
     
     # Symbols and timeframes
     supported_symbols: List[str] = field(default_factory=lambda: ["XAU_USD", "EUR_USD"])
-    # Default multi-timeframe set including M15 micro, H1/H4/D1 higher frames.
+    # Default multi-timeframe set: M15 primary, H1/H4/D1 for context.
     supported_timeframes: List[str] = field(default_factory=lambda: ["M15", "H1", "H4", "D1"])
-    primary_timeframe: str = "H4"        # drives time advancement
+    # M15 is the primary trading timeframe (decision/execution level).
+    # H1/H4/D1 are used only as context/confirmation filters.
+    primary_timeframe: str = "M15"       # drives time advancement
     
     # Data settings
     update_frequency: float = 1.0        # seconds between updates in live mode (0 = no throttling)
@@ -878,13 +880,35 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         try:
             tick = mt5.symbol_info_tick(mt5_symbol)
             if tick is None:
+                self.debug.log_generic("WARNING", "TICK_VALIDATION", f"MT5 returned None for {symbol}")
+                return None
+
+            # Validate tick data
+            try:
+                bid = float(tick.bid)
+                ask = float(tick.ask)
+                last = float(tick.last)
+                time_ts = datetime.datetime.fromtimestamp(tick.time)
+            except (TypeError, ValueError):
+                self.debug.log_generic("WARNING", "TICK_VALIDATION", f"Invalid numeric conversion for {symbol}")
+                return None
+
+            # Check for finite positive numbers and logical bid<ask
+            if not (math.isfinite(bid) and math.isfinite(ask) and math.isfinite(last)):
+                self.debug.log_generic("WARNING", "TICK_VALIDATION", f"Non-finite tick values for {symbol}: bid={bid}, ask={ask}, last={last}")
+                return None
+            if bid <= 0 or ask <= 0 or last <= 0:
+                self.debug.log_generic("WARNING", "TICK_VALIDATION", f"Non-positive tick prices for {symbol}: bid={bid}, ask={ask}, last={last}")
+                return None
+            if bid >= ask:
+                self.debug.log_generic("WARNING", "TICK_VALIDATION", f"Bid >= Ask for {symbol}: bid={bid}, ask={ask}")
                 return None
 
             return {
-                "bid": float(tick.bid),
-                "ask": float(tick.ask),
-                "last": float(tick.last),
-                "time": datetime.datetime.fromtimestamp(tick.time),
+                "bid": bid,
+                "ask": ask,
+                "last": last,
+                "time": time_ts,
                 "volume": int(tick.volume),
             }
         except Exception as e:

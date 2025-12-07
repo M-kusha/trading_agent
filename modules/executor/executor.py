@@ -583,6 +583,199 @@ class Executor(BaseModule):
             pass
 
         # ==========================================================
+        # v4.2.0: RISK CONTROLLER INTEGRATION
+        # Check DynamicRiskController for emergency mode or critical risk
+        # NOTE: risk_scale sizing is handled by UnifiedLotCalculator (single source of truth)
+        # Here we only check for hard VETO conditions (emergency, critical)
+        # ==========================================================
+        risk_veto = False
+        risk_veto_reason = ""
+        try:
+            risk_assessment = self.bus.get("risk_assessment", "Executor", default=None)
+            risk_level = self.bus.get("risk_level", "Executor", default=None)
+            
+            # Check for emergency mode - HARD VETO
+            if isinstance(risk_assessment, dict):
+                if risk_assessment.get("emergency_active", False):
+                    risk_veto = True
+                    risk_veto_reason = "EMERGENCY_MODE_ACTIVE"
+                    self.logger.warning(format_operator_message(
+                        icon="🚨",
+                        message="RISK_EMERGENCY_MODE",
+                        reason="DynamicRiskController in emergency mode - blocking new positions",
+                    ))
+            
+            # Check for critical risk level - HARD VETO
+            if isinstance(risk_level, str) and risk_level.upper() == "CRITICAL":
+                risk_veto = True
+                risk_veto_reason = "RISK_LEVEL_CRITICAL"
+                self.logger.warning(format_operator_message(
+                    icon="⛔",
+                    message="RISK_LEVEL_CRITICAL",
+                    reason="DynamicRiskController reports critical risk level",
+                ))
+            
+            # NOTE: risk_scale_multiplier REMOVED - UnifiedLotCalculator handles position sizing
+            # Executor only does VETO checks, not sizing adjustments
+        except Exception:
+            pass
+
+        # ==========================================================
+        # STRATEGY MODULE INTEGRATION (v3.0)
+        # Apply CurriculumPlannerPlus constraints and BiasAuditor adjustments
+        # ==========================================================
+        strategy_position_multiplier: float = 1.0
+        strategy_max_trades_per_day: int = 50  # Default high limit
+        curriculum_stage: str = "Expert"       # Default to no restrictions
+        bias_active: List[str] = []
+        
+        try:
+            # BiasAuditor: position size multiplier
+            bias_adjustments = self.bus.get("bias_adjustments", "Executor", default=None)
+            if isinstance(bias_adjustments, dict):
+                strategy_position_multiplier = float(bias_adjustments.get("position_size_multiplier", 1.0) or 1.0)
+                strategy_position_multiplier = max(0.1, min(1.0, strategy_position_multiplier))
+                
+                # Log if bias is reducing position size
+                if strategy_position_multiplier < 0.95:
+                    bias_analysis = self.bus.get("bias_analysis", "Executor", default={}) or {}
+                    ind_biases = bias_analysis.get("individual_biases", {})
+                    if isinstance(ind_biases, dict):
+                        bias_active = [k for k, v in ind_biases.items() if isinstance(v, dict) and v.get("detected", False)]
+                    self.logger.info(format_operator_message(
+                        icon="🧠",
+                        message="BIAS_POSITION_ADJUSTMENT",
+                        multiplier=f"{strategy_position_multiplier:.2f}",
+                        active_biases=bias_active[:3] if bias_active else ["psychological"],
+                    ))
+            
+            # CurriculumPlannerPlus: learning constraints
+            # NOTE: Only apply curriculum constraints in LIVE mode, not during training (sim)
+            # Training needs freedom to explore - curriculum restrictions should only apply to live trading
+            learning_constraints = self.bus.get("learning_constraints", "Executor", default=None)
+            curriculum_stage_data = self.bus.get("curriculum_stage", "Executor", default=None)
+            
+            # Determine if we're in live mode (adapter connected)
+            is_live_mode = self.adapter and self.adapter.is_connected()
+            
+            if isinstance(learning_constraints, dict) and is_live_mode:
+                # Max position size constraint (applied to strategy_position_multiplier)
+                # ONLY in live mode - training should explore full position sizes
+                max_pos = float(learning_constraints.get("max_position_size", 1.0) or 1.0)
+                if max_pos < 1.0:
+                    strategy_position_multiplier = min(strategy_position_multiplier, max_pos)
+                
+                # Max trades per day constraint (ONLY in live mode)
+                strategy_max_trades_per_day = int(learning_constraints.get("max_trades_per_day", 50) or 50)
+            elif not is_live_mode:
+                # Training mode: allow unlimited trades and full position sizes for exploration
+                strategy_max_trades_per_day = 9999  # Effectively unlimited
+                # Log only once per session to avoid spam
+                pass
+            
+            if isinstance(curriculum_stage_data, dict):
+                curriculum_stage = str(curriculum_stage_data.get("name", "Expert") or "Expert")
+                
+                # Log curriculum-based constraints (only in live mode)
+                if curriculum_stage in ("Foundation", "Basic") and is_live_mode:
+                    self.logger.debug(format_operator_message(
+                        icon="📚",
+                        message="CURRICULUM_CONSTRAINTS_ACTIVE",
+                        stage=curriculum_stage,
+                        max_position_multiplier=f"{strategy_position_multiplier:.2f}",
+                        max_trades=strategy_max_trades_per_day,
+                    ))
+        except Exception:
+            pass
+        
+        # Track trades today for curriculum enforcement
+        trades_today = 0
+        try:
+            if self.trades:
+                today_start = dt.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+                trades_today = sum(1 for t in self.trades[-200:] 
+                                   if isinstance(t, dict) and t.get("ts", 0) >= today_start.timestamp())
+        except Exception:
+            pass
+
+        # ==========================================================
+        # TRADING MODE INTEGRATION (v4.0)
+        # Apply TradingModeManager constraints for position sizing and risk
+        # ==========================================================
+        trading_mode_name: str = "normal"
+        trading_mode_position_scale: float = 1.0
+        trading_mode_max_exposure: float = 0.5
+        trading_mode_risk_multiplier: float = 1.0
+        trading_mode_stop_loss_multiplier: float = 1.0
+        
+        try:
+            trading_mode = self.bus.get("trading_mode", "Executor", default=None)
+            mode_config = self.bus.get("mode_config", "Executor", default=None)
+            mode_effectiveness = self.bus.get("mode_effectiveness", "Executor", default=None)
+            
+            if isinstance(trading_mode, str):
+                trading_mode_name = trading_mode.lower()
+            
+            if isinstance(mode_config, dict):
+                trading_mode_position_scale = float(mode_config.get("position_scale", 1.0) or 1.0)
+                trading_mode_position_scale = max(0.25, min(2.0, trading_mode_position_scale))
+                
+                trading_mode_max_exposure = float(mode_config.get("max_exposure", 0.5) or 0.5)
+                trading_mode_max_exposure = max(0.1, min(1.0, trading_mode_max_exposure))
+                
+                trading_mode_risk_multiplier = float(mode_config.get("risk_multiplier", 1.0) or 1.0)
+                trading_mode_risk_multiplier = max(0.25, min(4.0, trading_mode_risk_multiplier))
+                
+                trading_mode_stop_loss_multiplier = float(mode_config.get("stop_loss_multiplier", 1.0) or 1.0)
+                trading_mode_stop_loss_multiplier = max(0.5, min(2.0, trading_mode_stop_loss_multiplier))
+            
+            # Log trading mode constraints if not normal
+            if trading_mode_name != "normal" or trading_mode_position_scale != 1.0:
+                eff_value = None
+                if mode_effectiveness is not None:
+                    try:
+                        eff_value = float(mode_effectiveness) if not isinstance(mode_effectiveness, dict) else float(mode_effectiveness.get("value", mode_effectiveness.get("effectiveness", 0.5)))
+                    except (TypeError, ValueError):
+                        eff_value = None
+                
+                self.logger.info(format_operator_message(
+                    icon="⚙️",
+                    message="TRADING_MODE_CONSTRAINTS",
+                    mode=trading_mode_name.upper(),
+                    position_scale=f"{trading_mode_position_scale:.2f}",
+                    max_exposure=f"{trading_mode_max_exposure:.2f}",
+                    risk_multiplier=f"{trading_mode_risk_multiplier:.2f}",
+                    effectiveness=f"{eff_value:.2f}" if eff_value else "N/A",
+                ))
+        except Exception:
+            pass
+        
+        # Helper to apply trading mode position sizing
+        def _apply_trading_mode_sizing(intent: Dict[str, Any]) -> Dict[str, Any]:
+            """Apply TradingModeManager position scale and max exposure."""
+            if trading_mode_position_scale >= 0.99 and trading_mode_position_scale <= 1.01:
+                return intent  # No adjustment needed
+            
+            # Apply position scale to size_eur if present
+            if "size_eur" in intent and intent["size_eur"]:
+                original_size = float(intent["size_eur"])
+                intent["size_eur"] = original_size * trading_mode_position_scale
+                intent["_trading_mode_sizing"] = {
+                    "original_size": original_size,
+                    "position_scale": trading_mode_position_scale,
+                    "mode": trading_mode_name,
+                    "max_exposure": trading_mode_max_exposure,
+                    "risk_multiplier": trading_mode_risk_multiplier,
+                }
+            
+            # Apply scale to units if present
+            if "units" in intent and intent.get("units"):
+                original_units = float(intent["units"])
+                intent["units"] = original_units * trading_mode_position_scale
+            
+            return intent
+
+        # ==========================================================
         # PORTFOLIO RISK ENFORCEMENT: DISABLED FOR PROP FIRMS
         # Prop firms only care about P&L drawdown, NOT notional exposure.
         # This check was blocking positions based on exposure % which is
@@ -597,13 +790,52 @@ class Executor(BaseModule):
         def _is_instrument_vetoed(inst: str) -> bool:
             if memory_veto:
                 return True  # Global veto blocks all
+            if risk_veto:
+                return True  # Risk veto blocks all new positions
             normalized = str(inst).upper().replace("/", "_")
             return normalized in vetoed_instruments
+        
+        # Helper to get veto reason
+        def _get_veto_reason() -> Tuple[str, List[str]]:
+            if memory_veto:
+                return "memory_veto", memory_veto_reasons
+            if risk_veto:
+                return "risk_veto", [risk_veto_reason]
+            return "instrument_veto", ["Instrument on veto list"]
         
         # Helper to check if instrument is blocked by risk limits
         def _is_risk_blocked(inst: str, action: str) -> bool:
             """DISABLED: Prop firms don't care about notional exposure"""
             return False  # Never block based on exposure for prop firms
+        
+        # Helper to check curriculum trade limit
+        def _exceeds_curriculum_trade_limit() -> bool:
+            """Check if today's trades exceed curriculum limit."""
+            return trades_today >= strategy_max_trades_per_day
+        
+        # Helper to apply strategy position size multiplier
+        def _apply_strategy_sizing(intent: Dict[str, Any]) -> Dict[str, Any]:
+            """Apply BiasAuditor and CurriculumPlanner position size adjustments."""
+            if strategy_position_multiplier >= 0.99:
+                return intent  # No adjustment needed
+            
+            # Apply multiplier to size_eur if present
+            if "size_eur" in intent and intent["size_eur"]:
+                original_size = float(intent["size_eur"])
+                intent["size_eur"] = original_size * strategy_position_multiplier
+                intent["_strategy_sizing"] = {
+                    "original_size": original_size,
+                    "multiplier": strategy_position_multiplier,
+                    "curriculum_stage": curriculum_stage,
+                    "active_biases": bias_active,
+                }
+            
+            # Apply multiplier to units if present
+            if "units" in intent and intent.get("units"):
+                original_units = float(intent["units"])
+                intent["units"] = original_units * strategy_position_multiplier
+            
+            return intent
 
         # explicit order_queue
         oq = self.bus.get("order_queue", "Executor", default=[])
@@ -613,18 +845,36 @@ class Executor(BaseModule):
                 intent = self._normalize_order_item(item)
                 if not intent:
                     rejected.append({"reason": "bad_order_queue_item", "raw": item})
-                # Memory veto check - reject new opening orders (global OR per-instrument)
+                # Memory/Risk veto check - reject new opening orders (global OR per-instrument)
                 elif intent.get("action", "").lower() in ("open_long", "open_short", "buy", "sell", "scale_up"):
                     inst = intent.get("instrument", "")
                     action = intent.get("action", "")
-                    # First check memory veto
+                    # First check memory or risk veto
                     if _is_instrument_vetoed(inst):
+                        veto_reason, veto_reasons = _get_veto_reason()
                         rejected.append({
-                            "reason": "memory_veto",
+                            "reason": veto_reason,
                             "intent": intent,
-                            "memory_reasons": memory_veto_reasons if memory_veto else [f"Instrument {inst} on loss streak"],
+                            "veto_reasons": veto_reasons,
                             "vetoed_instrument": inst,
                         })
+                        continue
+                    # Check curriculum trade limit
+                    if _exceeds_curriculum_trade_limit():
+                        rejected.append({
+                            "reason": "curriculum_trade_limit",
+                            "intent": intent,
+                            "message": f"Daily trade limit ({strategy_max_trades_per_day}) reached for curriculum stage '{curriculum_stage}'",
+                            "trades_today": trades_today,
+                            "curriculum_stage": curriculum_stage,
+                        })
+                        self.logger.info(format_operator_message(
+                            icon="📚",
+                            message="ORDER_BLOCKED_CURRICULUM_LIMIT",
+                            trades_today=trades_today,
+                            max_trades=strategy_max_trades_per_day,
+                            stage=curriculum_stage,
+                        ))
                         continue
                     # Then check portfolio risk limits
                     if _is_risk_blocked(inst, action):
@@ -642,6 +892,10 @@ class Executor(BaseModule):
                             reason="Position size exceeds limit",
                         ))
                         continue
+                    # Apply strategy position sizing (BiasAuditor + CurriculumPlanner)
+                    intent = _apply_strategy_sizing(intent)
+                    # Apply trading mode position sizing
+                    intent = _apply_trading_mode_sizing(intent)
                     if self._passes_filters(intent):
                         if intent["id"] not in self._seen_ids:
                             accepted.append(intent)
@@ -1158,6 +1412,19 @@ class Executor(BaseModule):
         if not self.adapter or not self.adapter.is_connected():
             return fills, 0.0
 
+        # ═══════════════════════════════════════════════════════════════
+        # PROP FIRM SAFETY CHECK - Block ALL new trades if limits breached
+        # ═══════════════════════════════════════════════════════════════
+        prop_limits = self.lot_calculator.check_prop_firm_limits()
+        if not prop_limits.get("can_trade", True):
+            self.logger.warning(
+                f"[LIVE] 🚫 PROP FIRM BLOCK: Trading halted - {prop_limits.get('warnings', [])}"
+            )
+            # Only allow close actions, block all opens
+            intents = [i for i in intents if str(i.get("action", "")).lower() in ("close", "close_all", "scale_down")]
+            if not intents:
+                return fills, 0.0
+
         acct_before = self.adapter.get_account_info()
         eq_before = float(acct_before.get("equity", 0.0) or 0.0)
         try:
@@ -1331,6 +1598,19 @@ class Executor(BaseModule):
         fills: List[Dict[str, Any]] = []
         if not self.adapter or not self.adapter.is_connected():
             return fills, 0.0
+
+        # ═══════════════════════════════════════════════════════════════
+        # PROP FIRM SAFETY CHECK - Block ALL new trades if limits breached
+        # ═══════════════════════════════════════════════════════════════
+        prop_limits = self.lot_calculator.check_prop_firm_limits()
+        if not prop_limits.get("can_trade", True):
+            self.logger.warning(
+                f"[SMART] 🚫 PROP FIRM BLOCK: Trading halted - {prop_limits.get('warnings', [])}"
+            )
+            # Only allow close actions, block all opens
+            intents = [i for i in intents if str(i.get("action", "")).lower() in ("close", "close_all", "scale_down")]
+            if not intents:
+                return fills, 0.0
 
         acct_before = self.adapter.get_account_info()
         eq_before = float(acct_before.get("equity", 0.0) or 0.0)

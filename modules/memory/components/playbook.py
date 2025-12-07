@@ -44,6 +44,14 @@ class PlaybookComponent(MemoryComponent):
         self.timestamps: List[float] = []
         self.trade_metadata: List[Dict[str, Any]] = []
         
+        # NEW: Per-instrument indexes for filtered recall
+        # Maps instrument -> list of indices into self.features/pnls/etc.
+        self.instrument_indices: Dict[str, List[int]] = {}
+        
+        # Per-instrument KNN models (fit only when requested for specific instrument)
+        self.knn_models_by_instrument: Dict[str, NearestNeighbors] = {}
+        self.scalers_by_instrument: Dict[str, StandardScaler] = {}
+        
         # Track processed trade IDs to avoid double-counting
         self._processed_trade_ids: set = set()
 
@@ -266,12 +274,22 @@ class PlaybookComponent(MemoryComponent):
                 "instrument": instrument,
             }
         )
+        
+        # NEW: Update per-instrument index
+        current_idx = len(self.features) - 1
+        if instrument not in self.instrument_indices:
+            self.instrument_indices[instrument] = []
+        self.instrument_indices[instrument].append(current_idx)
 
         # Pattern tracking (includes instrument for per-instrument analysis)
         self._update_pattern_tracking(market_context, float(pnl), instrument)
         
-        # Model is now stale until re-fit (we fit lazily in process)
+        # Models are now stale until re-fit
         self.knn_fitted = False
+        # Also invalidate per-instrument model for this instrument
+        if instrument in self.knn_models_by_instrument:
+            del self.knn_models_by_instrument[instrument]
+            del self.scalers_by_instrument[instrument]
 
     def _update_pattern_tracking(self, context: Dict[str, Any], pnl: float, instrument: str = "UNKNOWN") -> None:
         """Update effectiveness stats keyed by (instrument_regime_vol_session)."""
@@ -342,10 +360,74 @@ class PlaybookComponent(MemoryComponent):
         except Exception as e:
             self.log_error("Model fitting failed", e)
             self.knn_fitted = False
+    
+    def _fit_model_for_instrument(self, instrument: str) -> bool:
+        """
+        Fit a per-instrument KNN model (lazy, on-demand).
+        
+        This allows recall to prefer same-instrument patterns, which is critical
+        because XAUUSD and EURUSD have very different characteristics.
+        
+        Args:
+            instrument: The instrument to fit a model for (e.g., "XAUUSD", "EURUSD")
+            
+        Returns:
+            True if model was successfully fitted, False otherwise
+        """
+        try:
+            indices = self.instrument_indices.get(instrument, [])
+            
+            if len(indices) < self.k_neighbors:
+                return False
+            
+            # Extract features for this instrument only
+            X = np.vstack([self.features[i] for i in indices])
+            
+            # Fit instrument-specific scaler
+            scaler = StandardScaler()
+            X_scaled = scaler.fit_transform(X)
+            
+            # Fit instrument-specific KNN
+            knn = NearestNeighbors(
+                n_neighbors=min(self.k_neighbors, len(indices)),
+                metric="euclidean",
+            )
+            knn.fit(X_scaled)
+            
+            # Store
+            self.scalers_by_instrument[instrument] = scaler
+            self.knn_models_by_instrument[instrument] = knn
+            
+            self._log_debug(
+                "knn_fitted_instrument",
+                details={"instrument": instrument, "n_samples": len(indices), "k": min(self.k_neighbors, len(indices))},
+            )
+            return True
+            
+        except Exception as e:
+            self.log_error(f"Per-instrument model fitting failed for {instrument}", e)
+            return False
 
     async def _perform_recall(self, context: Dict[str, Any]) -> Dict[str, Any]:
-        """Recall similar past trades and propose an action."""
+        """
+        Recall similar past trades and propose an action.
+        
+        Per-instrument recall: Preferentially uses trades from the same instrument
+        to ensure XAUUSD patterns don't influence EURUSD decisions (and vice versa).
+        Falls back to global model if insufficient same-instrument data.
+        """
         try:
+            # Get current instrument from context
+            current_instrument = self._extract_current_instrument(context)
+            
+            # Try per-instrument recall first (preferred)
+            instrument_recall_result = await self._perform_instrument_recall(context, current_instrument)
+            if instrument_recall_result.get("recall_performed"):
+                instrument_recall_result["recall_type"] = "per_instrument"
+                instrument_recall_result["instrument"] = current_instrument
+                return instrument_recall_result
+            
+            # Fall back to global model
             if not self.knn_fitted or self.knn_model is None or not self._scaler_fitted or len(self.features) == 0:
                 return {"recall_performed": False, "reason": "model_not_fitted"}
 
@@ -394,6 +476,12 @@ class PlaybookComponent(MemoryComponent):
             # non-scalar objects in self.pnls.
             similar_pnls = [safe_float(self.pnls[i], 0.0) for i in idx]
             similar_actions = [self.actions[i] for i in idx]
+            
+            # Get instruments of matched trades for transparency
+            matched_instruments = [
+                self.trade_metadata[i].get("instrument", "UNKNOWN") 
+                for i in idx if i < len(self.trade_metadata)
+            ]
 
             expected_pnl = float(np.mean(similar_pnls)) if similar_pnls else 0.0
 
@@ -453,17 +541,168 @@ class PlaybookComponent(MemoryComponent):
 
             return {
                 "recall_performed": True,
+                "recall_type": "global",  # Indicate this was global (fallback) recall
                 "expected_pnl": expected_pnl,
                 "confidence": confidence,
                 "recommended_action": recommended_action.astype(np.float32).tolist(),
                 "similar_trades": len(idx),
                 "profitable_matches": profitable_matches,
+                "matched_instruments": matched_instruments,  # Show which instruments were matched
                 # New fields for memory_vote composition
                 "signed_bias": signed_bias,
                 "top_neighbors": top_neighbors,
             }
         except Exception as e:
             self.log_error("Recall failed", e)
+            return {"recall_performed": False, "error": str(e)}
+    
+    def _extract_current_instrument(self, context: Dict[str, Any]) -> str:
+        """Extract current instrument from context."""
+        # Try multiple sources
+        market_context = context.get("market_context", {}) or {}
+        
+        # Priority: market_context.instrument > market_context.symbol > context.instrument
+        instrument = (
+            market_context.get("instrument") or
+            market_context.get("symbol") or
+            context.get("instrument") or
+            context.get("symbol") or
+            "UNKNOWN"
+        )
+        
+        # Normalize common variations
+        instrument = str(instrument).upper().replace("/", "").replace("_", "")
+        return instrument
+    
+    async def _perform_instrument_recall(
+        self, context: Dict[str, Any], instrument: str
+    ) -> Dict[str, Any]:
+        """
+        Perform recall using only same-instrument trades.
+        
+        This ensures XAUUSD doesn't get influenced by EURUSD patterns.
+        
+        Args:
+            context: The current market context
+            instrument: The instrument to recall for
+            
+        Returns:
+            Recall result dict, or {"recall_performed": False} if insufficient data
+        """
+        try:
+            indices = self.instrument_indices.get(instrument, [])
+            
+            # Need at least k_neighbors samples for meaningful recall
+            if len(indices) < self.k_neighbors:
+                return {"recall_performed": False, "reason": f"insufficient_{instrument}_samples"}
+            
+            # Fit model if needed
+            if instrument not in self.knn_models_by_instrument:
+                if not self._fit_model_for_instrument(instrument):
+                    return {"recall_performed": False, "reason": f"fit_failed_{instrument}"}
+            
+            knn_model = self.knn_models_by_instrument[instrument]
+            scaler = self.scalers_by_instrument[instrument]
+            
+            # Get query features (same logic as global recall)
+            query_features = context.get("query_features")
+            if query_features is None:
+                market_context = context.get("market_context", {}) or {}
+                prices = context.get("prices", {}) or {}
+                query_features = self._create_query_features(market_context, prices)
+            elif isinstance(query_features, dict):
+                if "raw_features" in query_features:
+                    query_features = query_features["raw_features"]
+                elif "features" in query_features and isinstance(query_features["features"], dict):
+                    inner = query_features["features"]
+                    if "raw_features" in inner:
+                        query_features = inner["raw_features"]
+            
+            q = np.asarray(query_features, dtype=np.float32).reshape(1, -1)
+            q_scaled = scaler.transform(q)
+            
+            distances, local_indices = knn_model.kneighbors(q_scaled)
+            dists = distances[0].astype(np.float32)
+            
+            # Map local indices back to global indices
+            global_idx = [indices[i] for i in local_indices[0].tolist()]
+            
+            # Get similar trades data
+            similar_pnls = [safe_float(self.pnls[i], 0.0) for i in global_idx]
+            similar_actions = [self.actions[i] for i in global_idx]
+            
+            expected_pnl = float(np.mean(similar_pnls)) if similar_pnls else 0.0
+            
+            # Confidence from distance
+            d_mean = float(np.mean(dists)) if dists.size else 0.0
+            confidence = float(np.exp(-d_mean))
+            
+            # Boost confidence for per-instrument recall (same-instrument is more reliable)
+            confidence = min(1.0, confidence * 1.1)
+            
+            # Weights
+            w = np.exp(-dists)
+            w_sum = float(np.sum(w))
+            if not np.isfinite(w_sum) or w_sum <= self._EPS:
+                w = np.full_like(dists, 1.0 / max(1, dists.size), dtype=np.float32)
+            else:
+                w = w / (w_sum + self._EPS)
+            
+            # Weighted action recommendation
+            if similar_actions:
+                A = np.vstack(similar_actions)
+                recommended_action = (A * w.reshape(-1, 1)).sum(axis=0)
+            else:
+                recommended_action = np.zeros(2, dtype=np.float32)
+            
+            profitable_matches = int(np.sum(np.asarray(similar_pnls) > 0.0))
+            
+            # signed_bias
+            pnl_scale = 20.0
+            signed_bias = float(np.tanh(expected_pnl / pnl_scale))
+            
+            # top neighbors
+            top_neighbors: List[Dict[str, Any]] = []
+            for i, (dist_val, pnl_val) in enumerate(zip(dists.tolist(), similar_pnls)):
+                global_i = global_idx[i]
+                if global_i < len(self.timestamps):
+                    age_h = (time.time() - self.timestamps[global_i]) / 3600.0
+                else:
+                    age_h = 0.0
+                
+                top_neighbors.append({
+                    "sim": round(float(np.exp(-dist_val)), 3),
+                    "pnl": round(pnl_val, 2),
+                    "age_h": round(age_h, 1),
+                    "dist": round(float(dist_val), 3),
+                    "instrument": instrument,  # All same instrument
+                })
+            
+            # Record recall
+            self.recall_history.append({
+                "timestamp": time.time(),
+                "expected_pnl": expected_pnl,
+                "confidence": confidence,
+                "similar_trades": len(global_idx),
+                "signed_bias": signed_bias,
+                "instrument": instrument,
+                "recall_type": "per_instrument",
+            })
+            
+            return {
+                "recall_performed": True,
+                "expected_pnl": expected_pnl,
+                "confidence": confidence,
+                "recommended_action": recommended_action.astype(np.float32).tolist(),
+                "similar_trades": len(global_idx),
+                "profitable_matches": profitable_matches,
+                "signed_bias": signed_bias,
+                "top_neighbors": top_neighbors,
+                "instrument_samples": len(indices),
+            }
+            
+        except Exception as e:
+            self.log_error(f"Per-instrument recall failed for {instrument}", e)
             return {"recall_performed": False, "error": str(e)}
 
     def _create_query_features(self, market_context: Dict[str, Any], prices: Dict[str, Any]) -> np.ndarray:

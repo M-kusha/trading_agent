@@ -1,13 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(rg:*)",
-      "Bash(python:*)",
-      "Bash(find:*)",
-      "Bash(cp:*)",
-      "Bash(awk:*)",
-      "WebSearch",
-      "Bash(del test_visualizer.py)"
+      "Bash(xargs:*)",
+      "Bash(\"C:\\Users\\Kushtrimi\\Desktop\\AI\\.venv\\Scripts\\python.exe\":*)"
     ],
     "deny": [],
     "ask": []

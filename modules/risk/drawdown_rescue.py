@@ -11,7 +11,7 @@ import numpy as np
 import datetime
 import time
 import threading
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from typing import Dict, Any, List, Optional
 from collections import deque, defaultdict
 
@@ -26,7 +26,6 @@ from modules.utils.info_bus import InfoBusManager
 from modules.utils.audit_utils import RotatingLogger, format_operator_message
 from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 from modules.monitoring.performance_tracker import PerformanceTracker
-from modules.utils.circuit_breaker_utils import migrate_dict_breaker
 
 
 # ─────────────────────────────────────────────────────────────
@@ -36,23 +35,31 @@ def _load_drawdown_rescue_config_from_yaml() -> Dict[str, Any]:
     """Load drawdown rescue config values from risk_policy.yaml."""
     import yaml
     import os
-    defaults = {}
+
+    defaults: Dict[str, Any] = {}
     try:
-        config_path = os.path.join(os.path.dirname(__file__), "..", "..", "config", "risk_policy.yaml")
+        config_path = os.path.join(
+            os.path.dirname(__file__),
+            "..",
+            "..",
+            "config",
+            "risk_policy.yaml",
+        )
         if os.path.exists(config_path):
             with open(config_path, "r", encoding="utf-8") as f:
                 policy = yaml.safe_load(f) or {}
-            
+
             limits = policy.get("limits", {})
             escalation = policy.get("escalation", {})
             modules_cfg = policy.get("modules", {}).get("DrawdownRescue", {})
-            
+
             # Map escalation thresholds to rescue thresholds
             defaults["dd_limit"] = float(limits.get("max_drawdown", 0.085))
             defaults["warning_dd"] = float(escalation.get("warning_threshold", 0.025))
             defaults["info_dd"] = float(escalation.get("alert_threshold", 0.015))
             defaults["recovery_threshold"] = float(modules_cfg.get("recovery_target", 0.05))
     except Exception:
+        # YAML load failure should not break the module; fall back to defaults
         pass
     return defaults
 
@@ -60,6 +67,7 @@ def _load_drawdown_rescue_config_from_yaml() -> Dict[str, Any]:
 @dataclass
 class DrawdownRescueConfig:
     """Configuration loaded from risk_policy.yaml"""
+
     # Thresholds (fractions 0..1) - from risk_policy.yaml
     dd_limit: float = 0.085         # From limits.max_drawdown
     warning_dd: float = 0.025       # From escalation.warning_threshold
@@ -88,31 +96,31 @@ class DrawdownRescueConfig:
     # Monitoring / health
     health_check_interval: int = 30
     circuit_breaker_threshold: int = 5
-    
-    def __post_init__(self):
-        """Load values from risk_policy.yaml after init."""
-        yaml_config = _load_drawdown_rescue_config_from_yaml()
-        for key, value in yaml_config.items():
-            if hasattr(self, key):
-                setattr(self, key, value)
     circuit_breaker_cooldown_sec: float = 20.0
     max_processing_time_ms: float = 60.0
     status_key: str = "drawdown_rescue_status"
     health_key: str = "drawdown_rescue_health"
 
+    def __post_init__(self) -> None:
+        """Load values from risk_policy.yaml after init."""
+        yaml_config = _load_drawdown_rescue_config_from_yaml()
+        for key, value in yaml_config.items():
+            if hasattr(self, key):
+                setattr(self, key, value)
+
 
 # ─────────────────────────────────────────────────────────────
 # Module
 # ─────────────────────────────────────────────────────────────
-@module(**module_args(
-    "DrawdownRescue",
-    description="Enhanced drawdown monitoring with intelligent rescue mechanisms and risk adjustment",
-    error_handling=True,
-    hot_reload=True,
-    timeout_ms=3000,
-))
-
-
+@module(
+    **module_args(
+        "DrawdownRescue",
+        description="Enhanced drawdown monitoring with intelligent rescue mechanisms and risk adjustment",
+        error_handling=True,
+        hot_reload=True,
+        timeout_ms=3000,
+    )
+)
 class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, SmartInfoBusTradingMixin):
     """
     Contract guarantees:
@@ -123,78 +131,79 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
     """
 
     # ── init & systems ───────────────────────────────────────
-    def __init__(self, config: Optional[Dict[str, Any]] = None, **kwargs):
-        # Merge typed config with dict overrides (only known keys)
-        cfg_dict = asdict(DrawdownRescueConfig())
+    def __init__(self, config: Optional[Dict[str, Any]] = None, **kwargs: Any):
+        # Proper layering: defaults -> YAML -> explicit config
+        base_cfg = DrawdownRescueConfig()  # includes YAML overrides via __post_init__
         if isinstance(config, dict):
             for k, v in config.items():
-                if k in cfg_dict:
-                    cfg_dict[k] = v
-        self._cfg = DrawdownRescueConfig(**cfg_dict)
+                if hasattr(base_cfg, k):
+                    setattr(base_cfg, k, v)
+        self._cfg = base_cfg
         self.config = config or {}
 
         # Initialize low-level systems BEFORE BaseModule may call _initialize()
         self._initialize_advanced_systems()
+
         # Debug flag for conditional logging in methods
         self.debug: bool = bool(getattr(self, "debug", False))
 
         # Circuit breaker & health state
-        self.circuit_breaker = {
+        self.circuit_breaker: Dict[str, Any] = {
             "failures": 0,
             "last_failure": 0.0,
             "state": "CLOSED",
             "threshold": int(self._cfg.circuit_breaker_threshold),
             "cooldown_sec": float(self._cfg.circuit_breaker_cooldown_sec),
         }
-        self._processing_times = deque(maxlen=100)  # seconds per cycle
-        self._health_status = "healthy"
-        self._monitoring_active = False
+        self._processing_times: deque[float] = deque(maxlen=100)  # seconds per cycle
+        self._health_status: str = "healthy"
+        self._monitoring_active: bool = False
 
         # Configuration mirror (for fast access)
-        self.dd_limit = float(self._cfg.dd_limit)
-        self.warning_dd = float(self._cfg.warning_dd)
-        self.info_dd = float(self._cfg.info_dd)
-        self.recovery_threshold = float(self._cfg.recovery_threshold)
-        self.velocity_window = int(self._cfg.velocity_window)
-        self.enabled = bool(self._cfg.enabled)
-        self.rescue_mode_enabled = bool(self._cfg.rescue_mode_default)
-        self.adaptive_thresholds = bool(self._cfg.adaptive_thresholds)
+        self.dd_limit: float = float(self._cfg.dd_limit)
+        self.warning_dd: float = float(self._cfg.warning_dd)
+        self.info_dd: float = float(self._cfg.info_dd)
+        self.recovery_threshold: float = float(self._cfg.recovery_threshold)
+        self.velocity_window: int = int(self._cfg.velocity_window)
+        self.enabled: bool = bool(self._cfg.enabled)
+        self.rescue_mode_enabled: bool = bool(self._cfg.rescue_mode_default)
+        self.adaptive_thresholds: bool = bool(self._cfg.adaptive_thresholds)
 
         # Core state
-        self.current_dd = 0.0
-        self.max_dd = 0.0
-        self.peak_balance = 0.0
-        self.dd_velocity = 0.0
-        self.dd_acceleration = 0.0
-        self.severity_level = "normal"
+        self.current_dd: float = 0.0
+        self.max_dd: float = 0.0
+        self.peak_balance: float = 0.0
+        self.dd_velocity: float = 0.0
+        self.dd_acceleration: float = 0.0
+        self.severity_level: str = "normal"
 
         # Rescue system state
-        self.rescue_mode = False
+        self.rescue_mode: bool = False
         self.rescue_start_time: Optional[datetime.datetime] = None
-        self.risk_adjustment_factor = 1.0
-        self.rescue_intervention_count = 0
+        self.risk_adjustment_factor: float = 1.0
+        self.rescue_intervention_count: int = 0
 
         # Analytics / history
-        self.dd_history: deque = deque(maxlen=self.velocity_window)
-        self.balance_history: deque = deque(maxlen=int(self._cfg.lookback_balance))
+        self.dd_history: deque[float] = deque(maxlen=self.velocity_window)
+        self.balance_history: deque[Dict[str, Any]] = deque(maxlen=int(self._cfg.lookback_balance))
         self.recovery_events: List[Dict[str, Any]] = []
-        self.regime_drawdowns = defaultdict(list)
+        self.regime_drawdowns: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
 
         # Performance counters
-        self.step_count = 0
-        self.successful_recoveries = 0
-        self.false_alarms = 0
-        self.emergency_interventions = 0
+        self.step_count: int = 0
+        self.successful_recoveries: int = 0
+        self.false_alarms: int = 0
+        self.emergency_interventions: int = 0
 
         # Dynamic thresholds (mutable)
-        self.current_thresholds = {
+        self.current_thresholds: Dict[str, float] = {
             "dd_limit": self.dd_limit,
             "warning_dd": self.warning_dd,
             "info_dd": self.info_dd,
         }
 
         # Context-aware multipliers
-        self.regime_multipliers = {
+        self.regime_multipliers: Dict[str, Dict[str, float]] = {
             "volatile": {"warning": 1.2, "critical": 1.15},
             "trending": {"warning": 0.9, "critical": 0.95},
             "ranging": {"warning": 1.0, "critical": 1.0},
@@ -216,7 +225,7 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
             )
         )
 
-    def _initialize_advanced_systems(self):
+    def _initialize_advanced_systems(self) -> None:
         """Initialize advanced monitoring and error handling systems"""
         self.smart_bus = InfoBusManager.get_instance()
         self.logger = RotatingLogger(
@@ -279,11 +288,11 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
             self.logger.error(f"Rescue initialization failed: {error_context}")
 
     # ── background monitor ───────────────────────────────────
-    def _start_monitoring(self):
+    def _start_monitoring(self) -> None:
         if getattr(self, "_monitoring_active", False):
             return
 
-        def loop():
+        def loop() -> None:
             self._monitoring_active = True
             self.logger.info("[MONITOR] DrawdownRescue health monitor started.")
             while self._monitoring_active:
@@ -315,10 +324,10 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
         t = threading.Thread(target=loop, daemon=True)
         t.start()
 
-    def stop_monitoring(self):
+    def stop_monitoring(self) -> None:
         self._monitoring_active = False
 
-    def _update_health(self):
+    def _update_health(self) -> None:
         try:
             self._health_status = "healthy"
             if len(self._processing_times) >= 10:
@@ -341,7 +350,7 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
         }
 
     # ── confidence & actions (optional API) ──────────────────
-    async def calculate_confidence(self, action: Dict[str, Any], **kwargs) -> float:
+    async def calculate_confidence(self, action: Dict[str, Any], **kwargs: Any) -> float:
         """Calculate confidence score for drawdown rescue assessment"""
         try:
             confidence = 0.9
@@ -381,10 +390,10 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
             self.logger.error(f"Confidence calculation failed: {e}")
             return 0.5
 
-    async def propose_action(self, **kwargs) -> Dict[str, Any]:
+    async def propose_action(self, **kwargs: Any) -> Dict[str, Any]:
         """Propose drawdown rescue actions based on current state"""
         try:
-            proposal = {
+            proposal: Dict[str, Any] = {
                 "action_type": "drawdown_rescue",
                 "timestamp": time.time(),
                 "current_drawdown": float(self.current_dd),
@@ -432,7 +441,11 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
             # Velocity-based signals
             if self.dd_velocity > self._cfg.rapid_velocity:
                 proposal["warnings"].append(
-                    {"type": "rapid_deterioration", "velocity": float(self.dd_velocity), "threshold": float(self._cfg.rapid_velocity)}
+                    {
+                        "type": "rapid_deterioration",
+                        "velocity": float(self.dd_velocity),
+                        "threshold": float(self._cfg.rapid_velocity),
+                    }
                 )
                 proposal["recommendations"].append(
                     {
@@ -456,7 +469,9 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
                 if self.rescue_start_time:
                     dur_h = (datetime.datetime.now() - self.rescue_start_time).total_seconds() / 3600.0
                     if dur_h > 24:
-                        proposal["warnings"].append({"type": "prolonged_rescue", "duration_hours": float(dur_h)})
+                        proposal["warnings"].append(
+                            {"type": "prolonged_rescue", "duration_hours": float(dur_h)}
+                        )
 
             if self.risk_adjustment_factor < 0.8:
                 proposal["adjustments"]["conservative_mode"] = True
@@ -474,6 +489,8 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
                 "warnings": [],
                 "adjustments": {},
             }
+
+    # ── canonical account snapshot ───────────────────────────
     def _read_account_snapshot(self) -> Dict[str, float]:
         """
         Canonical read for balance/equity/PNL from SmartInfoBus.
@@ -481,18 +498,16 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
         """
         pm = self.smart_bus.get("portfolio_metrics", "DrawdownRescue") or {}
         balance = pm.get("balance")
-        equity  = pm.get("equity")
-        pnl     = pm.get("current_pnl")
+        equity = pm.get("equity")
+        pnl = pm.get("current_pnl")
 
-        # Final defaults
         balance = float(balance) if balance is not None else 0.0
-        equity  = float(equity)  if equity  is not None else balance
-        pnl     = float(pnl)     if pnl     is not None else 0.0
+        equity = float(equity) if equity is not None else balance
+        pnl = float(pnl) if pnl is not None else 0.0
         return {"balance": balance, "equity": equity, "current_pnl": pnl}
 
-
-        # ── contract-safe process ────────────────────────────────
-    async def process(self, **kwargs) -> Dict[str, Any]:
+    # ── contract-safe process ────────────────────────────────
+    async def process(self, **kwargs: Any) -> Dict[str, Any]:
         """
         Enhanced drawdown monitoring with comprehensive rescue mechanisms
         Returns all provides + _thesis + success
@@ -512,11 +527,11 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
 
             self.step_count += 1
 
-            # ── CANONICAL READS (updated) ─────────────────────────
+            # Canonical reads
             acct = self._read_account_snapshot()
             balance, equity = acct["balance"], acct["equity"]
-            # keep 'positions' access to satisfy contract 'requires'
-            positions = self.smart_bus.get("positions", "DrawdownRescue") or []
+            # keep 'positions' access to satisfy contract 'requires' (even if unused)
+            _positions = self.smart_bus.get("positions", "DrawdownRescue") or []
             market_context = self.smart_bus.get("market_context", "DrawdownRescue") or {}
 
             # Update balance tracking and peak
@@ -561,12 +576,14 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
                 pass
             return payload
 
-
     # ── SmartInfoBus I/O (single-writer) ─────────────────────
     def _write_bus_from_payload(self, payload: Dict[str, Any], thesis: str) -> None:
         try:
             self.smart_bus.set(
-                "drawdown_risk", payload["drawdown_risk"], module="DrawdownRescue", thesis=thesis
+                "drawdown_risk",
+                payload["drawdown_risk"],
+                module="DrawdownRescue",
+                thesis=thesis,
             )
             self.smart_bus.set(
                 "rescue_status",
@@ -592,9 +609,22 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
         risk_adj: Dict[str, Any],
         thesis: str,
     ) -> Dict[str, Any]:
+        """
+        Format the provides output for SmartInfoBus.
+        
+        v3.1.0: Added dd_velocity, dd_acceleration, risk_adjustment_factor
+        for integration with DynamicRiskController.
+        """
         drawdown_payload = {
             "current_drawdown": float(self.current_dd),
+            "max_drawdown": float(self.max_dd),
             "severity_level": str(self.severity_level),
+            # v3.1.0: Include velocity/acceleration for DynamicRiskController integration
+            "dd_velocity": float(self.dd_velocity),
+            "dd_acceleration": float(self.dd_acceleration),
+            "risk_adjustment_factor": float(self.risk_adjustment_factor),
+            "rescue_mode": bool(self.rescue_mode),
+            # Detailed analysis
             "drawdown_analysis": dd_results,
             "rescue_status": rescue_status,
             "risk_adjustment": risk_adj,
@@ -605,6 +635,8 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
             "rescue_duration": float(rescue_status.get("rescue_duration_minutes", 0.0)),
             "intervention_count": int(self.rescue_intervention_count),
             "emergency_active": bool(rescue_status.get("emergency_intervention", False)),
+            # v3.1.0: Include risk_adjustment_factor for DynamicRiskController
+            "risk_adjustment_factor": float(self.risk_adjustment_factor),
         }
         return {
             "drawdown_risk": drawdown_payload,
@@ -615,7 +647,7 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
         }
 
     # ── histories & analytics ────────────────────────────────
-    def _update_balance_tracking(self, balance: float, equity: float):
+    def _update_balance_tracking(self, balance: float, equity: float) -> None:
         """Update balance and equity tracking, update peak balance."""
         try:
             effective_balance = equity if equity > 0 else balance
@@ -646,7 +678,10 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
             self.logger.warning(f"Balance tracking failed: {error_context}")
 
     async def _analyze_drawdown_comprehensive(
-        self, balance: float, equity: float, market_context: Dict[str, Any]
+        self,
+        balance: float,
+        equity: float,
+        market_context: Dict[str, Any],
     ) -> Dict[str, Any]:
         """Comprehensive drawdown analysis with advanced metrics"""
         start_time = datetime.datetime.now()
@@ -655,7 +690,9 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
 
             # Calculate current drawdown
             if self.peak_balance > 0:
-                self.current_dd = float(np.clip((self.peak_balance - effective_balance) / self.peak_balance, 0.0, 1.0))
+                self.current_dd = float(
+                    np.clip((self.peak_balance - effective_balance) / self.peak_balance, 0.0, 1.0)
+                )
             else:
                 self.current_dd = 0.0
 
@@ -668,36 +705,34 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
             # Context thresholds
             context_thresholds = self._calculate_context_adjusted_thresholds(market_context)
 
-            # ═══════════════════════════════════════════════════════════════════
-            # TRADING MODE MANAGER INTEGRATION
-            # Use mode's drawdown_limit as reference threshold
-            # ═══════════════════════════════════════════════════════════════════
+            # Trading mode integration (mode-level drawdown limits)
             try:
-                mode_config = self.smart_bus.get('mode_config', 'DrawdownRescue') or {}
-                trading_mode = self.smart_bus.get('trading_mode', 'DrawdownRescue') or 'normal'
-                mode_drawdown_limit = float(mode_config.get('drawdown_limit', 0.10))
+                mode_config = self.smart_bus.get("mode_config", "DrawdownRescue") or {}
+                trading_mode = self.smart_bus.get("trading_mode", "DrawdownRescue") or "normal"
+                mode_drawdown_limit = float(mode_config.get("drawdown_limit", self.dd_limit))
 
-                # Adjust our thresholds based on mode's limits
-                if 'critical_threshold' in context_thresholds:
-                    # Mode's limit becomes our critical threshold
-                    context_thresholds['critical_threshold'] = mode_drawdown_limit
-                    context_thresholds['warning_threshold'] = mode_drawdown_limit * 0.8
-                    context_thresholds['alert_threshold'] = mode_drawdown_limit * 0.6
+                # Mode's limit becomes the effective critical threshold
+                context_thresholds["dd_limit"] = mode_drawdown_limit
+                context_thresholds["warning_dd"] = mode_drawdown_limit * 0.8
+                context_thresholds["info_dd"] = mode_drawdown_limit * 0.6
 
-                    if self.debug and self.current_dd > mode_drawdown_limit * 0.5:
-                        self.logger.info(format_operator_message(
+                # Keep our internal mirror aligned
+                self.current_thresholds = dict(context_thresholds)
+
+                if self.debug and self.current_dd > mode_drawdown_limit * 0.5:
+                    self.logger.info(
+                        format_operator_message(
                             icon="🎛️",
                             message="Trading mode drawdown limit integrated",
                             mode=trading_mode,
                             mode_limit=f"{mode_drawdown_limit:.1%}",
                             current_dd=f"{self.current_dd:.1%}",
-                            proximity=f"{(self.current_dd / mode_drawdown_limit):.1%}"
-                        ))
-
+                            proximity=f"{(self.current_dd / mode_drawdown_limit):.1%}",
+                        )
+                    )
             except Exception as e:
                 if self.debug:
                     self.logger.warning(f"Trading mode integration failed in drawdown rescue: {e}")
-            # ═══════════════════════════════════════════════════════════════════
 
             # Severity
             severity_assessment = self._assess_drawdown_severity(velocity_metrics, context_thresholds)
@@ -732,11 +767,13 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
         """Calculate drawdown velocity and acceleration metrics"""
         try:
             self.dd_history.append(float(self.current_dd))
+
             # velocity
             if len(self.dd_history) >= 2:
                 self.dd_velocity = float(self.dd_history[-1] - self.dd_history[-2])
             else:
                 self.dd_velocity = 0.0
+
             # acceleration
             if len(self.dd_history) >= 3:
                 prev_v = float(self.dd_history[-2] - self.dd_history[-3])
@@ -745,7 +782,13 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
                 self.dd_acceleration = 0.0
 
             # trend & momentum
-            trend_direction = "deteriorating" if self.dd_velocity > 0 else "improving" if self.dd_velocity < 0 else "stable"
+            if self.dd_velocity > 0:
+                trend_direction = "deteriorating"
+            elif self.dd_velocity < 0:
+                trend_direction = "improving"
+            else:
+                trend_direction = "stable"
+
             momentum = 0.0
             if len(self.dd_history) >= 5:
                 recent = list(self.dd_history)[-5:]
@@ -766,7 +809,13 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "velocity_calculation")
             self.logger.warning(f"Velocity calculation failed: {error_context}")
-            return {"velocity": 0.0, "acceleration": 0.0, "trend_direction": "unknown", "momentum": 0.0, "volatility": 0.0}
+            return {
+                "velocity": 0.0,
+                "acceleration": 0.0,
+                "trend_direction": "unknown",
+                "momentum": 0.0,
+                "volatility": 0.0,
+            }
 
     def _calculate_context_adjusted_thresholds(self, market_context: Dict[str, Any]) -> Dict[str, float]:
         """Calculate context-adjusted drawdown thresholds"""
@@ -777,7 +826,7 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
             regime = str(market_context.get("regime", "unknown"))
             volatility_level = str(market_context.get("volatility_level", "medium"))
 
-            adjusted = {
+            adjusted: Dict[str, float] = {
                 "info_dd": float(self.info_dd),
                 "warning_dd": float(self.warning_dd),
                 "dd_limit": float(self.dd_limit),
@@ -795,7 +844,7 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
             for k in adjusted:
                 adjusted[k] *= vm
 
-            # Bounds
+            # Bounds (heuristic, not hard prop limits)
             adjusted["info_dd"] = float(np.clip(adjusted["info_dd"], 0.03, 0.15))
             adjusted["warning_dd"] = float(np.clip(adjusted["warning_dd"], 0.08, 0.30))
             adjusted["dd_limit"] = float(np.clip(adjusted["dd_limit"], 0.15, 0.60))
@@ -807,7 +856,11 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
             self.logger.warning(f"Threshold adjustment failed: {error_context}")
             return dict(self.current_thresholds)
 
-    def _assess_drawdown_severity(self, velocity_metrics: Dict[str, float], thresholds: Dict[str, float]) -> Dict[str, Any]:
+    def _assess_drawdown_severity(
+        self,
+        velocity_metrics: Dict[str, float],
+        thresholds: Dict[str, float],
+    ) -> Dict[str, Any]:
         """Assess drawdown severity with velocity consideration"""
         try:
             # Base severity
@@ -906,7 +959,12 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "recovery_metrics")
             self.logger.warning(f"Recovery metrics calculation failed: {error_context}")
-            return {"recovery_progress": 0.0, "recovery_velocity": 0.0, "recovery_stability": 0.0, "milestone_achieved": False}
+            return {
+                "recovery_progress": 0.0,
+                "recovery_velocity": 0.0,
+                "recovery_stability": 0.0,
+                "milestone_achieved": False,
+            }
 
     def _analyze_regime_patterns(self, market_context: Dict[str, Any]) -> Dict[str, Any]:
         """Analyze regime-specific drawdown patterns"""
@@ -953,9 +1011,18 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "regime_analysis")
             self.logger.warning(f"Regime analysis failed: {error_context}")
-            return {"current_regime": "unknown", "regime_stats": {}, "regime_assessment": "unknown", "regime_pattern": "unknown"}
+            return {
+                "current_regime": "unknown",
+                "regime_stats": {},
+                "regime_assessment": "unknown",
+                "regime_pattern": "unknown",
+            }
 
-    def _identify_regime_pattern(self, current_regime: str, stats: Dict[str, Dict[str, float]]) -> str:
+    def _identify_regime_pattern(
+        self,
+        current_regime: str,
+        stats: Dict[str, Dict[str, float]],
+    ) -> str:
         try:
             if current_regime not in stats or len(stats) < 2:
                 return "insufficient_data"
@@ -972,8 +1039,13 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
         except Exception:
             return "pattern_analysis_error"
 
-    def _update_rescue_system(self, dd_results: Dict[str, Any], market_context: Dict[str, Any]) -> Dict[str, Any]:
+    def _update_rescue_system(
+        self,
+        dd_results: Dict[str, Any],
+        market_context: Dict[str, Any],
+    ) -> Dict[str, Any]:
         """Update rescue system status and interventions"""
+        del market_context  # currently unused, reserved for future context-aware rescue logic
         try:
             sev = dd_results["severity_assessment"]["level"]
             v = float(dd_results["velocity_metrics"]["velocity"])
@@ -1004,8 +1076,17 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
                 )
 
             # Deactivation logic
-            if self.rescue_mode and sev == "normal" and v < 0 and dd_results["recovery_metrics"]["recovery_progress"] > 0.3:
-                dur_min = (datetime.datetime.now() - (self.rescue_start_time or datetime.datetime.now())).total_seconds() / 60.0
+            if (
+                self.rescue_mode
+                and sev == "normal"
+                and v < 0
+                and dd_results["recovery_metrics"]["recovery_progress"] > 0.3
+            ):
+                dur_min = (
+                    (datetime.datetime.now() - (self.rescue_start_time or datetime.datetime.now()))
+                    .total_seconds()
+                    / 60.0
+                )
                 self.rescue_mode = False
                 self.logger.info(
                     format_operator_message(
@@ -1019,7 +1100,10 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
 
             # Emergency intervention (hard brake)
             emergency_intervention = False
-            if (self.current_dd > self.current_thresholds["dd_limit"] * 1.2) and (v > self._cfg.rapid_velocity * 1.5):
+            if (
+                self.current_dd > self.current_thresholds["dd_limit"] * 1.2
+                and v > self._cfg.rapid_velocity * 1.5
+            ):
                 emergency_intervention = True
                 self.emergency_interventions += 1
                 self.logger.error(
@@ -1050,7 +1134,11 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
             self.logger.error(f"Rescue system update failed: {error_context}")
             return {"rescue_mode": False, "error": error_context}
 
-    def _calculate_risk_adjustment(self, dd_results: Dict[str, Any], rescue_status: Dict[str, Any]) -> Dict[str, Any]:
+    def _calculate_risk_adjustment(
+        self,
+        dd_results: Dict[str, Any],
+        rescue_status: Dict[str, Any],
+    ) -> Dict[str, Any]:
         """Calculate intelligent risk adjustment factor (EMA-smoothed)"""
         try:
             level = str(dd_results["severity_assessment"]["level"])
@@ -1112,7 +1200,11 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
             self.logger.error(f"Risk adjustment calculation failed: {error_context}")
             return {"risk_adjustment_factor": 0.5, "error": error_context}
 
-    def _determine_adjustment_reason(self, level: str, rescue_status: Dict[str, Any]) -> str:
+    def _determine_adjustment_reason(
+        self,
+        level: str,
+        rescue_status: Dict[str, Any],
+    ) -> str:
         if rescue_status.get("emergency_intervention", False):
             return "emergency_intervention"
         if rescue_status.get("rescue_mode", False):
@@ -1125,7 +1217,11 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
             return "elevated_drawdown"
         return "normal_operation"
 
-    def _calculate_drawdown_metrics(self, dd_results: Dict[str, Any], rescue_status: Dict[str, Any]) -> Dict[str, Any]:
+    def _calculate_drawdown_metrics(
+        self,
+        dd_results: Dict[str, Any],
+        rescue_status: Dict[str, Any],
+    ) -> Dict[str, Any]:
         """(Kept for external diagnostics; not used for provides formatting directly)"""
         try:
             v = float(dd_results["velocity_metrics"]["velocity"])
@@ -1136,8 +1232,8 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
 
             avg_recovery_time = 0.0
             if self.recovery_events:
-                recovery_steps = []
-                prev_step = None
+                recovery_steps: List[int] = []
+                prev_step: Optional[int] = None
                 for ev in self.recovery_events:
                     sc = int(ev.get("step_count", 0))
                     if prev_step is not None and sc > prev_step:
@@ -1219,7 +1315,9 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
                 adj_warn = float(dd_results["context_thresholds"]["warning_dd"])
                 parts.append(f"Thresholds adjusted for {regime} regime (warning {adj_warn:.1%})")
 
-            parts.append(f"Risk adjustment factor {self.risk_adjustment_factor:.1%} ({risk_adj.get('adjustment_reason','normal')})")
+            parts.append(
+                f"Risk adjustment factor {self.risk_adjustment_factor:.1%} ({risk_adj.get('adjustment_reason','normal')})"
+            )
             return " | ".join(parts)
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "thesis_generation")
@@ -1235,7 +1333,12 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
             "risk_adjustment": {"risk_adjustment_factor": float(self.risk_adjustment_factor)},
             "thesis": thesis,
         }
-        rs = {"rescue_mode": bool(self.rescue_mode), "rescue_duration": 0.0, "intervention_count": int(self.rescue_intervention_count), "emergency_active": False}
+        rs = {
+            "rescue_mode": bool(self.rescue_mode),
+            "rescue_duration": 0.0,
+            "intervention_count": int(self.rescue_intervention_count),
+            "emergency_active": False,
+        }
         return {
             "drawdown_risk": dd,
             "rescue_status": rs,
@@ -1351,7 +1454,9 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
             "severity_level": str(self.severity_level),
             "rescue_mode": bool(self.rescue_mode),
             "risk_adjustment_factor": float(self.risk_adjustment_factor),
-            "intervention_success_rate": float(self.successful_recoveries / max(1, self.rescue_intervention_count)),
+            "intervention_success_rate": float(
+                self.successful_recoveries / max(1, self.rescue_intervention_count)
+            ),
             "rescue_interventions": int(self.rescue_intervention_count),
             "emergency_interventions": int(self.emergency_interventions),
             "enabled": bool(self.enabled),

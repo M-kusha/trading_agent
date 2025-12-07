@@ -1,8 +1,22 @@
 #!/usr/bin/env python3
 """
 Complete Modern SmartInfoBus v4.0 Training Script
-Production-ready with data provider abstraction and richer telemetry
-Pylance-safe: no type identity clashes with external modules
+=================================================
+
+Production-ready with data provider abstraction and richer telemetry.
+Pylance-safe: no type identity clashes with external modules.
+
+Architecture Notes (v4.0):
+- This script trains using Stable Baselines3 (SB3) PPO
+- ModernTradingEnv uses PPOObservationBuilder for 64-dim observations
+- Trained models are saved in SB3 format (.zip files)
+- For live trading, PPOAgentShell loads these models via SB3.load()
+  or uses its own PPOCore for online learning
+
+Observation Schema (PPO_OBS_SIZE = 64):
+- Uses unified observation builder from modules.meta.ppo_observation_builder
+- Same 64-dim schema in training (here) and live (PPOAgentShell)
+- v4.0 adds world model predictions (8 dims) and trading mode state (8 dims)
 """
 
 from __future__ import annotations

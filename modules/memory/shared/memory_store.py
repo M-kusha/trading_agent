@@ -68,6 +68,9 @@ class UnifiedMemoryStore:
         self.timestamp_index: List[Tuple[float, str]] = []  # (timestamp, id)
         self.pnl_index: List[Tuple[float, str]] = []        # (pnl, id)
         self.importance_heap: List[MemoryEntry] = []        # min-heap (by importance)
+        
+        # NEW: Per-instrument index for fast instrument-specific queries
+        self.instrument_index: Dict[str, List[str]] = {}  # instrument -> [memory_ids]
 
         # Feature matrix for similarity search (row-aligned with feature_ids)
         self.feature_matrix: Optional[np.ndarray] = None
@@ -366,6 +369,7 @@ class UnifiedMemoryStore:
                     "memory_list": self.memory_list,
                     "timestamp_index": self.timestamp_index,
                     "pnl_index": self.pnl_index,
+                    "instrument_index": self.instrument_index,  # NEW: per-instrument index
                     "total_stored": self.total_stored,
                     "total_retrieved": self.total_retrieved,
                     "total_pruned": self.total_pruned,
@@ -397,6 +401,7 @@ class UnifiedMemoryStore:
                 self.memory_list = state.get("memory_list", [])
                 self.timestamp_index = state.get("timestamp_index", [])
                 self.pnl_index = state.get("pnl_index", [])
+                self.instrument_index = state.get("instrument_index", {})  # NEW: per-instrument index
                 self.total_stored = int(state.get("total_stored", 0))
                 self.total_retrieved = int(state.get("total_retrieved", 0))
                 self.total_pruned = int(state.get("total_pruned", 0))
@@ -407,10 +412,90 @@ class UnifiedMemoryStore:
 
                 # Mark feature matrix as dirty
                 self._feature_matrix_dirty = True
+                
+                # Rebuild instrument_index if not present in saved state
+                # (for backward compatibility with older saves)
+                if not self.instrument_index:
+                    self._rebuild_instrument_index()
 
             return True
         except Exception:
             return False
+    
+    def _rebuild_instrument_index(self) -> None:
+        """Rebuild instrument index from memories (for backward compatibility)."""
+        self.instrument_index = {}
+        for memory in self.memory_list:
+            instrument = (
+                memory.metadata.get("instrument") or 
+                memory.context.get("instrument") or 
+                "UNKNOWN"
+            )
+            instrument = str(instrument).upper().replace("/", "").replace("_", "")
+            if instrument not in self.instrument_index:
+                self.instrument_index[instrument] = []
+            self.instrument_index[instrument].append(memory.id)
+    
+    def get_by_instrument(self, instrument: str, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """
+        Get memories for a specific instrument.
+        
+        Args:
+            instrument: The instrument to filter by (e.g., "XAUUSD", "EURUSD")
+            limit: Optional limit on number of results
+            
+        Returns:
+            List of memories as dicts, newest first
+        """
+        # Normalize instrument name
+        instrument = str(instrument).upper().replace("/", "").replace("_", "")
+        
+        with self._lock:
+            mem_ids = self.instrument_index.get(instrument, [])
+            
+            # Get memories and sort by timestamp (newest first)
+            results: List[Dict[str, Any]] = []
+            for mem_id in reversed(mem_ids):  # Reverse for newest first
+                memory = self.memories.get(mem_id)
+                if memory is not None:
+                    results.append(self._memory_to_dict(memory))
+                    if limit and len(results) >= limit:
+                        break
+            
+            return results
+    
+    def get_instrument_stats(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Get statistics per instrument.
+        
+        Returns:
+            Dict mapping instrument -> {count, total_pnl, win_rate, avg_pnl}
+        """
+        with self._lock:
+            stats: Dict[str, Dict[str, Any]] = {}
+            
+            for instrument, mem_ids in self.instrument_index.items():
+                pnls = []
+                for mem_id in mem_ids:
+                    memory = self.memories.get(mem_id)
+                    if memory is not None:
+                        pnls.append(memory.pnl)
+                
+                if pnls:
+                    wins = sum(1 for p in pnls if p > 0)
+                    losses = sum(1 for p in pnls if p < 0)
+                    total = len(pnls)
+                    
+                    stats[instrument] = {
+                        "count": total,
+                        "wins": wins,
+                        "losses": losses,
+                        "win_rate": wins / total if total > 0 else 0.0,
+                        "total_pnl": sum(pnls),
+                        "avg_pnl": sum(pnls) / total if total > 0 else 0.0,
+                    }
+            
+            return stats
 
     # ------------------------------------------------------------------ #
     # Internals
@@ -442,6 +527,18 @@ class UnifiedMemoryStore:
         self.timestamp_index.append((memory.timestamp, entry_id))
         self.pnl_index.append((memory.pnl, entry_id))
         heapq.heappush(self.importance_heap, memory)
+        
+        # NEW: Per-instrument index
+        # Extract instrument from entry or metadata
+        instrument = (
+            entry.get("instrument") or 
+            entry.get("metadata", {}).get("instrument") or 
+            "UNKNOWN"
+        )
+        instrument = str(instrument).upper().replace("/", "").replace("_", "")
+        if instrument not in self.instrument_index:
+            self.instrument_index[instrument] = []
+        self.instrument_index[instrument].append(entry_id)
 
         # Feature matrix invalidated
         self._feature_matrix_dirty = True
@@ -541,6 +638,12 @@ class UnifiedMemoryStore:
         self.pnl_index = [(p, i) for (p, i) in self.pnl_index if i != entry_id]
         self.importance_heap = [m for m in self.importance_heap if m.id != entry_id]
         heapq.heapify(self.importance_heap)
+        
+        # Remove from instrument index
+        for inst, ids in self.instrument_index.items():
+            if entry_id in ids:
+                self.instrument_index[inst] = [i for i in ids if i != entry_id]
+                break
 
         # Invalidate feature matrix
         self._feature_matrix_dirty = True

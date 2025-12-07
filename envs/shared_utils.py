@@ -10,6 +10,7 @@ STRICT Utilities for the Modern SmartInfoBus Trading Environment
 from __future__ import annotations
 
 import importlib
+import inspect
 import logging
 import platform
 import time
@@ -17,7 +18,7 @@ from dataclasses import dataclass, field, asdict
 from functools import lru_cache, wraps
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -55,6 +56,7 @@ def _safe_getattr(obj: Any, name: str, default: Any = None) -> Any:
 @dataclass
 class SystemHealth:
     """System health status (strict)."""
+
     smartinfobus_active: bool = False
     modules_active: int = 0
     memory_usage_mb: float = 0.0
@@ -101,10 +103,12 @@ def strict_import(module_name: str, attr: Optional[str] = None) -> Any:
 def profile_method(func: Callable):
     """
     Performance profiling for env methods.
+
     - Logs at DEBUG if elapsed > self.profile_slow_ms (default 100 ms).
     - No external side-effects beyond logging.
+    - Handles both sync and async methods.
     """
-    is_coro = hasattr(func, "__await__") or getattr(func, "__is_coroutine__", False)
+    is_coro = inspect.iscoroutinefunction(func)
 
     @wraps(func)
     def _sync_wrapper(self, *args, **kwargs):
@@ -131,15 +135,17 @@ def profile_method(func: Callable):
                 logger.error("❌ %s failed after %.1f ms", func.__name__, elapsed_ms, exc_info=True)
             raise
 
-    async def _async_wrapper(self, *args, **kwargs):
-        threshold_ms = float(_safe_getattr(args[0], "profile_slow_ms", 100.0))
+    @wraps(func)
+    async def _async_wrapper(*args, **kwargs):
+        # For async methods, assume first arg is self
+        self = args[0] if args else None
+        threshold_ms = float(_safe_getattr(self, "profile_slow_ms", 100.0))
         t0 = _perf_ns()
         try:
             result = await func(*args, **kwargs)
             elapsed_ms = (_perf_ns() - t0) / 1_000_000.0
 
-            if elapsed_ms > threshold_ms:
-                self = args[0]
+            if elapsed_ms > threshold_ms and self is not None:
                 logger = _safe_getattr(self, "logger", None)
                 if isinstance(logger, logging.Logger):
                     last_log_ts = float(_safe_getattr(self, f"__pm_last_{func.__name__}", 0.0))
@@ -150,8 +156,8 @@ def profile_method(func: Callable):
             return result
         except Exception:
             elapsed_ms = (_perf_ns() - t0) / 1_000_000.0
-            self = args[0]
-            logger = _safe_getattr(self, "logger", None)
+            self = args[0] if args else None
+            logger = _safe_getattr(self, "logger", None) if self is not None else None
             if isinstance(logger, logging.Logger):
                 logger.error("❌ %s failed after %.1f ms", func.__name__, elapsed_ms, exc_info=True)
             raise
@@ -162,7 +168,11 @@ def profile_method(func: Callable):
 # ─────────────────────────────────────────────────────────
 # Logging
 # ─────────────────────────────────────────────────────────
-def create_enhanced_logger(name: str, log_path: Optional[str] = None, level: int = logging.INFO) -> logging.Logger:
+def create_enhanced_logger(
+    name: str,
+    log_path: Optional[str] = None,
+    level: int = logging.INFO,
+) -> logging.Logger:
     """
     Create a process-safe logger with console + optional rotating file handler.
     No duplicate handlers, deterministic formatting.
@@ -176,19 +186,28 @@ def create_enhanced_logger(name: str, log_path: Optional[str] = None, level: int
     logger.propagate = False
 
     console_handler = logging.StreamHandler()
-    console_handler.setFormatter(logging.Formatter(
-        "%(asctime)s | %(name)s | %(levelname)s | %(message)s",
-        datefmt="%H:%M:%S",
-    ))
+    console_handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s | %(name)s | %(levelname)s | %(message)s",
+            datefmt="%H:%M:%S",
+        )
+    )
     logger.addHandler(console_handler)
 
     if log_path:
         path = Path(log_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = RotatingFileHandler(path, maxBytes=5_000_000, backupCount=3, encoding="utf-8")
-        file_handler.setFormatter(logging.Formatter(
-            "%(asctime)s | %(name)s | %(levelname)s | %(funcName)s:%(lineno)d | %(message)s"
-        ))
+        file_handler = RotatingFileHandler(
+            path,
+            maxBytes=5_000_000,
+            backupCount=3,
+            encoding="utf-8",
+        )
+        file_handler.setFormatter(
+            logging.Formatter(
+                "%(asctime)s | %(name)s | %(levelname)s | %(funcName)s:%(lineno)d | %(message)s"
+            )
+        )
         logger.addHandler(file_handler)
 
     logger.setLevel(level)
@@ -201,21 +220,51 @@ def create_enhanced_logger(name: str, log_path: Optional[str] = None, level: int
 def validate_trading_config(config: Dict[str, Any]) -> Tuple[bool, List[str]]:
     """
     Validate a TradingConfig-like dict.
+
     Returns (ok, issues). No silent defaults.
+    Meant for env/config sanity, not risk-policy theology.
     """
     issues: List[str] = []
 
-    # Required core fields
-    for field in ("initial_balance", "max_steps", "instruments", "max_drawdown"):
-        if field not in config:
-            issues.append(f"❌ Missing required field: {field}")
-        elif field == "instruments" and (not isinstance(config[field], (list, tuple)) or not config[field]):
-            issues.append("❌ 'instruments' must be a non-empty list")
-        elif field in ("initial_balance", "max_steps", "max_drawdown"):
+    # Required core fields (env will not behave correctly without these)
+    core_fields = ("initial_balance", "max_steps", "instruments", "max_drawdown")
+    for field_name in core_fields:
+        if field_name not in config:
+            issues.append(f"❌ Missing required field: {field_name}")
+            continue
+
+        if field_name == "instruments":
+            if not isinstance(config[field_name], (list, tuple)) or not config[field_name]:
+                issues.append("❌ 'instruments' must be a non-empty list")
+        elif field_name == "max_steps":
             try:
-                _ = float(config[field]) if field != "max_steps" else int(config[field])
+                _ = int(config[field_name])
             except Exception:
-                issues.append(f"❌ Field '{field}' has invalid type/value")
+                issues.append("❌ Field 'max_steps' has invalid type/value")
+        else:
+            try:
+                _ = float(config[field_name])
+            except Exception:
+                issues.append(f"❌ Field '{field_name}' has invalid type/value")
+
+    # Env-aligned helpful checks (not hard-fail)
+    try:
+        eos = config.get("environment_observation_size", None)
+        if eos is None:
+            issues.append("⚠️ Missing 'environment_observation_size' (env assumes PPO_OBS_SIZE=48).")
+        else:
+            val = int(eos)
+            if val <= 0:
+                issues.append("❌ 'environment_observation_size' must be > 0")
+    except Exception:
+        issues.append("❌ 'environment_observation_size' has invalid type/value")
+
+    try:
+        mrb = config.get("min_required_data_bars", None)
+        if mrb is not None and int(mrb) <= 0:
+            issues.append("❌ 'min_required_data_bars' must be > 0")
+    except Exception:
+        issues.append("❌ 'min_required_data_bars' has invalid type/value")
 
     # Guard rails
     try:
@@ -248,14 +297,14 @@ def validate_trading_config(config: Dict[str, Any]) -> Tuple[bool, List[str]]:
     # Episode length / logging
     try:
         ms = int(config.get("max_steps", 200))
-        if ms > 1000:
+        if ms > 1_000:
             issues.append("⚠️ Very long episodes may be slow")
     except Exception:
         pass
 
     try:
         lrl = int(config.get("log_rotation_lines", 2000))
-        if lrl > 10000:
+        if lrl > 10_000:
             issues.append("⚠️ Very high log rotation may impact performance")
     except Exception:
         pass
@@ -307,10 +356,11 @@ def get_system_status() -> SystemHealth:
     # GPU (optional)
     try:
         import torch  # type: ignore
+
         if torch.cuda.is_available():
             health.gpu_count = torch.cuda.device_count()
             try:
-                # sum of reserved memory across devices
+                # Sum of reserved memory across devices
                 gpu_mem = 0.0
                 for i in range(health.gpu_count):
                     torch.cuda.set_device(i)
@@ -331,7 +381,7 @@ def validate_market_data(data_dict: Dict[str, Dict[str, pd.DataFrame]]) -> Tuple
     """
     Validate market data structure and quality.
 
-    Checks
+    Checks:
     - presence of instruments/timeframes
     - OHLC columns
     - NaNs / non-positive prices
@@ -386,11 +436,13 @@ def validate_market_data(data_dict: Dict[str, Dict[str, pd.DataFrame]]) -> Tuple
                 if (df["high"] < df["low"]).any():
                     issues.append(f"❌ {instrument}/{timeframe}: high < low")
                 oob = (
-                    (df["open"] > df["high"]) | (df["open"] < df["low"]) |
-                    (df["close"] > df["high"]) | (df["close"] < df["low"])
+                    (df["open"] > df["high"]) | (df["open"] < df["low"])
+                    | (df["close"] > df["high"]) | (df["close"] < df["low"])
                 )
                 if oob.any():
-                    issues.append(f"❌ {instrument}/{timeframe}: OHLC out-of-bounds in {int(oob.sum())} rows")
+                    issues.append(
+                        f"❌ {instrument}/{timeframe}: OHLC out-of-bounds in {int(oob.sum())} rows"
+                    )
             except Exception:
                 pass
 
@@ -402,26 +454,41 @@ def validate_market_data(data_dict: Dict[str, Dict[str, pd.DataFrame]]) -> Tuple
 # ─────────────────────────────────────────────────────────
 # Performance tuning (no behavior changes)
 # ─────────────────────────────────────────────────────────
-def optimize_environment_performance(config: Dict[str, Any]) -> Dict[str, Any]:
+def optimize_environment_performance(config: Union[Dict[str, Any], Any]) -> Dict[str, Any]:
     """
     Suggest minor runtime tweaks without changing semantics.
-    Returns a shallow copy with adjustments.
+
+    Accepts a TradingConfig-like dict or a dataclass instance and returns
+    a shallow dict copy with adjustments. Does NOT mutate the original.
     """
-    optimized = dict(config)
+    # Normalize to plain dict (avoid mutating dataclasses or Pydantic models)
+    if isinstance(config, dict):
+        base: Dict[str, Any] = dict(config)
+    else:
+        # best-effort dataclass / object support
+        try:
+            base = asdict(config)  # type: ignore[arg-type]
+        except Exception:
+            base = {k: getattr(config, k) for k in dir(config) if not k.startswith("_")}
+
+    optimized = dict(base)
 
     # Logging
     if not optimized.get("debug", True):
         lrl = int(optimized.get("log_rotation_lines", 2000))
-        optimized["log_rotation_lines"] = min(lrl, 1000)
+        optimized["log_rotation_lines"] = min(lrl, 1_000)
 
     # OS-specific parallelism hints
     sys_name = platform.system()
     if sys_name == "Windows":
         optimized["num_envs"] = int(optimized.get("num_envs", 1))
-        optimized["enable_parallel_processing"] = bool(optimized.get("enable_parallel_processing", False))
+        optimized["enable_parallel_processing"] = bool(
+            optimized.get("enable_parallel_processing", False)
+        )
     else:
         try:
-            cpu = max(1, (importlib.import_module("os").cpu_count() or 1))
+            os_mod = importlib.import_module("os")
+            cpu = max(1, (os_mod.cpu_count() or 1))
             default_envs = min(cpu, int(optimized.get("num_envs", 2)))
             optimized["num_envs"] = default_envs
             optimized["enable_parallel_processing"] = default_envs > 1
@@ -431,6 +498,7 @@ def optimize_environment_performance(config: Dict[str, Any]) -> Dict[str, Any]:
     # Memory-friendly episodes
     try:
         if int(optimized.get("max_steps", 200)) > 500:
+            # max_history is used by module configs, not TradingConfig directly
             optimized["max_history"] = int(optimized.get("max_history", 50))
     except Exception:
         pass
@@ -460,11 +528,16 @@ def create_environment_diagnostics(env: Any) -> Dict[str, Any]:
     # Config snapshot (best-effort)
     cfg = _safe_getattr(env, "config", None)
     if cfg is not None:
-        getter = (cfg.get if isinstance(cfg, dict) else lambda k, d=None: getattr(cfg, k, d))
+        if isinstance(cfg, dict):
+            getter = cfg.get
+        else:
+            getter = lambda k, d=None: getattr(cfg, k, d)  # type: ignore[no-redef]
+
         diag["configuration"] = {
             "instruments": getter("instruments", []),
             "max_steps": getter("max_steps", None),
             "live_mode": bool(getter("live_mode", False)),
+            "environment_observation_size": getter("environment_observation_size", None),
         }
 
     # Modules (best-effort)

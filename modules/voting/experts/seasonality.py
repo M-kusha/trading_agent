@@ -869,7 +869,8 @@ class SeasonalityRiskExpert(VotingExpertBase):
             sym_block = historical.get(symbol)
             if isinstance(sym_block, dict):
                 tf_rec = None
-                for tf in ("M15", "H4", "H1", "D1"):
+                # M15 is primary, H1/H4/D1 are context (ordered by granularity)
+                for tf in ("M15", "H1", "H4", "D1"):
                     candidate = sym_block.get(tf)
                     if isinstance(candidate, dict):
                         tf_rec = candidate

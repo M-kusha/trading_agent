@@ -3,10 +3,10 @@
 Enhanced Configuration System for InfoBus-Integrated Trading Environment
 BUS-FIRST edition: modules are source-of-truth; config is fallback + guard-rails.
 
-Key changes:
-- Added bus-first policy toggles (prefer_bus_* etc.) to avoid duplicating module logic
-- Added missing fields referenced by ModernTradingEnv (environment_observation_size, prefer_bus_data, fees, etc.)
-- Kept all prior fields for backward compatibility (act as defaults if bus has no data)
+Key ideas:
+- InfoBus + modules are the canonical owners of risk, limits, rewards, features.
+- TradingConfig provides sane defaults and guard-rails if the bus has no data.
+- ModernTradingEnv is bus-first and uses this config purely as a fallback.
 """
 
 from __future__ import annotations
@@ -16,7 +16,16 @@ from dataclasses import dataclass, field, asdict, replace
 from typing import Any, Dict, List, Optional
 from pathlib import Path
 
+# Import canonical timeframe constants (single source of truth)
+try:
+    from modules.voting.core.constants import PRIMARY_TIMEFRAME
+except ImportError:
+    PRIMARY_TIMEFRAME = "M15"  # Fallback if voting module not available
 
+
+# ─────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────
 def _clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
 
@@ -53,19 +62,22 @@ class TradingConfig:
     # Core Environment Parameters (fallbacks)
     # ===================================================================
     initial_balance: float = 100_000.0  # 100k for prop firm simulation
-    max_steps: int = 100000  # increase default episode length to reduce frequent resets
+    max_steps: int = 100_000           # increase default episode length to reduce frequent resets
     debug: bool = True
     init_seed: int = 42
     max_steps_per_episode: int = field(init=False)
 
-    # Observation sizing (env reads this, but will prefer bus features if available)
-    environment_observation_size: int = 256
+    # Observation sizing:
+    # - ModernTradingEnv uses PPO_OBS_SIZE (48) from ppo_observation_builder as the
+    #   canonical size.
+    # - This field is kept for external tooling / sanity checks and is clamped in __post_init__.
+    environment_observation_size: int = 48  # Must match PPO_OBS_SIZE from ppo_observation_builder
 
-    # Primary timeframe (used mainly for local fallback data windows)
-    primary_timeframe: str = "H1"
+    # Primary timeframe: M15 is the single decision/execution timeframe.
+    # H1/H4/D1 are context timeframes only. Uses canonical constant from voting module.
+    primary_timeframe: str = PRIMARY_TIMEFRAME
 
-    # Minimum data bars required (prevents 4-step episodes from tiny datasets)
-    # Set to 50 to ensure at least 50 timesteps per episode
+    # Minimum data bars required (prevents tiny datasets producing trivial episodes)
     min_required_data_bars: int = 50
 
     # ===================================================================
@@ -75,14 +87,17 @@ class TradingConfig:
     info_bus_audit_level: str = "DEBUG"  # DEBUG, INFO, WARNING, ERROR
     info_bus_validation: bool = True
     info_bus_init_timeout: float = 2.0
+
     orchestrator_init_timeout: float = 10.0
     orchestrator_async_init: bool = True
+
     # When the env triggers the orchestrator each step, optionally wait a few ms
-    # so decision modules (e.g., PositionManager) can enqueue orders before the
-    # env collects intents. Keeps bus-first async behavior, but reduces empty cycles.
+    # so decision modules can enqueue orders before the env collects intents.
     orchestrator_sync_wait_ms: float = 25.0
+
     # Limit the number of concurrent orchestrator executions scheduled by the env
     orchestrator_max_inflight: int = 1
+
     # Only schedule orchestrator once every N env steps (1 = every step)
     orchestrator_step_interval: int = 1
 
@@ -90,7 +105,7 @@ class TradingConfig:
     # or when no orchestrator scheduling occurs on a given step. Default 0 (no delay).
     step_sleep_ms: float = 0.0
 
-    # Bus-first policy toggles (single source of truth = modules via SmartInfoBus)
+    # Bus-first policy toggles (modules via SmartInfoBus are single source of truth)
     bus_first: bool = True
     prefer_bus_data: bool = True          # prefer MarketDataProvider over local data
     prefer_bus_features: bool = True      # prefer AdvancedFeatureEngine/MultiScaleFeatureEngine
@@ -98,8 +113,9 @@ class TradingConfig:
     prefer_bus_metrics: bool = True       # prefer PortfolioRiskSystem/DrawdownRescue/etc
     prefer_bus_limits: bool = True        # prefer Compliance/PortfolioRiskSystem/etc
     allow_module_overrides: bool = True   # let modules override defaults at runtime
-    halt_on_emergency: bool = True        # stop new orders on emergency/risk kill switch
+    halt_on_emergency: bool = True        # stop on emergency/risk kill switch
 
+    # Canonical alias map for SmartInfoBus wiring (modules declare owners)
     bus_aliases: Dict[str, List[str]] = field(default_factory=lambda: {
         # Data / step
         "market_data": ["MarketDataProvider"],
@@ -122,9 +138,11 @@ class TradingConfig:
         # Helpful aliases (kept canonical)
         "current_positions": ["Executor"],
         "pnl_data": ["Executor"],
+        "account_state": ["Executor"],
 
         # Features / observations
         "advanced_features": ["AdvancedFeatureEngine", "MultiScaleFeatureEngine"],
+        "environment_observation": ["Environment"],
 
         # Reward shaping
         "shaped_reward": ["RiskAdjustedReward"],
@@ -147,10 +165,15 @@ class TradingConfig:
 
         # Regime/volatility/session (context)
         "market_regime": ["UnifiedMarketModule"],         # was FractalRegimeConfirmation
-        "volatility_data": ["MarketDataProvider"],        # drop TimeAwareRiskScaling
-        "trading_session": ["MarketDataProvider"],        # SessionManager doesn't provide this
-    })
+        "volatility_data": ["MarketDataProvider"],
+        "trading_session": ["MarketDataProvider"],
 
+        # Prop firm status & memory (context used by env obs builder)
+        "prop_firm_status": ["PropFirmGuard"],
+        "memory_gate": ["UnifiedMemory"],
+        "memory_vote": ["UnifiedMemory"],
+        "neural_risk_hint": ["UnifiedMemory"],
+    })
 
     # ===================================================================
     # Data and Instruments (used as defaults/fallbacks)
@@ -165,27 +188,27 @@ class TradingConfig:
     no_trade_penalty: float = 0.2          # Reduced - don't force trading
     consensus_min: float = 0.50            # Raised from 0.30 - need more agreement
     consensus_max: float = 0.85            # Raised from 0.70 - higher ceiling
-    max_episodes: int = 10000
+    max_episodes: int = 10_000
 
-    # Execution economics (used by embedded executor when PositionManager/ExecutionQualityMonitor
-    # do not provide an override; otherwise treated as fallback)
+    # Execution economics (fallbacks; PositionManager/EQM should override via bus)
     default_spread: float = 0.0
     slippage_pts: float = 0.0
     commission_per_million: float = 0.0
 
     # Soft gating for env-embedded logic (fallback only; modules should own these live)
-    min_confidence: float = 0.35           # Raised from 0.0 - require confidence
-    min_intensity: float = 0.35            # Raised from 0.25 - filter weak signals
+    min_confidence: float = 0.35           # require confidence
+    min_intensity: float = 0.35            # filter weak signals
     ignore_hold: bool = True
 
     # ===================================================================
     # Risk Management (fallback guard-rails; Compliance/PortfolioRiskSystem are canonical)
     # ===================================================================
     rotation_gap: int = 5
-    max_position_pct: float = 0.15       # Reduced from 0.25 - smaller positions = less risk
-    max_total_exposure: float = 0.35     # Reduced from 0.50 - less total exposure
-    max_drawdown: float = 0.15           # Reduced from 0.20 - tighter DD limit
-    max_correlation: float = 0.7         # Reduced from 0.8 - less correlated risk
+    max_position_pct: float = 0.15       # smaller positions = less risk
+    max_total_exposure: float = 0.35     # less total exposure
+    max_drawdown: float = 0.15           # tighter DD limit
+    max_correlation: float = 0.7
+
     profit_target: float = 0.10          # From prop_firm.profit_target (10% default)
 
     # Position Management Specific (fallbacks)
@@ -204,9 +227,9 @@ class TradingConfig:
     confidence_decay: float = 0.95
 
     # Emergency behavior tuning (centralized, used by PositionManager and others)
-    emergency_drawdown_trigger: float = 0.15   # trigger if current drawdown > 15%
-    emergency_exposure_trigger: float = 0.40   # trigger emergency if exposure > 40% (prop firm friendly)
-    emergency_risk_score_threshold: float = 0.7  # require risk_score >= 0.7 to escalate
+    emergency_drawdown_trigger: float = 0.15    # trigger if current drawdown > 15%
+    emergency_exposure_trigger: float = 0.40    # trigger if exposure > 40% (prop firm friendly)
+    emergency_risk_score_threshold: float = 0.7 # require risk_score >= 0.7 to escalate
     emergency_breach_steps: int = 2             # consecutive steps required before hard emergency action
     emergency_warmup_steps: int = 20            # ignore emergency checks for first N steps
 
@@ -229,7 +252,7 @@ class TradingConfig:
     enable_shadow_sim: bool = True
     enable_news_sentiment: bool = False
 
-    # Module Enablement Flags (coarse)
+    # Module Enablement Flags (coarse – mostly for orchestrator wiring)
     enable_meta_rl: bool = True
     enable_memory_systems: bool = True
     enable_strategy_evolution: bool = True
@@ -237,7 +260,7 @@ class TradingConfig:
     enable_visualization: bool = True
 
     # ===================================================================
-    # PPO Hyperparameters (kept for legacy; agents (PPO/PPOLag) should own live HPs)
+    # PPO Hyperparameters (legacy; agents (PPO/PPOLag) should own live HPs)
     # ===================================================================
     learning_rate: float = 3e-4
     n_steps: int = 2048
@@ -261,10 +284,10 @@ class TradingConfig:
     # ===================================================================
     # Training Schedule (env/trainer level schedules)
     # ===================================================================
-    final_training_steps: int = 100000
+    final_training_steps: int = 100_000
     log_interval: int = 10
-    checkpoint_freq: int = 10000
-    eval_freq: int = 5000
+    checkpoint_freq: int = 10_000
+    eval_freq: int = 5_000
     n_eval_episodes: int = 5
 
     # ===================================================================
@@ -273,6 +296,7 @@ class TradingConfig:
     log_dir: str = "logs"
     log_level: str = "Debug"
     log_rotation_lines: int = 2000  # Mandatory 2000-line rotation
+
     checkpoint_dir: str = "checkpoints"
     model_dir: str = "models"
     tensorboard_dir: str = "logs/tensorboard"
@@ -282,33 +306,28 @@ class TradingConfig:
     audit_log_dir: str = "logs/audit"
     operator_log_dir: str = "logs/operator"
 
+    # Internal flag: ensure risk_policy.yaml is only loaded once per instance
+    _risk_policy_loaded: bool = field(init=False, default=False, repr=False)
+
+    # ─────────────────────────────────────────────────────────
+    # Post-init
+    # ─────────────────────────────────────────────────────────
     def __post_init__(self) -> None:
-        """Post-initialization setup with clamps, dirs, and invariants."""
+        """Post-initialization setup with clamps, dirs, mode, and invariants."""
         object.__setattr__(self, "max_steps_per_episode", int(self.max_steps))
 
-        # ═══════════════════════════════════════════════════════════════
-        # LOAD FROM risk_policy.yaml (single source of truth for risk params)
-        # Only applies defaults - explicit overrides in constructor take precedence
-        # ═══════════════════════════════════════════════════════════════
+        # Load risk_policy.yaml only once per instance
         self._load_from_risk_policy()
 
-        # ═══════════════════════════════════════════════════════════════
         # AUTO-SET TRADING MODE based on live_mode flag
-        # This propagates to all mode-aware subsystems (gates, voting, rewards)
-        # IMPORTANT: Only upgrade to LIVE mode, never downgrade from LIVE to TRAINING
-        # This prevents module initialization from resetting an already-set LIVE mode
-        # ═══════════════════════════════════════════════════════════════
+        # Only upgrade to LIVE; never downgrade from LIVE to TRAINING.
         try:
             from modules.core.trading_mode import TradingModeManager
-            # Only change mode if:
-            # 1. We explicitly want LIVE mode (live_mode=True), OR
-            # 2. We're not already in LIVE mode (don't downgrade)
+
             if self.live_mode:
                 TradingModeManager.set_mode("LIVE", silent=True)
             elif not TradingModeManager.is_live():
-                # Only set TRAINING if not already LIVE
                 TradingModeManager.set_mode("TRAINING", silent=True)
-            # else: Already in LIVE mode, don't downgrade
         except ImportError:
             pass  # Module not available yet during early init
 
@@ -329,118 +348,142 @@ class TradingConfig:
         self.trail_pct = _clamp(float(self.trail_pct), 0.0, 1.0)
         self.confidence_decay = _clamp(float(self.confidence_decay), 0.0, 1.0)
 
-    # Timers/intervals
+        # Timers/intervals
         self.info_bus_init_timeout = max(0.0, float(self.info_bus_init_timeout))
         self.orchestrator_init_timeout = max(0.0, float(self.orchestrator_init_timeout))
-        # Clamp small sync wait (non-blocking feel). Set 0 to fully disable waiting.
         self.orchestrator_sync_wait_ms = max(0.0, float(self.orchestrator_sync_wait_ms))
-        # Backpressure / pacing
+
         try:
             self.orchestrator_max_inflight = max(1, int(self.orchestrator_max_inflight))
         except Exception:
             self.orchestrator_max_inflight = 1
+
         try:
             self.orchestrator_step_interval = max(1, int(self.orchestrator_step_interval))
         except Exception:
             self.orchestrator_step_interval = 1
+
         self.risk_check_frequency = max(1, int(self.risk_check_frequency))
         self.risk_alert_cooldown = max(0, int(self.risk_alert_cooldown))
         self.max_concurrent_alerts = max(1, int(self.max_concurrent_alerts))
         self.max_steps = max(1, int(self.max_steps))
-        self.max_steps_per_episode = self.max_steps  # keep alias in sync
+        self.max_steps_per_episode = self.max_steps
         self.environment_observation_size = max(1, int(self.environment_observation_size))
 
         # Ensure directories exist
         all_dirs = [
-            self.log_dir, self.model_dir,
-            self.tensorboard_dir, self.data_dir, self.info_bus_log_dir,
-            self.audit_log_dir, self.operator_log_dir
+            self.log_dir,
+            self.model_dir,
+            self.tensorboard_dir,
+            self.data_dir,
+            self.info_bus_log_dir,
+            self.audit_log_dir,
+            self.operator_log_dir,
         ]
         for directory in all_dirs:
             _ensure_dir(directory)
 
         # Create module-specific log directories
         module_log_dirs = [
-            "logs/trading", "logs/risk", "logs/strategy", "logs/memory",
-            "logs/voting", "logs/position", "logs/features", "logs/meta"
+            "logs/trading",
+            "logs/risk",
+            "logs/strategy",
+            "logs/memory",
+            "logs/voting",
+            "logs/position",
+            "logs/features",
+            "logs/meta",
         ]
         for directory in module_log_dirs:
             _ensure_dir(directory)
 
+    # ─────────────────────────────────────────────────────────
+    # risk_policy.yaml integration
+    # ─────────────────────────────────────────────────────────
     def _load_from_risk_policy(self) -> None:
         """
         Load risk parameters from config/risk_policy.yaml.
-        
-        This ensures TradingConfig uses the same values as risk modules,
-        avoiding duplication and keeping risk_policy.yaml as single source of truth.
+
+        Important:
+        - This is only applied ONCE per TradingConfig instance.
+        - Subsequent __post_init__ calls (e.g. via apply_overrides / factory)
+          will not re-load or overwrite with risk_policy values.
         """
+        if getattr(self, "_risk_policy_loaded", False):
+            return
+
         try:
             import yaml
+
             risk_policy_path = Path("config/risk_policy.yaml")
             if not risk_policy_path.exists():
+                object.__setattr__(self, "_risk_policy_loaded", True)
                 return
-            
+
             with open(risk_policy_path, "r", encoding="utf-8") as f:
                 cfg = yaml.safe_load(f) or {}
-            
+
             prop_firm = cfg.get("prop_firm", {})
             lot_sizing = cfg.get("lot_sizing", {})
             limits = cfg.get("limits", {})
             position_manager = cfg.get("position_manager", {})
             smart_position = cfg.get("smart_position", {})
             escalation = cfg.get("escalation", {})
-            
+
             # Account balance (prop_firm.account_size or lot_sizing.account_balance)
             balance = prop_firm.get("account_size") or lot_sizing.get("account_balance")
             if balance and float(balance) > 0:
                 self.initial_balance = float(balance)
-            
+
             # Risk limits
             if "max_daily_loss" in limits:
                 # Use daily loss as max_drawdown (more conservative)
                 self.max_drawdown = float(limits["max_daily_loss"])
             elif "max_drawdown" in limits:
                 self.max_drawdown = float(limits["max_drawdown"])
-            
+
             if "max_position_size" in limits:
                 self.max_position_pct = float(limits["max_position_size"])
-            
+
             if "max_exposure_pct" in limits:
                 self.max_total_exposure = float(limits["max_exposure_pct"])
-            
+
             if "max_correlation" in limits:
                 self.max_correlation = float(limits["max_correlation"])
-            
+
             # Position manager settings
             if "max_consecutive_losses" in position_manager:
                 self.max_consecutive_losses = int(position_manager["max_consecutive_losses"])
-            
+
             if "emergency_drawdown_trigger" in position_manager:
                 self.emergency_drawdown_trigger = float(position_manager["emergency_drawdown_trigger"])
-            
+
             if "emergency_exposure_trigger" in position_manager:
                 self.emergency_exposure_trigger = float(position_manager["emergency_exposure_trigger"])
-            
+
             # Smart position settings
             if "hard_stop_loss_eur" in smart_position:
                 self.hard_loss_eur = float(smart_position["hard_stop_loss_eur"])
-            
+
             if "min_signal_strength" in smart_position:
                 self.min_signal_threshold = float(smart_position["min_signal_strength"])
-            
+
             if "profit_take_trail_pct" in smart_position:
                 self.trail_pct = float(smart_position["profit_take_trail_pct"])
-            
+
             # Escalation thresholds
             if "shutdown_threshold" in escalation:
                 self.emergency_close_threshold = float(escalation["shutdown_threshold"])
-            
+
             # Profit target from prop firm
             if "profit_target" in prop_firm:
                 self.profit_target = float(prop_firm["profit_target"])
-                
+
         except Exception:
-            pass  # Keep defaults if config load fails
+            # Keep defaults if config load fails
+            pass
+        finally:
+            object.__setattr__(self, "_risk_policy_loaded", True)
 
     # ------------------------------------------------------------------
     # Structured views
@@ -508,16 +551,28 @@ class TradingConfig:
 
     def save_config(self, path: str) -> None:
         """Save configuration to JSON file."""
-        with open(path, 'w', encoding='utf-8') as f:
+        with open(path, "w", encoding="utf-8") as f:
             json.dump(self.to_dict(), f, indent=2)
 
     @classmethod
     def load_config(cls, path: str) -> "TradingConfig":
-        """Load configuration from JSON file."""
-        with open(path, 'r', encoding='utf-8') as f:
+        """
+        Load configuration from JSON file.
+
+        Notes:
+            - Only fields with init=True are passed to the constructor.
+            - Internal fields like `_risk_policy_loaded` and
+              `max_steps_per_episode` are reconstructed in __post_init__.
+        """
+        with open(path, "r", encoding="utf-8") as f:
             config_dict = json.load(f)
-        allowed = {f.name for f in cls.__dataclass_fields__.values()}
-        clean = {k: v for k, v in config_dict.items() if k in allowed}
+
+        init_fields = {
+            name
+            for name, f in cls.__dataclass_fields__.items()  # type: ignore[attr-defined]
+            if getattr(f, "init", True)
+        }
+        clean = {k: v for k, v in config_dict.items() if k in init_fields}
         return cls(**clean)
 
     # ------------------------------------------------------------------
@@ -529,11 +584,16 @@ class TradingConfig:
         return replace(self, **known)
 
     def apply_overrides(self, **overrides: Any) -> None:
-        """In-place override for known fields (keeps compatibility)."""
+        """
+        In-place override for known fields (keeps compatibility).
+
+        Note: risk_policy.yaml will NOT be re-applied (it is loaded once).
+        """
         for k, v in overrides.items():
             if hasattr(self, k):
                 setattr(self, k, v)
-        self.__post_init__()  # re-run clamps/dirs when critical fields changed
+        # Re-run clamps/dirs/mode; _load_from_risk_policy() will no-op if already loaded
+        self.__post_init__()
 
     def __str__(self) -> str:
         """String representation for logging."""
@@ -546,18 +606,19 @@ class TradingConfig:
             f"  Instruments: {self.instruments}\n"
             f"  Obs Size: {self.environment_observation_size}\n"
             f"  Training Steps: {self.final_training_steps:,}\n"
-            f"  Risk Limits (fallback): DD={self.max_drawdown:.1%}, Exposure={self.max_total_exposure:.1%}, Pos={self.max_position_pct:.1%}\n"
+            f"  Risk Limits (fallback): DD={self.max_drawdown:.1%}, "
+            f"Exposure={self.max_total_exposure:.1%}, Pos={self.max_position_pct:.1%}\n"
             f"  Log Rotation: {self.log_rotation_lines} lines\n"
             f")"
         )
 
 
 # ─────────────────────────────────────────────────────────
-# Runtime market/episode state (unchanged)
+# Runtime market/episode state (unchanged, used by env)
 # ─────────────────────────────────────────────────────────
 @dataclass
 class MarketState:
-    """Enhanced market state with InfoBus integration"""
+    """Enhanced market state with InfoBus integration."""
     balance: float
     peak_balance: float
     current_step: int
@@ -570,13 +631,13 @@ class MarketState:
     session_pnl: float = 0.0
     last_info_bus_update: int = 0
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         object.__setattr__(self, "session_start_balance", float(self.balance))
 
 
 @dataclass
 class EpisodeMetrics:
-    """Enhanced episode metrics with InfoBus tracking"""
+    """Enhanced episode metrics with InfoBus tracking."""
     pnls: List[float] = field(default_factory=list)
     durations: List[int] = field(default_factory=list)
     drawdowns: List[float] = field(default_factory=list)
@@ -592,31 +653,21 @@ class EpisodeMetrics:
 
 
 # ─────────────────────────────────────────────────────────
-# Presets (set bus-first flags to True by default)
+# Presets (bus-first by default except exploration_mode)
 # ─────────────────────────────────────────────────────────
 class ConfigPresets:
-    """Enhanced preset configurations for InfoBus-integrated environment"""
+    """Preset configurations for InfoBus-integrated environment."""
 
     @staticmethod
     def exploration_mode() -> TradingConfig:
         """
         NO MODULES configuration for initial exploration/pretraining.
-        
+
         Use this to train the agent on raw price data BEFORE adding modules.
-        This lets the agent freely explore market dynamics without module constraints.
-        
-        Workflow:
-          1. Train with exploration_mode() first (e.g., 100k-500k steps)
-          2. Then fine-tune with production_backtest() using --pretrained
-        
-        Example:
-          python train/train_simple_mode.py --timesteps 200000
-          python train/train_ppo_hybrid.py --pretrained models/simple/simple_ppo_final.zip
+        The env runs without InfoBus / modules; all logic is local.
         """
         return TradingConfig(
-            # ═══════════════════════════════════════════════════════════════
-            # DISABLE ALL MODULE/BUS FEATURES - PURE EXPLORATION
-            # ═══════════════════════════════════════════════════════════════
+            # Disable all module/bus features – pure exploration
             bus_first=False,
             prefer_bus_data=False,
             prefer_bus_features=False,
@@ -625,31 +676,27 @@ class ConfigPresets:
             prefer_bus_limits=False,
             allow_module_overrides=False,
             halt_on_emergency=False,
-            
+
             # Disable InfoBus & Orchestrator
             info_bus_enabled=False,
             info_bus_validation=False,
             orchestrator_init_timeout=0.0,
             orchestrator_sync_wait_ms=0.0,
-            
-            # ═══════════════════════════════════════════════════════════════
-            # PERMISSIVE RISK SETTINGS FOR EXPLORATION
-            # (initial_balance loaded from risk_policy.yaml in __post_init__)
-            # ═══════════════════════════════════════════════════════════════
-            initial_balance=100000.0,       # Overridden from risk_policy.yaml
-            max_position_pct=0.20,          # 20% positions allowed
-            max_total_exposure=0.50,        # 50% total exposure
-            max_drawdown=0.30,              # 30% DD before termination
-            
-            # No consensus requirements (agent is on its own)
+
+            # Permissive risk settings for exploration
+            # (initial_balance will still be loaded from risk_policy.yaml if present)
+            initial_balance=100_000.0,
+            max_position_pct=0.20,
+            max_total_exposure=0.50,
+            max_drawdown=0.30,
+
+            # No consensus requirements (agent acts alone)
             consensus_min=0.0,
             consensus_max=1.0,
             min_confidence=0.0,
             min_intensity=0.0,
-            
-            # ═══════════════════════════════════════════════════════════════
-            # TRAINING SETTINGS - OPTIMIZED FOR EXPLORATION
-            # ═══════════════════════════════════════════════════════════════
+
+            # PPO training settings tuned for exploration
             learning_rate=3e-4,
             n_steps=2048,
             batch_size=64,
@@ -657,35 +704,35 @@ class ConfigPresets:
             gamma=0.99,
             gae_lambda=0.95,
             clip_range=0.2,
-            ent_coef=0.02,                  # Higher entropy for exploration
+            ent_coef=0.02,
             vf_coef=0.5,
             max_grad_norm=0.5,
             target_kl=0.015,
-            
+
             # Network (smaller for faster exploration)
             policy_hidden_size=128,
             value_hidden_size=128,
-            
+
             # Environment
-            max_steps=10000,                # Long episodes
-            environment_observation_size=128,
+            max_steps=10_000,
+            environment_observation_size=48,  # keep aligned with PPO_OBS_SIZE
             min_required_data_bars=50,
-            
-            # Training
-            final_training_steps=100000,
-            checkpoint_freq=10000,
-            eval_freq=5000,
+
+            # Training schedule
+            final_training_steps=100_000,
+            checkpoint_freq=10_000,
+            eval_freq=5_000,
             n_eval_episodes=5,
-            
+
             # Mode flags
             live_mode=False,
             test_mode=False,
             debug=True,
-            
+
             # Data
             instruments=["EUR_USD", "XAU_USD"],
             timeframes=["M15", "H1", "H4", "D1"],
-            
+
             # No execution costs for clean exploration
             default_spread=0.0,
             slippage_pts=0.0,
@@ -696,25 +743,23 @@ class ConfigPresets:
     def conservative_live() -> TradingConfig:
         """Ultra-conservative configuration for LIVE trading with real money."""
         return TradingConfig(
-            # ═══════════════════════════════════════════════════════════════
-            # ULTRA-CONSERVATIVE RISK SETTINGS FOR LIVE TRADING
-            # ═══════════════════════════════════════════════════════════════
-            initial_balance=1000.0,
-            max_position_pct=0.03,         # Max 3% per position (was 5%)
-            max_total_exposure=0.10,       # Max 10% total exposure (was 15%)
-            max_drawdown=0.08,             # Max 8% drawdown before halt (was 10%)
-            max_correlation=0.6,           # Lower correlation tolerance
-            
+            # Ultra-conservative risk settings
+            initial_balance=1_000.0,
+            max_position_pct=0.03,
+            max_total_exposure=0.10,
+            max_drawdown=0.08,
+            max_correlation=0.6,
+
             # Strong consensus requirements
-            consensus_min=0.65,            # Need 65% agreement (was 50%)
-            min_confidence=0.50,           # Need 50% confidence
-            min_intensity=0.40,            # Need strong signal
-            
+            consensus_min=0.65,
+            min_confidence=0.50,
+            min_intensity=0.40,
+
             # Position management - very conservative
-            max_consecutive_losses=3,      # Only 3 losses before reducing
-            loss_reduction=0.5,            # Reduce by 50% after consecutive losses
-            emergency_drawdown_trigger=0.06,  # Emergency at 6% DD
-            emergency_close_threshold=0.80,   # Close at 80% risk threshold
+            max_consecutive_losses=3,
+            loss_reduction=0.5,
+            emergency_drawdown_trigger=0.06,
+            emergency_close_threshold=0.80,
 
             # Live trading settings
             live_mode=True,
@@ -737,33 +782,34 @@ class ConfigPresets:
             info_bus_validation=True,
 
             # Frequent monitoring
-            risk_check_frequency=1,        # Check every step
-            risk_alert_cooldown=2,         # Quick alerts
-            max_concurrent_alerts=3,       # Fewer alerts before action
+            risk_check_frequency=1,
+            risk_alert_cooldown=2,
+            max_concurrent_alerts=3,
 
-            # Conservative learning (shouldn't update live, but safety)
-            learning_rate=1e-5,            # Very slow learning
+            # Conservative learning (safety; real live trading should be frozen anyway)
+            learning_rate=1e-5,
             ent_coef=0.001,
             n_steps=512,
 
             # Short episodes for quick recovery
             max_steps=50,
-            final_training_steps=10000,
+            final_training_steps=10_000,
 
             # Logging
-            log_interval=1,                # Log every step
-            checkpoint_freq=1000,
+            log_interval=1,
+            checkpoint_freq=1_000,
             eval_freq=500,
 
-            # Single instrument to start
+            # Start live with a single instrument
             instruments=["EUR_USD"],
             timeframes=["M15", "H1", "H4", "D1"],
         )
 
     @staticmethod
     def research_mode() -> TradingConfig:
+        """Bus-first research configuration for heavy diagnostics and module work."""
         return TradingConfig(
-            initial_balance=5000.0,
+            initial_balance=5_000.0,
             max_position_pct=0.10,
             max_total_exposure=0.30,
             max_drawdown=0.25,
@@ -797,11 +843,11 @@ class ConfigPresets:
             batch_size=32,
 
             max_steps=100,
-            final_training_steps=25000,
+            final_training_steps=25_000,
 
             log_interval=1,
-            checkpoint_freq=5000,
-            eval_freq=2500,
+            checkpoint_freq=5_000,
+            eval_freq=2_500,
 
             instruments=["EUR_USD", "XAU_USD"],
             timeframes=["M15", "H1", "H4", "D1"],
@@ -809,8 +855,9 @@ class ConfigPresets:
 
     @staticmethod
     def production_backtest() -> TradingConfig:
+        """Bus-first production-style backtest for full committee + RL."""
         return TradingConfig(
-            initial_balance=10000.0,
+            initial_balance=10_000.0,
             max_position_pct=0.15,
             max_total_exposure=0.40,
             max_drawdown=0.25,
@@ -844,11 +891,11 @@ class ConfigPresets:
             batch_size=64,
 
             max_steps=200,
-            final_training_steps=100000,
+            final_training_steps=100_000,
 
             log_interval=10,
-            checkpoint_freq=10000,
-            eval_freq=5000,
+            checkpoint_freq=10_000,
+            eval_freq=5_000,
 
             instruments=["EUR_USD", "XAU_USD"],
             timeframes=["M15", "H1", "H4", "D1"],
@@ -866,20 +913,22 @@ class ConfigFactory:
         mode: str = "backtest",
         risk_level: str = "moderate",
         info_bus_level: str = "auto",
-        **overrides: Any
+        **overrides: Any,
     ) -> TradingConfig:
         """
         Create a TradingConfig with appropriate mode settings.
-        
+
         Args:
             mode: "live", "research", "production", or "backtest"
             risk_level: "conservative", "moderate", or "aggressive"
             info_bus_level: "auto", "DEBUG", "INFO", "WARNING", "ERROR"
             **overrides: Additional config overrides
-        
-        Note: Setting mode="live" automatically enables LIVE trading mode
-              across all subsystems (gates, voting, rewards).
+
+        Note:
+            Setting mode="live" automatically enables LIVE trading mode
+            across all subsystems (gates, voting, rewards).
         """
+        # 1) Base preset
         if mode == "live":
             config = ConfigPresets.conservative_live()
         elif mode == "research":
@@ -889,7 +938,7 @@ class ConfigFactory:
         else:
             config = TradingConfig()
 
-        # Adjust InfoBus level
+        # 2) Adjust InfoBus level
         if info_bus_level == "auto":
             if config.debug:
                 config.info_bus_audit_level = "DEBUG"
@@ -900,7 +949,7 @@ class ConfigFactory:
         else:
             config.info_bus_audit_level = str(info_bus_level).upper()
 
-        # Risk level (affects only fallback guard-rails)
+        # 3) Risk level (affects only fallback guard-rails)
         if risk_level == "conservative":
             config.max_position_pct *= 0.5
             config.max_total_exposure *= 0.7
@@ -914,22 +963,32 @@ class ConfigFactory:
             config.risk_check_frequency = 2
             config.risk_alert_cooldown = 10
 
-        # Apply overrides (known fields only)
-        for key, value in overrides.items():
-            if hasattr(config, key):
-                setattr(config, key, value)
-            else:
-                print(f"Warning: Unknown config parameter '{key}'")
+        # 4) Apply overrides via helper (known fields only)
+        if overrides:
+            known: Dict[str, Any] = {}
+            unknown: List[str] = []
 
-        config.__post_init__()
-        
-        # Explicitly set trading mode after config is fully built
+            for key, value in overrides.items():
+                if hasattr(config, key):
+                    known[key] = value
+                else:
+                    unknown.append(key)
+
+            if unknown:
+                # Simple warning; replace with logger if needed
+                print(f"Warning: Unknown config parameters: {unknown}")
+
+            if known:
+                # This re-runs __post_init__ without re-loading risk_policy.yaml
+                config.apply_overrides(**known)
+
+        # 5) Explicitly set trading mode after config is fully built
         try:
             from modules.core.trading_mode import TradingModeManager
             TradingModeManager.from_config(config)
         except ImportError:
             pass
-        
+
         return config
 
 
@@ -981,7 +1040,10 @@ if __name__ == "__main__":
     for name, config in configs.items():
         print(f"\n📋 {name}:")
         print(f"  InfoBus: {config.info_bus_enabled} ({config.info_bus_audit_level}) | bus_first={config.bus_first}")
-        print(f"  Risk Fallbacks: DD={config.max_drawdown:.1%}, Exposure={config.max_total_exposure:.1%}, Pos={config.max_position_pct:.1%}")
+        print(
+            f"  Risk Fallbacks: DD={config.max_drawdown:.1%}, "
+            f"Exposure={config.max_total_exposure:.1%}, Pos={config.max_position_pct:.1%}"
+        )
         print(f"  Obs Size: {config.environment_observation_size}")
         warns = validate_config(config)
         if warns:

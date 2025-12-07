@@ -69,12 +69,15 @@ CONTRACTS: Dict[str, ModuleContract] = {
                   'DynamicRiskController_voting_proposal', 'DynamicRiskController_confidence'],
         # NOTE: 'position_data' is provided by PositionManager
         # NOTE: Memory signals (memory_gate, danger_zones, etc.) used for risk factor adjustment
-        requires=['anomaly_detection', 'compliance', 'execution_quality', 'market_context', 'market_data',
-                  'market_regime', 'performance_data', 'portfolio_risk', 'position_data', 'risk_data',
-                  'memory_gate', 'danger_zones', 'mistake_avoidance', 'intuition_vector'],
+        # FIX v4.3.0: Removed risk sub-module dependencies to break circular deps.
+        #             DynamicRiskController can function with basic inputs.
+        #             Optional signals (anomaly_detection, execution_quality, drawdown_risk, etc.)
+        #             are consumed via bus.get() with defaults in the module itself.
+        requires=['market_context', 'market_data', 'market_regime', 'position_data',
+                  'memory_gate', 'danger_zones'],
         # NOTE: is_voting_member=False - provides risk gate actions (proceed/caution/halt), not directional votes
         meta={'is_voting_member': False, 'thesis_required': True, 'health_monitoring': True,
-              'performance_tracking': True, 'category': 'risk', 'version': '4.1.0'}
+              'performance_tracking': True, 'category': 'risk', 'version': '4.2.0'}
     ),
 
     'EnhancedAnomalyDetector': ModuleContract(
@@ -93,7 +96,9 @@ CONTRACTS: Dict[str, ModuleContract] = {
         file='risk/execution_quality_monitor.py',  # fixed path (was incorrectly under voting/)
         provides=['execution_alerts', 'execution_analytics', 'execution_quality', 'quality_metrics',
                   'ExecutionQualityMonitor_voting_proposal', 'ExecutionQualityMonitor_confidence'],
-        requires=['execution_data', 'market_context', 'market_data', 'order_data', 'trade_data'],
+        # FIX v4.1.0: Removed Executor-dependent inputs (execution_data, order_data, trade_data)
+        #             to break circular dependency. Module gets these via bus.get() with defaults.
+        requires=['market_context', 'market_data'],
         # NOTE: is_voting_member=False - provides execution gate actions, not directional votes
         meta={'is_voting_member': False, 'thesis_required': True, 'health_monitoring': True,
               'performance_tracking': True, 'category': 'risk', 'version': '4.0.0'}
@@ -105,10 +110,14 @@ CONTRACTS: Dict[str, ModuleContract] = {
         provides=['portfolio_risk', 'portfolio_risk_proposal', 'position_limits', 'risk_data', 'risk_metrics',
                   'risk_score', 'risk_signals', 'portfolio_trade_data', 'trading_data',
                   'PortfolioRiskSystem_voting_proposal', 'PortfolioRiskSystem_confidence'],
-        requires=['market_context', 'market_data', 'positions'],
+        # NOTE: v4.1.0 - Added correlation_matrix, correlation_risk, diversification_score from CorrelatedRiskController
+        #       to remove correlation calculation duplication and use single source of truth
+        requires=['market_context', 'market_data', 'positions',
+                  # Correlation data from CorrelatedRiskController (v4.1.0)
+                  'correlation_matrix', 'correlation_risk', 'diversification_score'],
         # NOTE: is_voting_member=False - provides risk gate actions, not directional votes
         meta={'is_voting_member': False, 'thesis_required': True, 'health_monitoring': True,
-              'performance_tracking': True, 'category': 'risk', 'version': '4.0.0'}
+              'performance_tracking': True, 'category': 'risk', 'version': '4.1.0'}
     ),
 
     # ═══════════════════════════════ FEATURES ════════════════════════════════
@@ -145,20 +154,22 @@ CONTRACTS: Dict[str, ModuleContract] = {
               'category': 'meta', 'version': '3.0.1', 'disabled': True}  # DISABLED - Zero consumers
     ),
 
-    # NOTE: MetaRLController file is metar_rl_controller.py (typo in filename)
+    # NOTE: MetaRLController file is meta_rl_controller.py (typo in filename)
+    # DEPRECATED: Moved to legacy folder - functionality replaced by PPOAgentShell
     'MetaRLController': ModuleContract(
         name='MetaRLController',
-        file='meta/metar_rl_controller.py',
+        file='meta/legacy/meta_rl_controller.py',
         provides=['agent_decisions', 'agents_performance', 'automation_status', 'controller_status',
                   'controller_training_overview', 'meta_signals', 'trading_signal', 'trading_signals'],
         requires=['actions', 'market_data', 'trades', 'training_signals'],
         meta={'thesis_required': True, 'health_monitoring': True, 'performance_tracking': True,
-              'category': 'meta', 'version': '3.0.0'}
+              'category': 'meta', 'version': '3.0.0', 'disabled': True}  # DISABLED - Moved to legacy
     ),
 
+    # DEPRECATED: Moved to legacy folder - functionality replaced by PPOAgentShell + TradingModeManager
     'MetaAgent': ModuleContract(
         name='MetaAgent',
-        file='meta/meta_agent.py',
+        file='meta/legacy/meta_agent.py',
         provides=['automation_decisions', 'automation_metrics', 'meta_performance', 'system_mode',
                   'MetaAgent_voting_proposal', 'MetaAgent_confidence',
                   # FIX: Add active_strategy and auto_mode for BackendAPI
@@ -167,40 +178,46 @@ CONTRACTS: Dict[str, ModuleContract] = {
         # NOTE: is_voting_member=False - MetaAgent outputs risk gate signals (proceed/caution/halt),
         # NOT directional trading signals (long/short). It monitors system health, not market direction.
         meta={'is_voting_member': False, 'thesis_required': True, 'health_monitoring': True,
-              'performance_tracking': True, 'category': 'meta', 'version': '3.0.0'}
+              'performance_tracking': True, 'category': 'meta', 'version': '3.0.0', 'disabled': True}  # DISABLED - Moved to legacy
     ),
 
     'PPOAgent': ModuleContract(
         name='PPOAgent',
-        file='meta/ppo_agent.py',
-        # PPOAgent is now the INTELLIGENT ARBITER - makes final trading decisions
-        # It consumes committee consensus, expert signals, risk, memory and decides:
-        # 1. Whether to trade (GO/NO-GO)
+        file='meta/ppo_agent_shell.py',  # Updated to new shell architecture
+        # PPOAgent v4.0 is the INTELLIGENT ARBITER - makes final trading decisions
+        # It uses a 3-layer architecture:
+        # - PPOCore: Pure RL engine (no bus knowledge)
+        # - ArbiterLogic: Domain logic for per-instrument decisions
+        # - PPOAgentShell: SmartInfoBus gateway (this file)
+        #
+        # It consumes committee consensus, expert signals, risk, memory, trading mode,
+        # world model predictions, and strategy constraints to decide:
+        # 1. Whether to trade (GO/NO-GO) per instrument
         # 2. Position sizing based on confidence
         # 3. Override committee when it detects danger
-        provides=['actions', 'agent_performance', 'observations', 'policy_actions', 'policy_gradients', 'rewards',
-                  'training_data', 'training_metrics', 'training_signals',
+        provides=['agent_performance', 'policy_actions', 'policy_gradients', 'rewards',
+              'training_data', 'training_metrics', 'training_signals',
                   # Final decision outputs (consumed by Executor)
                   'ppo_final_decision', 'ppo_gate_passed', 'ppo_position_size',
+                  # Multi-instrument outputs (v3.0)
+                  'ppo_multi_decision',      # Dict with per-instrument decisions
+                  'ppo_instrument_stats',    # Per-instrument statistics
                   # Legacy voting outputs (for committee, but with low weight)
                   'PPOAgent_voting_proposal', 'PPOAgent_confidence'],
         # Runs AFTER committee consensus to make informed final decision
-        requires=['market_data', 'market_regime', 'regime_strength',
+        # FIX v5.1.0: Removed strategy/thesis inputs that may not be available on first cycle.
+        #             PPOAgentShell gets these via bus.get() with defaults.
+        requires=['market_data', 'market_regime',
                   # Committee consensus (aggregated expert votes)
                   'committee_decision', 'committee_confidence', 'consensus_score',
-                  # Individual expert signals (for override decisions)
-                  'TrendExpert_voting_proposal', 'TrendExpert_confidence',
-                  'MomentumExpert_voting_proposal', 'MomentumExpert_confidence', 
-                  'ThemeExpert_voting_proposal', 'ThemeExpert_confidence',
-                  'SeasonalityRiskExpert_voting_proposal', 'SeasonalityRiskExpert_confidence',
                   # Risk signals
-                  'risk_data', 'portfolio_risk', 'fragility',
+                  'fragility',
                   # Memory signals
                   'memory_gate', 'danger_zones'],
         meta={'is_voting_member': False,  # No longer a voter - it's the arbiter
               'is_final_arbiter': True,   # New role: intelligent final decision maker
               'thesis_required': True, 'health_monitoring': True,
-              'performance_tracking': True, 'category': 'meta', 'version': '4.0.0'}
+              'performance_tracking': True, 'category': 'meta', 'version': '5.0.0'}
     ),
 
     'PPOLagAgent': ModuleContract(
@@ -519,12 +536,14 @@ CONTRACTS: Dict[str, ModuleContract] = {
             'committee_decision', 'committee_confidence', 'votes', 'voting_summary',
             'strategy_arbiter_weights', 'committee_consensus'
           ],
+          # NOTE: Only directional voting experts are required inputs.
+          # Risk modules (DynamicRiskController, etc.) provide gate actions (proceed/caution/halt),
+          # NOT directional signals, so they are NOT required here.
           requires=[
+              'TrendExpert_voting_proposal', 'TrendExpert_confidence',
+              'MomentumExpert_voting_proposal', 'MomentumExpert_confidence',
               'ThemeExpert_voting_proposal', 'ThemeExpert_confidence',
               'SeasonalityRiskExpert_voting_proposal', 'SeasonalityRiskExpert_confidence',
-              'MomentumExpert_voting_proposal', 'MomentumExpert_confidence',
-              'TrendExpert_voting_proposal', 'TrendExpert_confidence',
-              'DynamicRiskController_voting_proposal', 'DynamicRiskController_confidence',
               'market_regime', 'volatility_data'
           ],
         meta={'thesis_required': True, 'explainable': True, 'health_monitoring': True,
@@ -787,12 +806,19 @@ CONTRACTS: Dict[str, ModuleContract] = {
         # NOTE: Memory gate used for final safety veto on order execution
         # NOTE: order_queue is consumed but NOT required - Executor handles empty queue gracefully
         # This allows Executor to run in parallel with PositionManager (order_queue comes next cycle)
+        # NOTE: Strategy modules (bias, curriculum) are consumed for position sizing and trade limits
+        # NOTE: Trading mode (v4.0) consumed for position scaling and risk constraints
         provides=['positions', 'trades', 'recent_trades',
                   'order_data', 'execution_data', 'execution_reports',
                   'portfolio_metrics', 'trading_result', 'current_pnl',
                   'trade_data', 'market_state', 'position_data',
                   'current_positions', 'pnl_data', 'closed_positions',
                   'live_adapter_status', 'pending_orders', 'account_state'],
+        # FIX v5.1.0: Removed optional dependencies that caused circular deps:
+        #   - bias_adjustments, learning_constraints, curriculum_stage (from BiasAuditor/CurriculumPlanner)
+        #   - risk_assessment, risk_level (from DynamicRiskController)
+        #   - trading_mode, mode_config, mode_effectiveness (from TradingModeManager)
+        # These are enhancement signals consumed via bus.get() with defaults in Executor.
         requires=['prices', 'price_data', 'environment_config', 'step_idx', 'execution_mode'],
         meta={'is_voting_member': False, 'thesis_required': False, 'explainable': True,
               'health_monitoring': True, 'performance_tracking': True,
@@ -956,13 +982,13 @@ CONTRACTS: Dict[str, ModuleContract] = {
             # NEW: Neural risk head output
             'neural_risk_hint'
         ],
-        # FIX: Removed 'risk_data' from requires to break circular dependency:
-        # PortfolioRiskSystem -> Executor -> PositionManager -> UnifiedMemory -> PortfolioRiskSystem
-        # UnifiedMemory can get risk_data optionally from bus with fallback
-        requires=['actions', 'episode_data', 'features', 'market_context', 'market_data',
-                  'observations', 'prices', 'rewards', 'time_risk_analysis', 'trades'],
+        # FIX: Removed training-only requirements (actions, observations, rewards) that only exist
+        # during training. UnifiedMemory gets these optionally from bus with fallback during live mode.
+        # Also removed 'risk_data' to break circular dependency.
+        requires=['episode_data', 'features', 'market_context', 'market_data',
+                  'prices', 'time_risk_analysis', 'trades'],
         meta={'thesis_required': True, 'health_monitoring': True, 'performance_tracking': True,
-              'category': 'memory', 'version': '4.2.0'}
+              'category': 'memory', 'version': '4.3.0'}
     ),
 }
 

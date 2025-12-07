@@ -317,18 +317,22 @@ class ThemeExpert(VotingExpertBase):
                     )
                     
                     # ── MTF confirmation for trend/vol regimes ───────────────
+                    # M15-PRIMARY: M15 generates direction, context TFs only modify confidence
+                    # Import constants for consistent values across all experts
+                    from modules.voting.core.constants import MTF_AGREEMENT_BONUS, MTF_DISAGREEMENT_PENALTY
+                    
                     mtf_result = self._analyze_multi_timeframe_theme(inst_norm)
                     if mtf_result["valid"]:
-                        # Adjust trend score based on MTF alignment
+                        # Adjust trend score based on MTF alignment (confidence modifier only)
                         if mtf_result["trend_aligned"]:
-                            trend_score = trend_score * 1.15  # +15% for MTF alignment
+                            trend_score = trend_score * (1.0 + MTF_AGREEMENT_BONUS)  # +15% for MTF alignment
                             self.log_debug(
-                                f"[THEME MTF] {inst_norm}: Trend aligned across TFs, boosting score"
+                                f"[THEME MTF] {inst_norm}: Context TFs agree with M15, boosting confidence"
                             )
                         elif mtf_result["trend_opposed"]:
-                            trend_score = trend_score * 0.75  # -25% for MTF opposition
+                            trend_score = trend_score * (1.0 - MTF_DISAGREEMENT_PENALTY)  # -20% for MTF opposition
                             self.log_debug(
-                                f"[THEME MTF] {inst_norm}: Trend opposed across TFs, reducing score"
+                                f"[THEME MTF] {inst_norm}: Context TFs oppose M15, reducing confidence"
                             )
                         
                         # Adjust vol score based on MTF volatility consistency
@@ -710,7 +714,8 @@ class ThemeExpert(VotingExpertBase):
             sym_block = historical.get(symbol)
             if isinstance(sym_block, dict):
                 tf_candidates: List[np.ndarray] = []
-                for tf in ("M15", "H4", "H1", "D1"):
+                # M15 is primary, H1/H4/D1 are context (ordered by granularity)
+                for tf in ("M15", "H1", "H4", "D1"):
                     candidate = sym_block.get(tf)
                     if not isinstance(candidate, dict):
                         continue
@@ -859,12 +864,13 @@ class ThemeExpert(VotingExpertBase):
     def _analyze_multi_timeframe_theme(self, instrument: str) -> Dict[str, Any]:
         """
         Analyze theme signals across multiple timeframes for confirmation.
-        
+
         Multi-timeframe confirmation:
-        - H1: Primary signal (40% weight)
-        - H4: Confirmation signal (35% weight)
-        - D1: Strategic direction (25% weight)
-        
+        - M15: PRIMARY trading timeframe (signal generation)
+        - H1: Hourly confirmation (context)
+        - H4: 4-hour filter (context)
+        - D1: Daily trend direction (context)
+
         Returns:
             Dict with trend_aligned, trend_opposed, vol_consistent, valid flags
         """

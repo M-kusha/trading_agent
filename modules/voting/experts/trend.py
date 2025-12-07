@@ -32,6 +32,8 @@ from modules.voting.core.constants import (
     CONFIDENCE_THRESHOLD_F,
     MIN_SIGNAL_STRENGTH_F,
     HIGH_CONFIDENCE_THRESHOLD_F,
+    PRIMARY_TIMEFRAME,
+    CONTEXT_TIMEFRAMES,
 )
 
 
@@ -91,12 +93,22 @@ class TrendExpert(VotingExpertBase):
         # Risk / signal caps
         self.max_signal_strength = float(self.config.get("max_signal_strength", 1.0))
 
-        # Multi-timeframe configuration (NEW: confirm H1 signals with H4/D1, M15 for micro-structure)
+        # Multi-timeframe configuration:
+        # M15 is the PRIMARY trading timeframe (100% of signal generation).
+        # H1/H4/D1 are CONTEXT timeframes (confidence modifiers ONLY, never override direction).
+        # This is because ExitManager closes trades early with tight TP, so H1/H4/D1 trends
+        # rarely have time to play out.
         self.use_mtf_confirmation = bool(self.config.get("use_mtf_confirmation", True))
-        self.mtf_timeframes = ["M15", "H1", "H4", "D1"]  # M15 micro, H1 primary, H4/D1 confirmations
-        self.mtf_weights = {"M15": 0.15, "H1": 0.35, "H4": 0.30, "D1": 0.20}  # Weight for each TF
-        self.mtf_agreement_bonus = 0.15  # Confidence bonus when all TFs agree
-        self.mtf_disagreement_penalty = 0.20  # Confidence penalty when TFs disagree
+        self.mtf_timeframes = [PRIMARY_TIMEFRAME] + list(CONTEXT_TIMEFRAMES)  # M15 primary, H1/H4/D1 context
+        # M15-PRIMARY: M15 generates direction, context TFs only adjust confidence
+        self.mtf_weights = {
+            "M15": 1.00,  # PRIMARY: M15 is the SOLE signal generator
+            "H1": 0.00,   # CONTEXT ONLY: modifies confidence, not direction
+            "H4": 0.00,   # CONTEXT ONLY: modifies confidence, not direction
+            "D1": 0.00,   # CONTEXT ONLY: modifies confidence, not direction
+        }
+        self.mtf_agreement_bonus = 0.15  # Confidence boost when context TFs agree with M15
+        self.mtf_disagreement_penalty = 0.20  # Confidence penalty when context TFs disagree with M15
 
         # ═══════════════════════════ PER-INSTRUMENT STATE ═══════════════════════════
         self.instrument_state: Dict[str, Dict[str, Any]] = {}
@@ -1018,8 +1030,9 @@ class TrendExpert(VotingExpertBase):
                     )
 
                     # ═══════════════════════════════════════════════════════════════
-                    # MULTI-TIMEFRAME CONFIRMATION (NEW)
-                    # Check if higher timeframes (H4, D1) agree with the H1 signal
+                    # M15-PRIMARY MULTI-TIMEFRAME CONFIRMATION
+                    # M15 is the SOLE signal generator - H1/H4/D1 ONLY modify confidence
+                    # Context TFs NEVER override M15 direction (ExitManager closes early)
                     # ═══════════════════════════════════════════════════════════════
                     mtf_adjustment = 0.0
                     mtf_info = ""
@@ -1031,36 +1044,31 @@ class TrendExpert(VotingExpertBase):
                             dominant = mtf_analysis.get("dominant_direction", "neutral")
                             alignment = mtf_analysis.get("alignment_score", 0.5)
                             
-                            # Check if signal direction matches MTF dominant direction
+                            # Check if M15 signal direction matches context TF direction
                             signal_is_bullish = action == "long"
                             mtf_is_bullish = dominant == "bullish"
                             mtf_is_bearish = dominant == "bearish"
                             
                             if signal_is_bullish and mtf_is_bullish:
-                                # LONG signal confirmed by higher timeframes - boost confidence
+                                # M15 LONG confirmed by context TFs - boost confidence
                                 mtf_adjustment = self.mtf_agreement_bonus * alignment
-                                mtf_info = f"MTF CONFIRMED ↑ (align={alignment:.2f})"
+                                mtf_info = f"Context TFs AGREE ↑ (align={alignment:.2f})"
                             elif not signal_is_bullish and mtf_is_bearish:
-                                # SHORT signal confirmed by higher timeframes - boost confidence
+                                # M15 SHORT confirmed by context TFs - boost confidence
                                 mtf_adjustment = self.mtf_agreement_bonus * alignment
-                                mtf_info = f"MTF CONFIRMED ↓ (align={alignment:.2f})"
+                                mtf_info = f"Context TFs AGREE ↓ (align={alignment:.2f})"
                             elif (signal_is_bullish and mtf_is_bearish) or (not signal_is_bullish and mtf_is_bullish):
-                                # Signal CONTRADICTS higher timeframes - penalize heavily
+                                # M15 signal CONTRADICTS context TFs - penalize confidence ONLY
+                                # M15-PRIMARY: Never override direction, only reduce confidence
                                 mtf_adjustment = -self.mtf_disagreement_penalty * alignment
-                                mtf_info = f"MTF DISAGREES (align={alignment:.2f})"
-                                # If strong disagreement, consider flipping to flat
-                                if alignment >= 0.7:
-                                    action = "flat"
-                                    confidence = 0.15
-                                    signal_strength = 0.05
-                                    current_trend = "mtf_conflict"
-                                    mtf_info = f"MTF OVERRIDE → flat (HTF disagrees strongly)"
+                                mtf_info = f"Context TFs DISAGREE (align={alignment:.2f}, conf penalty applied)"
+                                # NOTE: We do NOT override action to flat - M15 is the decision maker
                             else:
-                                # Neutral HTF - slight reduction
+                                # Neutral context TFs - slight reduction
                                 mtf_adjustment = -0.05
-                                mtf_info = f"MTF neutral (no confirmation)"
+                                mtf_info = f"Context TFs neutral (no confirmation)"
                             
-                            # Apply MTF adjustment to confidence
+                            # Apply MTF adjustment to confidence (NEVER change action)
                             confidence = max(0.1, min(0.95, confidence + mtf_adjustment))
                             
                             # Store MTF info in analysis
@@ -1307,7 +1315,8 @@ class TrendExpert(VotingExpertBase):
             if matched_symbol and matched_symbol in historical:
                 sym_block = historical[matched_symbol]
                 if isinstance(sym_block, dict):
-                    for tf in ["M15", "H4", "H1", "D1"]:
+                    # M15 is primary, H1/H4/D1 are context (ordered by granularity)
+                    for tf in ["M15", "H1", "H4", "D1"]:
                         tf_rec = sym_block.get(tf)
                         if isinstance(tf_rec, dict):
                             seq = tf_rec.get(price_type)

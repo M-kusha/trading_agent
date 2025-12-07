@@ -343,7 +343,7 @@ class FinalArbiter(VotingModuleBase):
         
         # Final gate decision (fragility excluded from blocking criteria)
         all_passed = confidence_ok and consensus_ok and collusion_ok and memory_ok
-        gate_passed = all_passed or weighted_score > 0.6
+        gate_passed = all_passed or weighted_score > 0.55
         
         if gate_passed:
             self._gate_passes += 1
@@ -372,7 +372,7 @@ class FinalArbiter(VotingModuleBase):
             
             self.logger.warning(
                 f"[ARBITER] Global gate BLOCKED [MODE={get_voting_mode()}]: "
-                f"score={weighted_score:.2f}<0.60 | "
+                    f"score={weighted_score:.2f}<0.55 | "
                 f"failed=[{', '.join(failed_criteria)}] | "
                 f"thresholds: min_conf={self.min_confidence:.2f}, consensus={self.consensus_threshold:.2f}"
             )

@@ -11,6 +11,7 @@ import numpy as np
 import datetime
 import time
 import threading
+import ast
 from dataclasses import dataclass, asdict
 from typing import Dict, Any, List, Optional, Tuple
 from collections import deque, defaultdict
@@ -54,13 +55,15 @@ class CorrelatedRiskConfig:
 # Module
 # ─────────────────────────────────────────────────────────────
 
-@module(**module_args(
-    "CorrelatedRiskController",
-    description="Enhanced correlation risk monitoring with intelligent clustering and diversification analysis",
-    error_handling=True,
-    hot_reload=True,
-    timeout_ms=3000,
-))
+@module(
+    **module_args(
+        "CorrelatedRiskController",
+        description="Enhanced correlation risk monitoring with intelligent clustering and diversification analysis",
+        error_handling=True,
+        hot_reload=True,
+        timeout_ms=3000,
+    )
+)
 class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin):
     """
     Contract guarantees:
@@ -85,47 +88,47 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
         self._initialize_advanced_systems()
 
         # Circuit breaker & health state
-        self.circuit_breaker = {
+        self.circuit_breaker: Dict[str, Any] = {
             "failures": 0,
             "last_failure": 0.0,
             "state": "CLOSED",
             "threshold": int(self._cfg.circuit_breaker_threshold),
             "cooldown_sec": 20.0,
         }
-        self._processing_times = deque(maxlen=100)  # seconds per cycle
-        self._health_status = "healthy"
-        self._monitoring_active = False
+        self._processing_times: deque[float] = deque(maxlen=100)  # seconds per cycle
+        self._health_status: str = "healthy"
+        self._monitoring_active: bool = False
         self._lock = threading.RLock()
 
         # Configuration with intelligent defaults (mirrors typed cfg)
-        self.max_correlation = float(self._cfg.max_correlation)
-        self.warning_correlation = float(self._cfg.warning_correlation)
-        self.min_diversification = float(self._cfg.min_diversification)
-        self.lookback_window = int(self._cfg.lookback_window)
-        self.min_samples_for_corr = int(self._cfg.min_samples_for_corr)
-        self.cluster_link_threshold = float(self._cfg.cluster_link_threshold)
-        self.enabled = bool(self._cfg.enabled)
+        self.max_correlation: float = float(self._cfg.max_correlation)
+        self.warning_correlation: float = float(self._cfg.warning_correlation)
+        self.min_diversification: float = float(self._cfg.min_diversification)
+        self.lookback_window: int = int(self._cfg.lookback_window)
+        self.min_samples_for_corr: int = int(self._cfg.min_samples_for_corr)
+        self.cluster_link_threshold: float = float(self._cfg.cluster_link_threshold)
+        self.enabled: bool = bool(self._cfg.enabled)
 
         # Enhanced correlation tracking
         self.correlation_matrix: Dict[Tuple[str, str], float] = {}
-        self.correlation_history = deque(maxlen=100)
+        self.correlation_history: deque[Dict[Tuple[str, str], float]] = deque(maxlen=100)
         self.price_history: Dict[str, deque] = defaultdict(lambda: deque(maxlen=self.lookback_window))
         self.return_history: Dict[str, deque] = defaultdict(lambda: deque(maxlen=self.lookback_window))
 
         # Risk assessment
-        self.correlation_risk_score = 0.0
-        self.diversification_score = 1.0
-        self.cluster_risk_score = 0.0
-        self.severity_level = "normal"
+        self.correlation_risk_score: float = 0.0
+        self.diversification_score: float = 1.0
+        self.cluster_risk_score: float = 0.0
+        self.severity_level: str = "normal"
 
         # Advanced analytics
         self.correlation_clusters: Dict[int, List[str]] = {}
         self.regime_correlations = defaultdict(lambda: defaultdict(list))
 
         # Performance tracking
-        self.step_count = 0
-        self.correlation_violations = 0
-        self.diversification_violations = 0
+        self.step_count: int = 0
+        self.correlation_violations: int = 0
+        self.diversification_violations: int = 0
 
         super().__init__()  # may call _initialize()
         self._start_monitoring()
@@ -142,7 +145,7 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
             )
         )
 
-    def _initialize_advanced_systems(self):
+    def _initialize_advanced_systems(self) -> None:
         """Initialize advanced monitoring and error handling systems"""
         self.smart_bus = InfoBusManager.get_instance()
         self.logger = RotatingLogger(
@@ -190,25 +193,26 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
             self.diversification_violations = 0
 
             # Publish baseline provides to avoid early BUS MISS for downstream consumers
+            baseline_corr = {
+                "correlation_risk_score": float(self.correlation_risk_score),
+                "severity_level": str(self.severity_level),
+                "risk_metrics": {
+                    "violation_risk": 0.0,
+                    "diversification_risk": 0.0,
+                    "cluster_risk_score": float(self.cluster_risk_score),
+                },
+                "summary": {
+                    "pairs_analyzed": 0,
+                    "instruments_analyzed": 0,
+                    "processing_time_ms": 0.0,
+                },
+                "timestamp": datetime.datetime.now().isoformat(),
+                "thesis": "Baseline correlation risk initialized",
+            }
             try:
                 self.smart_bus.set(
                     "correlation_risk",
-                    {
-                        "correlation_risk_score": float(self.correlation_risk_score),
-                        "severity_level": str(self.severity_level),
-                        "risk_metrics": {
-                            "violation_risk": 0.0,
-                            "diversification_risk": 0.0,
-                            "cluster_risk_score": float(self.cluster_risk_score),
-                        },
-                        "summary": {
-                            "pairs_analyzed": 0,
-                            "instruments_analyzed": 0,
-                            "processing_time_ms": 0.0,
-                        },
-                        "timestamp": datetime.datetime.now().isoformat(),
-                        "thesis": "Baseline correlation risk initialized",
-                    },
+                    baseline_corr,
                     module="CorrelatedRiskController",
                     thesis="Baseline correlation risk initialized",
                 )
@@ -240,11 +244,11 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
             self.logger.error(f"Controller initialization failed: {error_context}")
 
     # ── background monitor ───────────────────────────────────
-    def _start_monitoring(self):
+    def _start_monitoring(self) -> None:
         if self._monitoring_active:
             return
 
-        def loop():
+        def loop() -> None:
             self._monitoring_active = True
             self.logger.info("[MONITOR] CorrelatedRiskController health monitor started.")
             while self._monitoring_active:
@@ -276,10 +280,10 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
         t = threading.Thread(target=loop, daemon=True)
         t.start()
 
-    def stop_monitoring(self):
+    def stop_monitoring(self) -> None:
         self._monitoring_active = False
 
-    def _update_health(self):
+    def _update_health(self) -> None:
         try:
             self._health_status = "healthy"
             if len(self._processing_times) >= 10:
@@ -302,7 +306,7 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
         }
 
     # ── confidence & actions (optional API) ──────────────────
-    async def calculate_confidence(self, action: Dict[str, Any], **kwargs) -> float:
+    async def calculate_confidence(self, action: Dict[str, Any], **kwargs: Any) -> float:
         """Calculate confidence score for correlation risk assessment"""
         try:
             confidence = 0.9
@@ -312,9 +316,10 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
 
             # data availability factor
             instruments_count = len(self.price_history)
-            data_factor = min(1.0, instruments_count / 10.0) if instruments_count >= 5 else max(
-                0.3, instruments_count / 5.0
-            )
+            if instruments_count >= 5:
+                data_factor = min(1.0, instruments_count / 10.0)
+            else:
+                data_factor = max(0.3, instruments_count / 5.0)
             confidence *= float(data_factor)
 
             # severity factor
@@ -333,10 +338,10 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
             self.logger.error(f"Confidence calculation failed: {e}")
             return 0.5
 
-    async def propose_action(self, **kwargs) -> Dict[str, Any]:
+    async def propose_action(self, **kwargs: Any) -> Dict[str, Any]:
         """Propose correlation risk management actions"""
         try:
-            proposal = {
+            proposal: Dict[str, Any] = {
                 "action_type": "correlation_risk_management",
                 "timestamp": time.time(),
                 "correlation_risk_score": float(self.correlation_risk_score),
@@ -370,12 +375,22 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
             # surface top 3 risky pairs
             if self.correlation_matrix:
                 high_pairs = sorted(
-                    self.correlation_matrix.items(), key=lambda kv: abs(kv[1]), reverse=True
+                    self.correlation_matrix.items(),
+                    key=lambda kv: abs(kv[1]),
+                    reverse=True,
                 )
-                high_pairs = [(p, c) for (p, c) in high_pairs if abs(c) >= self.warning_correlation][:3]
+                high_pairs = [
+                    (pair, c)
+                    for (pair, c) in high_pairs
+                    if abs(c) >= self.warning_correlation
+                ][:3]
                 if high_pairs:
                     proposal["adjustments"]["pairs"] = [
-                        {"instruments": list(pair), "correlation": float(c), "action": "review_exposure"}
+                        {
+                            "instruments": [str(pair[0]), str(pair[1])],
+                            "correlation": float(c),
+                            "action": "review_exposure",
+                        }
                         for pair, c in high_pairs
                     ]
 
@@ -393,7 +408,7 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
             }
 
     # ── contract-safe process ────────────────────────────────
-    async def process(self, **kwargs) -> Dict[str, Any]:
+    async def process(self, **kwargs: Any) -> Dict[str, Any]:
         """
         Enhanced correlation risk analysis with comprehensive monitoring
         Returns all provides + _thesis + success
@@ -441,7 +456,10 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
             self._record_success(processing_time_sec)
             try:
                 self.performance_tracker.record_metric(
-                    "CorrelatedRiskController", "correlation_analysis", processing_time_sec * 1000.0, True
+                    "CorrelatedRiskController",
+                    "correlation_analysis",
+                    processing_time_sec * 1000.0,
+                    True,
                 )
             except Exception:
                 pass
@@ -461,7 +479,10 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
     def _write_bus_from_payload(self, payload: Dict[str, Any], thesis: str) -> None:
         try:
             self.smart_bus.set(
-                "correlation_risk", payload["correlation_risk"], module="CorrelatedRiskController", thesis=thesis
+                "correlation_risk",
+                payload["correlation_risk"],
+                module="CorrelatedRiskController",
+                thesis=thesis,
             )
             self.smart_bus.set(
                 "diversification_score",
@@ -475,7 +496,7 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
                 module="CorrelatedRiskController",
                 thesis="Correlation clusters update",
             )
-            # NEW: publish correlation_matrix (contract requires it)
+            # publish correlation_matrix (contract requires it)
             self.smart_bus.set(
                 "correlation_matrix",
                 payload["correlation_matrix"],
@@ -490,7 +511,7 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
     def _serialize_corr_matrix(self, corr: Dict[Tuple[str, str], float]) -> Dict[str, float]:
         """
         Convert tuple-keyed pair map to JSON-safe string keys.
-        Matches set_state() which expects stringified tuples like "('EURUSD','GBPUSD')".
+        Matches set_state() which expects stringified tuples like "('EURUSD','XAUUSD')".
         """
         out: Dict[str, float] = {}
         for (a, b), v in corr.items():
@@ -502,7 +523,10 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
         return out
 
     def _format_provides_output(
-        self, correlation_results: Dict[str, Any], risk_metrics: Dict[str, Any], thesis: str
+        self,
+        correlation_results: Dict[str, Any],
+        risk_metrics: Dict[str, Any],
+        thesis: str,
     ) -> Dict[str, Any]:
         # Main object for 'correlation_risk'
         corr_payload = {
@@ -514,50 +538,71 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
                 "cluster_risk_score": float(self.cluster_risk_score),
             },
             "summary": {
-                "pairs_analyzed": int(len(correlation_results.get("correlation_matrix", {}))),
-                "instruments_analyzed": int(len(correlation_results.get("instruments_analyzed", []))),
-                "processing_time_ms": float(correlation_results.get("processing_time_ms", 0.0)),
+                "pairs_analyzed": int(
+                    len(correlation_results.get("correlation_matrix", {}))
+                ),
+                "instruments_analyzed": int(
+                    len(correlation_results.get("instruments_analyzed", []))
+                ),
+                "processing_time_ms": float(
+                    correlation_results.get("processing_time_ms", 0.0)
+                ),
             },
             "timestamp": datetime.datetime.now().isoformat(),
             "thesis": thesis,
         }
 
         clusters = correlation_results.get("cluster_analysis", {}).get("clusters", {})
-        # NEW: include correlation_matrix in provides payload
-        corr_matrix_serialized = self._serialize_corr_matrix(
-            {tuple(k): float(v) for k, v in correlation_results.get("correlation_matrix", {}).items()}
-            if isinstance(correlation_results.get("correlation_matrix", {}), dict)
-            else {}
-        )
+
+        # Normalize correlation_matrix into tuple-keyed map, then serialize
+        tuple_corr: Dict[Tuple[str, str], float] = {}
+        raw_matrix = correlation_results.get("correlation_matrix", {})
+        if isinstance(raw_matrix, dict):
+            for k, v in raw_matrix.items():
+                if isinstance(k, tuple) and len(k) == 2:
+                    a, b = k
+                    tuple_corr[(str(a), str(b))] = float(v)
+                elif isinstance(k, str) and k.startswith("(") and k.endswith(")"):
+                    # Try to parse stringified tuple from other sources
+                    try:
+                        parsed = ast.literal_eval(k)
+                        if isinstance(parsed, tuple) and len(parsed) == 2:
+                            a, b = parsed
+                            tuple_corr[(str(a), str(b))] = float(v)
+                    except Exception:
+                        continue
+
+        corr_matrix_serialized = self._serialize_corr_matrix(tuple_corr)
 
         return {
             "correlation_risk": corr_payload,
             "diversification_score": float(self.diversification_score),
-            "correlation_clusters": {int(k): list(v) for k, v in clusters.items()} if clusters else {},
+            "correlation_clusters": {
+                int(k): list(v) for k, v in clusters.items()
+            } if clusters else {},
             "correlation_matrix": corr_matrix_serialized,
             "_thesis": thesis,
             "success": True,
         }
 
     # ── histories & analytics ────────────────────────────────
-    def _update_price_histories(self, prices: Dict[str, float]):
+    def _update_price_histories(self, prices: Dict[str, float]) -> None:
         """Update price and return histories for correlation calculation"""
         try:
             for instrument, price in prices.items():
                 try:
                     p = float(price)
-                    if p <= 0 or not np.isfinite(p):
+                    if p <= 0.0 or not np.isfinite(p):
                         continue
                 except Exception:
                     continue
 
-                # price history: keep only numeric for current window
                 ph = self.price_history[instrument]
                 prev_price = ph[-1] if ph else None
                 ph.append(p)
 
                 # compute simple log-return for better stability
-                if prev_price and prev_price > 0:
+                if prev_price is not None and prev_price > 0.0:
                     ret = float(np.log(p / prev_price))
                     rh = self.return_history[instrument]
                     rh.append(ret)
@@ -566,7 +611,9 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
             self.logger.warning(f"Price history update failed: {error_context}")
 
     async def _analyze_correlations_comprehensive(
-        self, positions: List[Dict[str, Any]], market_context: Dict[str, Any]
+        self,
+        positions: List[Dict[str, Any]],
+        market_context: Dict[str, Any],
     ) -> Dict[str, Any]:
         """Comprehensive correlation analysis with advanced features"""
         start = datetime.datetime.now()
@@ -580,12 +627,13 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
             else:
                 pos_iter = [raw_positions]
 
-            # Build a simple, safe list of position dicts for downstream use
             norm_positions: List[Dict[str, Any]] = []
             instruments_set: set[str] = set()
+
             for pos in pos_iter:
                 if not pos:
                     continue
+
                 if isinstance(pos, str):
                     sym = pos
                     norm_positions.append({"symbol": sym})
@@ -594,14 +642,15 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
                     norm_positions.append(pos)
                 else:
                     sym = str(getattr(pos, "symbol", "") or getattr(pos, "instrument", ""))
-                    # convert to dict minimally to avoid attribute errors downstream
                     norm_positions.append({"symbol": sym})
+
                 if sym:
                     instruments_set.add(sym)
 
             # instruments present in positions with available return history
-            instruments = [i for i in instruments_set if i and i in self.return_history]
-            instruments = [i for i in instruments if i and i in self.return_history]
+            instruments = [
+                i for i in instruments_set if i and i in self.return_history
+            ]
 
             if len(instruments) < 2:
                 return self._insufficient_data("Need at least 2 instruments with history")
@@ -609,10 +658,10 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
             # compute pairwise correlations (context-adjusted)
             corr_matrix = self._calculate_correlation_matrix(instruments, market_context)
 
-            # clustering (greedy union-find style; no external deps)
+            # clustering
             cluster_analysis = self._perform_greedy_clustering(corr_matrix, instruments)
 
-            # diversification metrics (use normalized positions list)
+            # diversification metrics
             diversification_metrics = self._calculate_diversification_metrics(corr_matrix, norm_positions)
 
             # violations
@@ -632,8 +681,11 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
                 "processing_time_ms": float(proc_ms),
                 "market_context": dict(market_context),
             }
+
             # Keep last corr map for proposals
             self.correlation_matrix = corr_matrix.copy()
+            self.correlation_history.append(self.correlation_matrix.copy())
+
             return result
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "correlation_analysis")
@@ -641,7 +693,9 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
             return self._analysis_error(str(error_context))
 
     def _calculate_correlation_matrix(
-        self, instruments: List[str], market_context: Dict[str, Any]
+        self,
+        instruments: List[str],
+        market_context: Dict[str, Any],
     ) -> Dict[Tuple[str, str], float]:
         corr: Dict[Tuple[str, str], float] = {}
         regime = str(market_context.get("regime", "unknown"))
@@ -664,8 +718,9 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
                     except Exception:
                         c = 0.0
                     adj = self._apply_regime_adjustments(c, regime, vol_regime)
-                    corr[(a, b)] = float(np.clip(adj, -0.95, 0.95))
-                    self.regime_correlations[regime][(a, b)].append(corr[(a, b)])
+                    value = float(np.clip(adj, -0.95, 0.95))
+                    corr[(a, b)] = value
+                    self.regime_correlations[regime][(a, b)].append(value)
                 else:
                     # heuristic when data is insufficient
                     corr[(a, b)] = self._heuristic_corr(a, b)
@@ -714,18 +769,20 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
             return 0.0
 
     def _perform_greedy_clustering(
-        self, corr: Dict[Tuple[str, str], float], instruments: List[str]
+        self,
+        corr: Dict[Tuple[str, str], float],
+        instruments: List[str],
     ) -> Dict[str, Any]:
         """Cluster instruments using a simple threshold graph on |corr| with union-find."""
-        parent = {i: i for i in instruments}
+        parent: Dict[str, str] = {i: i for i in instruments}
 
-        def find(x):
+        def find(x: str) -> str:
             while parent[x] != x:
                 parent[x] = parent[parent[x]]
                 x = parent[x]
             return x
 
-        def union(x, y):
+        def union(x: str, y: str) -> None:
             rx, ry = find(x), find(y)
             if rx != ry:
                 parent[ry] = rx
@@ -733,18 +790,18 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
         # Link pairs above threshold
         t = float(self.cluster_link_threshold)
         for (a, b), c in corr.items():
-            if abs(c) >= t:
+            if abs(c) >= t and a in parent and b in parent:
                 union(a, b)
 
-        clusters = defaultdict(list)
+        clusters_map: Dict[str, List[str]] = defaultdict(list)
         for inst in instruments:
-            clusters[find(inst)].append(inst)
+            clusters_map[find(inst)].append(inst)
 
         # Compute cluster risks (avg |corr| inside cluster times size factor)
         cluster_risks: Dict[int, float] = {}
-        id_map = {root: idx + 1 for idx, root in enumerate(clusters.keys())}
-        for root, members in clusters.items():
-            values = []
+        id_map: Dict[str, int] = {root: idx + 1 for idx, root in enumerate(clusters_map.keys())}
+        for root, members in clusters_map.items():
+            values: List[float] = []
             for i, x in enumerate(members):
                 for y in members[i + 1 :]:
                     values.append(abs(corr.get((x, y), corr.get((y, x), 0.0))))
@@ -752,8 +809,7 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
             size_factor = len(members) / 10.0
             cluster_risks[id_map[root]] = float(avg_corr * (1.0 + size_factor))
 
-        # Store for downstream access
-        mapped_clusters = {id_map[r]: m for r, m in clusters.items()}
+        mapped_clusters: Dict[int, List[str]] = {id_map[r]: m for r, m in clusters_map.items()}
         self.correlation_clusters = dict(mapped_clusters)
 
         return {
@@ -765,7 +821,9 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
         }
 
     def _calculate_diversification_metrics(
-        self, corr: Dict[Tuple[str, str], float], positions: List[Dict[str, Any]]
+        self,
+        corr: Dict[Tuple[str, str], float],
+        positions: List[Dict[str, Any]],
     ) -> Dict[str, Any]:
         try:
             if not corr:
@@ -782,7 +840,7 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
             corr_diversification = float(np.clip(1.0 - avg_abs_corr, 0.0, 1.0))
 
             # position concentration (Herfindahl)
-            exposures = []
+            exposures: List[float] = []
             total_exposure = 0.0
             for p in positions:
                 try:
@@ -794,17 +852,19 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
                 except Exception:
                     continue
 
-            if total_exposure > 0 and exposures:
+            if total_exposure > 0.0 and exposures:
                 weights = [e / total_exposure for e in exposures]
                 herfindahl = float(sum(w * w for w in weights))
                 pos_diversification = float(np.clip(1.0 - herfindahl, 0.0, 1.0))
-                effective_positions = float(1.0 / herfindahl) if herfindahl > 0 else float(len(positions))
+                effective_positions = float(1.0 / herfindahl) if herfindahl > 0.0 else float(len(positions))
             else:
                 pos_diversification = 1.0
                 effective_positions = float(len(positions))
 
             # blend
-            self.diversification_score = float(np.clip((corr_diversification + pos_diversification) / 2.0, 0.0, 1.0))
+            self.diversification_score = float(
+                np.clip((corr_diversification + pos_diversification) / 2.0, 0.0, 1.0)
+            )
 
             return {
                 "diversification_score": float(self.diversification_score),
@@ -820,9 +880,13 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
             self.diversification_score = 0.5
             return {"diversification_score": 0.5, "effective_positions": 1}
 
-    def _analyze_correlation_violations(self, corr: Dict[Tuple[str, str], float]) -> Dict[str, Any]:
+    def _analyze_correlation_violations(
+        self,
+        corr: Dict[Tuple[str, str], float],
+    ) -> Dict[str, Any]:
         try:
-            critical, warning = [], []
+            critical: List[Dict[str, Any]] = []
+            warning: List[Dict[str, Any]] = []
             for (a, b), c in corr.items():
                 ac = abs(float(c))
                 if ac >= self.max_correlation:
@@ -831,33 +895,44 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
                     warning.append({"instruments": (a, b), "correlation": float(c)})
 
             self.correlation_violations += len(critical)
-
             if self.diversification_score < self.min_diversification:
                 self.diversification_violations += 1
 
+            max_corr = float(
+                max([abs(v) for v in corr.values()])
+            ) if corr else 0.0
+
             return {
-                "violations": {"critical": critical, "warning": warning, "info": []},
+                "violations": {
+                    "critical": critical,
+                    "warning": warning,
+                    "info": [],
+                },
                 "total_violations": int(len(critical) + len(warning)),
                 "critical_pairs": int(len(critical)),
                 "warning_pairs": int(len(warning)),
-                "max_correlation": float(max([abs(v) for v in corr.values()])) if corr else 0.0,
+                "max_correlation": max_corr,
             }
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "violation_analysis")
             self.logger.error(f"Violation analysis failed: {error_context}")
-            return {"violations": {"critical": [], "warning": [], "info": []}, "total_violations": 0}
+            return {
+                "violations": {"critical": [], "warning": [], "info": []},
+                "total_violations": 0,
+            }
 
     def _analyze_regime_correlations(
-        self, corr: Dict[Tuple[str, str], float], market_context: Dict[str, Any]
+        self,
+        corr: Dict[Tuple[str, str], float],
+        market_context: Dict[str, Any],
     ) -> Dict[str, Any]:
         try:
             regime = str(market_context.get("regime", "unknown"))
             vol = str(market_context.get("volatility_level", "medium"))
 
-            # accumulate history already in _calculate_correlation_matrix
             stats: Dict[str, Dict[str, float]] = {}
             for regime_name, regime_data in self.regime_correlations.items():
-                vals = []
+                vals: List[float] = []
                 for pair_vals in regime_data.values():
                     vals.extend(pair_vals)
                 if vals:
@@ -882,7 +957,11 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
             self.logger.warning(f"Regime analysis failed: {error_context}")
             return {"current_regime": "unknown", "regime_stats": {}}
 
-    def _assess_regime_shift_impact(self, regime_stats: Dict[str, Dict[str, float]], current: str) -> str:
+    def _assess_regime_shift_impact(
+        self,
+        regime_stats: Dict[str, Dict[str, float]],
+        current: str,
+    ) -> str:
         try:
             if current not in regime_stats or len(regime_stats) < 2:
                 return "insufficient_data"
@@ -898,7 +977,10 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
         except Exception:
             return "assessment_error"
 
-    def _calculate_correlation_risk_metrics(self, results: Dict[str, Any]) -> Dict[str, Any]:
+    def _calculate_correlation_risk_metrics(
+        self,
+        results: Dict[str, Any],
+    ) -> Dict[str, Any]:
         try:
             viol = results.get("violation_analysis", {})
             div = results.get("diversification_metrics", {})
@@ -908,14 +990,31 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
             warnings = len(viol.get("violations", {}).get("warning", []))
             instruments = max(1, len(results.get("instruments_analyzed", [])))
 
-            violation_risk = float((critical * 1.0 + warnings * 0.6) / instruments)
-            diversification_risk = float(
-                max(0.0, (self.min_diversification - float(div.get("diversification_score", 1.0))) / max(self.min_diversification, 1e-6))
+            violation_risk = float(
+                (critical * 1.0 + warnings * 0.6) / instruments
             )
-            self.cluster_risk_score = float(clusters.get("max_cluster_risk", 0.0))
+            diversification_risk = float(
+                max(
+                    0.0,
+                    (
+                        self.min_diversification
+                        - float(div.get("diversification_score", 1.0))
+                    )
+                    / max(self.min_diversification, 1e-6),
+                )
+            )
+            self.cluster_risk_score = float(
+                clusters.get("max_cluster_risk", 0.0)
+            )
 
             self.correlation_risk_score = float(
-                np.clip(violation_risk * 0.4 + diversification_risk * 0.4 + self.cluster_risk_score * 0.2, 0.0, 1.0)
+                np.clip(
+                    violation_risk * 0.4
+                    + diversification_risk * 0.4
+                    + self.cluster_risk_score * 0.2,
+                    0.0,
+                    1.0,
+                )
             )
 
             if self.correlation_risk_score > 0.7 or critical > 0:
@@ -942,7 +1041,9 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
             return {"correlation_risk_score": 0.5, "severity_level": "error"}
 
     async def _generate_correlation_thesis(
-        self, results: Dict[str, Any], market_context: Dict[str, Any]
+        self,
+        results: Dict[str, Any],
+        market_context: Dict[str, Any],
     ) -> str:
         try:
             instruments = results.get("instruments_analyzed", [])
@@ -952,7 +1053,7 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
             clusters = results.get("cluster_analysis", {})
             regime = results.get("regime_analysis", {})
 
-            parts = []
+            parts: List[str] = []
             parts.append(f"Analyzed {len(instruments)} instruments and {len(corr_pairs)} correlation pairs")
 
             div_score = float(diversification.get("diversification_score", 1.0))
@@ -987,7 +1088,9 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
                 elif impact == "low_correlation_regime":
                     parts.append(f"Current {reg} regime favors diversification")
 
-            parts.append(f"Overall correlation risk: {self.severity_level.upper()} (score {self.correlation_risk_score:.2f})")
+            parts.append(
+                f"Overall correlation risk: {self.severity_level.upper()} (score {self.correlation_risk_score:.2f})"
+            )
             return " | ".join(parts)
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "thesis_generation")
@@ -1004,13 +1107,17 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
                     "diversification_risk": 0.0,
                     "cluster_risk_score": float(self.cluster_risk_score),
                 },
-                "summary": {"pairs_analyzed": 0, "instruments_analyzed": 0, "processing_time_ms": 0.0},
+                "summary": {
+                    "pairs_analyzed": 0,
+                    "instruments_analyzed": 0,
+                    "processing_time_ms": 0.0,
+                },
                 "timestamp": datetime.datetime.now().isoformat(),
                 "thesis": thesis,
             },
             "diversification_score": float(self.diversification_score),
             "correlation_clusters": {},
-            "correlation_matrix": {},  # NEW: include as required provide, even in fallback
+            "correlation_matrix": {},  # include as required provide, even in fallback
             "_thesis": thesis,
             "success": True,
         }
@@ -1059,8 +1166,8 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
 
     def _record_failure(self, error: Exception) -> None:
         try:
-            # not persisted; placeholder for future analytics
-            pass
+            # placeholder for future analytics
+            _ = str(error)
         except Exception:
             pass
 
@@ -1068,9 +1175,19 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
     def _insufficient_data(self, reason: str) -> Dict[str, Any]:
         return {
             "correlation_matrix": {},
-            "cluster_analysis": {"clusters": {}, "cluster_count": 0, "reason": reason},
-            "diversification_metrics": {"diversification_score": 1.0, "effective_positions": 0},
-            "violation_analysis": {"violations": {"critical": [], "warning": [], "info": []}, "total_violations": 0},
+            "cluster_analysis": {
+                "clusters": {},
+                "cluster_count": 0,
+                "reason": reason,
+            },
+            "diversification_metrics": {
+                "diversification_score": 1.0,
+                "effective_positions": 0,
+            },
+            "violation_analysis": {
+                "violations": {"critical": [], "warning": [], "info": []},
+                "total_violations": 0,
+            },
             "regime_analysis": {"current_regime": "unknown"},
             "instruments_analyzed": [],
             "processing_time_ms": 0.0,
@@ -1082,7 +1199,10 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
             "correlation_matrix": {},
             "cluster_analysis": {"error": error_context},
             "diversification_metrics": {"diversification_score": 0.5},
-            "violation_analysis": {"violations": {"critical": [], "warning": [], "info": []}, "total_violations": 0},
+            "violation_analysis": {
+                "violations": {"critical": [], "warning": [], "info": []},
+                "total_violations": 0,
+            },
             "regime_analysis": {"current_regime": "error"},
             "instruments_analyzed": [],
             "processing_time_ms": 0.0,
@@ -1094,11 +1214,13 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
     def get_state(self) -> Dict[str, Any]:
         """Get complete module state for hot-reload"""
         return {
-            "correlation_matrix": {str(k): float(v) for k, v in self.correlation_matrix.items()},
+            "correlation_matrix": self._serialize_corr_matrix(self.correlation_matrix),
             "correlation_risk_score": float(self.correlation_risk_score),
             "diversification_score": float(self.diversification_score),
             "severity_level": str(self.severity_level),
-            "correlation_clusters": {int(k): list(v) for k, v in self.correlation_clusters.items()},
+            "correlation_clusters": {
+                int(k): list(v) for k, v in self.correlation_clusters.items()
+            },
             "step_count": int(self.step_count),
             "correlation_violations": int(self.correlation_violations),
             "diversification_violations": int(self.diversification_violations),
@@ -1107,7 +1229,6 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
 
     def set_state(self, state: Dict[str, Any]) -> None:
         """Set module state for hot-reload"""
-        # lightweight, defensive restoration
         self.correlation_risk_score = float(state.get("correlation_risk_score", 0.0))
         self.diversification_score = float(state.get("diversification_score", 1.0))
         self.severity_level = str(state.get("severity_level", "normal"))
@@ -1116,16 +1237,20 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
         self.diversification_violations = int(state.get("diversification_violations", 0))
         self.config.update(dict(state.get("config", {})))
 
-        # avoid trusting external correlation map blindly
+        # restore correlation matrix from stringified tuples, safely
         try:
             cm = state.get("correlation_matrix", {})
             if isinstance(cm, dict):
-                rebuilt = {}
+                rebuilt: Dict[Tuple[str, str], float] = {}
                 for k, v in cm.items():
-                    # keys may be serialized tuples; ignore if malformed
-                    rebuilt_key = tuple(eval(k)) if isinstance(k, str) and k.startswith("(") else None
-                    if isinstance(rebuilt_key, tuple) and len(rebuilt_key) == 2:
-                        rebuilt[rebuilt_key] = float(v)
+                    if isinstance(k, str) and k.startswith("(") and k.endswith(")"):
+                        try:
+                            parsed = ast.literal_eval(k)
+                        except Exception:
+                            continue
+                        if isinstance(parsed, tuple) and len(parsed) == 2:
+                            a, b = parsed
+                            rebuilt[(str(a), str(b))] = float(v)
                 if rebuilt:
                     self.correlation_matrix = rebuilt
         except Exception:
@@ -1134,7 +1259,9 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
         try:
             cc = state.get("correlation_clusters", {})
             if isinstance(cc, dict):
-                self.correlation_clusters = {int(k): list(v) for k, v in cc.items()}
+                self.correlation_clusters = {
+                    int(k): list(v) for k, v in cc.items()
+                }
         except Exception:
             pass
 

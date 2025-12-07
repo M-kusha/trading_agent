@@ -22,6 +22,7 @@ from modules.voting.core.constants import (
     CONFIDENCE_THRESHOLD_F,
     MIN_SIGNAL_STRENGTH_F,
     HIGH_CONFIDENCE_THRESHOLD_F,
+    PRIMARY_TIMEFRAME,
 )
 
 
@@ -317,7 +318,8 @@ class VotingExpertBase(VotingModuleBase):
                 if not primary_symbol:
                     primary_symbol = next(iter(price_data.keys()))
         
-        primary_tf = str(self.config.get('primary_timeframe', 'H4') or 'H4')
+        # M15 is the primary trading timeframe; H1/H4/D1 are context only.
+        primary_tf = str(self.config.get('primary_timeframe', PRIMARY_TIMEFRAME) or PRIMARY_TIMEFRAME)
         
         # OHLCV snapshot
         if 'ohlcv' not in market_data:
@@ -327,7 +329,8 @@ class VotingExpertBase(VotingModuleBase):
                 if isinstance(sym_block, dict):
                     rec = sym_block.get(primary_tf)
                     if not isinstance(rec, dict):
-                        for tf in ('M15', 'H4', 'H1', 'D1'):
+                        # Fallback order: M15 (primary), then context TFs
+                        for tf in ('M15', 'H1', 'H4', 'D1'):
                             candidate = sym_block.get(tf)
                             if isinstance(candidate, dict):
                                 rec = candidate

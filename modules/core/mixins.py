@@ -329,7 +329,7 @@ class SmartInfoBusRiskMixin(ABC):
         try:
             config_path = os.path.join(os.path.dirname(__file__), "..", "..", "config", "risk_policy.yaml")
             if os.path.exists(config_path):
-                with open(config_path, "r") as f:
+                with open(config_path, "r", encoding="utf-8") as f:
                     policy = yaml.safe_load(f) or {}
                 
                 limits = policy.get("limits", {})

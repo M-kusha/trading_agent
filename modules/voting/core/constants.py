@@ -89,6 +89,45 @@ class VotingQuality(str, Enum):
 
 
 # ═══════════════════════════════════════════════════════════════════
+# TIMEFRAME CONFIGURATION - SINGLE SOURCE OF TRUTH
+# ═══════════════════════════════════════════════════════════════════
+
+# Primary trading timeframe: M15 is the decision/execution timeframe.
+# All experts produce signals based on M15 bars; H1/H4/D1 are context only.
+PRIMARY_TIMEFRAME: str = "M15"
+
+# Context timeframes: used for confirmation/filtering, never for primary signals.
+CONTEXT_TIMEFRAMES: tuple = ("H1", "H4", "D1")
+
+# All supported timeframes (primary + context, ordered by granularity)
+SUPPORTED_TIMEFRAMES: tuple = ("M15", "H1", "H4", "D1")
+
+# ───────────────────────────────────────────────────────────────────
+# M15-PRIMARY ARCHITECTURE CONSTANTS
+# M15 generates the signal direction (long/short/flat)
+# H1/H4/D1 only modify CONFIDENCE, never override direction
+# ───────────────────────────────────────────────────────────────────
+MTF_AGREEMENT_BONUS: float = 0.15      # Confidence boost when H1/H4/D1 agree with M15
+MTF_DISAGREEMENT_PENALTY: float = 0.20  # Confidence penalty when H1/H4/D1 disagree with M15
+MTF_NEUTRAL_ADJUSTMENT: float = 0.0    # No adjustment when context TFs are neutral
+
+
+def get_primary_timeframe() -> str:
+    """Get the canonical primary trading timeframe (M15)."""
+    return PRIMARY_TIMEFRAME
+
+
+def is_primary_timeframe(tf: str) -> bool:
+    """Check if a timeframe is the primary trading timeframe."""
+    return tf.upper() == PRIMARY_TIMEFRAME
+
+
+def is_context_timeframe(tf: str) -> bool:
+    """Check if a timeframe is a context/confirmation timeframe."""
+    return tf.upper() in CONTEXT_TIMEFRAMES
+
+
+# ═══════════════════════════════════════════════════════════════════
 # MODE-AWARE THRESHOLD SYSTEM
 # ═══════════════════════════════════════════════════════════════════
 
@@ -106,7 +145,7 @@ _LIVE_THRESHOLDS: Dict[str, float] = {
     "MIN_SIGNAL_STRENGTH": 0.32,        # Need decent signal magnitude
 
     # Consensus (good agreement required - experts should align)
-    "CONSENSUS_THRESHOLD": 0.70,        # Need 70% expert agreement (100% when 2 agree)
+    "CONSENSUS_THRESHOLD": 0.55,        # Need 55% expert agreement
     "STRONG_CONSENSUS_THRESHOLD": 0.85, # Strong consensus for best trades
     "WEAK_CONSENSUS_THRESHOLD": 0.55,   # Weak consensus threshold
 
@@ -452,27 +491,27 @@ class VotingBusKeys:
 
 # ═══════════════════════════════════════════════════════════════════
 # Known Voting Members (for discovery)
+# Only DIRECTIONAL voting experts should be listed here.
+# Risk modules (DynamicRiskController, etc.) provide gate actions (proceed/caution/halt),
+# NOT directional signals (long/short), so they are excluded.
 # ═══════════════════════════════════════════════════════════════════
 
 KNOWN_VOTING_MEMBERS = [
+    # Primary directional voting experts (provide long/short/flat signals)
+    "TrendExpert",
+    "MomentumExpert",
     "ThemeExpert",
     "SeasonalityRiskExpert",
-    "DynamicRiskController",
+    # PPOAgent provides the final directional decision
     "PPOAgent",
-    "PortfolioRiskSystem",
-    "EnhancedAnomalyDetector",
-    "ExecutionQualityMonitor",
-    "MetaAgent",
 ]
 
 # Expert name to bus key prefix mapping
 EXPERT_KEY_PREFIXES = {
+    "TrendExpert": "TrendExpert",
+    "MomentumExpert": "MomentumExpert",
     "ThemeExpert": "ThemeExpert",
     "SeasonalityRiskExpert": "SeasonalityRiskExpert",
-    "DynamicRiskController": "DynamicRiskController",
     "PPOAgent": "PPOAgent",
-    "PortfolioRiskSystem": "PortfolioRiskSystem",
-    "EnhancedAnomalyDetector": "EnhancedAnomalyDetector",
-    "ExecutionQualityMonitor": "ExecutionQualityMonitor",
-    "MetaAgent": "MetaAgent",
 }
+

@@ -117,6 +117,7 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
         self.position_durations: Dict[str, int] = {}
         self.position_first_seen: Dict[str, str] = {}
         self.position_velocity: Dict[str, int] = {}  # integer steps/cycle
+        self.position_instruments: Dict[str, str] = {}  # NEW: pid -> symbol/instrument
         self.duration_history: deque = deque(maxlen=self._cfg.history_maxlen)
 
         self.risk_score: float = 0.0
@@ -241,7 +242,7 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
             self.smart_bus.set('position_duration_risk', payload['position_duration_risk'],
                                module='ActiveTradeMonitor', thesis=thesis)
             self.smart_bus.set('duration_alerts', payload['duration_alerts'],
-                               module='ActiveTradeMonitor', thesis=f"Duration alerts updated")
+                               module='ActiveTradeMonitor', thesis="Duration alerts updated")
             self.smart_bus.set('position_tracking', payload['position_tracking'],
                                module='ActiveTradeMonitor', thesis="Position tracking metrics updated")
             self.smart_bus.set('trade_monitor_status', payload['trade_monitor_status'],
@@ -264,6 +265,7 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
             'info': list(alerts.get('info', [])),
         }
         stats = monitoring_results.get('duration_statistics') or {}
+        stats_by_inst = monitoring_results.get('duration_statistics_by_instrument') or {}
 
         # Cast to python types for serialization safety
         def _py(v):  # small caster for numpy types
@@ -282,6 +284,14 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
             'timestamp': datetime.datetime.now().isoformat()
         }
 
+        # Per-instrument stats: make sure values are plain Python types
+        def _py_stats_dict(d: Dict[str, Any]) -> Dict[str, Any]:
+            return {k: _py(v) for k, v in d.items()}
+
+        stats_by_instrument_py = {
+            inst: _py_stats_dict(s) for inst, s in stats_by_inst.items()
+        }
+
         payload = {
             'position_duration_risk': {
                 'risk_score': float(_py(self.risk_score)),
@@ -289,6 +299,7 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
                 'monitoring_results': {
                     'positions_tracked': int(_py(monitoring_results.get('positions_tracked', 0))),
                     'duration_statistics': {k: _py(v) for k, v in stats.items()},
+                    'duration_statistics_by_instrument': stats_by_instrument_py,
                     'closure_info': monitoring_results.get('closure_info', {}),
                     'processing_time_ms': int(_py(monitoring_results.get('processing_time_ms', 0))),
                     'market_context': monitoring_results.get('market_context', {}),
@@ -301,7 +312,8 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
             'position_tracking': {
                 'durations': {k: int(_py(v)) for k, v in self.position_durations.items()},
                 'velocities': {k: int(_py(v)) for k, v in self.position_velocity.items()},
-                'statistics': {k: _py(v) for k, v in stats.items()}
+                'statistics': {k: _py(v) for k, v in stats.items()},
+                'statistics_by_instrument': stats_by_instrument_py,
             },
             'trade_monitor_status': status_view,
             '_thesis': thesis
@@ -326,6 +338,9 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
                 try:
                     symbol = position.get('symbol') or position.get('instrument') or 'UNKNOWN'
                     current_ids.add(pid)
+
+                    # Track instrument for this position id
+                    self.position_instruments[pid] = str(symbol)
 
                     # Calculate duration + velocity
                     duration_info = self._calculate_enhanced_duration(position, pid)
@@ -365,6 +380,7 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
                 'alerts': alerts,
                 'positions_tracked': len(current_ids),
                 'duration_statistics': self._calculate_duration_statistics(),
+                'duration_statistics_by_instrument': self._calculate_duration_statistics_by_instrument(),
                 'closure_info': closure_info,
                 'processing_time_ms': processing_time,
                 'market_context': market_context
@@ -502,13 +518,15 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
                 'position_id': pid,
                 'duration': duration,
                 'type': ctype,
-                'first_seen': self.position_first_seen.get(pid)
+                'first_seen': self.position_first_seen.get(pid),
+                'instrument': self.position_instruments.get(pid, 'UNKNOWN'),
             })
 
             # cleanup
             self.position_durations.pop(pid, None)
             self.position_first_seen.pop(pid, None)
             self.position_velocity.pop(pid, None)
+            self.position_instruments.pop(pid, None)
 
             if ctype in ('timeout', 'emergency'):
                 self.logger.warning(format_operator_message(
@@ -522,12 +540,19 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
         return closure_info
 
     def _calculate_duration_statistics(self) -> Dict[str, Any]:
-        """Aggregate duration stats (safe and typed)"""
+        """Aggregate global duration stats (safe and typed)"""
         try:
             if not self.position_durations:
-                return {'active_positions': 0, 'avg_duration': 0, 'max_duration': 0, 'min_duration': 0,
-                        'std_duration': 0, 'median_duration': 0, 'positions_over_warning': 0,
-                        'positions_over_critical': 0}
+                return {
+                    'active_positions': 0,
+                    'avg_duration': 0,
+                    'max_duration': 0,
+                    'min_duration': 0,
+                    'std_duration': 0,
+                    'median_duration': 0,
+                    'positions_over_warning': 0,
+                    'positions_over_critical': 0
+                }
 
             durations = list(int(v) for v in self.position_durations.values())
             arr = np.array(durations, dtype=np.int32)
@@ -546,24 +571,83 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "statistics_calculation")
             self.logger.warning(f"Statistics calculation failed: {error_context}")
-            return {'active_positions': 0, 'avg_duration': 0, 'max_duration': 0, 'min_duration': 0,
-                    'std_duration': 0, 'median_duration': 0, 'positions_over_warning': 0,
-                    'positions_over_critical': 0}
+            return {
+                'active_positions': 0,
+                'avg_duration': 0,
+                'max_duration': 0,
+                'min_duration': 0,
+                'std_duration': 0,
+                'median_duration': 0,
+                'positions_over_warning': 0,
+                'positions_over_critical': 0
+            }
+
+    def _calculate_duration_statistics_by_instrument(self) -> Dict[str, Any]:
+        """
+        Aggregate duration stats per instrument.
+        This is the per-symbol layer so XAUUSD / EURUSD can be inspected independently.
+        """
+        try:
+            inst_durations: Dict[str, List[int]] = defaultdict(list)
+            for pid, dur in self.position_durations.items():
+                inst = self.position_instruments.get(pid, "UNKNOWN")
+                inst_durations[inst].append(int(dur))
+
+            per_inst: Dict[str, Any] = {}
+            for inst, durations in inst_durations.items():
+                if not durations:
+                    per_inst[inst] = {
+                        'active_positions': 0,
+                        'avg_duration': 0,
+                        'max_duration': 0,
+                        'min_duration': 0,
+                        'std_duration': 0,
+                        'median_duration': 0,
+                        'positions_over_warning': 0,
+                        'positions_over_critical': 0
+                    }
+                    continue
+
+                arr = np.array(durations, dtype=np.int32)
+                per_inst[inst] = {
+                    'active_positions': int(arr.size),
+                    'avg_duration': float(np.mean(arr)),
+                    'max_duration': int(np.max(arr)),
+                    'min_duration': int(np.min(arr)),
+                    'std_duration': float(np.std(arr)),
+                    'median_duration': float(np.median(arr)),
+                    'positions_over_warning': int(np.sum(arr >= self.warning_duration)),
+                    'positions_over_critical': int(np.sum(arr >= self.critical_duration)),
+                }
+
+            return per_inst
+
+        except Exception as e:
+            error_context = self.error_pinpointer.analyze_error(e, "statistics_by_instrument")
+            self.logger.warning(f"Per-instrument statistics calculation failed: {error_context}")
+            return {}
 
     def _calculate_comprehensive_risk_metrics(self, monitoring_results: Dict[str, Any]) -> Dict[str, Any]:
-        """Compute risk score from alerts, concentration and velocity distribution."""
+        """
+        Compute risk score from alerts, concentration and velocity distribution.
+
+        Hybrid design:
+        - Global risk_score / severity_level (for simple consumers)
+        - Per-instrument risk metrics in risk_metrics['per_instrument'][symbol]
+        """
         try:
             alerts = monitoring_results['alerts']
             stats = monitoring_results['duration_statistics']
+            stats_by_inst = monitoring_results.get('duration_statistics_by_instrument') or {}
 
-            # Alert risk
+            # ---- Global alert risk ----
             alert_risk = (
                 len(alerts['critical']) * self._cfg.w_alert_critical +
                 len(alerts['warning']) * self._cfg.w_alert_warning +
                 len(alerts['info']) * self._cfg.w_alert_info
             ) / max(stats.get('active_positions', 1), 1)
 
-            # Concentration risk
+            # ---- Global concentration risk ----
             concentration_risk = 0.0
             ap = stats.get('active_positions', 0)
             if ap > 0:
@@ -572,15 +656,15 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
                 concentration_risk = (over_warn * self._cfg.w_concentration_warning +
                                       over_crit * self._cfg.w_concentration_critical)
 
-            # Velocity risk
+            # ---- Global velocity risk ----
             vel_vals = list(int(v) for v in self.position_velocity.values())
             rapid = sum(1 for v in vel_vals if v > self._cfg.fast_velocity)
             velocity_risk = (rapid / max(len(vel_vals), 1)) if vel_vals else 0.0
 
-            # Combined risk score (bounded)
+            # Combined global risk score (bounded)
             self.risk_score = float(np.clip(alert_risk + concentration_risk + velocity_risk, 0.0, 1.0))
 
-            # Severity
+            # Global severity
             if self.risk_score > 0.7 or len(alerts['critical']) > 0:
                 self.severity_level = 'critical'
             elif self.risk_score > 0.4 or len(alerts['warning']) > 0:
@@ -590,13 +674,78 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
             else:
                 self.severity_level = 'normal'
 
+            # ---- Per-instrument risk metrics ----
+            # Build alert counts per instrument using alert entries' "symbol"
+            alert_counts_by_inst: Dict[str, Dict[str, int]] = defaultdict(
+                lambda: {'critical': 0, 'warning': 0, 'info': 0}
+            )
+            for lvl in ('critical', 'warning', 'info'):
+                for item in alerts[lvl]:
+                    sym = str(item.get('symbol') or 'UNKNOWN')
+                    alert_counts_by_inst[sym][lvl] += 1
+
+            # Velocities per instrument
+            vel_by_inst: Dict[str, List[int]] = defaultdict(list)
+            for pid, vel in self.position_velocity.items():
+                inst = self.position_instruments.get(pid, "UNKNOWN")
+                vel_by_inst[inst].append(int(vel))
+
+            per_inst_risk: Dict[str, Any] = {}
+            for inst, istats in stats_by_inst.items():
+                ap_i = istats.get('active_positions', 0)
+                if ap_i <= 0:
+                    continue
+
+                inst_alerts = alert_counts_by_inst.get(inst, {'critical': 0, 'warning': 0, 'info': 0})
+                inst_alert_risk = (
+                    inst_alerts['critical'] * self._cfg.w_alert_critical +
+                    inst_alerts['warning'] * self._cfg.w_alert_warning +
+                    inst_alerts['info'] * self._cfg.w_alert_info
+                ) / max(ap_i, 1)
+
+                over_warn_i = istats.get('positions_over_warning', 0) / ap_i
+                over_crit_i = istats.get('positions_over_critical', 0) / ap_i
+                inst_conc_risk = (
+                    over_warn_i * self._cfg.w_concentration_warning +
+                    over_crit_i * self._cfg.w_concentration_critical
+                )
+
+                vel_list_i = vel_by_inst.get(inst, [])
+                if vel_list_i:
+                    rapid_i = sum(1 for v in vel_list_i if v > self._cfg.fast_velocity)
+                    inst_velocity_risk = rapid_i / max(len(vel_list_i), 1)
+                else:
+                    inst_velocity_risk = 0.0
+
+                inst_score = float(np.clip(inst_alert_risk + inst_conc_risk + inst_velocity_risk, 0.0, 1.0))
+
+                if inst_score > 0.7 or inst_alerts['critical'] > 0:
+                    inst_severity = 'critical'
+                elif inst_score > 0.4 or inst_alerts['warning'] > 0:
+                    inst_severity = 'warning'
+                elif inst_score > 0.1 or inst_alerts['info'] > 0:
+                    inst_severity = 'elevated'
+                else:
+                    inst_severity = 'normal'
+
+                per_inst_risk[inst] = {
+                    'risk_score': inst_score,
+                    'severity_level': inst_severity,
+                    'alert_risk': float(inst_alert_risk),
+                    'concentration_risk': float(inst_conc_risk),
+                    'velocity_risk': float(inst_velocity_risk),
+                    'active_positions': int(ap_i),
+                    'alerts': inst_alerts,
+                }
+
             return {
                 'risk_score': self.risk_score,
                 'severity_level': self.severity_level,
                 'alert_risk': float(alert_risk),
                 'concentration_risk': float(concentration_risk),
                 'velocity_risk': float(velocity_risk),
-                'total_alerts': int(len(alerts['critical']) + len(alerts['warning']) + len(alerts['info']))
+                'total_alerts': int(len(alerts['critical']) + len(alerts['warning']) + len(alerts['info'])),
+                'per_instrument': per_inst_risk,
             }
 
         except Exception as e:
@@ -604,15 +753,22 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
             self.logger.error(f"Risk metrics calculation failed: {error_context}")
             self.risk_score = 0.5
             self.severity_level = 'unknown'
-            return {'risk_score': 0.5, 'severity_level': 'unknown',
-                    'alert_risk': 0.0, 'concentration_risk': 0.0, 'velocity_risk': 0.0,
-                    'total_alerts': 0}
+            return {
+                'risk_score': 0.5,
+                'severity_level': 'unknown',
+                'alert_risk': 0.0,
+                'concentration_risk': 0.0,
+                'velocity_risk': 0.0,
+                'total_alerts': 0,
+                'per_instrument': {},
+            }
 
     async def _generate_monitoring_thesis(self, monitoring_results: Dict[str, Any],
                                           market_context: Dict[str, Any]) -> str:
         """Generate plain-English thesis explaining monitoring decisions."""
         try:
             stats = monitoring_results.get('duration_statistics', {})
+            stats_by_inst = monitoring_results.get('duration_statistics_by_instrument', {})
             alerts = monitoring_results.get('alerts', {'critical': [], 'warning': [], 'info': []})
             regime = str(market_context.get('regime', 'ranging'))
             volatility = str(market_context.get('volatility_level', 'medium'))
@@ -630,6 +786,18 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
                     parts.append("Durations within acceptable ranges.")
             else:
                 parts.append("No active positions.")
+
+            # Brief per-instrument view (first few instruments)
+            if stats_by_inst:
+                inst_summaries = []
+                for inst, s in list(stats_by_inst.items())[:3]:
+                    inst_summaries.append(
+                        f"{inst}: {s.get('active_positions', 0)} pos, "
+                        f"avg {s.get('avg_duration', 0):.1f}, "
+                        f"over_warn={s.get('positions_over_warning', 0)}, "
+                        f"over_crit={s.get('positions_over_critical', 0)}"
+                    )
+                parts.append("Per-instrument durations: " + "; ".join(inst_summaries) + ".")
 
             adj = self._get_context_adjusted_thresholds(regime, volatility)
             parts.append(f"Context: regime={regime}, vol={volatility}, warning_threshold={adj['warning']} steps.")
@@ -659,6 +827,7 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
         try:
             alerts = monitoring_results.get('alerts', {'critical': [], 'warning': [], 'info': []})
             stats = monitoring_results.get('duration_statistics', {})
+            stats_by_inst = monitoring_results.get('duration_statistics_by_instrument', {})
 
             if alerts['critical']:
                 recs.append("IMMEDIATE: Close or reduce positions exceeding maximum duration.")
@@ -669,7 +838,14 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
                 recs.append("Tighten stops or realize partial profits.")
 
             if int(stats.get('active_positions', 0)) > 5:
-                recs.append("High concentration: consider reducing open positions.")
+                recs.append("High global concentration: consider reducing open positions.")
+
+            # Per-instrument hints (e.g., XAU vs EUR)
+            for inst, s in stats_by_inst.items():
+                if s.get('positions_over_critical', 0) > 0:
+                    recs.append(f"{inst}: positions exceeding critical duration, prioritize review.")
+                elif s.get('positions_over_warning', 0) > 0:
+                    recs.append(f"{inst}: several positions near duration limits, monitor closely.")
 
             rapid_positions = [pid for pid, v in self.position_velocity.items() if v > self._cfg.fast_velocity]
             if rapid_positions:
@@ -718,13 +894,15 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
             duration_risks: Dict[str, Any] = {}
             recommendations: List[Dict[str, Any]] = []
 
-            for pid, _ in positions.items():
+            for pid, pos in positions.items():
                 if pid in self.position_durations:
                     dur = int(self.position_durations[pid])
+                    symbol = self.position_instruments.get(pid, pos.get('symbol') or pos.get('instrument') or 'UNKNOWN')
                     if dur > self.critical_duration:
                         risk_level = 'critical'
                         recommendations.append({
                             'position_id': pid,
+                            'symbol': symbol,
                             'action': 'close_position',
                             'reason': f'Duration {dur} exceeds critical {self.critical_duration}',
                             'urgency': 'high'
@@ -733,6 +911,7 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
                         risk_level = 'warning'
                         recommendations.append({
                             'position_id': pid,
+                            'symbol': symbol,
                             'action': 'review_position',
                             'reason': f'Duration {dur} exceeds warning {self.warning_duration}',
                             'urgency': 'medium'
@@ -741,6 +920,7 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
                         risk_level = 'normal'
 
                     duration_risks[pid] = {
+                        'symbol': symbol,
                         'duration': dur,
                         'risk_level': risk_level,
                         'threshold_ratio': float(dur / max(1, self.max_duration))
@@ -869,6 +1049,7 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
                 'position_durations': {k: int(v) for k, v in self.position_durations.items()},
                 'position_first_seen': dict(self.position_first_seen),
                 'position_velocity': {k: int(v) for k, v in self.position_velocity.items()},
+                'position_instruments': dict(self.position_instruments),
                 'risk_score': float(self.risk_score),
                 'severity_level': str(self.severity_level),
                 'closure_analytics': dict(self.closure_analytics),
@@ -883,6 +1064,7 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
             self.position_durations = {k: int(v) for k, v in state.get('position_durations', {}).items()}
             self.position_first_seen = dict(state.get('position_first_seen', {}))
             self.position_velocity = {k: int(v) for k, v in state.get('position_velocity', {}).items()}
+            self.position_instruments = dict(state.get('position_instruments', {}))
             self.risk_score = float(state.get('risk_score', 0.0))
             self.severity_level = str(state.get('severity_level', 'normal'))
             self.closure_analytics = dict(state.get('closure_analytics', {'normal': 0, 'timeout': 0, 'emergency': 0}))
@@ -915,19 +1097,24 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
                 'severity_level': 'disabled',
                 'monitoring_results': {
                     'positions_tracked': 0,
-                    'duration_statistics': {'active_positions': 0, 'avg_duration': 0, 'max_duration': 0,
-                                            'min_duration': 0, 'std_duration': 0, 'median_duration': 0,
-                                            'positions_over_warning': 0, 'positions_over_critical': 0},
+                    'duration_statistics': {
+                        'active_positions': 0, 'avg_duration': 0, 'max_duration': 0,
+                        'min_duration': 0, 'std_duration': 0, 'median_duration': 0,
+                        'positions_over_warning': 0, 'positions_over_critical': 0
+                    },
+                    'duration_statistics_by_instrument': {},
                     'closure_info': {'closed_count': 0, 'closure_details': []},
                     'processing_time_ms': 0,
                     'market_context': {},
                     'alerts': {'critical': [], 'warning': [], 'info': []}
                 },
-                'risk_metrics': {'risk_score': 0.0, 'severity_level': 'disabled'},
+                'risk_metrics': {'risk_score': 0.0, 'severity_level': 'disabled', 'per_instrument': {}},
                 'timestamp': datetime.datetime.now().isoformat()
             },
             'duration_alerts': {'critical': [], 'warning': [], 'info': []},
-            'position_tracking': {'durations': {}, 'velocities': {}, 'statistics': {}},
+            'position_tracking': {
+                'durations': {}, 'velocities': {}, 'statistics': {}, 'statistics_by_instrument': {}
+            },
             'trade_monitor_status': {
                 'initialized': True,
                 'enabled': False,
@@ -949,19 +1136,25 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
                 'monitoring_results': {
                     'positions_tracked': int(len(self.position_durations)),
                     'duration_statistics': self._calculate_duration_statistics(),
+                    'duration_statistics_by_instrument': self._calculate_duration_statistics_by_instrument(),
                     'closure_info': {'closed_count': 0, 'closure_details': []},
                     'processing_time_ms': 0,
                     'market_context': {},
                     'alerts': {'critical': [], 'warning': [], 'info': []}
                 },
-                'risk_metrics': {'risk_score': float(self.risk_score), 'severity_level': str(self.severity_level)},
+                'risk_metrics': {
+                    'risk_score': float(self.risk_score),
+                    'severity_level': str(self.severity_level),
+                    'per_instrument': {}
+                },
                 'timestamp': datetime.datetime.now().isoformat()
             },
             'duration_alerts': {'critical': [], 'warning': [], 'info': []},
             'position_tracking': {
                 'durations': {k: int(v) for k, v in self.position_durations.items()},
                 'velocities': {k: int(v) for k, v in self.position_velocity.items()},
-                'statistics': self._calculate_duration_statistics()
+                'statistics': self._calculate_duration_statistics(),
+                'statistics_by_instrument': self._calculate_duration_statistics_by_instrument(),
             },
             'trade_monitor_status': {
                 'initialized': True,
@@ -984,19 +1177,24 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
                 'severity_level': 'error',
                 'monitoring_results': {
                     'positions_tracked': 0,
-                    'duration_statistics': {'active_positions': 0, 'avg_duration': 0, 'max_duration': 0,
-                                            'min_duration': 0, 'std_duration': 0, 'median_duration': 0,
-                                            'positions_over_warning': 0, 'positions_over_critical': 0},
+                    'duration_statistics': {
+                        'active_positions': 0, 'avg_duration': 0, 'max_duration': 0,
+                        'min_duration': 0, 'std_duration': 0, 'median_duration': 0,
+                        'positions_over_warning': 0, 'positions_over_critical': 0
+                    },
+                    'duration_statistics_by_instrument': {},
                     'closure_info': {'closed_count': 0, 'closure_details': []},
                     'processing_time_ms': 0,
                     'market_context': {},
                     'alerts': {'critical': [], 'warning': [], 'info': []}
                 },
-                'risk_metrics': {'risk_score': 0.5, 'severity_level': 'error'},
+                'risk_metrics': {'risk_score': 0.5, 'severity_level': 'error', 'per_instrument': {}},
                 'timestamp': datetime.datetime.now().isoformat()
             },
             'duration_alerts': {'critical': [], 'warning': [], 'info': []},
-            'position_tracking': {'durations': {}, 'velocities': {}, 'statistics': {}},
+            'position_tracking': {
+                'durations': {}, 'velocities': {}, 'statistics': {}, 'statistics_by_instrument': {}
+            },
             'trade_monitor_status': {
                 'initialized': True,
                 'enabled': bool(self.enabled),

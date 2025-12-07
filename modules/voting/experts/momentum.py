@@ -33,6 +33,10 @@ from modules.contracts import module_args
 from modules.core.module_base import module
 from modules.voting.experts.base import VotingExpertBase
 from modules.voting.core.per_instrument import PerInstrumentVote, InstrumentProposal
+from modules.voting.core.constants import (
+    PRIMARY_TIMEFRAME,
+    CONTEXT_TIMEFRAMES,
+)
 
 
 def normalize_instrument(symbol: str) -> str:
@@ -116,19 +120,24 @@ class MomentumExpert(VotingExpertBase):
         self.min_confluence_score = float(self.config.get("min_confluence", 0.15))
         self.strong_signal_confluence = float(self.config.get("strong_confluence", 0.5))
         
-        # Multi-timeframe configuration (M15 micro, H1 primary, H4/D1 confirmations)
+        # Multi-timeframe configuration:
+        # M15 is the PRIMARY trading timeframe (100% of signal generation).
+        # H1/H4/D1 are CONTEXT timeframes (confidence modifiers ONLY, never override direction).
+        # This is because ExitManager closes trades early with tight TP, so H1/H4/D1 trends
+        # rarely have time to play out.
         self.use_mtf_confirmation = bool(self.config.get("use_mtf_confirmation", True))
         self.mtf_timeframes: List[str] = self.config.get(
-            "mtf_timeframes", ["M15", "H1", "H4", "D1"]
+            "mtf_timeframes", [PRIMARY_TIMEFRAME] + list(CONTEXT_TIMEFRAMES)
         )
+        # M15-PRIMARY: M15 generates direction, context TFs only adjust confidence
         self.mtf_weights = {
-            "M15": 0.15,
-            "H1": 0.35,
-            "H4": 0.30,
-            "D1": 0.20,
+            "M15": 1.00,  # PRIMARY: M15 is the SOLE signal generator
+            "H1": 0.00,   # CONTEXT ONLY: modifies confidence, not direction
+            "H4": 0.00,   # CONTEXT ONLY: modifies confidence, not direction
+            "D1": 0.00,   # CONTEXT ONLY: modifies confidence, not direction
         }
-        self.mtf_agreement_bonus = 0.12  # Confidence bonus when all TFs agree
-        self.mtf_disagreement_penalty = 0.18  # Confidence penalty when TFs disagree
+        self.mtf_agreement_bonus = 0.15  # Confidence boost when context TFs agree with M15
+        self.mtf_disagreement_penalty = 0.20  # Confidence penalty when context TFs disagree with M15
 
         # Optional performance feedback toggle (defaults off to avoid bias)
         self.use_performance_feedback: bool = bool(
@@ -1147,7 +1156,9 @@ class MomentumExpert(VotingExpertBase):
             )
             
             # ═══════════════════════════════════════════════════════════════
-            # MULTI-TIMEFRAME CONFIRMATION
+            # M15-PRIMARY MULTI-TIMEFRAME CONFIRMATION
+            # M15 is the SOLE signal generator - H1/H4/D1 ONLY modify confidence
+            # Context TFs NEVER override M15 direction (ExitManager closes early)
             # ═══════════════════════════════════════════════════════════════
             mtf_adjustment = 0.0
             mtf_info = ""
@@ -1165,23 +1176,20 @@ class MomentumExpert(VotingExpertBase):
                     
                     if signal_is_bullish and mtf_is_bullish:
                         mtf_adjustment = self.mtf_agreement_bonus * alignment
-                        mtf_info = f"MTF+ (align={alignment:.2f})"
+                        mtf_info = f"Context TFs AGREE ↑ (align={alignment:.2f})"
                     elif (not signal_is_bullish) and mtf_is_bearish:
                         mtf_adjustment = self.mtf_agreement_bonus * alignment
-                        mtf_info = f"MTF+ (align={alignment:.2f})"
+                        mtf_info = f"Context TFs AGREE ↓ (align={alignment:.2f})"
                     elif (signal_is_bullish and mtf_is_bearish) or (
                         not signal_is_bullish and mtf_is_bullish
                     ):
+                        # M15-PRIMARY: Context TFs ONLY penalize confidence, NEVER override direction
                         mtf_adjustment = -self.mtf_disagreement_penalty * alignment
-                        mtf_info = f"MTF- (align={alignment:.2f})"
-                        if alignment >= 0.7:
-                            action = "flat"
-                            inst_confidence = 0.15
-                            signal_strength = 0.05
-                            mtf_info = "MTF override → flat"
+                        mtf_info = f"Context TFs DISAGREE (align={alignment:.2f}, conf penalty applied)"
+                        # NOTE: We do NOT override action to flat - M15 is the decision maker
                     else:
                         mtf_adjustment = -0.03
-                        mtf_info = "MTF neutral"
+                        mtf_info = "Context TFs neutral"
                     
                     inst_confidence = max(
                         0.1, min(0.95, inst_confidence + mtf_adjustment)

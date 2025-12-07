@@ -42,7 +42,7 @@ def _load_portfolio_risk_config_from_yaml() -> Dict[str, Any]:
     try:
         config_path = os.path.join(os.path.dirname(__file__), "..", "..", "config", "risk_policy.yaml")
         if os.path.exists(config_path):
-            with open(config_path, "r") as f:
+            with open(config_path, "r", encoding="utf-8") as f:
                 policy = yaml.safe_load(f) or {}
             
             # Map risk_policy.yaml values to PortfolioRiskConfig fields
@@ -184,6 +184,8 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                     def warning(self, *a, **k):
                         pass
                     def error(self, *a, **k):
+                        pass
+                    def debug(self, *a, **k):
                         pass
                 self.logger = _Dummy()
             if not hasattr(self, "debug"):
@@ -885,8 +887,70 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             return {"var_calculated": False, "error": str(e)}
 
     async def _calculate_correlation_matrix_async(self) -> Dict[str, Any]:
-        """Calculate correlation matrix for instruments asynchronously"""
+        """
+        Get correlation matrix from CorrelatedRiskController (single source of truth).
+        
+        v4.1.0: Changed from self-calculating to consuming from CorrelatedRiskController
+        to eliminate duplication and ensure consistency across the system.
+        
+        Fallback: If CorrelatedRiskController data is unavailable, calculate locally.
+        """
         try:
+            # ═══════════════════════════════════════════════════════════════════
+            # CORRELATED RISK CONTROLLER INTEGRATION (v4.1.0 - PRIMARY SOURCE)
+            # ═══════════════════════════════════════════════════════════════════
+            correlation_matrix_data = self.smart_bus.get("correlation_matrix", "PortfolioRiskSystem")
+            correlation_risk_data = self.smart_bus.get("correlation_risk", "PortfolioRiskSystem") or {}
+            diversification_score = self.smart_bus.get("diversification_score", "PortfolioRiskSystem")
+            
+            # Try to use CorrelatedRiskController's data first
+            if correlation_matrix_data and isinstance(correlation_matrix_data, dict):
+                matrix = correlation_matrix_data.get("matrix")
+                if matrix is not None:
+                    try:
+                        self.correlation_matrix = np.array(matrix)
+                        self.max_correlation = float(correlation_matrix_data.get("max_correlation", 0.0))
+                        
+                        if self.debug:
+                            self.logger.info(format_operator_message(
+                                icon="🔗",
+                                message="Using CorrelatedRiskController correlation data",
+                                max_correlation=f"{self.max_correlation:.2f}",
+                                source="CorrelatedRiskController"
+                            ))
+                        
+                        return {
+                            "correlation_source": "CorrelatedRiskController",
+                            "correlation_calculated": True,
+                            "max_correlation": self.max_correlation,
+                            "diversification_score": float(diversification_score) if diversification_score else None,
+                        }
+                    except (ValueError, TypeError) as e:
+                        self.logger.warning(f"Failed to parse CorrelatedRiskController matrix: {e}")
+            
+            # If we have correlation_risk data but no matrix, use max_correlation
+            if correlation_risk_data:
+                corr_risk_score = float(correlation_risk_data.get("correlation_risk_score", 0.0))
+                max_corr_from_risk = float(correlation_risk_data.get("max_correlation", 
+                                           correlation_risk_data.get("risk_metrics", {}).get("max_correlation", 0.0)))
+                
+                if max_corr_from_risk > 0:
+                    self.max_correlation = max_corr_from_risk
+                    # Estimate matrix from max_correlation if needed
+                    n_inst = len(self.instruments)
+                    if self.correlation_matrix is None or self.correlation_matrix.shape[0] != n_inst:
+                        self.correlation_matrix = np.eye(n_inst)
+                    
+                    return {
+                        "correlation_source": "CorrelatedRiskController_risk",
+                        "correlation_calculated": True,
+                        "max_correlation": self.max_correlation,
+                        "correlation_risk_score": corr_risk_score,
+                    }
+
+            # ═══════════════════════════════════════════════════════════════════
+            # FALLBACK: Calculate locally if CorrelatedRiskController unavailable
+            # ═══════════════════════════════════════════════════════════════════
             n_inst = len(self.instruments)
             self.correlation_matrix = np.eye(n_inst)
 
@@ -897,7 +961,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
 
             if min_len < 10:
                 self.max_correlation = 0.0
-                return {"correlation_data_sufficient": False}
+                return {"correlation_source": "fallback", "correlation_data_sufficient": False}
 
             returns_matrix = []
             valid_instruments = []
@@ -908,7 +972,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
 
             if len(returns_matrix) < 2:
                 self.max_correlation = 0.0
-                return {"correlation_pairs_insufficient": True}
+                return {"correlation_source": "fallback", "correlation_pairs_insufficient": True}
 
             returns_matrix = np.array(returns_matrix)
 
@@ -926,7 +990,16 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             off_diagonal = self.correlation_matrix[np.triu_indices(n_inst, k=1)]
             self.max_correlation = float(np.max(np.abs(off_diagonal))) if len(off_diagonal) > 0 else 0.0
 
+            if self.debug:
+                self.logger.info(format_operator_message(
+                    icon="📊",
+                    message="Correlation calculated locally (fallback)",
+                    max_correlation=f"{self.max_correlation:.2f}",
+                    source="local_fallback"
+                ))
+
             return {
+                "correlation_source": "local_fallback",
                 "correlation_calculated": True,
                 "correlation_data_points": min_len,
                 "valid_instruments": len(valid_instruments),
@@ -935,7 +1008,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
         except Exception as e:
             self.logger.warning(f"Correlation calculation failed: {e}")
             self.max_correlation = 0.0
-            return {"correlation_calculated": False, "error": str(e)}
+            return {"correlation_source": "error", "correlation_calculated": False, "error": str(e)}
 
     async def _calculate_portfolio_volatility_async(self) -> Dict[str, Any]:
         """Calculate portfolio volatility asynchronously"""
@@ -1189,16 +1262,28 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             return {"position_limits_updated": False, "error": str(e)}
 
     async def _check_portfolio_risk_violations(self, portfolio_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Check for portfolio risk violations"""
+        """
+        Check for portfolio risk violations.
+        
+        NOTE: For prop firms, NOTIONAL EXPOSURE is NOT the same as RISK.
+        A 0.01 lot XAUUSD has ~$2700 notional value but only ~$10-30 risk with proper SL.
+        Prop firms care about P&L drawdown, not notional exposure.
+        
+        We log exposure as INFO, not WARNING, since it's informational only.
+        """
         try:
             violations: List[str] = []
+            info_alerts: List[str] = []  # Informational, not violations
 
             exposure = float(self.performance_metrics.get("total_exposure", 0.0))
+            
+            # NOTE: For prop firms, notional exposure > limit is INFORMATIONAL only
+            # Prop firms don't care about notional exposure - they care about P&L drawdown
             if exposure > self._cfg.max_portfolio_exposure:
-                violations.append(
-                    f"Portfolio exposure {exposure:.1%} > limit {self._cfg.max_portfolio_exposure:.1%}"
+                # Log as INFO, not violation - this is expected for leveraged products like XAUUSD
+                info_alerts.append(
+                    f"Portfolio notional exposure {exposure:.1%} (informational - prop firms use P&L limits)"
                 )
-                self.limit_violations += 1
 
             # Track position limits at entry time to avoid false violations from dynamic limit changes
             if not hasattr(self, '_position_entry_limits'):
@@ -1218,21 +1303,26 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                         self._position_entry_limits[instrument] = current_limit
                         effective_limit = current_limit
 
-                    # Only flag violation if position exceeds the effective limit
+                    # For prop firms: notional exposure exceeding limit is INFORMATIONAL
+                    # This is NOT a risk violation - it's just how leveraged products work
                     if abs(position) > effective_limit:
-                        violations.append(f"{instrument} position {abs(position):.1%} > limit {effective_limit:.1%}")
-                        self.limit_violations += 1
+                        info_alerts.append(
+                            f"{instrument} notional {abs(position):.1%} of equity (normal for leveraged instruments)"
+                        )
                 else:
                     # Position closed - remove entry limit tracking
                     self._position_entry_limits.pop(instrument, None)
 
+            # VaR violations are real risk concerns
             if self.current_var > 0.05:
                 violations.append(f"Portfolio VaR {self.current_var:.1%} > 5% limit")
 
+            # High correlation with multiple positions is a real concern
             if self.max_correlation > 0.9 and len(self.current_positions) > 1:
                 violations.append(f"High correlation {self.max_correlation:.2f} with multiple positions")
                 self.correlation_alerts += 1
 
+            # Log real violations as warnings
             if violations:
                 self.logger.warning(
                     format_operator_message(
@@ -1243,6 +1333,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                         context="risk_violations",
                     )
                 )
+                self.limit_violations += len(violations)
                 for violation in violations:
                     self.risk_events.append(
                         {
@@ -1253,6 +1344,12 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                         }
                     )
 
+            # Log informational alerts at debug level (not warnings)
+            if info_alerts and self.debug:
+                self.logger.debug(
+                    f"[INFO] Exposure info (not violations): {'; '.join(info_alerts[:2])}"
+                )
+
             if len(self.risk_events) > 50:
                 self.risk_events = self.risk_events[-50:]
 
@@ -1260,6 +1357,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                 "violations_checked": True,
                 "violations_found": len(violations),
                 "violations": violations,
+                "info_alerts": info_alerts,
                 "total_limit_violations": self.limit_violations,
                 "correlation_alerts": self.correlation_alerts,
             }

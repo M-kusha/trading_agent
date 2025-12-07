@@ -49,3 +49,12 @@ docs/
 
 # Ignore optuna results
 optuna_results/
+
+# Ignore scripts
+scripts/
+
+# Local settings
+settings.local.json
+copilot-instructions.md
+.claude/
+.github/

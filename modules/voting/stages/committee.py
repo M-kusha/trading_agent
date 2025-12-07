@@ -91,12 +91,14 @@ class CommitteeCoordinator(VotingModuleBase):
         self.ingest_minimum = int(self.config.get('ingest_minimum', self.minimum_voters))
         # Gate/risk actions should not be counted as directional votes.
         # These are risk module signals (proceed/caution/halt) that indicate safety, not direction.
-        # Also filter 'hold'/'flat' since these indicate no directional guidance.
+        # NOTE: 'hold' and 'flat' ARE valid neutral signals from directional experts and should NOT be filtered.
+        # They indicate "no trade opportunity" which is valuable information for the committee.
         self.ignore_actions = set(self.config.get('ignore_actions', [
-            'abstain', None, 'unknown', 'neutral', 'hold', 'flat',
+            'abstain', None, 'unknown',
             # Risk gate actions (from ExecutionQualityMonitor, AnomalyDetector, etc.)
+            # These are NOT directional signals and should be filtered
             'proceed', 'caution', 'halt', 'continue', 'confirm', 'wait',
-            # Expert neutral actions (legacy - new experts use 'long'/'short'/'flat')
+            # Legacy neutral actions that have been superseded by 'flat'
             'seasonal_neutral', 'momentum_neutral', 'trend_neutral', 'theme_neutral',
             # Session avoidance (legacy - now mapped to 'flat')
             'session_avoid', 'session_optimal',

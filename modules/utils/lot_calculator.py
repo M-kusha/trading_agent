@@ -101,10 +101,31 @@ class LotSizeConfig:
 
 class UnifiedLotCalculator:
     """
+    ═══════════════════════════════════════════════════════════════════════════
     SINGLE SOURCE OF TRUTH for lot size calculation.
+    ═══════════════════════════════════════════════════════════════════════════
 
     All components (Executor, PositionManager, SmartPositionManager)
     must use this calculator for lot sizing to ensure consistency.
+
+    ARCHITECTURE NOTE:
+    ─────────────────────────────────────────────────────────────────────────
+    This calculator is responsible for ALL risk-based adjustments to lot size.
+    Other components should NOT apply these adjustments themselves to avoid
+    double-penalizing:
+
+    ✅ HANDLED HERE (single application):
+        - Signal strength scaling
+        - Volatility scaling
+        - Drawdown scaling
+        - DynamicRiskController risk_scale
+        - Trading mode multiplier
+        - Prop firm headroom reduction
+
+    ❌ NOT HERE (handled elsewhere):
+        - Hard VETO checks (Executor checks emergency/critical)
+        - Memory VETO (PositionManager checks memory_gate.veto)
+        - Gate checks (ArbiterLogic checks GatingResult.gate_passed)
 
     Key principles:
     1. Risk-based sizing: Fixed % of equity per trade
@@ -113,6 +134,7 @@ class UnifiedLotCalculator:
     4. Account leverage: Properly accounts for margin requirements
     5. Drawdown protection: Reduces size during losing streaks
     6. Prop firm safety: Enforces daily/max DD and headroom-based throttling
+    ═══════════════════════════════════════════════════════════════════════════
     """
 
     _instance: Optional["UnifiedLotCalculator"] = None
@@ -784,9 +806,17 @@ class UnifiedLotCalculator:
         details["trading_mode_multiplier"] = mode_multiplier
 
         # 12. Prop firm headroom reduction
+        # CRITICAL: If prop firm limits are breached, return 0 lots to block trading
         if self.config.prop_firm_mode:
             prop_reduction = self.get_prop_firm_lot_reduction()
-            if prop_reduction < 1.0:
+            if prop_reduction == 0.0:
+                # Prop firm limits breached - BLOCK ALL TRADING
+                details["adjustments"].append("prop_firm_BLOCKED")
+                details["prop_firm_reduction"] = 0.0
+                details["final_lots"] = 0.0
+                details["blocked_reason"] = "prop_firm_limits_breached"
+                return 0.0, details
+            elif prop_reduction < 1.0:
                 base_lots *= prop_reduction
                 details["adjustments"].append(f"prop_firm_headroom={prop_reduction:.2f}x")
                 details["prop_firm_reduction"] = prop_reduction
