@@ -175,11 +175,10 @@ limits:
   max_daily_loss: 0.042      # Stop at 4.2% (buffer below 5% limit)
   max_drawdown: 0.085        # Stop at 8.5% (buffer below 10% limit)
 
-  # PROP FIRM REALITY: Notional exposure is IRRELEVANT
-  # Prop firms only care about P&L, not how much margin you use
-  # Setting these high to effectively disable exposure-based blocking
-  max_position_size: 1.0     # 100% = effectively disabled (prop firms don't care)
-  max_exposure_pct: 2.0      # 200% = effectively disabled (prop firms don't care)
+  # Position size limits (as fraction of balance)
+  # These provide reasonable caps even though prop firms care about P&L not notional
+  max_position_size: 0.15    # Max 15% of balance per position
+  max_exposure_pct: 0.30     # Max 30% total exposure across all positions
 
   max_portfolio_var: 0.015   # Tighter VaR (was 2.5%)
   max_leverage: 100.0        # Match broker leverage (prop firms don't limit this)

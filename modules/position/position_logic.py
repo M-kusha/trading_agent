@@ -305,10 +305,23 @@ class PositionManager(PositionManagerBase):
         # ======================================================
         # PPO INTELLIGENT ARBITER GATE (highest priority)
         # PPOAgent has seen committee consensus, risk, memory and made final decision
+        # v4.3.1: Use per-instrument gate from ppo_multi_decision for multi-instrument support
         # ======================================================
-        ppo_gate_passed = self.smart_bus.get("ppo_gate_passed", "PositionManager", default=True)
+        ppo_multi_decision = self.smart_bus.get("ppo_multi_decision", "PositionManager", default={})
         ppo_final_decision = self.smart_bus.get("ppo_final_decision", "PositionManager", default={})
         ppo_position_size = self.smart_bus.get("ppo_position_size", "PositionManager", default=None)
+        
+        # Get per-instrument gate status (fallback to global for backward compatibility)
+        ppo_gate_passed = True  # Default to True if not found
+        if isinstance(ppo_multi_decision, dict):
+            instruments = ppo_multi_decision.get("instruments", {})
+            if isinstance(instruments, dict) and instrument in instruments:
+                inst_decision = instruments[instrument]
+                if isinstance(inst_decision, dict):
+                    ppo_gate_passed = inst_decision.get("gate_passed", True)
+            else:
+                # Fallback to global ppo_gate_passed if instrument not in multi_decision
+                ppo_gate_passed = self.smart_bus.get("ppo_gate_passed", "PositionManager", default=True)
 
         # If PPOAgent explicitly blocked the trade, respect that decision
         if ppo_gate_passed is False and not has_position:
@@ -1377,9 +1390,16 @@ class PositionManager(PositionManagerBase):
             ),
             0.01,
         )
+        # Hard cap risk_pct to 20% max to prevent runaway sizing
+        risk_pct = min(risk_pct, 0.20)
+        
         risk_budget = balance * risk_pct
         vol_adjusted_budget = risk_budget / volatility
         base_size = intensity * vol_adjusted_budget
+        
+        # Hard safety cap: never exceed 50% of balance as notional
+        max_notional = balance * 0.50
+        base_size = float(np.clip(base_size, -max_notional, max_notional))
 
         # Portfolio health modifier (local state - not in LotCalculator)
         portfolio_health = self._portfolio_health_score

@@ -136,23 +136,23 @@ _VOTING_MODE: str = "TRAINING"  # "LIVE" or "TRAINING"
 
 # ───────────────────────────────────────────────────────────────────
 # LIVE MODE THRESHOLDS (Expert Mode - few but profitable trades)
-# Strategy: Quality trades but allow reasonable signals through
-# Tuned based on actual signal distribution (conf ~0.57-0.64, consensus ~0.48-0.54)
+# Strategy: Quality trades only - be VERY selective (~80% reduction)
+# Based on signal distribution: EURUSD conf=0.61-0.64, XAUUSD conf=0.56-0.62
 # ───────────────────────────────────────────────────────────────────
 _LIVE_THRESHOLDS: Dict[str, float] = {
-    # Confidence (slightly relaxed based on observed signal distribution)
-    "CONFIDENCE_THRESHOLD": 0.50,       # Lowered from 0.60 - signals often 0.57-0.64
-    "HIGH_CONFIDENCE_THRESHOLD": 0.70,  # High confidence bonus threshold
-    "MIN_SIGNAL_STRENGTH": 0.35,        # Lowered from 0.45 - allow moderate signals
+    # Confidence (require top-tier signals only)
+    "CONFIDENCE_THRESHOLD": 0.68,       # Only top ~20% of signals pass
+    "HIGH_CONFIDENCE_THRESHOLD": 0.80,  # High confidence bonus threshold
+    "MIN_SIGNAL_STRENGTH": 0.50,        # Need clear directional bias
 
-    # Consensus (relaxed - observed consensus ~0.48-0.54)
-    "CONSENSUS_THRESHOLD": 0.45,        # Lowered from 0.55 - allow majority-ish agreement
-    "STRONG_CONSENSUS_THRESHOLD": 0.65, # Strong consensus for bonus (lowered from 0.70)
-    "WEAK_CONSENSUS_THRESHOLD": 0.30,   # Weak consensus threshold
+    # Consensus (require strong expert agreement)
+    "CONSENSUS_THRESHOLD": 0.65,        # Need solid majority agreement
+    "STRONG_CONSENSUS_THRESHOLD": 0.75, # Strong consensus for bonus
+    "WEAK_CONSENSUS_THRESHOLD": 0.40,   # Weak consensus threshold
 
-    # Arbiter (slightly relaxed safety net)
-    "ARBITER_CONFIDENCE_FLOOR": 0.45,   # Lowered from 0.55 - still meaningful
-    "ARBITER_INTENSITY_FLOOR": 0.40,    # Lowered from 0.50 - allow moderate signals
+    # Arbiter (tight safety net)
+    "ARBITER_CONFIDENCE_FLOOR": 0.60,   # Meaningful conviction required
+    "ARBITER_INTENSITY_FLOOR": 0.55,    # Clear directional bias required
 }
 
 # ───────────────────────────────────────────────────────────────────
