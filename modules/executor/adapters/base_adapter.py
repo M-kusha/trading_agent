@@ -506,7 +506,7 @@ class BaseLiveAdapter:
     def _disconnect_impl(self) -> None:
         pass
 
-    def _get_account_info_impl(self) -> Dict[str, float]:
+    def _get_account_info_impl(self) -> Dict[str, float | str]:
         raise NotImplementedError
 
     def _get_prices_impl(self, instrument: str) -> Dict[str, float]:

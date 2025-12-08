@@ -1786,9 +1786,11 @@ class CurriculumPlannerPlus(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             self.error_count = error_state.get("error_count", 0)
             self.is_disabled = error_state.get("is_disabled", False)
             
-            # Load curriculum stages if provided
-            if "curriculum_stages" in state:
-                self.curriculum_stages = state["curriculum_stages"]
+            # IMPORTANT: Do NOT restore curriculum_stages from state
+            # Always use the fresh definitions from _initialize_progressive_curriculum()
+            # This ensures code changes to stage constraints (like max_trades_per_day) are applied
+            # instead of being overridden by stale persisted values
+            # The curriculum_stages are code-defined, not runtime state
             
             self.logger.info(format_operator_message(
                 icon="[RELOAD]",

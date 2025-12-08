@@ -136,23 +136,23 @@ _VOTING_MODE: str = "TRAINING"  # "LIVE" or "TRAINING"
 
 # ───────────────────────────────────────────────────────────────────
 # LIVE MODE THRESHOLDS (Expert Mode - few but profitable trades)
-# Strategy: Higher bars for quality trades, not just any signal
-# Tuned for fewer, higher-quality trades
+# Strategy: Quality trades but allow reasonable signals through
+# Tuned based on actual signal distribution (conf ~0.57-0.64, consensus ~0.48-0.54)
 # ───────────────────────────────────────────────────────────────────
 _LIVE_THRESHOLDS: Dict[str, float] = {
-    # Confidence (require stronger conviction)
-    "CONFIDENCE_THRESHOLD": 0.58,       # Raised from 0.45 - need solid conviction
-    "HIGH_CONFIDENCE_THRESHOLD": 0.75,  # High confidence bonus threshold
-    "MIN_SIGNAL_STRENGTH": 0.40,        # Require decent signal magnitude
+    # Confidence (slightly relaxed based on observed signal distribution)
+    "CONFIDENCE_THRESHOLD": 0.50,       # Lowered from 0.60 - signals often 0.57-0.64
+    "HIGH_CONFIDENCE_THRESHOLD": 0.70,  # High confidence bonus threshold
+    "MIN_SIGNAL_STRENGTH": 0.35,        # Lowered from 0.45 - allow moderate signals
 
-    # Consensus (need expert agreement for quality)
-    "CONSENSUS_THRESHOLD": 0.45,        # Raised from 0.15 - need some agreement
-    "STRONG_CONSENSUS_THRESHOLD": 0.70, # Strong consensus for bonus
-    "WEAK_CONSENSUS_THRESHOLD": 0.25,   # Weak consensus threshold
+    # Consensus (relaxed - observed consensus ~0.48-0.54)
+    "CONSENSUS_THRESHOLD": 0.45,        # Lowered from 0.55 - allow majority-ish agreement
+    "STRONG_CONSENSUS_THRESHOLD": 0.65, # Strong consensus for bonus (lowered from 0.70)
+    "WEAK_CONSENSUS_THRESHOLD": 0.30,   # Weak consensus threshold
 
-    # Arbiter (tighter safety net)
-    "ARBITER_CONFIDENCE_FLOOR": 0.50,   # Raised - ensure quality
-    "ARBITER_INTENSITY_FLOOR": 0.45,    # Raised - meaningful signals only
+    # Arbiter (slightly relaxed safety net)
+    "ARBITER_CONFIDENCE_FLOOR": 0.45,   # Lowered from 0.55 - still meaningful
+    "ARBITER_INTENSITY_FLOOR": 0.40,    # Lowered from 0.50 - allow moderate signals
 }
 
 # ───────────────────────────────────────────────────────────────────

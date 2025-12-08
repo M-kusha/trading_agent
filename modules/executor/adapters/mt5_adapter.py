@@ -226,7 +226,7 @@ class MT5Adapter(BaseLiveAdapter):
     # ─────────────────────────────────────────────────────
     # Account & market
     # ─────────────────────────────────────────────────────
-    def _get_account_info_impl(self) -> Dict[str, float]:
+    def _get_account_info_impl(self) -> Dict[str, float | str]:
         if not (_MT5 and self.connected):
             return {}
         try:
@@ -239,6 +239,8 @@ class MT5Adapter(BaseLiveAdapter):
                 "margin": _sf(getattr(ai, "margin", 0.0)),
                 "free_margin": _sf(getattr(ai, "margin_free", 0.0)),
                 "margin_level": _sf(getattr(ai, "margin_level", 0.0)),
+                "leverage": _sf(getattr(ai, "leverage", 100.0)),  # Fetch from MT5
+                "currency": str(getattr(ai, "currency", "EUR")),
             }
         except Exception:
             return {}

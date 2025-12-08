@@ -160,9 +160,9 @@ decision_mode:
     ppo_weight: 0.6
     committee_weight: 0.4
     
-    # Minimum confidence thresholds
-    ppo_min_confidence: 0.3       # PPO needs at least 30% confidence to contribute
-    committee_min_confidence: 0.3  # Committee needs at least 30% confidence
+    # Minimum confidence thresholds (raised for expert trading)
+    ppo_min_confidence: 0.55      # PPO needs at least 55% confidence to contribute
+    committee_min_confidence: 0.55 # Committee needs at least 55% confidence
     
     # Conflict resolution: what to do when PPO and Committee disagree
     # "higher_confidence": go with whoever is more confident

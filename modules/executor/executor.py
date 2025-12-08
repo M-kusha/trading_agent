@@ -227,6 +227,10 @@ class Executor(BaseModule):
                 st.update({
                     "balance": float(ai.get("balance", 0.0) or 0.0),
                     "equity": float(ai.get("equity", 0.0) or 0.0),
+                    "leverage": float(ai.get("leverage", 100.0) or 100.0),  # From MT5
+                    "margin": float(ai.get("margin", 0.0) or 0.0),
+                    "free_margin": float(ai.get("free_margin", 0.0) or 0.0),
+                    "currency": str(ai.get("currency", "EUR")),
                 })
             except Exception:
                 pass
@@ -2016,13 +2020,13 @@ class Executor(BaseModule):
                                 raw_unreal = getattr(position, "unrealized_pnl", getattr(position, "pnl", 0.0))
                                 position_is_profitable = raw_unreal > 5.0
 
-                                min_confidence = 0.35
-                                min_consensus = 0.55
+                                min_confidence = 0.55  # Raised for expert trading
+                                min_consensus = 0.55   # Raised for expert trading
                                 # Slightly stricter bar if profitable and vote is opposing
                                 if position_is_profitable:
                                     if (position_is_long and vote_action == "SELL") or \
                                        (not position_is_long and vote_action == "BUY"):
-                                        min_confidence = 0.50
+                                        min_confidence = 0.60
                                         min_consensus = 0.65
 
                                 if vote_confidence >= min_confidence and vote_consensus >= min_consensus and vote_action in ("BUY", "SELL"):

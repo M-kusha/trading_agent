@@ -296,21 +296,28 @@ class FinalArbiter(VotingModuleBase):
         }
     
     async def _evaluate_gate(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Evaluate gate criteria (global gate)."""
+        """
+        Evaluate GLOBAL gate criteria only.
+        
+        SIMPLIFIED: This gate now only checks truly global conditions:
+        - Collusion (are experts suspiciously aligned? data issue?)
+        - Memory gate (did memory module veto based on past losses?)
+        - Fragility (Monte Carlo uncertainty - warn only)
+        
+        Confidence/consensus checks are delegated to per-instrument gate,
+        which is more granular and can allow EURUSD through while blocking XAUUSD.
+        """
         self._step_count += 1
         self._gate_attempts += 1
         
-        # During bootstrap, be lenient
-        bootstrap_factor = 0.5 if self._step_count < self.bootstrap_steps else 1.0
-        
-        # Extract scores
-        confidence = data.get('committee_confidence', 0.5)
-        consensus = data.get('consensus_score', 0.5)
+        # Extract GLOBAL scores only (not confidence/consensus - those are per-instrument)
+        confidence = data.get('committee_confidence', 0.5)  # For logging/weighted_score only
+        consensus = data.get('consensus_score', 0.5)  # For logging/weighted_score only
         collusion = data.get('collusion_score', 0.0)
         fragility = data.get('fragility', 0.5)
         memory_gate = data.get('memory_gate', 1.0)
         
-        # Criteria evaluation
+        # Criteria evaluation (still compute weighted_score for confidence scaling)
         criteria_scores = {
             'confidence': confidence,
             'consensus': consensus,
@@ -319,7 +326,7 @@ class FinalArbiter(VotingModuleBase):
             'memory_clear': memory_gate,
         }
         
-        # Weighted combination
+        # Weighted combination (used to scale final confidence, not for gating)
         weights = self.criteria_weights
         if len(weights) < 5:
             weights = [0.2] * 5
@@ -332,49 +339,35 @@ class FinalArbiter(VotingModuleBase):
             weights[4] * criteria_scores['memory_clear']
         )
         
-        # Individual thresholds
-        confidence_ok = confidence >= (self.min_confidence * bootstrap_factor)
-        consensus_ok = consensus >= (self.consensus_threshold * bootstrap_factor)
-        collusion_ok = collusion < self.max_collusion
-        # Fragility is WARN-ONLY - does not block trades (often high due to Monte Carlo noise)
-        fragility_ok = True  # Always pass - we just warn on high fragility
-        fragility_warning = fragility >= self.max_fragility  # Track for logging
-        memory_ok = memory_gate > 0.3
+        # GLOBAL checks only - confidence/consensus left to per-instrument gate
+        collusion_ok = collusion < self.max_collusion  # Extreme collusion = data issue
+        memory_ok = memory_gate > 0.3  # Memory module veto
+        fragility_warning = fragility >= self.max_fragility  # Warn only, doesn't block
         
-        # Final gate decision (fragility excluded from blocking criteria)
-        all_passed = confidence_ok and consensus_ok and collusion_ok and memory_ok
-        gate_passed = all_passed or weighted_score > 0.55
+        # Global gate passes unless there's a TRUE global issue (collusion/memory)
+        # Per-instrument confidence/consensus is checked in _check_instrument_gate
+        gate_passed = collusion_ok and memory_ok
         
         if gate_passed:
             self._gate_passes += 1
-            # Add warning if fragility is high even though we passed
             fragility_msg = f" ⚠️ HIGH_FRAGILITY={fragility:.2f}" if fragility_warning else ""
             self.logger.debug(
                 f"[ARBITER] Global gate PASSED [MODE={get_voting_mode()}]: "
-                f"score={weighted_score:.2f}, conf={confidence:.2f}, consensus={consensus:.2f}{fragility_msg}"
+                f"score={weighted_score:.2f}, collusion={collusion:.2f}, memory={memory_gate:.2f}{fragility_msg}"
             )
         else:
-            # Log detailed failure reasons as WARNING so operators can see why trades are blocked
+            # Log what GLOBAL issue blocked
             failed_criteria = []
-            if not confidence_ok:
-                effective_thresh = self.min_confidence * bootstrap_factor
-                failed_criteria.append(f"confidence({confidence:.2f}<{effective_thresh:.2f})")
-            if not consensus_ok:
-                effective_thresh = self.consensus_threshold * bootstrap_factor
-                failed_criteria.append(f"consensus({consensus:.2f}<{effective_thresh:.2f})")
             if not collusion_ok:
                 failed_criteria.append(f"collusion({collusion:.2f}>{self.max_collusion:.2f})")
-            # Fragility is WARN-ONLY - still log it but note it's not blocking
-            if fragility_warning:
-                failed_criteria.append(f"⚠️fragility({fragility:.2f}>{self.max_fragility:.2f})[warn-only]")
             if not memory_ok:
                 failed_criteria.append(f"memory_gate({memory_gate:.2f}<0.30)")
+            if fragility_warning:
+                failed_criteria.append(f"⚠️fragility({fragility:.2f}>{self.max_fragility:.2f})[warn-only]")
             
             self.logger.warning(
                 f"[ARBITER] Global gate BLOCKED [MODE={get_voting_mode()}]: "
-                    f"score={weighted_score:.2f}<0.55 | "
-                f"failed=[{', '.join(failed_criteria)}] | "
-                f"thresholds: min_conf={self.min_confidence:.2f}, consensus={self.consensus_threshold:.2f}"
+                f"failed=[{', '.join(failed_criteria)}]"
             )
         
         return {
@@ -382,10 +375,11 @@ class FinalArbiter(VotingModuleBase):
             'weighted_score': weighted_score,
             'criteria_scores': criteria_scores,
             'criteria_passed': {
-                'confidence': confidence_ok,
-                'consensus': consensus_ok,
+                # confidence/consensus now checked per-instrument, not globally
+                'confidence': True,  # Delegated to per-instrument gate
+                'consensus': True,   # Delegated to per-instrument gate
                 'collusion': collusion_ok,
-                'fragility': fragility_ok,
+                'fragility': True,   # Fragility is warn-only, never blocks
                 'memory': memory_ok,
             },
             'bootstrap_active': self._step_count < self.bootstrap_steps,

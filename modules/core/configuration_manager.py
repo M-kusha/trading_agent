@@ -523,7 +523,7 @@ class ConfigurationManager:
             default_config={
                 'action_dim': 4,
                 'adapt_rate': 0.01,
-                'min_confidence': 0.3,
+                'min_confidence': 0.55,  # Raised for expert trading
                 'bootstrap_steps': 50,
                 'debug': True,
                 'reinforce_lr': 0.001,

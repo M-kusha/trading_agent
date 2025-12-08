@@ -311,6 +311,25 @@ class UnifiedLotCalculator:
 
         return float(self.config.account_balance)
 
+    def get_current_leverage(self) -> float:
+        """
+        Get current account leverage from live adapter or config default.
+
+        Priority:
+        1. Live adapter status (from MT5)
+        2. Config default (100.0)
+        """
+        try:
+            if self.bus:
+                live_status = self.bus.get("live_adapter_status", "LotCalculator", default=None)
+                if isinstance(live_status, dict):
+                    leverage = live_status.get("leverage")
+                    if isinstance(leverage, (int, float)) and leverage > 0:
+                        return float(leverage)
+        except Exception:
+            pass
+        return float(self.config.account_leverage)
+
     def get_current_drawdown(self) -> float:
         """
         Get current drawdown from InfoBus.
@@ -760,7 +779,8 @@ class UnifiedLotCalculator:
         else:
             # Fallback: leverage-based calculation
             contract_size = self.get_contract_size(symbol)
-            max_margin_lots = (balance * self.config.account_leverage) / contract_size
+            leverage = self.get_current_leverage()  # Use live leverage from MT5
+            max_margin_lots = (balance * leverage) / contract_size
             base_lots = max_margin_lots * risk_pct * 10.0  # scaled heuristic
         details["base_lots"] = base_lots
 
@@ -829,16 +849,17 @@ class UnifiedLotCalculator:
 
         # 15. Margin / exposure check
         contract_size = self.get_contract_size(symbol)
+        leverage = self.get_current_leverage()  # Use live leverage from MT5
         max_margin = balance * self.config.max_exposure_pct
-        margin_required = (lots * contract_size) / self.config.account_leverage
+        margin_required = (lots * contract_size) / leverage
 
         if margin_required > max_margin:
             # Reduce lots to fit margin constraint
-            allowed_lots = (max_margin * self.config.account_leverage) / contract_size
+            allowed_lots = (max_margin * leverage) / contract_size
             allowed_lots = self._round_to_step(allowed_lots, self.config.lot_step, mode="down")
             allowed_lots = max(self.config.min_lot, min(allowed_lots, self.config.max_lot))
             lots = allowed_lots
-            margin_required = (lots * contract_size) / self.config.account_leverage
+            margin_required = (lots * contract_size) / leverage
             details["adjustments"].append(f"margin_cap→{lots:.2f}")
 
         details["final_lots"] = lots
@@ -898,11 +919,12 @@ class UnifiedLotCalculator:
             balance = self.get_current_balance()
 
         contract_size = self.get_contract_size(symbol)
+        leverage = self.get_current_leverage()  # Use live leverage from MT5
 
-        leverage_max = (balance * self.config.account_leverage) / contract_size
+        leverage_max = (balance * leverage) / contract_size
 
         exposure_max = (
-            balance * self.config.max_exposure_pct * self.config.account_leverage
+            balance * self.config.max_exposure_pct * leverage
         ) / contract_size
 
         max_lots = min(leverage_max, exposure_max, self.config.max_lot)
@@ -934,7 +956,7 @@ class UnifiedLotCalculator:
         try:
             config_data = {
                 "account_balance": self.get_current_balance(),
-                "account_leverage": self.config.account_leverage,
+                "account_leverage": self.get_current_leverage(),  # Use live leverage
                 "risk_per_trade_pct": self.config.risk_per_trade_pct,
                 "min_lot": self.config.min_lot,
                 "max_lot": self.config.max_lot,

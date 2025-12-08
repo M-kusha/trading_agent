@@ -190,8 +190,8 @@ class PositionManager(PositionManagerBase):
             "strategy": "confidence_weighted",
             "ppo_weight": 0.6,
             "committee_weight": 0.4,
-            "ppo_min_confidence": 0.3,
-            "committee_min_confidence": 0.3,
+            "ppo_min_confidence": 0.55,  # Raised for expert trading
+            "committee_min_confidence": 0.55,  # Raised for expert trading
             "conflict_resolution": "higher_confidence",
         })
     
@@ -689,9 +689,12 @@ class PositionManager(PositionManagerBase):
                     voting_direction = ppo_direction
                     voting_confidence = max(ppo_conf, committee_conf)
                     decision_source = "blended (agreement)"
+                    # ppo_direction verified non-None by ppo_valid check above
+                    dir_idx = ppo_direction if ppo_direction is not None else 0
+                    dir_label = ['SHORT', 'HOLD', 'LONG'][dir_idx + 1]
                     rationale["factors"].append(
                         f"Mode=BLENDED: PPO and Committee agree "
-                        f"({['SHORT', 'HOLD', 'LONG'][ppo_direction + 1]}), conf={voting_confidence:.2f}"
+                        f"({dir_label}), conf={voting_confidence:.2f}"
                     )
                 else:
                     # Conflict - apply resolution strategy

@@ -180,11 +180,11 @@ class PerInstrumentVote:
     """
     member: str
     proposals: Dict[str, InstrumentProposal] = field(default_factory=dict)
-    timestamp: str = field(default_factory=_now_iso)
-
+    
     # Legacy compatibility: also track a "global" fallback for old consumers
     global_action: str = "flat"
     global_confidence: float = 0.5
+    timestamp: str = ""  # Will be set in __post_init__ if empty
 
     def __post_init__(self) -> None:
         # Normalize timestamp
@@ -500,6 +500,12 @@ def aggregate_instrument_votes(
     long_conf_weight = 0.0
     short_conf_sum = 0.0
     short_conf_weight = 0.0
+    flat_conf_sum = 0.0
+    flat_conf_weight = 0.0
+    
+    # Track confidence-weighted consensus (smarter than raw vote counts)
+    # This allows 2 high-confidence experts to outweigh 2 low-confidence experts
+    total_confidence_weight = 0.0
 
     for vote in votes:
         prop = vote.get_proposal(inst)
@@ -516,13 +522,21 @@ def aggregate_instrument_votes(
             mag = conf  # Use confidence as magnitude fallback
             
         base_weight = float(weights.get(vote.member, 1.0))
+        
+        # Effective confidence weight for consensus calculation
+        effective_conf_weight = conf * base_weight
 
         # Every non-missing proposal counts as one "vote" for consensus ratio
         decision.vote_count += 1
+        
+        # Track total confidence weight for weighted consensus
+        total_confidence_weight += effective_conf_weight
 
         # No usable magnitude or confidence → treat as neutral vote
         if conf == 0.0 and mag == 0.0:
             decision.flat_votes += 1
+            flat_conf_sum += 0.1 * base_weight  # Small weight for abstains
+            flat_conf_weight += base_weight
             continue
 
         # Strong directional: requires confidence above threshold
@@ -540,12 +554,12 @@ def aggregate_instrument_votes(
             if act is VotingAction.LONG:
                 decision.long_votes += 1
                 long_score += w * mag
-                long_conf_sum += conf * base_weight
+                long_conf_sum += effective_conf_weight  # Use same weight as total
                 long_conf_weight += base_weight
             elif act is VotingAction.SHORT:
                 decision.short_votes += 1
                 short_score += w * mag
-                short_conf_sum += conf * base_weight
+                short_conf_sum += effective_conf_weight  # Use same weight as total
                 short_conf_weight += base_weight
                 
         elif moderate_directional:
@@ -556,17 +570,19 @@ def aggregate_instrument_votes(
             if act is VotingAction.LONG:
                 decision.long_votes += 1
                 long_score += w * max(mag, conf * 0.5)  # Use conf as mag proxy if needed
-                long_conf_sum += conf * base_weight * 0.7
+                long_conf_sum += effective_conf_weight  # Use same weight as total
                 long_conf_weight += base_weight * 0.7
             elif act is VotingAction.SHORT:
                 decision.short_votes += 1
                 short_score += w * max(mag, conf * 0.5)
-                short_conf_sum += conf * base_weight * 0.7
+                short_conf_sum += effective_conf_weight  # Use same weight as total
                 short_conf_weight += base_weight * 0.7
         else:
             # Weak/neutral: count as neutral
             decision.flat_votes += 1
             w = base_weight * conf * 0.25
+            flat_conf_sum += effective_conf_weight  # Use same weight as total
+            flat_conf_weight += base_weight * 0.25
             flat_score += w * 0.5
             total_weight += w
 
@@ -588,10 +604,31 @@ def aggregate_instrument_votes(
     winning_action = max(scores, key=lambda k: scores[k])
     winning_score = scores[winning_action]
 
-    # Calculate consensus (how much agreement, including neutral votes)
-    max_votes = max(decision.long_votes, decision.short_votes, decision.flat_votes)
-    if decision.vote_count > 0:
-        decision.consensus_score = max_votes / decision.vote_count
+    # ═══════════════════════════════════════════════════════════════════
+    # CONFIDENCE-WEIGHTED CONSENSUS (v5.1)
+    # Instead of raw vote counts (which always gave 0.50 with 4 experts),
+    # calculate consensus as the proportion of confidence weight aligned
+    # with the winning direction.
+    #
+    # Example: If TrendExpert votes SHORT@0.70 and MomentumExpert votes SHORT@0.58,
+    # while ThemeExpert votes LONG@0.40 and SeasonalityRisk votes FLAT@0.30,
+    # the confidence-weighted consensus for SHORT = (0.70+0.58)/(0.70+0.58+0.40+0.30) = 0.646
+    # This is much more informative than raw 2/4 = 0.50
+    # ═══════════════════════════════════════════════════════════════════
+    if total_confidence_weight > 0:
+        if winning_action is VotingAction.LONG:
+            winning_conf_weight = long_conf_sum
+        elif winning_action is VotingAction.SHORT:
+            winning_conf_weight = short_conf_sum
+        else:
+            winning_conf_weight = flat_conf_sum
+        
+        decision.consensus_score = winning_conf_weight / total_confidence_weight
+    else:
+        # Fallback to raw vote count if no confidence data
+        max_votes = max(decision.long_votes, decision.short_votes, decision.flat_votes)
+        if decision.vote_count > 0:
+            decision.consensus_score = max_votes / decision.vote_count
 
     decision.action = winning_action.value
     decision.weighted_score = winning_score
