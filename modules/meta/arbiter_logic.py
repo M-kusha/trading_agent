@@ -723,6 +723,10 @@ class ArbiterLogic:
         self.primary_instrument = PRIMARY_INSTRUMENT
         self.debug = debug
         
+        # Logger for debugging direction decisions
+        import logging
+        self.logger = logging.getLogger("ArbiterLogic")
+        
         # Per-instrument statistics
         self.stats_tracker = InstrumentStatsTracker()
         
@@ -909,6 +913,13 @@ class ArbiterLogic:
         regime = str(committee.get("regime", experts.get("regime", "unknown")))
         regime_strength = float(
             committee.get("regime_strength", experts.get("regime_strength", 0.5))
+        )
+        
+        # CRITICAL DEBUG: Log what direction PPO is using
+        self.logger.info(
+            f"[PPO_DIRECTION] {instrument}: committee_action={committee_action}, "
+            f"expert_consensus={expert_consensus}, expert_conf={expert_confidence:.2f}, "
+            f"trust_score={trust_score:.2f}"
         )
         
         # 3) Interpret trust_score into a raw directional intention
@@ -1166,9 +1177,11 @@ class ArbiterLogic:
         # Adaptive blending based on autonomy phase
         if phase == "EXPERT_LED":
             # Experts dominate - PPO just learning
-            direction = expert_dir if expert_confidence > 0.3 else committee_dir
-            confidence = expert_confidence * expert_weight + ppo_conf * ppo_weight
-            reasoning = f"[{phase}] Experts lead ({expert_weight:.0%}): {direction}"
+            # CRITICAL FIX v4.3.0: In EXPERT_LED, use committee_dir (per-instrument from FinalArbiter)
+            # rather than expert_dir (global). FinalArbiter already computed per-instrument consensus.
+            direction = committee_dir if committee_confidence > 0.3 else expert_dir
+            confidence = max(committee_confidence, expert_confidence) * expert_weight + ppo_conf * ppo_weight
+            reasoning = f"[{phase}] Committee leads ({expert_weight:.0%}): {direction} (comm={committee_dir}, exp={expert_dir})"
             
         elif phase == "BLENDED":
             # 60/40 split - PPO starting to contribute
@@ -1272,14 +1285,34 @@ class ArbiterLogic:
         committee_data: Dict[str, Any],
         instrument: str,
     ) -> Dict[str, Any]:
-        """Extract committee data for a specific instrument."""
+        """Extract committee data for a specific instrument.
+        
+        CRITICAL: Must use per-instrument data when available to avoid
+        direction mismatch (e.g., XAUUSD should be SHORT when experts say SHORT,
+        not LONG because global committee_decision says LONG for EURUSD).
+        """
         # Check if per-instrument data exists
         if "instruments" in committee_data:
             inst_data = committee_data["instruments"].get(instrument, {})
             if inst_data:
-                return inst_data
+                self.logger.debug(
+                    f"[DIRECTION] {instrument}: Using per-instrument committee data: "
+                    f"action={inst_data.get('action', 'N/A')}, conf={inst_data.get('confidence', 'N/A')}"
+                )
+                return {
+                    "action": inst_data.get("action", "hold"),
+                    "confidence": inst_data.get("confidence", 0.5),
+                    "consensus_score": inst_data.get("consensus_score", 0.5),
+                    "fragility": committee_data.get("fragility", 0.5),
+                    "regime": committee_data.get("regime", "unknown"),
+                    "regime_strength": committee_data.get("regime_strength", 0.5),
+                }
         
         # Fall back to global committee data
+        self.logger.warning(
+            f"[DIRECTION] {instrument}: No per-instrument data found! "
+            f"Falling back to global: action={committee_data.get('action', 'hold')}"
+        )
         return {
             "action": committee_data.get("action", "hold"),
             "confidence": committee_data.get("confidence", 0.5),

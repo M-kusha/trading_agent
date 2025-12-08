@@ -571,6 +571,12 @@ class PositionManager(PositionManagerBase):
                 ppo_direction = -1
             elif ppo_direction_raw == "hold":
                 ppo_direction = 0
+            
+            # DEBUG: Log PPO decision extraction
+            self.logger.debug(
+                f"[DIRECTION_DEBUG] {instrument}: PPO says direction={ppo_direction_raw}({ppo_direction}), "
+                f"conf={ppo_conf:.2f}, gate_passed={ppo_final_decision.get('gate_passed', 'N/A')}"
+            )
         
         # Extract Committee decision data (from FinalArbiter/trade_vote_v2)
         committee_direction: Optional[int] = None

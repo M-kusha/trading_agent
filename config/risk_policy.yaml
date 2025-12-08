@@ -129,17 +129,17 @@ smart_position:
 
   # Scaling rules - MORE CONSERVATIVE for prop firms
   scale_up_min_profit_eur: 50.0      # Only add if in decent profit
-  scale_up_cooldown_seconds: 900.0   # 15 min between scale-ups
+  scale_up_cooldown_seconds: 600.0   # 10 min between scale-ups
   scale_down_trigger_loss_eur: 40.0  # Scale down faster if losing
 
-  # Trade cooldowns - LONGER to avoid overtrading
-  same_direction_cooldown_seconds: 900.0  # 15 min between same-direction entries
-  reversal_cooldown_seconds: 600.0        # 10 min after reversal
+  # Trade cooldowns - BALANCED for expert trading (quality over quantity)
+  same_direction_cooldown_seconds: 300.0  # 5 min between same-direction entries
+  reversal_cooldown_seconds: 300.0        # 5 min after reversal
 
-  # Signal thresholds - HIGHER quality signals only
-  min_signal_strength: 0.50          # Need 50%+ confidence to trade
+  # Signal thresholds - PPO is arbiter, these are safety nets
+  min_signal_strength: 0.40          # Need 40%+ confidence (PPO outputs ~0.50)
   strong_signal_threshold: 0.70      # Strong signal = 70%+
-  reversal_signal_threshold: 0.70    # Need strong reversal to exit
+  reversal_signal_threshold: 0.65    # Need decent reversal to exit
 
 # Stop Loss / Take Profit Settings (in pips)
 # IMPORTANT: Emergency safety nets - TIGHTER for prop firms

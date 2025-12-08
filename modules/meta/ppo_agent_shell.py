@@ -385,21 +385,49 @@ class PPOAgentShell(
     # ─────────────────────────────────────────────────────────────
     
     def _gather_committee_consensus(self) -> Dict[str, Any]:
-        """Gather committee consensus from SmartInfoBus."""
+        """Gather committee consensus from SmartInfoBus.
+        
+        CRITICAL FIX v4.3.0: Now fetches per-instrument committee decisions
+        from 'committee_decisions_by_instrument' to ensure each instrument
+        gets its correct direction (e.g., XAUUSD SHORT vs EURUSD LONG).
+        """
         name = "PPOAgentShell"
         
+        # CRITICAL: Get per-instrument decisions - this is the authoritative source!
+        per_inst_decisions = self.smart_bus.get("committee_decisions_by_instrument", name) or {}
+        
+        # Fall back to global committee_decision for backwards compatibility
         committee_decision = self.smart_bus.get("committee_decision", name) or {}
         if isinstance(committee_decision, str):
             committee_decision = {"action": committee_decision}
         
-        return {
+        # Global/fallback values
+        result = {
             "action": str(committee_decision.get("action", "hold")).lower(),
             "confidence": float(self.smart_bus.get("committee_confidence", name) or 0.5),
             "consensus_score": float(self.smart_bus.get("consensus_score", name) or 0.5),
             "fragility": float(self.smart_bus.get("fragility", name) or 0.5),
             "regime": self.smart_bus.get("market_regime", name) or "unknown",
             "regime_strength": float(self.smart_bus.get("regime_strength", name) or 0.5),
+            # NEW: Include per-instrument decisions for ArbiterLogic to use
+            "instruments": {},
         }
+        
+        # Parse per-instrument decisions into the instruments dict
+        if isinstance(per_inst_decisions, dict):
+            for inst, inst_data in per_inst_decisions.items():
+                if isinstance(inst_data, dict):
+                    result["instruments"][inst] = {
+                        "action": str(inst_data.get("action", inst_data.get("direction", "hold"))).lower(),
+                        "confidence": float(inst_data.get("confidence", inst_data.get("weight", 0.5)) or 0.5),
+                        "consensus_score": float(inst_data.get("consensus_score", 0.5) or 0.5),
+                    }
+                    self.logger.debug(
+                        f"Per-instrument committee: {inst} -> {result['instruments'][inst]['action']} "
+                        f"(conf={result['instruments'][inst]['confidence']:.2f})"
+                    )
+        
+        return result
     
     def _gather_expert_signals(self) -> Dict[str, Any]:
         """Gather expert voting, risk, and memory signals from SmartInfoBus."""

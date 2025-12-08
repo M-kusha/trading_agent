@@ -135,23 +135,24 @@ def is_context_timeframe(tf: str) -> bool:
 _VOTING_MODE: str = "TRAINING"  # "LIVE" or "TRAINING"
 
 # ───────────────────────────────────────────────────────────────────
-# LIVE MODE THRESHOLDS (Balanced - let PPO make final decisions)
-# When mode=ppo, PPO is the arbiter - thresholds are safety nets only
+# LIVE MODE THRESHOLDS (Expert Mode - few but profitable trades)
+# Strategy: PPO is arbiter - these are SAFETY NETS, not blockers
+# Tuned to actual signal ranges observed in production
 # ───────────────────────────────────────────────────────────────────
 _LIVE_THRESHOLDS: Dict[str, float] = {
-    # Confidence (moderate - PPO can trade at 0.45+ confidence)
-    "CONFIDENCE_THRESHOLD": 0.45,       # Lowered: PPO decides when to trade
+    # Confidence (PPO typically outputs 0.45-0.55, trust it)
+    "CONFIDENCE_THRESHOLD": 0.45,       # PPO decides quality, not this gate
     "HIGH_CONFIDENCE_THRESHOLD": 0.70,  # High confidence bonus threshold
-    "MIN_SIGNAL_STRENGTH": 0.28,        # Need decent signal magnitude
+    "MIN_SIGNAL_STRENGTH": 0.30,        # Reasonable signal magnitude
 
-    # Consensus (lower requirements when PPO is arbiter - it learned to weigh experts)
-    "CONSENSUS_THRESHOLD": 0.20,        # Lowered: PPO makes final decision, not expert consensus
-    "STRONG_CONSENSUS_THRESHOLD": 0.65, # Strong consensus for best trades
-    "WEAK_CONSENSUS_THRESHOLD": 0.15,   # Weak consensus threshold
+    # Consensus (experts often disagree, PPO weighs them - low bar here)
+    "CONSENSUS_THRESHOLD": 0.15,        # Very low - PPO is the real arbiter
+    "STRONG_CONSENSUS_THRESHOLD": 0.65, # Strong consensus for bonus
+    "WEAK_CONSENSUS_THRESHOLD": 0.10,   # Weak consensus threshold
 
-    # Arbiter (moderate filtering - final gate)
-    "ARBITER_CONFIDENCE_FLOOR": 0.48,   # Arbiter confidence floor
-    "ARBITER_INTENSITY_FLOOR": 0.38,    # Intensity/conviction floor
+    # Arbiter (safety net only)
+    "ARBITER_CONFIDENCE_FLOOR": 0.40,   # Low floor - PPO decides
+    "ARBITER_INTENSITY_FLOOR": 0.35,    # Low floor - let trades through
 }
 
 # ───────────────────────────────────────────────────────────────────
