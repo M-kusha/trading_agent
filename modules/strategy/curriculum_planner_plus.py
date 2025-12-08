@@ -147,7 +147,7 @@ class CurriculumPlannerPlus(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 'market_conditions': ['ranging', 'low_volatility'],
                 'constraints': {
                     'max_position_size': 0.5,
-                    'max_trades_per_day': 5,
+                    'max_trades_per_day': 15,  # Raised from 5 for testing
                     'max_risk_per_trade': 0.01
                 },
                 'learning_objectives': [
@@ -168,7 +168,7 @@ class CurriculumPlannerPlus(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 'market_conditions': ['trending', 'ranging'],
                 'constraints': {
                     'max_position_size': 0.75,
-                    'max_trades_per_day': 8,
+                    'max_trades_per_day': 20,  # Raised from 8 for testing
                     'max_risk_per_trade': 0.015
                 },
                 'learning_objectives': [

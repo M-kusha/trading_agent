@@ -136,23 +136,23 @@ _VOTING_MODE: str = "TRAINING"  # "LIVE" or "TRAINING"
 
 # ───────────────────────────────────────────────────────────────────
 # LIVE MODE THRESHOLDS (Expert Mode - few but profitable trades)
-# Strategy: PPO is arbiter - these are SAFETY NETS, not blockers
-# Tuned to actual signal ranges observed in production
+# Strategy: Higher bars for quality trades, not just any signal
+# Tuned for fewer, higher-quality trades
 # ───────────────────────────────────────────────────────────────────
 _LIVE_THRESHOLDS: Dict[str, float] = {
-    # Confidence (PPO typically outputs 0.45-0.55, trust it)
-    "CONFIDENCE_THRESHOLD": 0.45,       # PPO decides quality, not this gate
-    "HIGH_CONFIDENCE_THRESHOLD": 0.70,  # High confidence bonus threshold
-    "MIN_SIGNAL_STRENGTH": 0.30,        # Reasonable signal magnitude
+    # Confidence (require stronger conviction)
+    "CONFIDENCE_THRESHOLD": 0.58,       # Raised from 0.45 - need solid conviction
+    "HIGH_CONFIDENCE_THRESHOLD": 0.75,  # High confidence bonus threshold
+    "MIN_SIGNAL_STRENGTH": 0.40,        # Require decent signal magnitude
 
-    # Consensus (experts often disagree, PPO weighs them - low bar here)
-    "CONSENSUS_THRESHOLD": 0.15,        # Very low - PPO is the real arbiter
-    "STRONG_CONSENSUS_THRESHOLD": 0.65, # Strong consensus for bonus
-    "WEAK_CONSENSUS_THRESHOLD": 0.10,   # Weak consensus threshold
+    # Consensus (need expert agreement for quality)
+    "CONSENSUS_THRESHOLD": 0.45,        # Raised from 0.15 - need some agreement
+    "STRONG_CONSENSUS_THRESHOLD": 0.70, # Strong consensus for bonus
+    "WEAK_CONSENSUS_THRESHOLD": 0.25,   # Weak consensus threshold
 
-    # Arbiter (safety net only)
-    "ARBITER_CONFIDENCE_FLOOR": 0.40,   # Low floor - PPO decides
-    "ARBITER_INTENSITY_FLOOR": 0.35,    # Low floor - let trades through
+    # Arbiter (tighter safety net)
+    "ARBITER_CONFIDENCE_FLOOR": 0.50,   # Raised - ensure quality
+    "ARBITER_INTENSITY_FLOOR": 0.45,    # Raised - meaningful signals only
 }
 
 # ───────────────────────────────────────────────────────────────────
