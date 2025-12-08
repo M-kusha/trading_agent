@@ -502,7 +502,10 @@ class ModernTradingEnv(gym.Env):
         self.logger.info(f"🔄 ENVIRONMENT_RESET: Episode {self.episode_count + 1}")
         self.episode_count += 1
         self.episode_metrics = EpisodeMetrics()
-        self.data = copy.deepcopy(self.orig_data)
+        # PERF: Don't deep copy data - it's read-only during training
+        # Deep copy of 60k+ rows per instrument was causing multi-minute stalls on reset
+        # self.data = copy.deepcopy(self.orig_data)  # OLD: very slow!
+        self.data = self.orig_data  # NEW: reference only (data is read-only)
 
         # Recompute minimum data length on each reset (in case of hot-reload)
         try:

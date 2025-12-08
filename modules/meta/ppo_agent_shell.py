@@ -316,6 +316,12 @@ class PPOAgentShell(
             # 2) Build observations for each instrument
             observations = self._build_observations_for_instruments()
             
+            # DEBUG: Log observation summary
+            self.logger.info(
+                f"[PPO] Processing: obs_dims={[len(v) for v in observations.values()]}, "
+                f"committee={bool(committee_data)}, risk={risk_info.portfolio_risk:.2f}"
+            )
+            
             # 3) Make multi-instrument decision (with full integration)
             multi_decision = self.arbiter.make_multi_instrument_decision(
                 observations=observations,
@@ -332,6 +338,14 @@ class PPOAgentShell(
             self._last_multi_decision = multi_decision
             self._last_observations = observations
             self._last_decisions = multi_decision.instruments
+            
+            # Log per-instrument decisions
+            for inst, decision in multi_decision.instruments.items():
+                self.logger.info(
+                    f"[PPO] {inst}: dir={decision.direction}, conf={decision.confidence:.2f}, "
+                    f"gate={'PASS' if decision.gate_passed else 'BLOCK'}, "
+                    f"trust={decision.trust_score:.2f}, regime={decision.regime}"
+                )
             
             # 4) Build result dict
             result = self._build_process_result(multi_decision)

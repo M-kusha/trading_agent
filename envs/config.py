@@ -293,7 +293,7 @@ class TradingConfig:
     final_training_steps: int = 100_000
     log_interval: int = 10
     checkpoint_freq: int = 10_000
-    eval_freq: int = 5_000
+    eval_freq: int = 20_000
     n_eval_episodes: int = 5
 
     # ===================================================================

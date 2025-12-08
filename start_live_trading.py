@@ -73,6 +73,7 @@ class LiveTradingLauncher:
         self.backend_process: Optional[Any] = None
         self.backend_url = f"http://localhost:{backend_port}"
         self.backend_port = backend_port
+        self.emergency_watchdog = None  # Emergency position watchdog
         self.instruments = instruments or ["EURUSD", "XAUUSD"]
 
         # Setup signal handlers for graceful shutdown
@@ -348,6 +349,9 @@ class LiveTradingLauncher:
             self.logger.error("Failed to start trading. Exiting.")
             return
 
+        # Start emergency position watchdog
+        self._start_emergency_watchdog()
+
         self.logger.info("\n" + "="*60)
         self.logger.info("LIVE TRADING SYSTEM RUNNING")
         self.logger.info("="*60)
@@ -384,6 +388,43 @@ class LiveTradingLauncher:
         finally:
             self.shutdown()
 
+    def _start_emergency_watchdog(self) -> None:
+        """Start the emergency position watchdog (independent safety net)."""
+        try:
+            from modules.position.emergency_watchdog import EmergencyPositionWatchdog, load_watchdog_config
+            
+            config = load_watchdog_config()
+            
+            def on_emergency_close(symbol: str, profit: float, reason: str):
+                self.logger.critical(
+                    f"🚨 EMERGENCY CLOSE by watchdog: {symbol} | "
+                    f"P&L: €{profit:.2f} | Reason: {reason}"
+                )
+            
+            self.emergency_watchdog = EmergencyPositionWatchdog(
+                config=config,
+                on_emergency_close=on_emergency_close
+            )
+            
+            if self.emergency_watchdog.start():
+                self.logger.info("[OK] Emergency watchdog started")
+                self.logger.info(f"     Hard stop: €{config.hard_stop_eur}")
+                self.logger.info(f"     Check interval: {config.check_interval_s}s")
+            else:
+                self.logger.warning("[WARN] Emergency watchdog failed to start")
+        except Exception as e:
+            self.logger.warning(f"[WARN] Could not start emergency watchdog: {e}")
+            self.emergency_watchdog = None
+
+    def _stop_emergency_watchdog(self) -> None:
+        """Stop the emergency position watchdog."""
+        if self.emergency_watchdog:
+            try:
+                self.emergency_watchdog.stop()
+                self.logger.info("[OK] Emergency watchdog stopped")
+            except Exception as e:
+                self.logger.warning(f"Error stopping watchdog: {e}")
+
     def shutdown(self) -> None:
         """Graceful shutdown"""
         if not self.running:
@@ -394,6 +435,9 @@ class LiveTradingLauncher:
         self.logger.info("="*60)
 
         self.running = False
+
+        # Stop emergency watchdog first
+        self._stop_emergency_watchdog()
 
         # Stop trading via API
         try:

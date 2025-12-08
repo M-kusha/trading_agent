@@ -1117,6 +1117,133 @@ class Executor(BaseModule):
     # ─────────────────────────────────────────────────────────
     # SIM execution
     # ─────────────────────────────────────────────────────────
+    
+    def _check_sim_exits(self) -> Tuple[List[Dict[str, Any]], float]:
+        """
+        Check all simulation positions for exit conditions.
+        
+        This is CRITICAL for training - without this, positions can lose
+        unlimited amounts in simulation, making training ineffective.
+        
+        Exit conditions checked:
+        1. Hard stop loss (absolute max loss per position)
+        2. Trailing profit (lock in gains)
+        3. Time decay (close old losing positions)
+        
+        Returns:
+            Tuple of (fills list, realized PnL)
+        """
+        fills: List[Dict[str, Any]] = []
+        realized = 0.0
+        
+        # Load exit config from SmartPositionManager (already loads from risk_policy.yaml)
+        try:
+            spm_cfg = self.smart_position_manager.config
+            hard_stop_eur = float(spm_cfg.hard_stop_loss_eur)
+            trailing_activation = float(spm_cfg.profit_take_activation_eur)
+            trailing_pct = float(spm_cfg.profit_take_trail_pct)
+            time_decay_hours = float(spm_cfg.time_decay_hours)
+            time_decay_stop = float(spm_cfg.time_decay_stop_eur)
+        except Exception:
+            # Fallback to safe defaults
+            hard_stop_eur = 150.0
+            trailing_activation = 100.0
+            trailing_pct = 0.30
+            time_decay_hours = 4.0
+            time_decay_stop = 60.0
+        
+        # Track positions to close (can't modify dict during iteration)
+        positions_to_close: List[Tuple[str, str, float]] = []  # (inst, reason, pnl)
+        
+        for inst, pos in self.positions.items():
+            price = self._sim_price(inst, pos.side)
+            if price is None:
+                continue
+            
+            # Calculate current unrealized PnL
+            unrealized_pnl = (price - pos.entry_price) * pos.side * pos.units
+            
+            # Update peak for trailing
+            if unrealized_pnl > pos.peak_unrealized:
+                pos.peak_unrealized = unrealized_pnl
+            
+            # Calculate position age in hours
+            try:
+                open_ts = float(pos.open_time) if pos.open_time is not None else None
+            except Exception:
+                open_ts = None
+            age_hours = (time.time() - open_ts) / 3600.0 if open_ts else 0.0
+            
+            exit_reason = None
+            
+            # 1. HARD STOP - Always close if loss exceeds limit
+            if unrealized_pnl <= -hard_stop_eur:
+                exit_reason = f"HARD_STOP: Loss €{unrealized_pnl:.2f} exceeds -€{hard_stop_eur:.0f}"
+            
+            # 2. TRAILING PROFIT - Close if profit retraces significantly from peak
+            elif pos.peak_unrealized >= trailing_activation:
+                retrace = (pos.peak_unrealized - unrealized_pnl) / pos.peak_unrealized if pos.peak_unrealized > 0 else 0
+                if retrace >= trailing_pct:
+                    exit_reason = f"TRAILING_PROFIT: Retraced {retrace*100:.1f}% from peak €{pos.peak_unrealized:.2f}"
+            
+            # 3. TIME DECAY - Close old losing positions
+            elif age_hours >= time_decay_hours and unrealized_pnl <= -time_decay_stop:
+                exit_reason = f"TIME_DECAY: Position {age_hours:.1f}h old with loss €{unrealized_pnl:.2f}"
+            
+            if exit_reason:
+                positions_to_close.append((inst, exit_reason, unrealized_pnl))
+        
+        # Close flagged positions
+        for inst, reason, pnl in positions_to_close:
+            pos = self.positions.get(inst)
+            if not pos:
+                continue
+            
+            price = self._sim_price(inst, pos.side)
+            if price is None:
+                continue
+            
+            # Calculate realized PnL
+            commission = 0.0
+            if hasattr(self.cfg, 'commission_per_million') and self.cfg.commission_per_million:
+                notional = pos.units * price
+                commission = (abs(notional) / 1_000_000.0) * float(self.cfg.commission_per_million)
+            
+            realized_pnl = (price - pos.entry_price) * pos.side * pos.units - commission
+            realized += realized_pnl
+            
+            # Create fill
+            fill = TradeFill(
+                id=f"fill-{uuid.uuid4().hex[:10]}",
+                ts=time.time(),
+                step=self.step_idx,
+                instrument=inst,
+                action="exit:auto",
+                side=-pos.side,
+                units=pos.units,
+                price=price,
+                notional_eur=pos.units * price,
+                realized_pnl=realized_pnl,
+                origin_id="sim_exit_check",
+                comment=reason,
+            ).as_bus()
+            self.trades.append(fill)
+            fills.append(fill)
+            
+            # Track and remove position
+            self._track_closed_position(pos, price, realized_pnl, "auto_exit")
+            del self.positions[inst]
+            
+            # Log the exit
+            try:
+                self.logger.info(
+                    f"[SIM] 🛑 AUTO EXIT: {inst} | {reason} | Realized: €{realized_pnl:.2f}"
+                )
+            except Exception:
+                pass
+        
+        return fills, realized
+
     def _sim_price(self, inst: str, side: int) -> Optional[float]:
         sp = (self.bus.get("prices", "Executor", default=None)
               or self.bus.get("prices", "PositionManager", default={})
@@ -1282,6 +1409,14 @@ class Executor(BaseModule):
     def _execute_sim(self, intents: List[Dict[str, Any]], *, want_breakdown: bool = False) -> Tuple[List[Dict[str, Any]], float, float, float]:
         fills: List[Dict[str, Any]] = []
         realized_step = 0.0
+
+        # ═══════════════════════════════════════════════════════════════
+        # SIMULATION EXIT CHECKS - Check existing positions for exits FIRST
+        # This ensures hard stops, trailing stops work in simulation!
+        # ═══════════════════════════════════════════════════════════════
+        exit_fills, exit_realized = self._check_sim_exits()
+        fills.extend(exit_fills)
+        realized_step += exit_realized
 
         for intent in intents:
             inst = intent["instrument"]

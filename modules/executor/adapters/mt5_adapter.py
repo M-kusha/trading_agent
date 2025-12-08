@@ -430,12 +430,22 @@ class MT5Adapter(BaseLiveAdapter):
             ret_invalid_fill = getattr(mt5, "TRADE_RETCODE_INVALID_FILL", 10030)
 
             if r.retcode in (ret_ok, ret_placed, ret_partial):
+                ticket = getattr(r, 'order', getattr(r, 'deal', 0))
                 try:
+                    # Log successful order WITH SL/TP confirmation
+                    sl_status = f"SL={sl_price:.5f}" if sl_price else "SL=NONE⚠️"
+                    tp_status = f"TP={tp_price:.5f}" if tp_price else "TP=NONE"
                     self.log.info(
-                        f"[MT5] order_send OK: retcode={r.retcode} "
-                        f"price={_sf(getattr(r, 'price', 0.0)):.5f} "
-                        f"ticket={getattr(r, 'order', getattr(r, 'deal', 0))}"
+                        f"[MT5] ✅ ORDER SUCCESS: {sym} {'BUY' if side > 0 else 'SELL'} {lots:.4f} lots | "
+                        f"ticket={ticket} price={_sf(getattr(r, 'price', 0.0)):.5f} | "
+                        f"{sl_status} {tp_status}"
                     )
+                    # CRITICAL: Warn if SL was not set
+                    if not sl_price:
+                        self.log.warning(
+                            f"[MT5] ⚠️ WARNING: Order {ticket} has NO STOP-LOSS! "
+                            "Position is unprotected!"
+                        )
                 except Exception:
                     pass
                 return {
@@ -443,7 +453,9 @@ class MT5Adapter(BaseLiveAdapter):
                     "price": _sf(getattr(r, "price", 0.0)),
                     "lots": float(lots),
                     "side": 1 if side > 0 else -1,
-                    "ticket": getattr(r, "order", getattr(r, "deal", 0)),
+                    "ticket": ticket,
+                    "sl": sl_price,
+                    "tp": tp_price,
                 }
 
             # One retry with alternate filling mode if fill mode invalid

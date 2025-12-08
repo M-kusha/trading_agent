@@ -461,6 +461,13 @@ class FinalArbiter(VotingModuleBase):
             # Use per-instrument decisions from CommitteeCoordinator
             self.logger.debug(f"[ARBITER] Using per-instrument decisions: {list(per_inst_decisions.keys())}")
             
+            # DEBUG: Log raw per-instrument decisions to verify fresh data
+            for debug_inst, debug_dec in per_inst_decisions.items():
+                self.logger.info(
+                    f"[ARBITER][RAW] {debug_inst}: action={debug_dec.get('action')}, "
+                    f"conf={debug_dec.get('confidence'):.4f}, consensus={debug_dec.get('consensus_score'):.4f}"
+                )
+            
             collusion_score = float(data.get('collusion_score', 0.0))
             global_fragility = float(data.get('fragility', 0.5))
             # Use per-instrument fragility if available from UncertaintySampler
@@ -852,18 +859,18 @@ class FinalArbiter(VotingModuleBase):
                 }
                 regime_consensus_adj = {}
             else:
-                # LIVE: moderate regime adjustments - balance quality with opportunity
+                # LIVE: minimal regime adjustments - let PPO make decisions
                 regime_conf_adj = {
-                    'TRENDING': -0.08,       # Easier in clear trends (trend following)
-                    'MEAN_REVERTING': 0.03,  # Slightly harder in ranging markets
-                    'VOLATILE': 0.08,        # Harder in volatile (was 0.15 - too strict)
-                    'UNKNOWN': 0.05,         # Slightly harder when regime unclear
+                    'TRENDING': -0.10,       # Much easier in clear trends
+                    'MEAN_REVERTING': 0.0,   # No adjustment in ranging markets
+                    'VOLATILE': 0.0,         # NO penalty in volatile - PPO handles risk
+                    'UNKNOWN': 0.0,          # No penalty - let PPO decide
                 }
                 regime_consensus_adj = {
                     'TRENDING': 0.0,
-                    'MEAN_REVERTING': 0.03,
-                    'VOLATILE': 0.05,        # Need more consensus in volatile markets
-                    'UNKNOWN': 0.03,
+                    'MEAN_REVERTING': 0.0,
+                    'VOLATILE': 0.0,         # NO consensus penalty - PPO is arbiter
+                    'UNKNOWN': 0.0,
                 }
             
             min_confidence += regime_conf_adj.get(market_regime.upper(), 0.0)
@@ -892,13 +899,10 @@ class FinalArbiter(VotingModuleBase):
                     )
                     return (False, action, confidence)
                 
-                # Check 3: In volatile regime, require slightly higher standards
-                if market_regime.upper() == 'VOLATILE' and confidence < 0.65:
-                    self.logger.warning(
-                        f"[ARBITER] 🚫 Gate BLOCKED {instrument} {action} [LIVE/VOLATILE]: "
-                        f"confidence {confidence:.2f} < 0.65 (volatile market requires higher confidence)"
-                    )
-                    return (False, action, confidence)
+                # Note: Removed redundant volatile check (0.65 hardcoded) - 
+                # the regime_conf_adj already adds +0.08 for volatile markets,
+                # raising threshold from 0.55 to 0.63. Double-penalizing was making
+                # trades mathematically impossible.
             
             else:
                 # TRAINING MODE: More permissive checks

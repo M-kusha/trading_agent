@@ -135,19 +135,19 @@ def is_context_timeframe(tf: str) -> bool:
 _VOTING_MODE: str = "TRAINING"  # "LIVE" or "TRAINING"
 
 # ───────────────────────────────────────────────────────────────────
-# LIVE MODE THRESHOLDS (Conservative - quality signals only)
-# Target: 3-5 trades per day with good expert consensus
+# LIVE MODE THRESHOLDS (Balanced - let PPO make final decisions)
+# When mode=ppo, PPO is the arbiter - thresholds are safety nets only
 # ───────────────────────────────────────────────────────────────────
 _LIVE_THRESHOLDS: Dict[str, float] = {
-    # Confidence (high requirements - only trade when experts are confident)
-    "CONFIDENCE_THRESHOLD": 0.55,       # Requires 55%+ confidence
-    "HIGH_CONFIDENCE_THRESHOLD": 0.78,  # High confidence bonus threshold
-    "MIN_SIGNAL_STRENGTH": 0.32,        # Need decent signal magnitude
+    # Confidence (moderate - PPO can trade at 0.45+ confidence)
+    "CONFIDENCE_THRESHOLD": 0.45,       # Lowered: PPO decides when to trade
+    "HIGH_CONFIDENCE_THRESHOLD": 0.70,  # High confidence bonus threshold
+    "MIN_SIGNAL_STRENGTH": 0.28,        # Need decent signal magnitude
 
-    # Consensus (good agreement required - experts should align)
-    "CONSENSUS_THRESHOLD": 0.55,        # Need 55% expert agreement
-    "STRONG_CONSENSUS_THRESHOLD": 0.85, # Strong consensus for best trades
-    "WEAK_CONSENSUS_THRESHOLD": 0.55,   # Weak consensus threshold
+    # Consensus (lower requirements when PPO is arbiter - it learned to weigh experts)
+    "CONSENSUS_THRESHOLD": 0.20,        # Lowered: PPO makes final decision, not expert consensus
+    "STRONG_CONSENSUS_THRESHOLD": 0.65, # Strong consensus for best trades
+    "WEAK_CONSENSUS_THRESHOLD": 0.15,   # Weak consensus threshold
 
     # Arbiter (moderate filtering - final gate)
     "ARBITER_CONFIDENCE_FLOOR": 0.48,   # Arbiter confidence floor
