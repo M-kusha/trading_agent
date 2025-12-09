@@ -824,6 +824,7 @@ CONTRACTS: Dict[str, ModuleContract] = {
         file='executor/executor.py',
         # FIX: Added position_data as canonical provider (actual executed positions)
         # FIX: Added closed_positions (consumed by TrainingVisualizer for win rate tracking)
+        # FIX v4.5: Added position_focus_context for position management mode
         # NOTE: Memory gate used for final safety veto on order execution
         # NOTE: order_queue is consumed but NOT required - Executor handles empty queue gracefully
         # This allows Executor to run in parallel with PositionManager (order_queue comes next cycle)
@@ -834,7 +835,8 @@ CONTRACTS: Dict[str, ModuleContract] = {
                   'portfolio_metrics', 'trading_result', 'current_pnl',
                   'trade_data', 'market_state', 'position_data',
                   'current_positions', 'pnl_data', 'closed_positions',
-                  'live_adapter_status', 'pending_orders', 'account_state'],
+                  'live_adapter_status', 'pending_orders', 'account_state',
+                  'position_focus_context'],  # NEW: Signals position management mode to all modules
         # NOTE: trade_outcome_for_autonomy is published opportunistically when trades close
         # It's not in provides[] because it's event-driven, not every-cycle
         # FIX v5.1.0: Removed optional dependencies that caused circular deps:

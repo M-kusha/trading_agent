@@ -85,6 +85,7 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         self.thesis_genealogy = defaultdict(lambda: deque(maxlen=50))  # FIX: prevent memory leak
         self.successful_mutations = deque(maxlen=100)  # FIX: prevent memory leak
         self.failed_experiments = []
+        self.generation_count = 0  # Track number of evolution generations
         
         # Enhanced analytics system
         self.evolution_analytics = {
@@ -466,11 +467,12 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             if self._process_count % 50 == 0:
                 best = self._get_best_performing_thesis()
                 diversity = analytics_results.get('diversity_score', 0.0)
+                best_thesis = self.thesis_performance.get(best, {}).get('category', best) if best else 'none'
                 self.logger.info(format_operator_message(
                     icon="🧬",
                     message="THESIS_EVOLUTION_STATUS",
                     active_theses=len(self.theses),
-                    best_thesis=best.get('category', 'none') if best else 'none',
+                    best_thesis=best_thesis,
                     diversity=f"{diversity:.1%}",
                     generations=self.generation_count,
                     calls=self._process_count,

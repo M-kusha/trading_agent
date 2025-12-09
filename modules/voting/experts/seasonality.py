@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import calendar
 from datetime import datetime, time as dt_time
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
 
 import numpy as np
 
@@ -79,8 +79,7 @@ class SeasonalityRiskExpert(VotingExpertBase):
             "overlap_asia_eu": {"start": dt_time(7, 0), "end": dt_time(9, 0)},
         }
 
-        # Day-of-week biases (0=Monday, 4=Friday)
-        # Based on typical FX patterns (approximate)
+        # Day-of-week biases (0=Monday, 4=Friday) – stylized FX patterns
         self.dow_biases = {
             0: {
                 "name": "Monday",
@@ -165,9 +164,37 @@ class SeasonalityRiskExpert(VotingExpertBase):
             self.config.get("min_regime_persistence", 3)
         )
 
+        # Local trading-window configuration (user's timezone)
+        # Default: Europe/Berlin, trade 07:00–22:00 local, avoid last 30 minutes before 23:00.
+        self.trading_timezone: str = self.config.get(
+            "trading_timezone", "Europe/Berlin"
+        )
+        self.local_trade_start_hour: int = int(
+            self.config.get("local_trade_start_hour", 7)
+        )
+        self.local_trade_end_hour: int = int(
+            self.config.get("local_trade_end_hour", 22)
+        )
+        self.local_hard_close_hour: int = int(
+            self.config.get("local_hard_close_hour", 23)
+        )
+        # In the last N minutes before local_hard_close, we push for exits.
+        self.no_trade_last_minutes: int = int(
+            self.config.get("no_trade_last_minutes", 30)
+        )
+        
+        # TEST MODE: Allow trades during off-hours (for testing purposes)
+        # Set to True to bypass trading window restrictions
+        self.allow_off_hours_trading: bool = bool(
+            self.config.get("allow_off_hours_trading", False)
+        )
+
         self.log_info(
             f"[SEASONALITY] SeasonalityRiskExpert initialized | "
-            f"instruments={self.instruments}"
+            f"instruments={self.instruments} | trading_tz={self.trading_timezone} "
+            f"| trade_window={self.local_trade_start_hour}:00-{self.local_trade_end_hour}:00 "
+            f"| hard_close={self.local_hard_close_hour}:00"
+            f"| allow_off_hours={self.allow_off_hours_trading}"
         )
 
         # Publish baseline keys
@@ -258,6 +285,7 @@ class SeasonalityRiskExpert(VotingExpertBase):
 
         - Time-based regime (sessions, DOW, month, high-impact windows) is global.
         - Each instrument applies those temporal regimes plus its own historical bias.
+        - Local trading window (user's timezone) restricts late-day / overnight exposure.
         """
         name = self.__class__.__name__
         start = self._now_ms()
@@ -267,21 +295,26 @@ class SeasonalityRiskExpert(VotingExpertBase):
             if self._check_circuit_breaker():
                 return self._degraded_output("circuit_breaker_open")
 
-            # Global time context (UTC)
-            current_time = datetime.utcnow()
+            # Global time context (UTC) – local trading window derived separately
+            # IMPORTANT: Use timezone-aware datetime to ensure correct UTC→local conversion
+            # datetime.utcnow() returns naive datetime which Python treats as LOCAL time
+            # when calling .astimezone(), causing 1-hour DST errors
+            from datetime import timezone as dt_timezone
+            current_time_utc = datetime.now(dt_timezone.utc)
+            trading_window = self._analyze_trading_window(current_time_utc)
 
             market_data = self.smart_bus.get("market_data", name, default={})
             features = self.smart_bus.get("features", name, default={})
 
             # Global temporal components (same for all instruments)
-            session_analysis = self._analyze_session(current_time)
-            dow_analysis = self._analyze_day_of_week(current_time)
-            monthly_analysis = self._analyze_monthly_pattern(current_time)
-            hour_analysis = self._analyze_hour_patterns(current_time)
+            session_analysis = self._analyze_session(current_time_utc)
+            dow_analysis = self._analyze_day_of_week(current_time_utc)
+            monthly_analysis = self._analyze_monthly_pattern(current_time_utc)
+            hour_analysis = self._analyze_hour_patterns(current_time_utc)
 
-            rollover_risk = self._check_rollover_risk(current_time)
-            weekend_risk = self._check_weekend_risk(current_time)
-            high_impact_window = self._check_high_impact_window(current_time)
+            rollover_risk = self._check_rollover_risk(current_time_utc)
+            weekend_risk = self._check_weekend_risk(current_time_utc)
+            high_impact_window = self._check_high_impact_window(current_time_utc)
 
             # Per-instrument container
             per_instrument_vote = PerInstrumentVote(member=name)
@@ -296,7 +329,7 @@ class SeasonalityRiskExpert(VotingExpertBase):
                 inst_features = self._extract_instrument_data(features, inst)
 
                 historical_score = self._calculate_historical_pattern_score(
-                    current_time, inst_market, inst_features, inst_norm
+                    current_time_utc, inst_market, inst_features, inst_norm
                 )
 
                 composite_score = self._calculate_composite_score(
@@ -317,6 +350,7 @@ class SeasonalityRiskExpert(VotingExpertBase):
                     high_impact_window,
                     instrument=inst_norm,
                     asset_class=asset_class,
+                    trading_window=trading_window,
                 )
 
                 # Calibrate magnitude: seasonality is an overlay, keep it modest
@@ -326,6 +360,81 @@ class SeasonalityRiskExpert(VotingExpertBase):
                 else:
                     magnitude = float(
                         max(min_strength * 0.4, min(1.0, confidence * 0.6))
+                    )
+
+                # ═══════════════════════════════════════════════════════════════
+                # POSITION FOCUS MODE (PER-INSTRUMENT)
+                # If we have a position in THIS instrument, reframe signal for position management.
+                # End-of-day window will prefer EXIT to avoid overnight fees.
+                # ═══════════════════════════════════════════════════════════════
+                position_focus = self._get_position_focus_context()
+                supports_position = True
+                position_eval = "no_position"
+                original_action = action
+
+                if position_focus and self._has_position_for_instrument(inst_norm):
+                    position_side = self._get_position_side_for_instrument(inst_norm)
+                    inst_position = self._get_position_for_instrument(inst_norm)
+                    position_pnl = float(
+                        inst_position.get(
+                            "unrealized_pnl", inst_position.get("pnl", 0.0)
+                        )
+                    ) if inst_position else 0.0
+
+                    # Determine if signal supports or threatens position
+                    if position_side > 0:  # LONG position
+                        if action in ("long", "buy"):
+                            supports_position = True
+                            position_eval = "supports_long"
+                        elif action in ("short", "sell"):
+                            supports_position = False
+                            position_eval = "threatens_long"
+                        else:
+                            supports_position = True
+                            position_eval = "neutral_for_long"
+                    elif position_side < 0:  # SHORT position
+                        if action in ("short", "sell"):
+                            supports_position = True
+                            position_eval = "supports_short"
+                        elif action in ("long", "buy"):
+                            supports_position = False
+                            position_eval = "threatens_short"
+                        else:
+                            supports_position = True
+                            position_eval = "neutral_for_short"
+
+                    # Remap action for position management (default behaviour)
+                    if supports_position:
+                        action = "hold"  # Strong support = confident hold
+                    else:
+                        if confidence > 0.7:
+                            action = "exit"  # Strong opposing signal
+                        elif confidence > 0.5:
+                            action = "tighten"  # Moderate opposing signal
+                        else:
+                            action = "hold"  # Weak opposing signal
+
+                    # End-of-day safeguard: prefer exit in final window before hard-close
+                    if trading_window.get("final_exit_window", False):
+                        action = "exit"
+                        position_eval = "eod_exit_window"
+                        confidence = max(confidence, 0.65)
+                        thesis = (
+                            f"{inst_norm}: POSITION_FOCUS(EOD_EXIT_WINDOW) -> exit "
+                            f"(local_close_in={trading_window.get('minutes_to_close', 0)}min, "
+                            f"pnl={position_pnl:.2f})"
+                        )
+
+                    # Adjust confidence based on PnL (risk-aware tweaks)
+                    if position_pnl > 0 and not supports_position:
+                        confidence *= 0.8  # Reduce exit confidence when in profit
+                    elif position_pnl < 0 and not supports_position:
+                        confidence = min(1.0, confidence * 1.2)  # Increase exit confidence when losing
+
+                    self.log_debug(
+                        f"[SEASONALITY] {inst_norm} POSITION_FOCUS: original_action={original_action} -> {action}, "
+                        f"supports={supports_position}, eval={position_eval}, "
+                        f"pnl={position_pnl:.2f}, eod_window={trading_window.get('final_exit_window', False)}"
                     )
 
                 per_instrument_vote.set_proposal(
@@ -349,12 +458,27 @@ class SeasonalityRiskExpert(VotingExpertBase):
                     "high_impact_window": high_impact_window,
                     "action": action,
                     "confidence": confidence,
+                    "position_focus_mode": self._has_position_for_instrument(inst_norm),
+                    "supports_position": supports_position,
+                    "position_evaluation": position_eval,
+                    "original_action": original_action,
+                    "trading_window": {
+                        "timezone": trading_window.get("timezone"),
+                        "local_time": trading_window.get("local_time"),
+                        "local_hour": trading_window.get("local_hour"),
+                        "local_minute": trading_window.get("local_minute"),
+                        "in_primary_window": trading_window.get("in_primary_window"),
+                        "no_new_trades": trading_window.get("no_new_trades"),
+                        "final_exit_window": trading_window.get("final_exit_window"),
+                    },
                 }
 
                 self.log_debug(
                     f"[SEASONALITY] {inst_norm}: session={session_analysis['current_session']}, "
                     f"month={monthly_analysis['month_name']}, comp={composite_score:.2f}, "
-                    f"action={action}, conf={confidence:.2f}"
+                    f"action={action}, conf={confidence:.2f}, "
+                    f"local_time={trading_window.get('local_time')}, "
+                    f"no_new_trades={trading_window.get('no_new_trades')}"
                 )
 
             # ── Global summary / backward compatibility ──────────────────────
@@ -474,6 +598,7 @@ class SeasonalityRiskExpert(VotingExpertBase):
                 "action": global_action,
                 "confidence": global_confidence,
                 "per_instrument": per_instrument_analysis,
+                "trading_window": trading_window,
             }
 
             output = {
@@ -496,6 +621,7 @@ class SeasonalityRiskExpert(VotingExpertBase):
                     "monthly_pattern": monthly_analysis["pattern"],
                     "composite_score": global_composite,
                     "per_instrument": per_instrument_analysis,
+                    "trading_window": trading_window,
                 },
                 "seasonality_expert_analysis": {
                     "session": session_analysis["current_session"],
@@ -505,6 +631,7 @@ class SeasonalityRiskExpert(VotingExpertBase):
                     "rollover_risk": rollover_risk,
                     "weekend_risk": weekend_risk,
                     "per_instrument": per_instrument_analysis,
+                    "trading_window": trading_window,
                 },
                 "seasonality_expert_thesis": global_thesis,
                 "seasonal_session": session_analysis["current_session"],
@@ -577,9 +704,14 @@ class SeasonalityRiskExpert(VotingExpertBase):
 
     def _analyze_session(self, current_time: datetime) -> Dict[str, Any]:
         """
-        Analyze current trading session and quality.
+        Analyze current trading session and quality (UTC-based).
 
-        Returns session info and quality score.
+        Returns:
+            - current_session
+            - active_sessions
+            - session_quality
+            - liquidity_score
+            - session_phase
         """
         current_hour = current_time.time()
         active_sessions: List[str] = []
@@ -641,6 +773,7 @@ class SeasonalityRiskExpert(VotingExpertBase):
         end_mins = end.hour * 60 + end.minute
         current_mins = current.hour * 60 + current.minute
 
+        # Handle overnight sessions
         if end_mins < start_mins:
             end_mins += 24 * 60
             if current_mins < start_mins:
@@ -727,12 +860,11 @@ class SeasonalityRiskExpert(VotingExpertBase):
         is_pre_news = hour in self.high_impact_hours and minute >= 50
         is_news_hour = hour in self.high_impact_hours and minute < 30
 
+        # Volatility bands (UTC)
         if 13 <= hour <= 16:
             expected_volatility = 1.3
         elif 7 <= hour <= 9:
             expected_volatility = 1.1
-        elif 13 <= hour <= 14:
-            expected_volatility = 1.2
         elif 0 <= hour <= 6:
             expected_volatility = 0.7
         elif 22 <= hour <= 23:
@@ -740,9 +872,10 @@ class SeasonalityRiskExpert(VotingExpertBase):
         else:
             expected_volatility = 0.9
 
+        # Trading quality bands
         if 8 <= hour <= 16:
             trading_quality = 0.9
-        elif 13 <= hour <= 20:
+        elif 17 <= hour <= 20:
             trading_quality = 0.85
         else:
             trading_quality = 0.6
@@ -757,12 +890,12 @@ class SeasonalityRiskExpert(VotingExpertBase):
         }
 
     def _check_rollover_risk(self, current_time: datetime) -> bool:
-        """Check if we're in the rollover window."""
+        """Check if we're in the rollover window (UTC)."""
         current = current_time.time()
         return self._time_in_range(current, self.rollover_start, self.rollover_end)
 
     def _check_weekend_risk(self, current_time: datetime) -> bool:
-        """Check if we're in weekend gap risk window."""
+        """Check if we're in weekend gap risk window (Friday late UTC)."""
         is_friday = current_time.weekday() == 4
         current = current_time.time()
         return is_friday and current >= self.weekend_risk_start
@@ -772,13 +905,71 @@ class SeasonalityRiskExpert(VotingExpertBase):
         hour = current_time.hour
         minute = current_time.minute
 
+        # On the event hour: 00–30 and 50–59 are dangerous.
         if hour in self.high_impact_hours and (minute <= 30 or minute >= 50):
             return True
 
+        # 10 minutes before the event hour (previous hour, :50–:59)
         if (hour + 1) % 24 in self.high_impact_hours and minute >= 50:
             return True
 
         return False
+
+    def _analyze_trading_window(self, current_time_utc: datetime) -> Dict[str, Any]:
+        """
+        Analyze local trading window in the configured timezone.
+
+        Goals:
+        - Encourage trading only inside primary local hours (e.g. 07:00–22:00).
+        - Avoid opening new trades after cutoff.
+        - In last N minutes before local_hard_close, push strongly for exits.
+        """
+        try:
+            from zoneinfo import ZoneInfo  # Python 3.9+
+            tz = ZoneInfo(self.trading_timezone)
+            local_dt = current_time_utc.astimezone(tz)
+            tz_name = self.trading_timezone
+        except Exception:
+            # Fallback to naive UTC if zoneinfo is unavailable
+            local_dt = current_time_utc
+            tz_name = "UTC"
+
+        lh = local_dt.hour
+        lm = local_dt.minute
+        local_minutes = lh * 60 + lm
+
+        start_minutes = self.local_trade_start_hour * 60
+        end_minutes = self.local_trade_end_hour * 60
+        hard_close_minutes = self.local_hard_close_hour * 60
+
+        in_primary_window = start_minutes <= local_minutes < end_minutes
+        after_cutoff = local_minutes >= end_minutes
+
+        minutes_to_close = hard_close_minutes - local_minutes
+        if minutes_to_close < 0:
+            # Past hard close; treat as "already closed" for this day
+            minutes_to_close = 0
+
+        final_exit_window = 0 <= minutes_to_close <= self.no_trade_last_minutes
+        
+        # TEST MODE: Override no_new_trades if allow_off_hours_trading is enabled
+        if self.allow_off_hours_trading:
+            no_new_trades = False
+        else:
+            no_new_trades = after_cutoff or final_exit_window
+
+        return {
+            "timezone": tz_name,
+            "local_time": local_dt.isoformat(),
+            "local_hour": lh,
+            "local_minute": lm,
+            "in_primary_window": in_primary_window,
+            "after_cutoff": after_cutoff,
+            "minutes_to_close": minutes_to_close,
+            "no_new_trades": no_new_trades,
+            "final_exit_window": final_exit_window,
+            "allow_off_hours_override": self.allow_off_hours_trading,
+        }
 
     def _calculate_historical_pattern_score(
         self,
@@ -794,6 +985,36 @@ class SeasonalityRiskExpert(VotingExpertBase):
 
         if len(close_prices) < 50:
             return 0.5
+
+        # ═══════════════════════════════════════════════════════════════
+        # REAL-TIME RESPONSIVENESS: Append forming bar's close price
+        # ═══════════════════════════════════════════════════════════════
+        try:
+            inst_norm = normalize_instrument(instrument) if instrument else ""
+            historical = self.smart_bus.get(
+                "historical_prices", self.module_name, default=None
+            )
+            if isinstance(historical, dict):
+                matched_sym = None
+                for sym in historical.keys():
+                    if normalize_instrument(sym) == inst_norm:
+                        matched_sym = sym
+                        break
+                if matched_sym and isinstance(historical.get(matched_sym), dict):
+                    m15_rec = historical[matched_sym].get("M15", {})
+                    if isinstance(m15_rec, dict):
+                        cur_bar = m15_rec.get("current_bar", {})
+                        if isinstance(cur_bar, dict):
+                            forming_close = cur_bar.get("close")
+                            if forming_close is not None and len(close_prices) > 0:
+                                forming_close = float(forming_close)
+                                if abs(forming_close - float(close_prices[-1])) > 0.0001:
+                                    close_prices = np.append(
+                                        close_prices[:-1], forming_close
+                                    )
+        except Exception:
+            # Silently continue with original prices
+            pass
 
         recent_returns = np.diff(np.log(close_prices[-20:]))
 
@@ -926,15 +1147,18 @@ class SeasonalityRiskExpert(VotingExpertBase):
         high_impact_window: bool,
         instrument: str = "",
         asset_class: str = "forex",
+        trading_window: Optional[Dict[str, Any]] = None,
     ) -> Tuple[str, float, str]:
         """
         Select trading action based on seasonal analysis.
 
         Instrument-aware:
         - Gold has different seasonal patterns and safe-haven behaviour.
+        - Local trading-window overlay can veto late-day entries.
         """
         inst_norm = normalize_instrument(instrument) if instrument else ""
         is_gold = inst_norm in ("XAUUSD", "GOLD", "XAU")
+        tw = trading_window or {}
 
         # High-impact caution: stay flat; Gold may get safe-haven bid
         if high_impact_window:
@@ -964,6 +1188,23 @@ class SeasonalityRiskExpert(VotingExpertBase):
                 "flat",
                 0.6,
                 f"{inst_norm}: Rollover window - wider spreads and lower liquidity",
+            )
+
+        # Local trading window guard (user-local time).
+        # - After local_trade_end_hour or in final_exit_window,
+        #   we do NOT want new entries: flat with strong conviction.
+        if tw.get("no_new_trades", False):
+            lh = tw.get("local_hour")
+            lm = tw.get("local_minute")
+            tz_name = tw.get("timezone", "local")
+            if isinstance(lh, int) and isinstance(lm, int):
+                time_str = f"{lh:02d}:{lm:02d} {tz_name}"
+            else:
+                time_str = f"local time ({tz_name})"
+            return (
+                "flat",
+                0.7,
+                f"{inst_norm}: Outside primary trading window at {time_str} - no new entries",
             )
 
         # Poor session quality: stay flat (Gold can still trade in Asia)

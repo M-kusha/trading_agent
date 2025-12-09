@@ -15,11 +15,9 @@ import datetime as _dt
 import threading
 import time
 import uuid
-import json
 from collections import defaultdict, deque
 from dataclasses import dataclass, asdict
 from enum import Enum
-from pathlib import Path
 from typing import Any, Awaitable, Dict, List, Optional, Tuple, TypeVar, Union, cast
 
 import numpy as np
@@ -42,6 +40,7 @@ from modules.utils.audit_utils import RotatingLogger, format_operator_message, A
 # Debug system
 from .position_debug import PositionDebugSystem, DebugLevel
 from .position_logger import UnifiedPositionLogger
+
 
 # ===============================
 # Debug / decision scaffolding
@@ -474,7 +473,7 @@ class PositionManagerBase(
             self._position_performance: Dict[str, Dict[str, Any]] = {}
             self._exit_signals: Dict[str, List[Dict[str, Any]]] = {}
 
-    # ---------- bus execution interface (no-op writers)
+    # ---------- bus execution interface (hook)
     def _publish_bus_feeds(
         self,
         balance: float,
@@ -484,7 +483,10 @@ class PositionManagerBase(
         execution_data: Optional[Dict[str, Any]] = None,
         order_data: Optional[Dict[str, Any]] = None,
     ) -> None:
-        # Intentionally left as a hook for integration into external infra.
+        """
+        Hook for external infra (e.g. dashboards, observers).
+        The base implementation is a no-op by design.
+        """
         return
 
     def _refresh_positions_from_bus(self) -> None:
@@ -679,7 +681,7 @@ class PositionManagerBase(
                 individual_biases = bias_analysis.get("individual_biases", {})
                 aggregate = bias_analysis.get("aggregate_metrics", {})
                 total_bias_score = aggregate.get("total_bias_score", 0.0)
-                
+
                 if total_bias_score > 1.0:
                     # High bias score = penalty
                     boost -= 0.05
@@ -687,7 +689,7 @@ class PositionManagerBase(
                 elif total_bias_score < 0.3 and not individual_biases:
                     boost += 0.03
                     reasons.append("no_severe_bias")
-            
+
             # 3b. Bias adjustments (position size multipliers from BiasAuditor)
             bias_adjustments = self.smart_bus.get("bias_adjustments", "PositionManager")
             if isinstance(bias_adjustments, dict):
@@ -697,7 +699,11 @@ class PositionManagerBase(
                     # Significant bias detected - apply penalty
                     penalty = (1.0 - min_adjustment) * 0.1
                     boost -= penalty
-                    dominant_bias = min(bias_adjustments.items(), key=lambda x: x[1])[0] if bias_adjustments else "unknown"
+                    dominant_bias = (
+                        min(bias_adjustments.items(), key=lambda x: x[1])[0]
+                        if bias_adjustments
+                        else "unknown"
+                    )
                     reasons.append(f"bias_adj:{dominant_bias}@{min_adjustment:.0%}")
 
             # 4. Trading mode boost (from TradingModeManager)
@@ -767,9 +773,8 @@ class PositionManagerBase(
                 pass
 
             risk_factor = 1.0 + 0.6 * fragility + 0.5 * collusion_score
-            
-            # During training/simulation, be more lenient on collusion 
-            # (experts often agree on clear signals, which is fine)
+
+            # During training/simulation, be more lenient on collusion
             # During live trading, be stricter
             exec_mode = "simulation"
             try:
@@ -778,20 +783,21 @@ class PositionManagerBase(
                 ).lower()
             except Exception:
                 pass
-            
+
             # Thresholds based on mode
             if exec_mode in ("live", "paper"):
                 # Live mode: Block on extreme fragility (>=0.95) or very high collusion (>=0.95)
                 risk_block = (fragility >= 0.95) or (collusion_score >= 0.95)
             else:
                 # Training/sim mode: Only block on truly extreme values
-                # High collusion during training usually means experts agree on a clear signal
                 risk_block = (fragility >= 0.98) or (collusion_score >= 0.99)
 
             # Define action categories
             RISK_BLOCK_ACTIONS = {"halt", "emergency", "reduce_risk", "block"}
             RISK_CAUTION_ACTIONS = {"caution", "reduce", "warning"}
             RISK_APPROVE_ACTIONS = {"proceed", "hold", "maintain", "increase_risk", "safe", "approve"}
+            _ = RISK_CAUTION_ACTIONS  # reserved for future nuance
+            _ = RISK_APPROVE_ACTIONS
 
             # Get committee data
             consensus = self.smart_bus.get("committee_consensus", "PositionManager")
@@ -831,8 +837,6 @@ class PositionManagerBase(
                         return False
 
             # If fragility/collusion are extreme, WARN but don't block when experts agree
-            # Fragility=1.0 is common due to Monte Carlo sampling noise - shouldn't kill trades
-            # Collusion blocking is also relaxed - high agreement when experts agree is expected
             if risk_block:
                 self.logger.warning(
                     f"[GATE] ⚠️ HIGH FRAGILITY/COLLUSION WARNING - PROCEEDING: "

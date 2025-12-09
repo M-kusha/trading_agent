@@ -15,16 +15,19 @@ import threading
 from typing import Any, Dict, Optional, Callable
 from dataclasses import dataclass
 from pathlib import Path
+
 import yaml
 
 # Import MT5 if available
 try:
     import MetaTrader5 as _mt5_mod  # type: ignore
     from typing import cast, Any as _Any
+
     mt5 = cast(_Any, _mt5_mod)
     _MT5_AVAILABLE = True
 except ImportError:
     from typing import cast, Any as _Any
+
     mt5 = cast(_Any, None)
     _MT5_AVAILABLE = False
 
@@ -33,67 +36,130 @@ from modules.utils.audit_utils import RotatingLogger
 
 @dataclass
 class WatchdogConfig:
-    """Configuration for emergency watchdog."""
+    """
+    Configuration for emergency watchdog.
+
+    NOTE: The watchdog is a BACKGROUND SAFETY NET that runs independently.
+    It uses the same thresholds as ExitConfig (exit_engine.py) / prop_firm
+    config for consistency.
+
+    The watchdog should only trigger on truly critical conditions that the
+    main loop missed due to being slow or hung.
+    """
+
     # Check interval (seconds)
     check_interval_s: float = 2.0
-    
+
     # Hard stop limit (EUR) - close position if loss exceeds this
+    # Uses same value as ExitConfig.hard_stop_loss_eur by default.
     hard_stop_eur: float = 150.0
-    
-    # Emergency stop (EUR) - absolutely never lose more than this
+
+    # Emergency stop (EUR) - absolutely never lose more than this per position.
+    # This is ABOVE hard stop - a true failsafe.
     emergency_stop_eur: float = 300.0
-    
+
     # Account-level daily loss limit (EUR)
     daily_loss_limit_eur: float = 5000.0
-    
+
     # Enable/disable watchdog
     enabled: bool = True
-    
+
     # Log every check (verbose mode)
     verbose: bool = False
 
 
 def load_watchdog_config() -> WatchdogConfig:
-    """Load watchdog config from risk_policy.yaml."""
+    """
+    Load watchdog config from config/risk_policy.yaml.
+
+    Priority:
+    1) policy["watchdog"] overrides everything explicitly
+    2) fall back to exit_strategies/smart_position for per-position stops
+    3) derive daily loss limit from prop_firm block if present
+
+    The goal is to stay consistent with:
+      - ExitStrategyEngine config
+      - prop_firm daily drawdown rules
+    """
     try:
         config_path = Path("config/risk_policy.yaml")
         if config_path.exists():
             with open(config_path, "r", encoding="utf-8") as f:
                 policy = yaml.safe_load(f) or {}
-            
-            smart_pos = policy.get("smart_position", {})
-            prop_firm = policy.get("prop_firm", {})
-            
-            # Calculate daily limit from prop firm config
-            account_size = prop_firm.get("account_size", 100000.0)
-            daily_dd_pct = prop_firm.get("daily_drawdown_limit", 0.05)
-            daily_limit = account_size * daily_dd_pct * 0.7  # 70% of limit as safety margin
-            
+
+            exit_cfg = policy.get("exit_strategies", {}) or {}
+            smart_pos = policy.get("smart_position", {}) or {}
+            prop_firm = policy.get("prop_firm", {}) or {}
+            watchdog_cfg = policy.get("watchdog", {}) or {}
+
+            # --- Hard stop per position -------------------------------------
+            hard_stop = watchdog_cfg.get("hard_stop_eur")
+            if hard_stop is None:
+                hard_stop = (
+                    exit_cfg.get("hard_stop_loss_eur")
+                    or smart_pos.get("hard_stop_loss_eur")
+                    or 150.0
+                )
+            hard_stop = float(hard_stop)
+
+            # --- Emergency stop per position --------------------------------
+            emergency_stop = watchdog_cfg.get("emergency_stop_eur")
+            if emergency_stop is None:
+                # Allow optional multiplier in config, else 2x hard stop
+                mult = float(watchdog_cfg.get("emergency_multiplier", 2.0))
+                emergency_stop = hard_stop * max(mult, 1.1)
+            emergency_stop = float(emergency_stop)
+
+            # Ensure emergency > hard stop to keep semantics sane
+            if emergency_stop <= hard_stop:
+                emergency_stop = hard_stop * 1.5
+
+            # --- Daily limit from prop_firm block ---------------------------
+            daily_limit = watchdog_cfg.get("daily_loss_limit_eur")
+            if daily_limit is None:
+                account_size = float(prop_firm.get("account_size", 100_000.0) or 100_000.0)
+                daily_dd_pct = float(
+                    prop_firm.get("daily_drawdown_limit", 0.05) or 0.05
+                )  # e.g. 5%
+                # Safety margin factor (e.g. 0.7 => trigger at 70% of official limit)
+                safety_margin = float(prop_firm.get("watchdog_safety_margin", 0.7) or 0.7)
+                daily_limit = account_size * daily_dd_pct * safety_margin
+            daily_limit = float(daily_limit)
+
+            # --- Misc options -----------------------------------------------
+            check_interval = float(watchdog_cfg.get("check_interval_s", 2.0))
+            enabled = bool(watchdog_cfg.get("enabled", True))
+            verbose = bool(watchdog_cfg.get("verbose", False))
+
             return WatchdogConfig(
-                hard_stop_eur=smart_pos.get("hard_stop_loss_eur", 150.0),
-                emergency_stop_eur=smart_pos.get("hard_stop_loss_eur", 150.0) * 2,  # 2x hard stop
+                check_interval_s=check_interval,
+                hard_stop_eur=hard_stop,
+                emergency_stop_eur=emergency_stop,
                 daily_loss_limit_eur=daily_limit,
+                enabled=enabled,
+                verbose=verbose,
             )
-    except Exception as e:
+    except Exception as e:  # pragma: no cover - defensive only
         print(f"[Watchdog] Failed to load config: {e}")
-    
+
+    # Fallback defaults – reasonable but conservative.
     return WatchdogConfig()
 
 
 class EmergencyPositionWatchdog:
     """
     Independent watchdog thread that monitors positions for emergency conditions.
-    
+
     This is a SAFETY NET that runs independently of the main orchestrator loop.
     It provides fast protection against:
-    - Slow orchestrator loops
-    - Orchestrator crashes/hangs
-    - Missed exit signals
-    
+      - Slow orchestrator loops
+      - Orchestrator crashes/hangs
+      - Missed exit signals
+
     WARNING: This is NOT a replacement for native MT5 stop-loss!
     Native SL is always faster and more reliable.
     """
-    
+
     def __init__(
         self,
         config: Optional[WatchdogConfig] = None,
@@ -101,150 +167,179 @@ class EmergencyPositionWatchdog:
     ):
         self.config = config or load_watchdog_config()
         self.on_emergency_close = on_emergency_close
-        
+
         self.logger = RotatingLogger(
             "EmergencyWatchdog",
             log_path="logs/position/emergency_watchdog.log",
             operator_mode=True,
             max_lines=5000,
         )
-        
+
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._is_running = False
-        
-        # Track daily losses
+
+        # Track daily losses (realized PnL from watchdog-triggered closes)
         self._daily_realized_loss: float = 0.0
         self._last_reset_day: int = 0
-        
-        # Track emergency closes
+
+        # Track all emergency closes (for diagnostics / dashboard)
         self._emergency_closes: list = []
-    
+
+    # ------------------------------------------------------------------ #
+    # Lifecycle
+    # ------------------------------------------------------------------ #
     def start(self) -> bool:
         """Start the watchdog thread."""
         if not self.config.enabled:
             self.logger.info("[Watchdog] Disabled by config")
             return False
-        
+
         if not _MT5_AVAILABLE:
             self.logger.error("[Watchdog] MT5 not available - cannot start")
             return False
-        
+
         if self._is_running:
             self.logger.warning("[Watchdog] Already running")
             return True
-        
+
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._watchdog_loop, daemon=True)
         self._thread.start()
         self._is_running = True
-        
+
         self.logger.info(
-            f"[Watchdog] 🚨 Started - checking every {self.config.check_interval_s}s | "
-            f"Hard stop: €{self.config.hard_stop_eur} | Emergency: €{self.config.emergency_stop_eur}"
+            (
+                f"[Watchdog] 🚨 Started - interval={self.config.check_interval_s:.1f}s | "
+                f"Hard stop=€{self.config.hard_stop_eur:.2f} | "
+                f"Emergency=€{self.config.emergency_stop_eur:.2f} | "
+                f"Daily limit=€{self.config.daily_loss_limit_eur:.2f}"
+            )
         )
         return True
-    
+
     def stop(self) -> None:
         """Stop the watchdog thread."""
         if not self._is_running:
             return
-        
+
         self._stop_event.set()
         if self._thread:
             self._thread.join(timeout=5.0)
         self._is_running = False
         self.logger.info("[Watchdog] Stopped")
-    
+
+    # ------------------------------------------------------------------ #
+    # Core loop
+    # ------------------------------------------------------------------ #
     def _watchdog_loop(self) -> None:
         """Main watchdog loop - runs in background thread."""
         while not self._stop_event.is_set():
             try:
                 self._check_positions()
-            except Exception as e:
+            except Exception as e:  # pragma: no cover - defensive
                 self.logger.error(f"[Watchdog] Error in check loop: {e}")
-            
+
             # Sleep in small increments to allow fast shutdown
-            for _ in range(int(self.config.check_interval_s * 10)):
-                if self._stop_event.is_set():
-                    break
-                time.sleep(0.1)
-    
+            remaining = float(self.config.check_interval_s)
+            while remaining > 0.0 and not self._stop_event.is_set():
+                step = min(0.1, remaining)
+                time.sleep(step)
+                remaining -= step
+
     def _check_positions(self) -> None:
-        """Check all positions for emergency conditions."""
+        """Check all positions for emergency conditions (hard / emergency / daily)."""
         try:
             # Ensure MT5 is initialized
             if not mt5.terminal_info():
                 if not mt5.initialize():
                     return
-            
+
             positions = mt5.positions_get()
             if not positions:
                 return
-            
+
             # Reset daily loss counter if new day
             current_day = time.localtime().tm_yday
             if current_day != self._last_reset_day:
                 self._daily_realized_loss = 0.0
                 self._last_reset_day = current_day
-            
+
             # Check each position
             total_unrealized = 0.0
             for pos in positions:
                 symbol = pos.symbol
-                profit = pos.profit
+                profit = float(pos.profit)
                 total_unrealized += profit
-                
+
                 if self.config.verbose:
                     self.logger.debug(f"[Watchdog] {symbol}: €{profit:.2f}")
-                
-                # Check hard stop
-                if profit <= -self.config.hard_stop_eur:
-                    self._emergency_close(pos, "HARD_STOP", f"Loss €{profit:.2f} exceeds hard stop €{self.config.hard_stop_eur}")
-                
-                # Check emergency stop
-                elif profit <= -self.config.emergency_stop_eur:
-                    self._emergency_close(pos, "EMERGENCY_STOP", f"Loss €{profit:.2f} exceeds emergency limit €{self.config.emergency_stop_eur}")
-            
+
+                # ----------------------------------------------------------
+                # EMERGENCY_STOP has higher priority than HARD_STOP.
+                # Check the stricter condition first.
+                # ----------------------------------------------------------
+                if profit <= -self.config.emergency_stop_eur:
+                    self._emergency_close(
+                        pos,
+                        "EMERGENCY_STOP",
+                        (
+                            f"Loss €{profit:.2f} exceeds emergency limit "
+                            f"€{self.config.emergency_stop_eur:.2f}"
+                        ),
+                    )
+                elif profit <= -self.config.hard_stop_eur:
+                    self._emergency_close(
+                        pos,
+                        "HARD_STOP",
+                        (
+                            f"Loss €{profit:.2f} exceeds hard stop "
+                            f"€{self.config.hard_stop_eur:.2f}"
+                        ),
+                    )
+
             # Check total unrealized + realized against daily limit
             total_loss = total_unrealized + self._daily_realized_loss
             if total_loss <= -self.config.daily_loss_limit_eur:
                 self.logger.critical(
-                    f"[Watchdog] 🚨🚨🚨 DAILY LIMIT BREACH! "
-                    f"Total: €{total_loss:.2f} > limit €{self.config.daily_loss_limit_eur}"
+                    "[Watchdog] 🚨🚨🚨 DAILY LIMIT BREACH! "
+                    f"Total PnL: €{total_loss:.2f} (limit=€{self.config.daily_loss_limit_eur:.2f})"
                 )
                 # Close ALL positions
                 for pos in positions:
-                    self._emergency_close(pos, "DAILY_LIMIT", f"Daily loss limit breached")
-        
-        except Exception as e:
+                    self._emergency_close(pos, "DAILY_LIMIT", "Daily loss limit breached")
+
+        except Exception as e:  # pragma: no cover - defensive
             self.logger.error(f"[Watchdog] Position check failed: {e}")
-    
+
+    # ------------------------------------------------------------------ #
+    # Execution
+    # ------------------------------------------------------------------ #
     def _emergency_close(self, position: Any, reason: str, details: str) -> bool:
-        """Emergency close a position."""
+        """Emergency close a single position."""
         try:
             ticket = position.ticket
             symbol = position.symbol
-            volume = position.volume
-            profit = position.profit
+            volume = float(position.volume)
+            profit = float(position.profit)
             pos_type = position.type
-            
+
             self.logger.critical(
                 f"[Watchdog] 🚨 EMERGENCY CLOSE: {symbol} | "
-                f"Reason: {reason} | {details}"
+                f"Reason={reason} | {details}"
             )
-            
+
             # Determine close direction (opposite of position)
             if pos_type == mt5.POSITION_TYPE_BUY:
                 close_type = mt5.ORDER_TYPE_SELL
                 tick = mt5.symbol_info_tick(symbol)
-                price = tick.bid if tick else 0
+                price = tick.bid if tick else 0.0
             else:
                 close_type = mt5.ORDER_TYPE_BUY
                 tick = mt5.symbol_info_tick(symbol)
-                price = tick.ask if tick else 0
-            
-            request = {
+                price = tick.ask if tick else 0.0
+
+            request: Dict[str, Any] = {
                 "action": mt5.TRADE_ACTION_DEAL,
                 "symbol": symbol,
                 "volume": volume,
@@ -252,59 +347,74 @@ class EmergencyPositionWatchdog:
                 "position": ticket,
                 "price": price,
                 "deviation": 50,  # Wider deviation for emergency
-                "magic": 424243,  # Different magic for watchdog closes
+                "magic": 424243,  # Distinct magic for watchdog closes
                 "comment": f"WATCHDOG:{reason}",
                 "type_filling": mt5.ORDER_FILLING_IOC,
             }
-            
+
             result = mt5.order_send(request)
-            
-            if result and result.retcode in (10009, 10008):  # Done or Placed
+
+            if result and result.retcode in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
                 self.logger.critical(
-                    f"[Watchdog] ✅ Emergency close SUCCESS: {symbol} ticket {ticket}"
+                    f"[Watchdog] ✅ Emergency close SUCCESS: {symbol} ticket={ticket}"
                 )
+                # Profit is negative for losses; keep sign so daily check is consistent.
                 self._daily_realized_loss += profit
-                self._emergency_closes.append({
-                    "time": time.time(),
-                    "symbol": symbol,
-                    "ticket": ticket,
-                    "profit": profit,
-                    "reason": reason,
-                })
-                
-                # Call callback if provided
+                self._emergency_closes.append(
+                    {
+                        "time": time.time(),
+                        "symbol": symbol,
+                        "ticket": ticket,
+                        "profit": profit,
+                        "reason": reason,
+                    }
+                )
+
+                # Callback hook for dashboard / alerting layer
                 if self.on_emergency_close:
                     try:
                         self.on_emergency_close(symbol, profit, reason)
                     except Exception:
+                        # Callback errors must not affect safety net
                         pass
-                
+
                 return True
-            else:
-                retcode = result.retcode if result else "None"
-                self.logger.error(
-                    f"[Watchdog] ❌ Emergency close FAILED: {symbol} | retcode={retcode}"
-                )
-                return False
-        
-        except Exception as e:
+
+            retcode = result.retcode if result else "None"
+            self.logger.error(
+                f"[Watchdog] ❌ Emergency close FAILED: {symbol} | retcode={retcode}"
+            )
+            return False
+
+        except Exception as e:  # pragma: no cover - defensive
             self.logger.error(f"[Watchdog] Emergency close exception: {e}")
             return False
-    
+
+    # ------------------------------------------------------------------ #
+    # Introspection
+    # ------------------------------------------------------------------ #
     def get_stats(self) -> Dict[str, Any]:
-        """Get watchdog statistics."""
+        """Expose basic watchdog statistics for dashboards / health checks."""
+        today = time.localtime().tm_yday
+        emergency_closes_today = len(
+            [
+                c
+                for c in self._emergency_closes
+                if time.localtime(c["time"]).tm_yday == today
+            ]
+        )
         return {
             "is_running": self._is_running,
             "config": {
+                "check_interval_s": self.config.check_interval_s,
                 "hard_stop_eur": self.config.hard_stop_eur,
                 "emergency_stop_eur": self.config.emergency_stop_eur,
-                "check_interval_s": self.config.check_interval_s,
+                "daily_loss_limit_eur": self.config.daily_loss_limit_eur,
+                "enabled": self.config.enabled,
+                "verbose": self.config.verbose,
             },
             "daily_realized_loss": self._daily_realized_loss,
-            "emergency_closes_today": len([
-                c for c in self._emergency_closes 
-                if time.localtime(c["time"]).tm_yday == time.localtime().tm_yday
-            ]),
+            "emergency_closes_today": emergency_closes_today,
             "total_emergency_closes": len(self._emergency_closes),
         }
 
@@ -337,28 +447,28 @@ def stop_emergency_watchdog() -> None:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("  EMERGENCY POSITION WATCHDOG")
-    print("="*60)
-    
-    config = load_watchdog_config()
-    print(f"\nConfiguration:")
-    print(f"  Hard stop: €{config.hard_stop_eur}")
-    print(f"  Emergency stop: €{config.emergency_stop_eur}")
-    print(f"  Daily limit: €{config.daily_loss_limit_eur}")
-    print(f"  Check interval: {config.check_interval_s}s")
-    
+    print("=" * 60)
+
+    cfg = load_watchdog_config()
+    print("\nConfiguration:")
+    print(f"  Hard stop:      €{cfg.hard_stop_eur:.2f}")
+    print(f"  Emergency stop: €{cfg.emergency_stop_eur:.2f}")
+    print(f"  Daily limit:    €{cfg.daily_loss_limit_eur:.2f}")
+    print(f"  Check interval: {cfg.check_interval_s:.2f}s")
+    print(f"  Enabled:        {cfg.enabled}")
+    print(f"  Verbose:        {cfg.verbose}")
+
     if _MT5_AVAILABLE:
         print("\n✅ MT5 available - watchdog can run")
-        
-        # Try to start watchdog
+
         watchdog = get_emergency_watchdog()
         if watchdog.start():
-            print("✅ Watchdog started!")
-            print("\nPress Ctrl+C to stop...")
+            print("✅ Watchdog started! (Ctrl+C to stop)")
             try:
                 while True:
-                    time.sleep(1)
+                    time.sleep(1.0)
             except KeyboardInterrupt:
                 print("\nStopping...")
                 watchdog.stop()

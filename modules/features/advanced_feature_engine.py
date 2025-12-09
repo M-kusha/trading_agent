@@ -334,7 +334,15 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                                 if isinstance(payload, dict):
                                     closes = payload.get("close")
                                     if isinstance(closes, (list, np.ndarray)) and len(closes) > 0:
-                                        market_data["prices"].extend(np.asarray(closes).flatten().tolist())
+                                        closes_list = np.asarray(closes).flatten().tolist()
+                                        # Apply forming bar update for real-time responsiveness
+                                        cb = payload.get("current_bar", {})
+                                        if cb and isinstance(cb.get("close"), (int, float)):
+                                            if closes_list:
+                                                closes_list[-1] = float(cb["close"])
+                                            else:
+                                                closes_list.append(float(cb["close"]))
+                                        market_data["prices"].extend(closes_list)
                                     else:
                                         cb = payload.get("current_bar", {})
                                         if isinstance(cb.get("close"), (int, float)):

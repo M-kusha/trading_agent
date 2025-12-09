@@ -15,7 +15,6 @@ from __future__ import annotations
 import datetime
 import json
 import threading
-import time
 import traceback
 from collections import defaultdict, deque
 from dataclasses import asdict, dataclass
@@ -46,18 +45,6 @@ class DebugLevel(Enum):
         self.label = label
         self.icon = icon
         self.priority = priority
-
-
-class ActionType(Enum):
-    """High-level trading action types (mainly for semantics)."""
-
-    BUY = "BUY"
-    SELL = "SELL"
-    HOLD = "HOLD"
-    SCALE_UP = "ADD_MORE"
-    SCALE_DOWN = "REDUCE"
-    CLOSE_POSITION = "CLOSE"
-    EMERGENCY_EXIT = "EMERGENCY"
 
 
 @dataclass
@@ -181,6 +168,11 @@ class ErrorSnapshot:
     recovery_action: Optional[str] = None
 
     def to_plain_english(self) -> str:
+        try:
+            ctx_str = json.dumps(self.context, indent=2, default=str)[:300]
+        except Exception:
+            ctx_str = str(self.context)[:300]
+
         lines = [
             "!" * 80,
             "🚨 ERROR DETECTED",
@@ -196,7 +188,7 @@ class ErrorSnapshot:
             f"{self.stack_trace[:300]}...",
             "",
             "Context (truncated):",
-            f"{json.dumps(self.context, indent=2)[:300]}...",
+            f"{ctx_str}...",
             "",
             f"Recovery: {self.recovery_action or 'Manual intervention needed'}",
             "!" * 80,
@@ -436,13 +428,13 @@ Log Directory: {self.log_dir}
                 rationale=rationale,
             )
             technical_factors = self._extract_technical_factors(context)
-            risk_factors = self._extract_risk_factors(
+            risk_factors_list = self._extract_risk_factors(
                 context, rationale.get("risk_factors", {})
             )
 
-            # 4) Check if this decision should be executed at all
+            # 4) Check if this decision should be executed at all (log-level check)
             will_execute, blocked_reason = self._check_execution_viability(
-                size, confidence, context
+                size, confidence, context, risk_score=risk_score
             )
 
             # 5) Build snapshot
@@ -463,7 +455,7 @@ Log Directory: {self.log_dir}
                 risk_score=risk_score,
                 plain_english_reason=plain_english,
                 technical_factors=technical_factors,
-                risk_factors=risk_factors,
+                risk_factors=risk_factors_list,
                 will_execute=will_execute,
                 execution_blocked_reason=blocked_reason,
                 raw_context=(
@@ -799,7 +791,11 @@ Log Directory: {self.log_dir}
         return factors if factors else ["Risk levels are acceptable"]
 
     def _check_execution_viability(
-        self, size: float, confidence: float, context: Dict[str, Any]
+        self,
+        size: float,
+        confidence: float,
+        context: Dict[str, Any],
+        risk_score: Optional[float] = None,
     ) -> Tuple[bool, Optional[str]]:
         """
         Decide whether this decision should realistically be executed.
@@ -820,9 +816,9 @@ Log Directory: {self.log_dir}
         if confidence < 0.3:
             return False, f"Confidence too low ({confidence:.1%})"
 
-        risk_score = self._calculate_risk_score(context)
-        if risk_score > 0.8:
-            return False, f"Risk score too high ({risk_score:.1%})"
+        risk = float(risk_score) if risk_score is not None else self._calculate_risk_score(context)
+        if risk > 0.8:
+            return False, f"Risk score too high ({risk:.1%})"
 
         drawdown = float(context.get("drawdown", 0.0) or 0.0)
         if drawdown > 0.15:
@@ -859,6 +855,21 @@ Log Directory: {self.log_dir}
         elif snapshot.action in ("SELL", "SCALE_UP") and not snapshot.is_buying:
             stats["total_sells"] += 1
             stats["sell_volume"] += snapshot.size_eur
+
+        # Persist to signals CSV for fast forensic analysis
+        if self.file_output and self.signals_csv is not None:
+            try:
+                ts = signal.timestamp.isoformat() + "Z"
+                pnl_val = "" if signal.pnl is None else f"{signal.pnl:.2f}"
+                line = (
+                    f"{ts},{signal.instrument},{signal.action},"
+                    f"{signal.size_eur:.2f},{signal.confidence:.4f},"
+                    f"{signal.executed},{signal.price:.5f},{pnl_val}\n"
+                )
+                self._log_to_file(self.signals_csv, line)
+            except Exception:
+                # Never let debug I/O break trading
+                pass
 
     def _update_stats(self, snapshot: DecisionSnapshot) -> None:
         """Update global statistics from a new decision snapshot."""
@@ -973,9 +984,10 @@ Log Directory: {self.log_dir}
             pass
 
     def _write_metric_to_file(self, metric: PerformanceMetric) -> None:
-        if not self.file_output or self.debug_log is None:
+        if not self.file_output:
             return
         try:
+            # Human-readable line into debug log
             line = (
                 f"[METRIC] {metric.timestamp} | {metric.metric_name}: "
                 f"{metric.value:.6f} {metric.unit}"
@@ -986,7 +998,22 @@ Log Directory: {self.log_dir}
                 )
                 line += f" | {context_str}"
             line += "\n"
-            self._log_to_file(self.debug_log, line)
+            if self.debug_log is not None:
+                self._log_to_file(self.debug_log, line)
+
+            # Structured JSON into metrics file
+            if self.metrics_json is not None:
+                payload = {
+                    "timestamp": metric.timestamp,
+                    "metric_name": metric.metric_name,
+                    "value": metric.value,
+                    "unit": metric.unit,
+                    "context": metric.context,
+                }
+                self._log_to_file(
+                    self.metrics_json,
+                    json.dumps(payload, default=str) + "\n",
+                )
 
             # Mirror compact line to shared logger
             sl = getattr(self, "_shared_logger", None)

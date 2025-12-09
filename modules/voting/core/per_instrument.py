@@ -1,45 +1,28 @@
-# modules/voting/core/per_instrument.py
 """
-Per-Instrument Voting Infrastructure
-====================================
-Provides utilities and data structures for per-instrument voting.
-All voting members should use these to produce per-instrument proposals.
-
-Design principles:
-- Each instrument (EURUSD, XAUUSD) gets its own vote
-- Votes are aggregated per-instrument by CommitteeCoordinator
-- FinalArbiter receives per-instrument decisions
-- Downstream modules (PositionManager, Executor) already handle per-instrument
-
-Usage in voting members:
-    from modules.voting.core.per_instrument import (
-        InstrumentProposal,
-        PerInstrumentVote,
-        create_per_instrument_vote,
-        DEFAULT_INSTRUMENTS,
-    )
+Voting system data types.
+Immutable / structured dataclasses for proposals, bundles, and stage results.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
-import numpy as np
-
-from .constants import VotingAction, get_thresholds
+from .constants import (
+    VotingAction,
+    VotingQuality,
+    get_thresholds,
+    FRAGILITY_THRESHOLD,
+)
 
 
 # ═══════════════════════════════════════════════════════════════════
-# Helpers / Constants
+# Helpers
 # ═══════════════════════════════════════════════════════════════════
-
-# Default instruments - should match system_config.yaml
-DEFAULT_INSTRUMENTS: List[str] = ["EURUSD", "XAUUSD"]
-
 
 def _now_iso() -> str:
+    """Return current time in ISO 8601 format."""
     return datetime.now().isoformat()
 
 
@@ -65,98 +48,344 @@ def _clamp_01(value: float, default: float = 0.0) -> float:
     return v
 
 
-def normalize_instrument(inst: str) -> str:
+def normalize_instrument(symbol: str) -> str:
     """
-    Normalize instrument name to canonical format.
-
-    Handles:
-    - Case insensitivity
-    - Separators ('EUR_USD', 'eur/usd', 'XAU-USD', etc.)
+    Normalize instrument symbol to a canonical format (no separators).
+    
+    Examples:
+        'EUR/USD' -> 'EURUSD'
+        'xau_usd' -> 'XAUUSD'
+        'GOLD-USD' -> 'XAUUSD'
     """
-    if inst is None:
-        return "UNKNOWN"
-
-    s = str(inst).strip()
-    if not s:
-        return "UNKNOWN"
-
-    # Remove separators and upper-case
-    key = s.replace("/", "").replace("_", "").replace("-", "").upper()
-
-    if key == "EURUSD":
-        return "EURUSD"
-    if key == "XAUUSD":
-        return "XAUUSD"
-
-    # Fallback: normalized but not recognized
-    return key
+    if not symbol:
+        return ""
+    s = symbol.upper().replace("/", "").replace("_", "").replace("-", "").strip()
+    mapping = {"EURUSD": "EURUSD", "XAUUSD": "XAUUSD", "GOLDUSD": "XAUUSD"}
+    return mapping.get(s, s)
 
 
 # ═══════════════════════════════════════════════════════════════════
-# Data Structures
+# Default Instruments
+# ═══════════════════════════════════════════════════════════════════
+
+DEFAULT_INSTRUMENTS: List[str] = ["XAUUSD", "EURUSD"]
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Aggregated Instrument Decision
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass
+class AggregatedInstrumentDecision:
+    """
+    Result of aggregating votes for a single instrument.
+    Used as return type of aggregate_all_instruments.
+    """
+    action: str = "flat"
+    confidence: float = 0.5
+    consensus_score: float = 0.0
+    vote_count: int = 0
+    long_votes: int = 0
+    short_votes: int = 0
+    flat_votes: int = 0
+    weighted_score: float = 0.0
+    members: List[str] = field(default_factory=list)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "action": self.action,
+            "confidence": self.confidence,
+            "consensus_score": self.consensus_score,
+            "vote_count": self.vote_count,
+            "long_votes": self.long_votes,
+            "short_votes": self.short_votes,
+            "flat_votes": self.flat_votes,
+            "weighted_score": self.weighted_score,
+            "members": self.members,
+        }
+
+
+def aggregate_all_instruments(
+    votes: List["PerInstrumentVote"],
+    instruments: Optional[List[str]] = None,
+    weights: Optional[Dict[str, float]] = None,
+) -> Dict[str, AggregatedInstrumentDecision]:
+    """
+    Aggregate per-instrument votes across all voting members.
+    
+    Returns a dict keyed by instrument with AggregatedInstrumentDecision objects
+    containing action, confidence, consensus score, vote counts, and weighted score.
+    
+    Args:
+        votes: List of PerInstrumentVote from all experts
+        instruments: List of instruments to aggregate (defaults to DEFAULT_INSTRUMENTS)
+        weights: Optional dict mapping member names to their voting weights (0.0-1.0)
+    
+    Returns:
+        Dict[instrument, AggregatedInstrumentDecision]
+    """
+    if instruments is None:
+        instruments = DEFAULT_INSTRUMENTS
+    if weights is None:
+        weights = {}
+    
+    result: Dict[str, AggregatedInstrumentDecision] = {}
+    
+    for inst in instruments:
+        inst_norm = normalize_instrument(inst)
+        long_count = 0
+        short_count = 0
+        flat_count = 0
+        confidences: List[float] = []
+        members: List[str] = []
+        weighted_sum: float = 0.0  # For weighted direction scoring
+        total_weight: float = 0.0
+        
+        for vote in votes:
+            prop = vote.get_proposal(inst_norm)
+            if prop:
+                action = prop.action.lower()
+                member_weight = weights.get(vote.member, 1.0)
+                
+                # Count by action
+                if action in ("long", "buy", "bullish"):
+                    long_count += 1
+                    weighted_sum += member_weight * prop.confidence
+                elif action in ("short", "sell", "bearish"):
+                    short_count += 1
+                    weighted_sum -= member_weight * prop.confidence
+                else:
+                    flat_count += 1
+                    # Flat/neutral doesn't contribute to direction
+                
+                total_weight += member_weight
+                confidences.append(prop.confidence)
+                members.append(vote.member)
+        
+        vote_count = long_count + short_count + flat_count
+        
+        # Determine dominant action based on weighted score
+        if weighted_sum > 0.1:
+            dominant_action = "long"
+        elif weighted_sum < -0.1:
+            dominant_action = "short"
+        else:
+            dominant_action = "flat"
+        
+        # Compute consensus: how much agreement is there among voters?
+        # Consensus is high if votes skew heavily one direction
+        if vote_count > 0:
+            max_votes = max(long_count, short_count, flat_count)
+            consensus_score = max_votes / vote_count
+        else:
+            consensus_score = 0.0
+        
+        avg_confidence = sum(confidences) / len(confidences) if confidences else 0.5
+        
+        result[inst_norm] = AggregatedInstrumentDecision(
+            action=dominant_action,
+            confidence=avg_confidence,
+            consensus_score=consensus_score,
+            vote_count=vote_count,
+            long_votes=long_count,
+            short_votes=short_count,
+            flat_votes=flat_count,
+            weighted_score=weighted_sum / max(total_weight, 1.0),
+            members=members,
+        )
+    
+    return result
+
+
+def extract_instrument_data(data: Dict[str, Any], instrument: str) -> Dict[str, Any]:
+    """
+    Extract data for a specific instrument from nested market/feature data.
+    
+    Looks up the instrument using various key variations:
+    - Exact match
+    - Normalized form (no separators)
+    - Upper/lower case variations
+    - Common separator variations (EUR_USD, EUR/USD, EURUSD)
+    
+    Args:
+        data: Dict containing instrument-keyed data
+        instrument: Instrument symbol to look up
+        
+    Returns:
+        Dict with instrument-specific data, or original dict if not found
+    """
+    if not isinstance(data, dict):
+        return {}
+    
+    inst_norm = normalize_instrument(instrument)
+    
+    # Try various key formats
+    for key in [instrument, inst_norm, instrument.upper(), instrument.lower()]:
+        if key in data:
+            return data[key] if isinstance(data[key], dict) else data
+    
+    # Try with common separators
+    for sep in ["_", "/", "-", ""]:
+        for pair in [f"EUR{sep}USD", f"XAU{sep}USD"]:
+            norm_pair = normalize_instrument(pair)
+            if norm_pair == inst_norm and pair in data:
+                return data[pair] if isinstance(data[pair], dict) else data
+    
+    # Fallback: return original data (legacy flat format)
+    return data
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Vote Proposal (from individual experts)
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass(frozen=True)
+class VotingProposal:
+    """
+    A single vote from an expert.
+    Immutable to ensure vote integrity throughout the pipeline.
+    """
+    action: str
+    confidence: float
+    signal_strength: float
+    reason: str
+    expert: str
+    timestamp: str
+
+    # Optional enrichments
+    instrument: Optional[str] = None
+    timeframe: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+    def __post_init__(self):
+        object.__setattr__(self, "confidence", _clamp_01(self.confidence))
+        object.__setattr__(
+            self,
+            "signal_strength",
+            _clamp_01(self.signal_strength, default=0.0),
+        )
+
+        normalized_action = self.voting_action.value
+        object.__setattr__(self, "action", normalized_action)
+
+        if self.metadata is None:
+            object.__setattr__(self, "metadata", {})
+
+        if not self.timestamp:
+            object.__setattr__(self, "timestamp", _now_iso())
+
+    @property
+    def voting_action(self) -> VotingAction:
+        """Parse action string/enum to VotingAction enum."""
+        return VotingAction.from_string(self.action)
+
+    @property
+    def canonical_action(self) -> str:
+        """Canonical action string ('long', 'short', 'hold', 'abstain')."""
+        return self.voting_action.value
+
+    @property
+    def is_directional(self) -> bool:
+        """True if this is a long or short signal."""
+        return self.voting_action.is_directional
+
+    @property
+    def is_valid(self) -> bool:
+        """
+        Check if proposal has minimum required data.
+
+        Uses VotingAction normalization so that legacy aliases like 'flat' or
+        'neutral' are treated as valid neutral actions.
+        """
+        action_enum = self.voting_action
+        return (
+            action_enum
+            in (
+                VotingAction.LONG,
+                VotingAction.SHORT,
+                VotingAction.HOLD,
+                VotingAction.ABSTAIN,
+            )
+            and 0.0 <= self.confidence <= 1.0
+            and 0.0 <= self.signal_strength <= 1.0
+            and bool(self.expert)
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for bus publication."""
+        return {
+            "action": self.canonical_action,
+            "confidence": self.confidence,
+            "signal_strength": self.signal_strength,
+            "reason": self.reason,
+            "expert": self.expert,
+            "timestamp": self.timestamp,
+            "instrument": self.instrument,
+            "timeframe": self.timeframe,
+            "metadata": self.metadata or {},
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "VotingProposal":
+        """Create from dictionary (bus consumption)."""
+        return cls(
+            action=str(data.get("action", data.get("canonical_action", "abstain"))),
+            confidence=float(data.get("confidence", 0.0)),
+            signal_strength=float(
+                data.get("signal_strength", data.get("intensity", 0.0))
+            ),
+            reason=str(data.get("reason", data.get("thesis", ""))),
+            expert=str(data.get("expert", data.get("module", "unknown"))),
+            timestamp=str(data.get("timestamp", _now_iso())),
+            instrument=data.get("instrument"),
+            timeframe=data.get("timeframe"),
+            metadata=data.get("metadata") or {},
+        )
+
+    @classmethod
+    def abstain(cls, expert: str, reason: str = "No signal") -> "VotingProposal":
+        """Create an abstain proposal."""
+        return cls(
+            action="abstain",
+            confidence=0.0,
+            signal_strength=0.0,
+            reason=reason,
+            expert=expert,
+            timestamp=_now_iso(),
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Per-Instrument Voting Types
 # ═══════════════════════════════════════════════════════════════════
 
 @dataclass
 class InstrumentProposal:
     """
-    A voting proposal for a single instrument.
-
-    Attributes:
-        instrument: The instrument symbol (e.g., 'EURUSD')
-        action: The proposed action ('long', 'short', 'hold', 'abstain', legacy 'flat')
-        confidence: Confidence in this proposal (0.0 to 1.0)
-        magnitude: Signal strength/intensity (0.0 to 1.0)
-        horizon: Time horizon ('scalp', 'intraday', 'swing')
-        rationale: Human-readable explanation
-        meta: Additional metadata
+    A vote proposal for a specific instrument.
+    Used within PerInstrumentVote to track per-instrument decisions.
     """
     instrument: str
-    action: str = "flat"  # will be normalized to canonical via VotingAction
+    action: str = "flat"
     confidence: float = 0.5
-    magnitude: float = 0.0
-    horizon: str = "intraday"
+    magnitude: float = 0.5
     rationale: str = ""
-    meta: Dict[str, Any] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        # Normalize instrument and action
-        self.instrument = normalize_instrument(self.instrument)
-        self.action = VotingAction.from_string(self.action).value
-
-        # Clamp numeric fields
-        self.confidence = _clamp_01(self.confidence, default=0.0)
-        self.magnitude = _clamp_01(self.magnitude, default=0.0)
-
-        if self.meta is None:
-            self.meta = {}
-
-    @property
-    def voting_action(self) -> VotingAction:
-        return VotingAction.from_string(self.action)
-
-    @property
-    def is_directional(self) -> bool:
-        """Returns True if this is a directional signal."""
-        return self.voting_action.is_directional
-
-    @property
-    def is_neutral(self) -> bool:
-        """True for non-directional but valid actions (hold/abstain)."""
-        act = self.voting_action
-        return act in (VotingAction.HOLD, VotingAction.ABSTAIN)
-
+    
+    def __post_init__(self):
+        self.confidence = _clamp_01(self.confidence)
+        self.magnitude = _clamp_01(self.magnitude)
+        self.action = self.action.lower() if self.action else "flat"
+    
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary format for bus publishing."""
+        """Convert to dictionary."""
         return {
             "instrument": self.instrument,
-            "action": self.action,  # canonical
-            "confidence": round(self.confidence, 4),
-            "magnitude": round(self.magnitude, 4),
-            "horizon": self.horizon,
+            "action": self.action,
+            "confidence": self.confidence,
+            "magnitude": self.magnitude,
             "rationale": self.rationale,
-            "meta": self.meta,
         }
-
+    
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "InstrumentProposal":
         """Create from dictionary."""
@@ -164,502 +393,440 @@ class InstrumentProposal:
             instrument=str(data.get("instrument", "UNKNOWN")),
             action=str(data.get("action", "flat")),
             confidence=float(data.get("confidence", 0.5)),
-            magnitude=float(data.get("magnitude", 0.0)),
-            horizon=str(data.get("horizon", "intraday")),
-            rationale=str(data.get("rationale", "")),
-            meta=dict(data.get("meta", {})),
+            magnitude=float(data.get("magnitude", data.get("signal_strength", 0.5))),
+            rationale=str(data.get("rationale", data.get("reason", ""))),
         )
 
 
 @dataclass
 class PerInstrumentVote:
     """
-    A complete per-instrument vote from a voting member.
-
-    Contains proposals for ALL instruments the member analyzed.
+    Container for per-instrument voting proposals from a single expert/member.
+    
+    Tracks multiple instrument-specific votes from one voting member,
+    allowing the committee to aggregate votes on a per-instrument basis.
     """
     member: str
     proposals: Dict[str, InstrumentProposal] = field(default_factory=dict)
+    timestamp: str = field(default_factory=_now_iso)
     
-    # Legacy compatibility: also track a "global" fallback for old consumers
-    global_action: str = "flat"
-    global_confidence: float = 0.5
-    timestamp: str = ""  # Will be set in __post_init__ if empty
-
-    def __post_init__(self) -> None:
-        # Normalize timestamp
-        if not self.timestamp:
-            self.timestamp = _now_iso()
-
-        # Normalize global_action
-        self.global_action = VotingAction.from_string(self.global_action).value
-        self.global_confidence = _clamp_01(self.global_confidence, default=0.0)
-
-        # Ensure proposals are properly initialized
-        normalized: Dict[str, InstrumentProposal] = {}
-        for inst, prop in self.proposals.items():
-            if not isinstance(prop, InstrumentProposal):
-                prop = InstrumentProposal.from_dict(prop)
-            prop.instrument = normalize_instrument(prop.instrument or inst)
-            normalized[prop.instrument] = prop
-        if normalized:
-            self.proposals = normalized
-
-        # Update global fallback from proposals if available
-        if self.proposals:
-            self._update_global()
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary format for bus publishing."""
-        return {
-            "member": self.member,
-            "proposals": {k: v.to_dict() for k, v in self.proposals.items()},
-            "timestamp": self.timestamp,
-            # Legacy compatibility fields
-            "action": self.global_action,
-            "confidence": self.global_confidence,
-            "proposal": {
-                "direction": self.global_action,
-                "magnitude": max((p.magnitude for p in self.proposals.values()), default=0.0),
-                "horizon": "intraday",
-            },
-        }
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "PerInstrumentVote":
-        """Create from dictionary."""
-        proposals: Dict[str, InstrumentProposal] = {}
-        raw_props = data.get("proposals", {})
-        if isinstance(raw_props, dict):
-            for inst, prop_data in raw_props.items():
-                proposals[inst] = InstrumentProposal.from_dict(prop_data)
-
-        return cls(
-            member=str(data.get("member", "Unknown")),
-            proposals=proposals,
-            timestamp=str(data.get("timestamp", _now_iso())),
-            global_action=str(data.get("action", "flat")),
-            global_confidence=float(data.get("confidence", 0.5)),
-        )
-
+    def set_proposal(self, proposal: InstrumentProposal) -> None:
+        """Add or update a proposal for an instrument."""
+        self.proposals[proposal.instrument] = proposal
+    
     def get_proposal(self, instrument: str) -> Optional[InstrumentProposal]:
         """Get proposal for a specific instrument."""
-        inst = normalize_instrument(instrument)
-        return self.proposals.get(inst)
-
-    def set_proposal(self, proposal: InstrumentProposal) -> None:
-        """Set proposal for an instrument."""
-        inst = normalize_instrument(proposal.instrument)
-        proposal.instrument = inst
-        self.proposals[inst] = proposal
-        self._update_global()
-
-    def _update_global(self) -> None:
+        return self.proposals.get(instrument)
+    
+    def get_action(self, instrument: str, default: str = "flat") -> str:
+        """Get action for instrument, with default."""
+        prop = self.proposals.get(instrument)
+        return prop.action if prop else default
+    
+    def get_confidence(self, instrument: str, default: float = 0.5) -> float:
+        """Get confidence for instrument, with default."""
+        prop = self.proposals.get(instrument)
+        return prop.confidence if prop else default
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary."""
+        return {
+            "member": self.member,
+            "proposals": {
+                inst: prop.to_dict() for inst, prop in self.proposals.items()
+            },
+            "timestamp": self.timestamp,
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "PerInstrumentVote":
         """
-        Update global fallback from per-instrument proposals.
-
-        Global action is chosen as:
-        - Prefer directional proposals with highest confidence * magnitude
-        - Fallback to strongest neutral proposal
+        Create from dictionary.
+        
+        Supports both:
+        - proposals as dict of InstrumentProposal dicts
+        - Legacy format with global action/confidence applied to all instruments
         """
-        if not self.proposals:
-            return
-
-        best_prop: Optional[InstrumentProposal] = None
-        best_score = -1.0
-
-        for prop in self.proposals.values():
-            conf = _clamp_01(prop.confidence, default=0.0)
-            mag = _clamp_01(prop.magnitude, default=0.0)
-            act = prop.voting_action
-
-            # Directional proposals get full weight, neutral ones get half
-            base = conf * mag if act.is_directional else conf * mag * 0.5
-            if base > best_score:
-                best_score = base
-                best_prop = prop
-
-        if best_prop is not None:
-            self.global_action = best_prop.voting_action.value
-            self.global_confidence = _clamp_01(best_prop.confidence, default=0.0)
+        member = str(data.get("member", "unknown"))
+        proposals_data = data.get("proposals", {})
+        
+        piv = cls(member=member)
+        
+        if isinstance(proposals_data, dict):
+            for inst, prop_data in proposals_data.items():
+                if isinstance(prop_data, dict):
+                    prop_data.setdefault("instrument", inst)
+                    piv.set_proposal(InstrumentProposal.from_dict(prop_data))
+                elif isinstance(prop_data, InstrumentProposal):
+                    piv.set_proposal(prop_data)
+        
+        return piv
 
 
 # ═══════════════════════════════════════════════════════════════════
-# Helper Functions
-# ═══════════════════════════════════════════════════════════════════
-
-def create_per_instrument_vote(
-    member: str,
-    proposals: Dict[str, Dict[str, Any]],
-) -> PerInstrumentVote:
-    """
-    Create a PerInstrumentVote from a dictionary of proposals.
-
-    Args:
-        member: Name of the voting member
-        proposals: Dict mapping instrument -> proposal dict
-                   Each proposal dict should have: action, confidence, magnitude, etc.
-
-    Returns:
-        PerInstrumentVote instance
-    """
-    vote = PerInstrumentVote(member=member)
-
-    for inst, prop_data in proposals.items():
-        prop = InstrumentProposal(
-            instrument=normalize_instrument(inst),
-            action=str(prop_data.get("action", "flat")),
-            confidence=float(prop_data.get("confidence", 0.5)),
-            magnitude=float(prop_data.get("magnitude", 0.0)),
-            horizon=str(prop_data.get("horizon", "intraday")),
-            rationale=str(prop_data.get("rationale", "")),
-            meta=dict(prop_data.get("meta", {})),
-        )
-        vote.set_proposal(prop)
-
-    return vote
-
-
-def create_flat_vote(member: str, instruments: Optional[List[str]] = None) -> PerInstrumentVote:
-    """
-    Create a neutral (no directional) vote for all instruments.
-
-    This represents "I have evaluated, but I have no directional signal",
-    which maps to a canonical HOLD action.
-    """
-    instruments = instruments or DEFAULT_INSTRUMENTS
-    vote = PerInstrumentVote(member=member)
-
-    for inst in instruments:
-        vote.set_proposal(
-            InstrumentProposal(
-                instrument=inst,
-                action="hold",      # canonical neutral
-                confidence=0.3,     # low but non-zero confidence
-                magnitude=0.0,
-                rationale="No signal",
-            )
-        )
-
-    return vote
-
-
-def extract_instrument_data(
-    market_data: Dict[str, Any],
-    instrument: str,
-) -> Dict[str, Any]:
-    """
-    Extract market data for a specific instrument.
-
-    Handles mixed formats:
-    - market_data[instrument] = {...}  (direct)
-    - market_data['EURUSD'], market_data['eur_usd'], market_data['EUR/USD'], etc.
-    """
-    inst = normalize_instrument(instrument)
-
-    # Try direct canonical key
-    if inst in market_data:
-        return market_data[inst]
-
-    # Try matching by normalized key of any entry
-    for key, value in market_data.items():
-        if normalize_instrument(key) == inst:
-            return value
-
-    return {}
-
-
-def analyze_instrument_trend(
-    price_data: Dict[str, Any],
-    indicators: Dict[str, Any],
-) -> Tuple[str, float]:
-    """
-    Analyze trend direction for a single instrument.
-
-    Returns:
-        Tuple of (direction: 'long'|'short'|'hold', strength: 0.0-1.0)
-    """
-    try:
-        # Get price movement
-        open_price = float(price_data.get("open", 0) or 0)
-        close_price = float(price_data.get("close", price_data.get("last", 0)) or 0)
-
-        if open_price <= 0 or close_price <= 0:
-            return VotingAction.HOLD.value, 0.0
-
-        # Candle direction
-        candle_change = (close_price - open_price) / open_price
-
-        # RSI
-        rsi = float(indicators.get("rsi", 50) or 50)
-
-        # Momentum
-        momentum = float(indicators.get("momentum", indicators.get("roc", 0)) or 0)
-
-        signals: List[float] = []
-
-        # Candle signal
-        if abs(candle_change) > 0.001:  # 0.1% minimum
-            signals.append(1.0 if candle_change > 0 else -1.0)
-
-        # RSI signal
-        if rsi > 60:
-            signals.append(1.0 * min(1.0, (rsi - 50) / 30))
-        elif rsi < 40:
-            signals.append(-1.0 * min(1.0, (50 - rsi) / 30))
-
-        # Momentum signal
-        if abs(momentum) > 0.1:
-            m = max(-1.0, min(1.0, momentum / 2.0))
-            signals.append(m)
-
-        if not signals:
-            return VotingAction.HOLD.value, 0.0
-
-        avg_signal = float(np.mean(signals))
-        strength = abs(avg_signal)
-
-        if strength < 0.2:
-            return VotingAction.HOLD.value, float(strength)
-        elif avg_signal > 0:
-            return VotingAction.LONG.value, float(strength)
-        else:
-            return VotingAction.SHORT.value, float(strength)
-
-    except Exception:
-        return VotingAction.HOLD.value, 0.0
-
-
-# ═══════════════════════════════════════════════════════════════════
-# Aggregation Helpers (for CommitteeCoordinator)
+# Consensus Result (from consensus stage)
 # ═══════════════════════════════════════════════════════════════════
 
 @dataclass
-class AggregatedInstrumentDecision:
-    """Aggregated committee decision for a single instrument."""
-    instrument: str
-    action: str = VotingAction.ABSTAIN.value
-    confidence: float = 0.0
-    consensus_score: float = 0.0
-    vote_count: int = 0
-    long_votes: int = 0
-    short_votes: int = 0
-    flat_votes: int = 0  # neutral/non-directional votes
-    weighted_score: float = 0.0
+class ConsensusResult:
+    """Result from consensus analysis stage."""
+    consensus_score: float
+    consensus_action: str
+    vote_distribution: Dict[str, int]
+    confidence_weighted_score: float
+    quality: str
+    participating_experts: List[str]
+    abstain_count: int
+    timestamp: str
 
-    def __post_init__(self) -> None:
-        self.instrument = normalize_instrument(self.instrument)
-        self.action = VotingAction.from_string(self.action).value
-        self.confidence = _clamp_01(self.confidence, default=0.0)
-        self.consensus_score = _clamp_01(self.consensus_score, default=0.0)
-        self.weighted_score = _clamp_01(self.weighted_score, default=0.0)
+    def __post_init__(self):
+        self.consensus_score = _clamp_01(self.consensus_score)
+        self.confidence_weighted_score = _clamp_01(
+            self.confidence_weighted_score
+        )
+        if not isinstance(self.vote_distribution, dict):
+            self.vote_distribution = dict(self.vote_distribution or {})
+        if not self.timestamp:
+            self.timestamp = _now_iso()
+
+    @property
+    def has_quorum(self) -> bool:
+        """True if enough experts participated."""
+        return len(self.participating_experts) >= 2
+
+    @property
+    def agreement_ratio(self) -> float:
+        """Alias for confidence_weighted_score (backward compatibility)."""
+        return self.confidence_weighted_score
+
+    @property
+    def is_strong(self) -> bool:
+        """True if consensus is strong (> 0.7)."""
+        return self.consensus_score >= 0.7
+
+    @property
+    def quality_enum(self) -> VotingQuality:
+        """Return quality as VotingQuality enum."""
+        try:
+            return VotingQuality(self.quality)
+        except ValueError:
+            return VotingQuality.INVALID
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
+    @classmethod
+    def empty(cls) -> "ConsensusResult":
+        """Create empty/failed result."""
+        return cls(
+            consensus_score=0.0,
+            consensus_action="abstain",
+            vote_distribution={},
+            confidence_weighted_score=0.0,
+            quality="invalid",
+            participating_experts=[],
+            abstain_count=0,
+            timestamp=_now_iso(),
+        )
 
-def aggregate_instrument_votes(
-    votes: List[PerInstrumentVote],
-    instrument: str,
-    weights: Optional[Dict[str, float]] = None,
-) -> AggregatedInstrumentDecision:
+
+# ═══════════════════════════════════════════════════════════════════
+# Collusion Result (from collusion detection stage)
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass
+class CollusionResult:
+    """Result from collusion detection stage."""
+    collusion_score: float
+    is_suspicious: bool
+    correlation_matrix: Dict[str, Dict[str, float]]
+    flagged_pairs: List[tuple]
+    diversity_score: float
+    adjustment_factor: float
+    reason: str
+    timestamp: str
+
+    def __post_init__(self):
+        self.collusion_score = _clamp_01(self.collusion_score)
+        self.diversity_score = _clamp_01(self.diversity_score)
+
+        try:
+            adj = float(self.adjustment_factor)
+        except (TypeError, ValueError):
+            adj = 1.0
+        if adj < 0.5:
+            adj = 0.5
+        if adj > 1.0:
+            adj = 1.0
+        self.adjustment_factor = adj
+
+        if self.correlation_matrix is None:
+            self.correlation_matrix = {}
+        if self.flagged_pairs is None:
+            self.flagged_pairs = []
+        if not self.timestamp:
+            self.timestamp = _now_iso()
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "collusion_score": self.collusion_score,
+            "is_suspicious": self.is_suspicious,
+            "correlation_matrix": self.correlation_matrix,
+            "flagged_pairs": self.flagged_pairs,
+            "diversity_score": self.diversity_score,
+            "adjustment_factor": self.adjustment_factor,
+            "reason": self.reason,
+            "timestamp": self.timestamp,
+        }
+
+    @property
+    def collusion_detected(self) -> bool:
+        """Alias for is_suspicious."""
+        return self.is_suspicious
+
+    @property
+    def suspicious_pairs(self) -> List[tuple]:
+        """Alias for flagged_pairs."""
+        return self.flagged_pairs
+
+    @property
+    def thesis(self) -> str:
+        """Alias for reason."""
+        return self.reason
+
+    @classmethod
+    def clean(cls) -> "CollusionResult":
+        """Create result indicating no collusion."""
+        return cls(
+            collusion_score=0.0,
+            is_suspicious=False,
+            correlation_matrix={},
+            flagged_pairs=[],
+            diversity_score=1.0,
+            adjustment_factor=1.0,
+            reason="No collusion detected",
+            timestamp=_now_iso(),
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Vote Bundle (complete pipeline result)
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass
+class VoteBundle:
     """
-    Aggregate votes from multiple members for a single instrument.
-
-    Mode-aware:
-    - Uses CONFIDENCE_THRESHOLD and MIN_SIGNAL_STRENGTH from get_thresholds()
-      to classify strong directional vs weak/neutral votes.
-    - Tracks actual confidence separately from magnitude-weighted scores.
-    - For LIVE: requires both high confidence AND reasonable magnitude
-    - Confidence output reflects actual expert confidence, not magnitude
-
-    Args:
-        votes: List of PerInstrumentVote from all voting members
-        instrument: The instrument to aggregate for
-        weights: Optional member weights (default: equal weights)
-
-    Returns:
-        AggregatedInstrumentDecision
+    Complete voting bundle after all pipeline stages.
+    Typically created by the monolithic voting kernel (legacy path) or
+    by higher-level orchestrators when a structured result is preferred.
     """
-    thresholds = get_thresholds()
-    conf_threshold = float(thresholds["CONFIDENCE_THRESHOLD"])
-    min_strength = float(thresholds["MIN_SIGNAL_STRENGTH"])
+    # Coordination
+    decision_id: str
+    tick_ts: str
+    timestamp: str
 
-    weights = weights or {}
-    inst = normalize_instrument(instrument)
+    # Collected votes
+    proposals: List[VotingProposal] = field(default_factory=list)
 
-    decision = AggregatedInstrumentDecision(instrument=inst)
+    # Stage results
+    consensus: Optional[ConsensusResult] = None
+    collusion: Optional[CollusionResult] = None
 
-    long_score = 0.0
-    short_score = 0.0
-    flat_score = 0.0
-    total_weight = 0.0
-    
-    # Track actual confidence values separately for proper output
-    long_conf_sum = 0.0
-    long_conf_weight = 0.0
-    short_conf_sum = 0.0
-    short_conf_weight = 0.0
-    flat_conf_sum = 0.0
-    flat_conf_weight = 0.0
-    
-    # Track confidence-weighted consensus (smarter than raw vote counts)
-    # This allows 2 high-confidence experts to outweigh 2 low-confidence experts
-    total_confidence_weight = 0.0
+    # Horizon alignment
+    aligned_weights: Dict[str, float] = field(default_factory=dict)
+    horizon_score: float = 0.5
 
-    for vote in votes:
-        prop = vote.get_proposal(inst)
-        if prop is None:
-            continue
+    # Uncertainty / fragility
+    fragility: float = 0.0
+    uncertainty_samples: int = 0
 
-        act = prop.voting_action
-        conf = _clamp_01(prop.confidence, default=0.0)
-        mag = _clamp_01(prop.magnitude, default=0.0)
-        
-        # IMPORTANT: If magnitude is not set (0), use confidence as proxy
-        # Many experts don't set signal_strength/magnitude explicitly
-        if mag == 0.0 and conf > 0.0:
-            mag = conf  # Use confidence as magnitude fallback
-            
-        base_weight = float(weights.get(vote.member, 1.0))
-        
-        # Effective confidence weight for consensus calculation
-        effective_conf_weight = conf * base_weight
+    # Final decision
+    final_action: str = "abstain"
+    final_confidence: float = 0.0
+    final_intensity: float = 0.0
 
-        # Every non-missing proposal counts as one "vote" for consensus ratio
-        decision.vote_count += 1
-        
-        # Track total confidence weight for weighted consensus
-        total_confidence_weight += effective_conf_weight
+    # Meta
+    processing_time_ms: float = 0.0
+    stages_completed: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
 
-        # No usable magnitude or confidence → treat as neutral vote
-        if conf == 0.0 and mag == 0.0:
-            decision.flat_votes += 1
-            flat_conf_sum += 0.1 * base_weight  # Small weight for abstains
-            flat_conf_weight += base_weight
-            continue
+    def __post_init__(self):
+        self.horizon_score = _clamp_01(self.horizon_score, default=0.5)
+        self.fragility = _clamp_01(self.fragility, default=0.0)
+        self.final_confidence = _clamp_01(self.final_confidence, default=0.0)
+        self.final_intensity = _clamp_01(self.final_intensity, default=0.0)
 
-        # Strong directional: requires confidence above threshold
-        # (magnitude already falls back to confidence, so we just check conf)
-        strong_directional = act.is_directional and conf >= conf_threshold
-        
-        # Moderate directional: has reasonable confidence (70% of threshold)
-        moderate_directional = act.is_directional and conf >= conf_threshold * 0.7
-        
-        if strong_directional:
-            # Full weight for strong signals
-            w = base_weight * conf
-            total_weight += w
-            
-            if act is VotingAction.LONG:
-                decision.long_votes += 1
-                long_score += w * mag
-                long_conf_sum += effective_conf_weight  # Use same weight as total
-                long_conf_weight += base_weight
-            elif act is VotingAction.SHORT:
-                decision.short_votes += 1
-                short_score += w * mag
-                short_conf_sum += effective_conf_weight  # Use same weight as total
-                short_conf_weight += base_weight
-                
-        elif moderate_directional:
-            # Reduced weight for moderate signals (70% weight)
-            w = base_weight * conf * 0.7
-            total_weight += w
-            
-            if act is VotingAction.LONG:
-                decision.long_votes += 1
-                long_score += w * max(mag, conf * 0.5)  # Use conf as mag proxy if needed
-                long_conf_sum += effective_conf_weight  # Use same weight as total
-                long_conf_weight += base_weight * 0.7
-            elif act is VotingAction.SHORT:
-                decision.short_votes += 1
-                short_score += w * max(mag, conf * 0.5)
-                short_conf_sum += effective_conf_weight  # Use same weight as total
-                short_conf_weight += base_weight * 0.7
+        if not self.timestamp:
+            self.timestamp = _now_iso()
+
+        if self.final_action:
+            self.final_action = VotingAction.from_string(self.final_action).value
         else:
-            # Weak/neutral: count as neutral
-            decision.flat_votes += 1
-            w = base_weight * conf * 0.25
-            flat_conf_sum += effective_conf_weight  # Use same weight as total
-            flat_conf_weight += base_weight * 0.25
-            flat_score += w * 0.5
-            total_weight += w
+            self.final_action = VotingAction.ABSTAIN.value
 
-    if total_weight <= 0.0 or decision.vote_count == 0:
-        # No usable votes, leave defaults (ABSTAIN / 0)
-        return decision
-
-    # Normalize scores
-    long_score /= total_weight
-    short_score /= total_weight
-    flat_score /= total_weight
-
-    # Determine winning action
-    scores = {
-        VotingAction.LONG: long_score,
-        VotingAction.SHORT: short_score,
-        VotingAction.HOLD: flat_score,
-    }
-    winning_action = max(scores, key=lambda k: scores[k])
-    winning_score = scores[winning_action]
-
-    # ═══════════════════════════════════════════════════════════════════
-    # CONFIDENCE-WEIGHTED CONSENSUS (v5.1)
-    # Instead of raw vote counts (which always gave 0.50 with 4 experts),
-    # calculate consensus as the proportion of confidence weight aligned
-    # with the winning direction.
-    #
-    # Example: If TrendExpert votes SHORT@0.70 and MomentumExpert votes SHORT@0.58,
-    # while ThemeExpert votes LONG@0.40 and SeasonalityRisk votes FLAT@0.30,
-    # the confidence-weighted consensus for SHORT = (0.70+0.58)/(0.70+0.58+0.40+0.30) = 0.646
-    # This is much more informative than raw 2/4 = 0.50
-    # ═══════════════════════════════════════════════════════════════════
-    if total_confidence_weight > 0:
-        if winning_action is VotingAction.LONG:
-            winning_conf_weight = long_conf_sum
-        elif winning_action is VotingAction.SHORT:
-            winning_conf_weight = short_conf_sum
+        if self.aligned_weights is None:
+            self.aligned_weights = {}
         else:
-            winning_conf_weight = flat_conf_sum
-        
-        decision.consensus_score = winning_conf_weight / total_confidence_weight
-    else:
-        # Fallback to raw vote count if no confidence data
-        max_votes = max(decision.long_votes, decision.short_votes, decision.flat_votes)
-        if decision.vote_count > 0:
-            decision.consensus_score = max_votes / decision.vote_count
+            self.aligned_weights = {
+                str(k): float(v) for k, v in self.aligned_weights.items()
+            }
 
-    decision.action = winning_action.value
-    decision.weighted_score = winning_score
-    
-    # Use actual average confidence for the winning direction
-    # This ensures output confidence reflects expert confidence, not magnitude
-    if winning_action is VotingAction.LONG and long_conf_weight > 0:
-        decision.confidence = long_conf_sum / long_conf_weight
-    elif winning_action is VotingAction.SHORT and short_conf_weight > 0:
-        decision.confidence = short_conf_sum / short_conf_weight
-    else:
-        # Fall back to weighted score for HOLD or when no directional votes
-        decision.confidence = winning_score
+    @property
+    def is_complete(self) -> bool:
+        """True if all pipeline stages completed successfully."""
+        expected = [
+            "committee",
+            "consensus",
+            "collusion",
+            "horizon",
+            "uncertainty",
+            "arbiter",
+        ]
+        return all(stage in self.stages_completed for stage in expected)
 
-    return decision
+    @property
+    def is_actionable(self) -> bool:
+        """
+        True if this bundle has an actionable directional decision.
+
+        Uses mode-aware thresholds from constants.get_thresholds():
+        - ARBITER_CONFIDENCE_FLOOR
+        - ARBITER_INTENSITY_FLOOR
+        """
+        thresholds = get_thresholds()
+        conf_floor = float(thresholds["ARBITER_CONFIDENCE_FLOOR"])
+        intensity_floor = float(thresholds["ARBITER_INTENSITY_FLOOR"])
+
+        return (
+            self.final_action in (VotingAction.LONG.value, VotingAction.SHORT.value)
+            and self.final_confidence >= conf_floor
+            and self.final_intensity >= intensity_floor
+        )
+
+    @property
+    def quality(self) -> VotingQuality:
+        """Assess overall quality of the decision."""
+        if not self.is_complete:
+            return VotingQuality.INVALID
+
+        thresholds = get_thresholds()
+        high_conf = float(thresholds["HIGH_CONFIDENCE_THRESHOLD"])
+        base_conf = float(thresholds["CONFIDENCE_THRESHOLD"])
+
+        # High quality: strong consensus, high confidence, low fragility
+        if (
+            self.consensus
+            and self.consensus.is_strong
+            and self.final_confidence >= high_conf
+            and self.fragility <= FRAGILITY_THRESHOLD
+        ):
+            return VotingQuality.HIGH
+
+        if self.final_confidence >= base_conf:
+            return VotingQuality.MEDIUM
+
+        return VotingQuality.LOW
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for bus publication."""
+        return {
+            "decision_id": self.decision_id,
+            "tick_ts": self.tick_ts,
+            "timestamp": self.timestamp,
+            "proposals": [p.to_dict() for p in self.proposals],
+            "consensus": self.consensus.to_dict() if self.consensus else None,
+            "collusion": self.collusion.to_dict() if self.collusion else None,
+            "aligned_weights": self.aligned_weights,
+            "horizon_score": self.horizon_score,
+            "fragility": self.fragility,
+            "uncertainty_samples": self.uncertainty_samples,
+            "final_action": self.final_action,
+            "final_confidence": self.final_confidence,
+            "final_intensity": self.final_intensity,
+            "processing_time_ms": self.processing_time_ms,
+            "stages_completed": list(self.stages_completed),
+            "warnings": list(self.warnings),
+            "is_actionable": self.is_actionable,
+            "quality": self.quality.value,
+        }
+
+    def add_warning(self, warning: str) -> None:
+        """Add a warning message (deduplicated)."""
+        if warning and warning not in self.warnings:
+            self.warnings.append(warning)
+
+    def mark_stage_complete(self, stage: str) -> None:
+        """Mark a pipeline stage as completed."""
+        if stage and stage not in self.stages_completed:
+            self.stages_completed.append(stage)
 
 
-def aggregate_all_instruments(
-    votes: List[PerInstrumentVote],
-    instruments: Optional[List[str]] = None,
-    weights: Optional[Dict[str, float]] = None,
-) -> Dict[str, AggregatedInstrumentDecision]:
-    """
-    Aggregate votes for all instruments.
+# ═══════════════════════════════════════════════════════════════════
+# Helper Factory Functions
+# ═══════════════════════════════════════════════════════════════════
 
-    Returns:
-        Dict mapping instrument -> AggregatedInstrumentDecision
-    """
-    instruments = instruments or DEFAULT_INSTRUMENTS
+def create_empty_bundle(decision_id: str, tick_ts: str) -> VoteBundle:
+    """Create an empty vote bundle for a new decision cycle."""
+    return VoteBundle(
+        decision_id=decision_id,
+        tick_ts=tick_ts,
+        timestamp=_now_iso(),
+    )
 
-    return {
-        inst: aggregate_instrument_votes(votes, inst, weights)
-        for inst in instruments
-    }
+
+def create_abstain_bundle(
+    decision_id: str, tick_ts: str, reason: str
+) -> VoteBundle:
+    """Create a bundle that abstains from decision."""
+    bundle = create_empty_bundle(decision_id, tick_ts)
+    bundle.final_action = "abstain"
+    bundle.final_confidence = 0.0
+    bundle.final_intensity = 0.0
+    bundle.add_warning(f"Abstain: {reason}")
+    return bundle
+
+
+def make_vote_bundle(
+    decision_id: str = "",
+    tick_ts: str = "",
+    proposals: Optional[List[VotingProposal]] = None,
+    **kwargs: Any,
+) -> VoteBundle:
+    """Factory function to create a VoteBundle with optional overrides."""
+    return VoteBundle(
+        decision_id=decision_id
+        or f"vote_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+        tick_ts=tick_ts or _now_iso(),
+        timestamp=_now_iso(),
+        proposals=proposals or [],
+        **kwargs,
+    )
+
+
+def make_consensus_result(
+    consensus_action: VotingAction = VotingAction.ABSTAIN,
+    consensus_score: float = 0.0,
+    agreement_ratio: float = 0.0,
+    thesis: str = "",  # kept for backward compatibility, not stored directly
+    **kwargs: Any,
+) -> ConsensusResult:
+    """Factory function to create a ConsensusResult."""
+    return ConsensusResult(
+        consensus_score=consensus_score,
+        consensus_action=(
+            consensus_action.value
+            if isinstance(consensus_action, VotingAction)
+            else str(consensus_action)
+        ),
+        vote_distribution=kwargs.get("vote_distribution", {}),
+        confidence_weighted_score=kwargs.get(
+            "confidence_weighted_score", agreement_ratio
+        ),
+        quality=kwargs.get(
+            "quality",
+            "medium" if consensus_score >= 0.5 else "low",
+        ),
+        participating_experts=kwargs.get("participating_experts", []),
+        abstain_count=kwargs.get("abstain_count", 0),
+        timestamp=_now_iso(),
+    )

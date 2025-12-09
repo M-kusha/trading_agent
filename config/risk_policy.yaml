@@ -136,10 +136,19 @@ smart_position:
   same_direction_cooldown_seconds: 300.0  # 5 min between same-direction entries
   reversal_cooldown_seconds: 300.0        # 5 min after reversal
 
-  # Signal thresholds - Expert trading (few but profitable)
-  min_signal_strength: 0.55          # Raised for expert trading - need solid conviction
-  strong_signal_threshold: 0.75      # Strong signal = 75%+
-  reversal_signal_threshold: 0.70    # Need strong reversal to exit
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SIGNAL THRESHOLDS - Final execution gate (AFTER voting gates pass)
+  # ═══════════════════════════════════════════════════════════════════════════
+  # These should be LOWER than voting thresholds since signals already passed:
+  #   1. Committee voting (conf >= 0.45 to count as directional)
+  #   2. Arbiter gate (adaptive ~0.50-0.56 per instrument)
+  #   3. Position Manager direction consensus (50%+)
+  # 
+  # Signals reaching here typically have intensity 0.50-0.65
+  # ─────────────────────────────────────────────────────────────────────────────
+  min_signal_strength: 0.45          # Below arbiter output (~0.50+) so passed signals execute
+  strong_signal_threshold: 0.65      # Strong signal for scaling up
+  reversal_signal_threshold: 0.60    # Clear reversal needed to exit profitable position
 
 # Stop Loss / Take Profit Settings (in pips)
 # IMPORTANT: Emergency safety nets - TIGHTER for prop firms

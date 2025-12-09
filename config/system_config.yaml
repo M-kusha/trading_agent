@@ -684,6 +684,18 @@ modules:
       timeout_ms: 200
 
   # Extra voting experts
+  SeasonalityRiskExpert:
+    config:
+      # Trading window configuration
+      trading_timezone: "Europe/Berlin"
+      local_trade_start_hour: 7
+      local_trade_end_hour: 22
+      local_hard_close_hour: 23
+      no_trade_last_minutes: 30
+      # TEST MODE: Set to true to allow trades during off-hours (for testing only)
+      allow_off_hours_trading: true
+
+  # DEPRECATED - use SeasonalityRiskExpert instead
   EnhancedSeasonalityRiskExpert:
     config:
       seasonal_analysis_depth: 'comprehensive'

@@ -153,8 +153,10 @@ def load_exit_config() -> ExitConfig:
                 }
 
             # Only pass keys that exist on ExitConfig
-            return ExitConfig(**{k: v for k, v in exit_cfg.items()
-                                 if hasattr(ExitConfig, k)})
+            return ExitConfig(**{
+                k: v for k, v in exit_cfg.items()
+                if hasattr(ExitConfig, k)
+            })
     except Exception as e:
         print(f"[ExitEngine] Failed to load config: {e}")
 
@@ -208,16 +210,16 @@ class PositionContext:
         """True if signal direction opposes position side."""
         if self.signal_direction == 0:
             return False
-        return (self.side > 0 and self.signal_direction < 0) or \
-               (self.side < 0 and self.signal_direction > 0)
+        return ((self.side > 0 and self.signal_direction < 0) or
+                (self.side < 0 and self.signal_direction > 0))
 
     @property
     def signal_aligns(self) -> bool:
         """True if signal direction aligns with position side."""
         if self.signal_direction == 0:
             return False
-        return (self.side > 0 and self.signal_direction > 0) or \
-               (self.side < 0 and self.signal_direction < 0)
+        return ((self.side > 0 and self.signal_direction > 0) or
+                (self.side < 0 and self.signal_direction < 0))
 
     @property
     def pnl_pips(self) -> float:
@@ -243,33 +245,136 @@ class ExitStrategyEngine:
 
     Evaluates all exit strategies and returns the highest-priority
     exit decision. This is the SINGLE SOURCE OF TRUTH for exit logic.
-
-    Usage:
-        engine = ExitStrategyEngine()  # Loads config from risk_policy.yaml
-
-        ctx = PositionContext(
-            symbol="EURUSD",
-            side=1,
-            unrealized_pnl=50.0,
-            peak_pnl=120.0,
-            entry_price=1.1000,
-            current_price=1.1050,
-            open_time=time.time() - 3600,
-            atr=0.0015,
-            signal_direction=-1,
-            signal_strength=0.7,
-            consensus_confidence=0.8,
-        )
-
-        decision = engine.evaluate(ctx)
-        if decision.should_exit:
-            print(f"Exit: {decision.reason.name} (urgency={decision.urgency:.2f})")
     """
 
     def __init__(self, config: Optional[ExitConfig] = None):
         self.config = config or load_exit_config()
         # Track peak P&L per position; key = "position_id|SYMBOL" or "SYMBOL"
         self._profit_peaks: Dict[str, float] = {}
+
+    # ------------------------------------------------------------------ #
+    # Internal helpers
+    # ------------------------------------------------------------------ #
+
+    def _peak_key(self, ctx: PositionContext) -> str:
+        """Internal key for peak tracking."""
+        if ctx.position_id:
+            return f"{ctx.position_id}|{ctx.symbol}"
+        return ctx.symbol
+
+    def _update_peak(self, ctx: PositionContext) -> None:
+        """Track profit peak for trailing stop."""
+        key = self._peak_key(ctx)
+        current_peak = self._profit_peaks.get(key, ctx.unrealized_pnl)
+        self._profit_peaks[key] = max(current_peak, ctx.unrealized_pnl)
+
+    def _effective_peak_pnl(self, ctx: PositionContext) -> float:
+        """
+        Compute effective peak P&L with stale-peak protection.
+
+        Combines externally supplied ctx.peak_pnl (e.g. persisted by
+        SmartPositionManager) with internally tracked peaks and resets
+        obviously stale values.
+        """
+        self._update_peak(ctx)
+        peak_key = self._peak_key(ctx)
+        tracked_peak = self._profit_peaks.get(peak_key, ctx.unrealized_pnl)
+
+        # If the position is very new and near flat P&L, but the stored peak
+        # is very large, treat the stored value as stale (leftover from a
+        # previous position) and reset it.
+        if (
+            ctx.age_seconds < 300
+            and abs(ctx.unrealized_pnl) < 50.0
+            and tracked_peak > 100.0
+        ):
+            self._profit_peaks[peak_key] = ctx.unrealized_pnl
+            tracked_peak = ctx.unrealized_pnl
+
+        return max(ctx.peak_pnl, tracked_peak)
+
+    def _adjust_confidence(self, base_conf: float, ctx: PositionContext) -> float:
+        """
+        Modulate confidence with committee consensus.
+
+        factor = 0.5 + 0.5 * consensus_confidence
+        """
+        factor = 0.5 + 0.5 * max(0.0, min(ctx.consensus_confidence, 1.0))
+        conf = base_conf * factor
+        return max(0.0, min(conf, 1.0))
+
+    def _adjust_urgency(self, base_urg: float, ctx: PositionContext) -> float:
+        """
+        Modulate urgency with volatility.
+
+        Higher volatility => slightly higher urgency.
+        Very low volatility => slightly lower urgency.
+        """
+        vol = ctx.volatility
+        if vol >= 0.03:
+            factor = 1.1
+        elif vol <= 0.01:
+            factor = 0.9
+        else:
+            factor = 1.0
+
+        urg = base_urg * factor
+        return max(0.0, min(urg, 1.0))
+
+    def _regime_adjusted_config(self, ctx: PositionContext) -> ExitConfig:
+        """
+        Adjust config thresholds based on market regime and volatility.
+
+        - If ctx.regime is explicitly set (volatile/ranging/trending), use it.
+        - If ctx.regime is "auto"/"normal", infer from ctx.volatility.
+        """
+        regime = (ctx.regime or "normal").lower()
+
+        if regime in ("auto", "normal", ""):
+            # Simple volatility-based routing if regime not explicitly set
+            vol = ctx.volatility
+            if vol >= 0.03:
+                regime = "volatile"
+            elif vol <= 0.01:
+                regime = "ranging"
+            else:
+                regime = "trending"
+
+        # Get scaling factor
+        if regime in ("volatile", "high_volatility"):
+            scale = self.config.volatile_regime_tighten      # <1.0 => tighter
+        elif regime in ("ranging", "sideways", "low_volatility"):
+            scale = self.config.ranging_regime_loosen        # >1.0 => looser
+        else:
+            scale = self.config.trending_regime_neutral      # 1.0
+
+        if scale == 1.0:
+            return self.config
+
+        # Create adjusted config; numeric thresholds scaled appropriately
+        return ExitConfig(
+            hard_stop_loss_eur=self.config.hard_stop_loss_eur * scale,
+            soft_stop_loss_eur=self.config.soft_stop_loss_eur * scale,
+            soft_stop_min_signal=self.config.soft_stop_min_signal,
+            time_decay_hours=self.config.time_decay_hours,  # Do not scale time
+            time_decay_stop_eur=self.config.time_decay_stop_eur * scale,
+            trailing_activation_eur=self.config.trailing_activation_eur,
+            trailing_activation_atr=self.config.trailing_activation_atr,
+            trailing_retrace_pct=self.config.trailing_retrace_pct * scale,
+            trailing_retrace_atr=self.config.trailing_retrace_atr * scale,
+            trailing_use_atr=self.config.trailing_use_atr,
+            trailing_min_peak_eur=self.config.trailing_min_peak_eur * scale,
+            momentum_exit_profit_eur=self.config.momentum_exit_profit_eur * scale,
+            momentum_reversal_signal=self.config.momentum_reversal_signal,
+            signal_exit_threshold=self.config.signal_exit_threshold,
+            signal_direction_weight=self.config.signal_direction_weight,
+            volatile_regime_tighten=self.config.volatile_regime_tighten,
+            ranging_regime_loosen=self.config.ranging_regime_loosen,
+            trending_regime_neutral=self.config.trending_regime_neutral,
+            emergency_drawdown_pct=self.config.emergency_drawdown_pct,
+            emergency_daily_loss_buffer_pct=self.config.emergency_daily_loss_buffer_pct,
+            emergency_max_open_risk_eur=self.config.emergency_max_open_risk_eur,
+        )
 
     # ------------------------------------------------------------------ #
     # Public API
@@ -282,27 +387,10 @@ class ExitStrategyEngine:
         Returns the highest-priority exit decision.
         Strategies are evaluated in priority order.
         """
-        # Update peak tracking first
-        self._update_peak(ctx)
-        peak_key = self._peak_key(ctx)
-        
-        # Get tracked peak, but validate it's not stale from a previous position
-        # A peak is likely stale if: position just opened (low age), current PnL near zero,
-        # but tracked peak is large. This happens when peak wasn't reset on position close.
-        tracked_peak = self._profit_peaks.get(peak_key, ctx.unrealized_pnl)
-        
-        # Sanity check: if position is very new (< 5 minutes) and current PnL is near zero
-        # but tracked peak is significantly positive, the peak is stale - reset it
-        if (ctx.age_seconds < 300 and  # Less than 5 minutes old
-            abs(ctx.unrealized_pnl) < 50.0 and  # Current PnL near zero (within €50)
-            tracked_peak > 100.0):  # But tracked peak is substantial (> €100)
-            # Stale peak detected - reset and use current PnL
-            self._profit_peaks[peak_key] = ctx.unrealized_pnl
-            tracked_peak = ctx.unrealized_pnl
-        
-        ctx_peak = max(ctx.peak_pnl, tracked_peak)
+        # Effective peak P&L (combining external and internal tracking)
+        ctx_peak = self._effective_peak_pnl(ctx)
 
-        # Get regime-adjusted thresholds
+        # Regime-adjusted config
         cfg = self._regime_adjusted_config(ctx)
 
         # 0. EMERGENCY - account-level protection
@@ -320,33 +408,17 @@ class ExitStrategyEngine:
                 details={
                     "loss": ctx.unrealized_pnl,
                     "threshold": -cfg.hard_stop_loss_eur,
-                    "message": f"HARD STOP: Loss €{ctx.unrealized_pnl:.2f} "
-                               f"exceeds -€{cfg.hard_stop_loss_eur:.0f}",
+                    "message": (
+                        f"HARD STOP: Loss €{ctx.unrealized_pnl:.2f} "
+                        f"exceeds -€{cfg.hard_stop_loss_eur:.0f}"
+                    ),
                 },
             )
 
-        # 2. SOFT STOP - Loss + opposing signal
-        if ctx.unrealized_pnl <= -cfg.soft_stop_loss_eur and ctx.signal_against:
-            if ctx.signal_strength >= cfg.soft_stop_min_signal:
-                base_conf = 0.90
-                conf = self._adjust_confidence(base_conf, ctx)
-                urg = self._adjust_urgency(0.85, ctx)
-                return ExitDecision(
-                    should_exit=True,
-                    reason=ExitReason.SOFT_STOP,
-                    confidence=conf,
-                    urgency=urg,
-                    details={
-                        "loss": ctx.unrealized_pnl,
-                        "threshold": -cfg.soft_stop_loss_eur,
-                        "signal_direction": ctx.signal_direction,
-                        "signal_strength": ctx.signal_strength,
-                        "message": (
-                            f"SOFT STOP: Loss €{ctx.unrealized_pnl:.2f} "
-                            f"with opposing signal (strength={ctx.signal_strength:.2f})"
-                        ),
-                    },
-                )
+        # 2. SOFT STOP - Loss + opposing signal (shared implementation)
+        soft_stop_decision = self._check_soft_stop(ctx, cfg)
+        if soft_stop_decision.should_exit:
+            return soft_stop_decision
 
         # 3. TIME DECAY - Old position + losing OR stale profit
         time_decay_decision = self._check_time_decay(ctx, ctx_peak, cfg)
@@ -390,18 +462,7 @@ class ExitStrategyEngine:
             - "emergency", "hard_stop", "soft_stop",
               "time_decay", "trailing", "momentum", "signal", "final"
         """
-        self._update_peak(ctx)
-        peak_key = self._peak_key(ctx)
-        
-        # Same stale peak detection as in evaluate()
-        tracked_peak = self._profit_peaks.get(peak_key, ctx.unrealized_pnl)
-        if (ctx.age_seconds < 300 and
-            abs(ctx.unrealized_pnl) < 50.0 and
-            tracked_peak > 100.0):
-            self._profit_peaks[peak_key] = ctx.unrealized_pnl
-            tracked_peak = ctx.unrealized_pnl
-        
-        ctx_peak = max(ctx.peak_pnl, tracked_peak)
+        ctx_peak = self._effective_peak_pnl(ctx)
         cfg = self._regime_adjusted_config(ctx)
 
         results: Dict[str, ExitDecision] = {}
@@ -415,7 +476,10 @@ class ExitStrategyEngine:
                 reason=ExitReason.HARD_STOP,
                 confidence=0.99,
                 urgency=1.0,
-                details={},
+                details={
+                    "loss": ctx.unrealized_pnl,
+                    "threshold": -cfg.hard_stop_loss_eur,
+                },
             )
         else:
             results["hard_stop"] = ExitDecision(
@@ -423,6 +487,7 @@ class ExitStrategyEngine:
                 reason=ExitReason.HOLD,
                 confidence=0.0,
                 urgency=0.0,
+                details={},
             )
 
         results["soft_stop"] = self._check_soft_stop(ctx, cfg)
@@ -463,7 +528,9 @@ class ExitStrategyEngine:
         if ctx.daily_loss_eur is not None and ctx.daily_loss_limit_eur is not None:
             if ctx.daily_loss_limit_eur > 0:
                 realized_loss = -min(ctx.daily_loss_eur, 0.0)  # positive number for loss
-                trigger_loss = cfg.emergency_daily_loss_buffer_pct * ctx.daily_loss_limit_eur
+                trigger_loss = (
+                    cfg.emergency_daily_loss_buffer_pct * ctx.daily_loss_limit_eur
+                )
                 if realized_loss >= trigger_loss:
                     triggers.append(
                         f"daily loss €{realized_loss:.2f} "
@@ -500,7 +567,7 @@ class ExitStrategyEngine:
         )
 
     def _check_soft_stop(self, ctx: PositionContext, cfg: ExitConfig) -> ExitDecision:
-        """Soft stop helper used by evaluate_all()."""
+        """Soft stop helper used by both evaluate() and evaluate_all()."""
         if ctx.unrealized_pnl <= -cfg.soft_stop_loss_eur and ctx.signal_against:
             if ctx.signal_strength >= cfg.soft_stop_min_signal:
                 base_conf = 0.90
@@ -511,8 +578,18 @@ class ExitStrategyEngine:
                     reason=ExitReason.SOFT_STOP,
                     confidence=conf,
                     urgency=urg,
-                    details={},
+                    details={
+                        "loss": ctx.unrealized_pnl,
+                        "threshold": -cfg.soft_stop_loss_eur,
+                        "signal_direction": ctx.signal_direction,
+                        "signal_strength": ctx.signal_strength,
+                        "message": (
+                            f"SOFT STOP: Loss €{ctx.unrealized_pnl:.2f} "
+                            f"with opposing signal (strength={ctx.signal_strength:.2f})"
+                        ),
+                    },
                 )
+
         return ExitDecision(
             should_exit=False,
             reason=ExitReason.HOLD,
@@ -705,9 +782,6 @@ class ExitStrategyEngine:
         ):
             daily_pnl = ctx.daily_loss_eur  # positive = profit, negative = loss
             if daily_pnl > 0:
-                # 0   → no extra tightening
-                # 0.3 → ~30% of daily loss limit in profit → noticeable cushion
-                # 1.0 → equal to daily loss limit in profit → very strong day
                 ratio = max(0.0, min(daily_pnl / ctx.daily_loss_limit_eur, 1.0))
                 # shrink thresholds by up to 30% on very strong days
                 daily_factor = 1.0 - 0.3 * ratio
@@ -777,7 +851,6 @@ class ExitStrategyEngine:
             details={},
         )
 
-
     def _check_momentum_exit(self, ctx: PositionContext, cfg: ExitConfig) -> ExitDecision:
         """
         Momentum-based profit taking: if position is profitable,
@@ -814,6 +887,7 @@ class ExitStrategyEngine:
 
     def _check_signal_exit(self, ctx: PositionContext, cfg: ExitConfig) -> ExitDecision:
         """Check if agent signal warrants exit (direction flip or weak signal)."""
+
         # Direction flip - agent wants opposite position
         if ctx.signal_against and ctx.signal_strength >= cfg.signal_direction_weight:
             base_conf = 0.75
@@ -865,75 +939,8 @@ class ExitStrategyEngine:
         )
 
     # ------------------------------------------------------------------ #
-    # Regime + helpers
+    # Peak management (external visibility)
     # ------------------------------------------------------------------ #
-
-    def _regime_adjusted_config(self, ctx: PositionContext) -> ExitConfig:
-        """
-        Adjust config thresholds based on market regime and volatility.
-
-        - If ctx.regime is explicitly set (volatile/ranging/trending), use it.
-        - If ctx.regime is "auto"/"normal", infer from ctx.volatility.
-        """
-        regime = (ctx.regime or "normal").lower()
-
-        if regime in ("auto", "normal", ""):
-            # Simple volatility-based routing if regime not explicitly set
-            vol = ctx.volatility
-            if vol >= 0.03:
-                regime = "volatile"
-            elif vol <= 0.01:
-                regime = "ranging"
-            else:
-                regime = "trending"
-
-        # Get scaling factor
-        if regime in ("volatile", "high_volatility"):
-            scale = self.config.volatile_regime_tighten      # <1.0 => tighter
-        elif regime in ("ranging", "sideways", "low_volatility"):
-            scale = self.config.ranging_regime_loosen        # >1.0 => looser
-        else:
-            scale = self.config.trending_regime_neutral      # 1.0
-
-        if scale == 1.0:
-            return self.config
-
-        # Create adjusted config; numeric thresholds scaled appropriately
-        return ExitConfig(
-            hard_stop_loss_eur=self.config.hard_stop_loss_eur * scale,
-            soft_stop_loss_eur=self.config.soft_stop_loss_eur * scale,
-            soft_stop_min_signal=self.config.soft_stop_min_signal,
-            time_decay_hours=self.config.time_decay_hours,  # Do not scale time
-            time_decay_stop_eur=self.config.time_decay_stop_eur * scale,
-            trailing_activation_eur=self.config.trailing_activation_eur,
-            trailing_activation_atr=self.config.trailing_activation_atr,
-            trailing_retrace_pct=self.config.trailing_retrace_pct * scale,
-            trailing_retrace_atr=self.config.trailing_retrace_atr * scale,
-            trailing_use_atr=self.config.trailing_use_atr,
-            trailing_min_peak_eur=self.config.trailing_min_peak_eur * scale,
-            momentum_exit_profit_eur=self.config.momentum_exit_profit_eur * scale,
-            momentum_reversal_signal=self.config.momentum_reversal_signal,
-            signal_exit_threshold=self.config.signal_exit_threshold,
-            signal_direction_weight=self.config.signal_direction_weight,
-            volatile_regime_tighten=self.config.volatile_regime_tighten,
-            ranging_regime_loosen=self.config.ranging_regime_loosen,
-            trending_regime_neutral=self.config.trending_regime_neutral,
-            emergency_drawdown_pct=self.config.emergency_drawdown_pct,
-            emergency_daily_loss_buffer_pct=self.config.emergency_daily_loss_buffer_pct,
-            emergency_max_open_risk_eur=self.config.emergency_max_open_risk_eur,
-        )
-
-    def _peak_key(self, ctx: PositionContext) -> str:
-        """Internal key for peak tracking."""
-        if ctx.position_id:
-            return f"{ctx.position_id}|{ctx.symbol}"
-        return ctx.symbol
-
-    def _update_peak(self, ctx: PositionContext) -> None:
-        """Track profit peak for trailing stop."""
-        key = self._peak_key(ctx)
-        current_peak = self._profit_peaks.get(key, ctx.unrealized_pnl)
-        self._profit_peaks[key] = max(current_peak, ctx.unrealized_pnl)
 
     def reset_peak(self, symbol: str) -> None:
         """Reset peak tracking when position(s) for a symbol are closed."""
@@ -959,34 +966,6 @@ class ExitStrategyEngine:
     def get_all_peaks(self) -> Dict[str, float]:
         """Get all tracked peaks (debugging / monitoring)."""
         return self._profit_peaks.copy()
-
-    def _adjust_confidence(self, base_conf: float, ctx: PositionContext) -> float:
-        """
-        Modulate confidence with committee consensus.
-
-        factor = 0.5 + 0.5 * consensus_confidence
-        """
-        factor = 0.5 + 0.5 * max(0.0, min(ctx.consensus_confidence, 1.0))
-        conf = base_conf * factor
-        return max(0.0, min(conf, 1.0))
-
-    def _adjust_urgency(self, base_urg: float, ctx: PositionContext) -> float:
-        """
-        Modulate urgency with volatility.
-
-        Higher volatility => slightly higher urgency.
-        Very low volatility => slightly lower urgency.
-        """
-        vol = ctx.volatility
-        if vol >= 0.03:
-            factor = 1.1
-        elif vol <= 0.01:
-            factor = 0.9
-        else:
-            factor = 1.0
-
-        urg = base_urg * factor
-        return max(0.0, min(urg, 1.0))
 
 
 # Singleton instance for shared use

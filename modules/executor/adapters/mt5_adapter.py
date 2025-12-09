@@ -109,7 +109,7 @@ class MT5Adapter(BaseLiveAdapter):
             )
         except Exception:
             class _Dummy:
-                def info(self, *a, **k):  # noqa: D401 - silent dummy logger
+                def info(self, *a, **k):
                     pass
 
                 def warning(self, *a, **k):
@@ -587,15 +587,15 @@ class MT5Adapter(BaseLiveAdapter):
                     filling_modes = [cached_mode] + [m for m in all_modes if m != cached_mode]
                 else:
                     filling_modes = all_modes
-                
+
                 ret_ok = getattr(mt5, "TRADE_RETCODE_DONE", 10009)
                 ret_no_prices = 10021  # Market closed / no quotes
                 ret_market_closed = 10018
                 ret_invalid_fill = 10030  # Unsupported filling mode
-                
+
                 success = False
                 last_error = None
-                
+
                 for fill_mode in filling_modes:
                     # Build close request WITH position ticket (required for hedging accounts)
                     request = {
@@ -645,7 +645,7 @@ class MT5Adapter(BaseLiveAdapter):
                         last_error = f"retcode_{r.retcode}: {getattr(r, 'comment', '')}"
                         self.log.error(f"[MT5] close_position: ❌ Failed ticket {ticket}: {last_error}")
                         break  # Don't try other fill modes for non-fill errors
-                
+
                 if not success:
                     self.log.error(f"[MT5] close_position: All filling modes failed for ticket {ticket}")
                     return {"ok": False, "error": last_error or "all_fills_failed"}
@@ -653,6 +653,82 @@ class MT5Adapter(BaseLiveAdapter):
             return {"ok": True, "price": last_px}
         except Exception as e:
             self.log.error(f"[MT5] close_position exception: {e}")
+            return {"ok": False, "error": str(e)}
+
+    def _modify_position_impl(
+        self,
+        ticket: int,
+        sl: Optional[float] = None,
+        tp: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """
+        Concrete implementation for BaseLiveAdapter.modify_position wrapper.
+
+        Args:
+            ticket: Position ticket to modify
+            sl: New stop loss price (None = don't change)
+            tp: New take profit price (None = don't change)
+        """
+        if not (_MT5 and self.connected):
+            return {"ok": False, "error": "mt5_not_connected"}
+
+        try:
+            # Get current position
+            positions = mt5.positions_get(ticket=ticket)
+            if not positions:
+                return {"ok": False, "error": f"position_not_found: {ticket}"}
+
+            pos = positions[0]
+            symbol = getattr(pos, "symbol", "")
+            current_sl = float(getattr(pos, "sl", 0.0) or 0.0)
+            current_tp = float(getattr(pos, "tp", 0.0) or 0.0)
+
+            # Use current values if not changing
+            new_sl = sl if sl is not None else current_sl
+            new_tp = tp if tp is not None else current_tp
+
+            # Skip if no change needed
+            if abs(new_sl - current_sl) < 0.00001 and abs(new_tp - current_tp) < 0.00001:
+                return {"ok": True, "message": "no_change_needed", "sl": current_sl, "tp": current_tp}
+
+            # Ensure symbol is selected
+            if not self._ensure_symbol(symbol):
+                return {"ok": False, "error": "symbol_not_available"}
+
+            # Build modify request
+            request = {
+                "action": mt5.TRADE_ACTION_SLTP,
+                "symbol": symbol,
+                "position": ticket,
+                "sl": new_sl,
+                "tp": new_tp,
+            }
+
+            self.log.debug(
+                f"[MT5] modify_position: ticket={ticket} sl={current_sl:.5f}->{new_sl:.5f} "
+                f"tp={current_tp:.5f}->{new_tp:.5f}"
+            )
+
+            result = mt5.order_send(request)
+
+            if result is None:
+                error = mt5.last_error()
+                self.log.error(f"[MT5] modify_position: ❌ Failed: {error}")
+                return {"ok": False, "error": str(error)}
+
+            if result.retcode == mt5.TRADE_RETCODE_DONE:
+                self.log.info(
+                    f"[MT5] modify_position: ✅ Modified ticket {ticket} "
+                    f"SL={new_sl:.5f} TP={new_tp:.5f}"
+                )
+                return {"ok": True, "sl": new_sl, "tp": new_tp}
+            else:
+                error_msg = f"retcode={result.retcode}: {result.comment}"
+                self.log.error(f"[MT5] modify_position: ❌ {error_msg}")
+                return {"ok": False, "error": error_msg}
+
+        except Exception as e:
+            self.log.error(f"[MT5] modify_position exception: {e}")
             return {"ok": False, "error": str(e)}
 
     def _sync_positions_impl(self) -> Dict[str, Dict[str, Any]]:
@@ -734,10 +810,34 @@ class MT5Adapter(BaseLiveAdapter):
                 notional_eur = units * entry_price
 
                 times: List[float] = []
+                total_profit = 0.0
+                current_price = 0.0
+                primary_ticket = 0
+                primary_lots = 0.0
+                position_sl = 0.0
+                position_tp = 0.0
+                
                 for q in plist:
                     t = getattr(q, "time", None)
                     if isinstance(t, (int, float)) and math.isfinite(t):
                         times.append(float(t))
+                    
+                    # Sum up profit from all positions for this symbol
+                    profit = _sf(getattr(q, "profit", 0.0))
+                    total_profit += profit
+                    
+                    # Get current price from any position
+                    if current_price == 0.0:
+                        current_price = _sf(getattr(q, "price_current", 0.0))
+                    
+                    # Track the largest ticket for SL/TP modifications
+                    vol = _sf(getattr(q, "volume", 0.0))
+                    if vol > primary_lots:
+                        primary_lots = vol
+                        primary_ticket = int(getattr(q, "ticket", 0) or 0)
+                        position_sl = _sf(getattr(q, "sl", 0.0))
+                        position_tp = _sf(getattr(q, "tp", 0.0))
+                
                 open_time = min(times) if times else 0.0
 
                 out[sym] = {
@@ -747,6 +847,15 @@ class MT5Adapter(BaseLiveAdapter):
                     "entry_price": float(entry_price),
                     "notional_eur": float(notional_eur),
                     "open_time": open_time,
+                    # NEW: Add P&L and price data for experts/PPO
+                    "unrealized_pnl": float(total_profit),
+                    "profit": float(total_profit),  # alias for compatibility
+                    "current_price": float(current_price),
+                    "price_current": float(current_price),  # alias
+                    "ticket": primary_ticket,
+                    "sl": float(position_sl),
+                    "tp": float(position_tp),
+                    "lots": float(abs(net_lots)),  # for convenience
                 }
 
             return out

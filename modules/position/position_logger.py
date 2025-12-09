@@ -10,12 +10,9 @@ from __future__ import annotations
 
 import datetime as dt
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Dict, List, Optional
 
 from modules.utils.info_bus import InfoBusManager
-
-if TYPE_CHECKING:
-    from modules.utils.info_bus import SmartInfoBus
 
 
 # =====================================================================
@@ -80,7 +77,7 @@ class UnifiedPositionLogger:
     """
     Unified logging system for position decisions.
 
-    Produces one cohesive, “operator-friendly” block that covers:
+    Produces one cohesive, operator-friendly block that covers:
       - Decision overview
       - Market context
       - Voting signals (if any)
@@ -89,8 +86,8 @@ class UnifiedPositionLogger:
       - Rationale and execution status
     """
 
-    BOX_WIDTH = 78     # internal width
-    PAD_WIDTH = 77     # width of text area inside borders
+    BOX_WIDTH = 78     # internal width used for top/bottom borders
+    PAD_WIDTH = 77     # width of text area inside borders (after leading space)
 
     def __init__(self, logger: Any, smart_bus: Optional[Any] = None) -> None:
         """
@@ -119,6 +116,16 @@ class UnifiedPositionLogger:
         """
         self.decision_count += 1
         timestamp = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+
+        # Enrich with current voting signals from SmartInfoBus if not provided
+        voting = self.get_voting_signals()
+        cc = entry.committee_consensus or voting.get("committee_consensus")
+        tv = entry.trade_vote or voting.get("trade_vote")
+        cs = (
+            entry.consensus_strength
+            if entry.consensus_strength is not None
+            else voting.get("consensus_strength")
+        )
 
         lines: List[str] = []
         pad = self.PAD_WIDTH
@@ -173,11 +180,10 @@ class UnifiedPositionLogger:
         self._section_blank(lines)
 
         # Section 3: Voting Signals
-        if entry.committee_consensus or entry.trade_vote or entry.consensus_strength is not None:
+        if cc or tv or cs is not None:
             self._section_title(lines, "🗳️  VOTING SIGNALS")
 
-            if entry.committee_consensus:
-                cc = entry.committee_consensus
+            if cc:
                 exists = bool(cc.get("consensus_exists", False))
                 strength = float(cc.get("consensus_strength", 0.0))
                 action = cc.get("consensus_action", "N/A")
@@ -197,8 +203,7 @@ class UnifiedPositionLogger:
                     + "║"
                 )
 
-            if entry.trade_vote:
-                tv = entry.trade_vote
+            if tv:
                 vote_action = tv.get("action", "HOLD")
                 vote_conf = float(tv.get("confidence", 0.0))
                 lines.append(
@@ -207,8 +212,7 @@ class UnifiedPositionLogger:
                     + "║"
                 )
 
-            if entry.consensus_strength is not None:
-                cs = float(entry.consensus_strength)
+            if cs is not None:
                 lines.append(
                     "║ "
                     + f"Consensus Str:    {cs:.1%}".ljust(pad)
@@ -250,7 +254,6 @@ class UnifiedPositionLogger:
         )
 
         if entry.risk_factors:
-            # show first few risk factors
             for name, value in list(entry.risk_factors.items())[:4]:
                 label = name.replace("_", " ").capitalize()
                 lines.append(
@@ -302,7 +305,7 @@ class UnifiedPositionLogger:
 
         Keeps it compact, human-readable, and aligned.
         """
-        side = self._format_side(order.get("side", 0))
+        side = self._format_side(int(order.get("side", 0) or 0))
         intent = str(order.get("intent", "N/A")).upper()
         size_eur = float(order.get("size_eur", 0.0) or 0.0)
         confidence = float(order.get("confidence", 0.0) or 0.0)
@@ -334,7 +337,8 @@ class UnifiedPositionLogger:
             drawdown, drawdown_health, exposure_health,
             streak_health, risk_health.
         """
-        h = lambda k, default=0.0: float(health.get(k, default) or 0.0)
+        def h(key: str, default: float = 0.0) -> float:
+            return float(health.get(key, default) or 0.0)
 
         lines = [
             "",
@@ -387,7 +391,8 @@ class UnifiedPositionLogger:
 
     def _section_blank(self, lines: List[str]) -> None:
         """Append a blank spacer line."""
-        lines.append("║" + " " * (self.BOX_WIDTH + 0) + "║".replace("║" + " " * (self.BOX_WIDTH + 0) + "║", "║" + " " * self.BOX_WIDTH + "║"))  # safety
+        pad = self.PAD_WIDTH
+        lines.append("║ " + " " * pad + "║")
 
     def _format_decision(self, decision: str) -> str:
         """Format decision with emoji prefix (high-level meaning)."""
@@ -503,17 +508,17 @@ class UnifiedPositionLogger:
                 return signals
 
             # Committee consensus
-            cc = bus.get("committee_consensus", "PositionManager")  # type: ignore
+            cc = bus.get("committee_consensus", "PositionManager")
             if isinstance(cc, dict) and cc:
                 signals["committee_consensus"] = cc
 
             # Trade vote (canonical: trade_vote_v2)
-            tv = bus.get("trade_vote_v2", "PositionManager")  # type: ignore
+            tv = bus.get("trade_vote_v2", "PositionManager")
             if isinstance(tv, dict) and tv:
                 signals["trade_vote"] = tv
 
             # Consensus strength (can be scalar or dict)
-            cs = bus.get("consensus_score", "PositionManager")  # type: ignore
+            cs = bus.get("consensus_score", "PositionManager")
             if cs is not None:
                 if isinstance(cs, dict):
                     signals["consensus_strength"] = float(

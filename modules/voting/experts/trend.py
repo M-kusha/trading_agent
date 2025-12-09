@@ -44,12 +44,22 @@ class TrendExpert(VotingExpertBase):
 
     Combines 8+ trend indicators with support/resistance and
     multi-timeframe alignment for high-conviction directional signals.
+
+    Design notes (synchronized with Theme/Momentum experts):
+    - M15 is the PRIMARY trading timeframe (signal generation).
+    - H1/H4/D1 are CONTEXT timeframes: they only modify confidence,
+      never override direction.
+    - Per-instrument voting: EURUSD, XAUUSD, etc. each have their own
+      InstrumentProposal so the arbiter/committee can treat them separately.
     """
 
     # ═══════════════════════════ INIT ═══════════════════════════
 
     def _expert_specific_init(self) -> None:
         """Initialize advanced trend analysis state."""
+        # Module identifier (used by SmartInfoBus, error pinpointer, etc.)
+        self.module_name = self.__class__.__name__
+
         # Instruments to analyze (from config or default)
         self.instruments = self.config.get("instruments", ["EURUSD", "XAUUSD"])
 
@@ -61,6 +71,11 @@ class TrendExpert(VotingExpertBase):
         # Default was 55; bump to 90 so the effective minimum bars (slow_period + 10)
         # is ~100, matching the broader architecture's 100-bar windows.
         self.slow_period = int(self.config.get("slow_period", 90))
+
+        # Minimum bars required for a stable trend view
+        self.min_price_history = int(
+            self.config.get("min_price_history", self.slow_period + 10)
+        )
 
         # ADX configuration
         self.adx_period = int(self.config.get("adx_period", 14))
@@ -96,19 +111,21 @@ class TrendExpert(VotingExpertBase):
         # Multi-timeframe configuration:
         # M15 is the PRIMARY trading timeframe (100% of signal generation).
         # H1/H4/D1 are CONTEXT timeframes (confidence modifiers ONLY, never override direction).
-        # This is because ExitManager closes trades early with tight TP, so H1/H4/D1 trends
-        # rarely have time to play out.
         self.use_mtf_confirmation = bool(self.config.get("use_mtf_confirmation", True))
-        self.mtf_timeframes = [PRIMARY_TIMEFRAME] + list(CONTEXT_TIMEFRAMES)  # M15 primary, H1/H4/D1 context
-        # M15-PRIMARY: M15 generates direction, context TFs only adjust confidence
+        self.mtf_timeframes = [PRIMARY_TIMEFRAME] + list(CONTEXT_TIMEFRAMES)
+        # M15-PRIMARY: M15 is the SOLE signal generator
         self.mtf_weights = {
-            "M15": 1.00,  # PRIMARY: M15 is the SOLE signal generator
+            "M15": 1.00,  # PRIMARY: M15 is the decision-maker
             "H1": 0.00,   # CONTEXT ONLY: modifies confidence, not direction
-            "H4": 0.00,   # CONTEXT ONLY: modifies confidence, not direction
-            "D1": 0.00,   # CONTEXT ONLY: modifies confidence, not direction
+            "H4": 0.00,   # CONTEXT ONLY
+            "D1": 0.00,   # CONTEXT ONLY
         }
-        self.mtf_agreement_bonus = 0.15  # Confidence boost when context TFs agree with M15
-        self.mtf_disagreement_penalty = 0.20  # Confidence penalty when context TFs disagree with M15
+        self.mtf_agreement_bonus = float(
+            self.config.get("mtf_agreement_bonus", 0.15)
+        )  # Confidence boost when context TFs agree with M15
+        self.mtf_disagreement_penalty = float(
+            self.config.get("mtf_disagreement_penalty", 0.20)
+        )  # Confidence penalty when context TFs disagree with M15
 
         # ═══════════════════════════ PER-INSTRUMENT STATE ═══════════════════════════
         self.instrument_state: Dict[str, Dict[str, Any]] = {}
@@ -172,7 +189,7 @@ class TrendExpert(VotingExpertBase):
         self.trend_history: deque = deque(maxlen=100)
         self.signal_history: deque = deque(maxlen=50)
 
-        # Performance tracking
+        # Performance tracking (used for confidence calibration)
         self.trend_performance: Dict[str, Dict[str, Any]] = {
             "long": {"signals": 0, "success": 0, "total_pnl": 0.0},
             "short": {"signals": 0, "success": 0, "total_pnl": 0.0},
@@ -183,15 +200,17 @@ class TrendExpert(VotingExpertBase):
 
         self.log_info(
             f"[TREND] Advanced TrendExpert initialized | "
-            f"instruments={self.instruments} | MA periods={self.fast_period}/{self.medium_period}/{self.slow_period} | "
-            f"ADX period={self.adx_period} | ADX threshold={self.adx_trending_threshold}"
+            f"instruments={self.instruments} | "
+            f"MA periods={self.fast_period}/{self.medium_period}/{self.slow_period} | "
+            f"ADX period={self.adx_period} | ADX trending={self.adx_trending_threshold}"
         )
 
+        # Baseline keys for downstream readers
         self._publish_baseline_keys()
         self._publish_trend_baseline()
 
     def _publish_trend_baseline(self) -> None:
-        """Publish trend baseline keys."""
+        """Publish trend baseline keys to avoid stale reads."""
         try:
             self.smart_bus.set(
                 "trend_voting_proposal",
@@ -211,11 +230,16 @@ class TrendExpert(VotingExpertBase):
             )
             self.smart_bus.set(
                 "trend_analysis",
-                {"current_trend": "neutral", "trend_strength": 0.0},
+                {
+                    "current_trend": "neutral",
+                    "trend_strength": 0.0,
+                    "per_instrument": {},
+                },
                 module="TrendExpert",
                 thesis="Trend analysis baseline",
             )
         except Exception:
+            # Baseline publication must never break module init
             pass
 
     # ═══════════════════════════ INDICATOR CALCULATIONS ═══════════════════════════
@@ -266,9 +290,11 @@ class TrendExpert(VotingExpertBase):
                 self.price_history.append(cp)
                 self.close_history.append(cp)
                 self.high_history.append(
-                    float(current_high) if current_high else cp
+                    float(current_high) if current_high is not None else cp
                 )
-                self.low_history.append(float(current_low) if current_low else cp)
+                self.low_history.append(
+                    float(current_low) if current_low is not None else cp
+                )
                 return True
 
             return False
@@ -279,8 +305,10 @@ class TrendExpert(VotingExpertBase):
 
     def _calculate_ema(self, prices: List[float], period: int) -> float:
         """Calculate Exponential Moving Average."""
-        if len(prices) < period:
-            return float(sum(prices) / len(prices)) if prices else 0.0
+        if not prices:
+            return 0.0
+        if period <= 1 or len(prices) < period:
+            return float(sum(prices) / len(prices))
 
         try:
             multiplier = 2 / (period + 1)
@@ -293,8 +321,10 @@ class TrendExpert(VotingExpertBase):
 
     def _calculate_sma(self, prices: List[float], period: int) -> float:
         """Calculate Simple Moving Average."""
+        if not prices:
+            return 0.0
         if len(prices) < period:
-            return float(sum(prices) / len(prices)) if prices else 0.0
+            return float(sum(prices) / len(prices))
         return float(sum(prices[-period:]) / period)
 
     def _calculate_triple_ma(
@@ -317,7 +347,7 @@ class TrendExpert(VotingExpertBase):
     def _calculate_adx(
         self, highs: List[float], lows: List[float], closes: List[float]
     ) -> Tuple[float, float, float]:
-        """Calculate ADX with +DI and -DI."""
+        """Calculate ADX with +DI and -DI (simplified, stable)."""
         period = self.adx_period
         if (
             len(highs) < period + 1
@@ -328,9 +358,9 @@ class TrendExpert(VotingExpertBase):
             return 20.0, 50.0, 50.0
 
         try:
-            highs_arr = np.array(highs[-(period + 1):], dtype=np.float64)
-            lows_arr = np.array(lows[-(period + 1):], dtype=np.float64)
-            closes_arr = np.array(closes[-(period + 1):], dtype=np.float64)
+            highs_arr = np.array(highs[-(period + 1) :], dtype=np.float64)
+            lows_arr = np.array(lows[-(period + 1) :], dtype=np.float64)
+            closes_arr = np.array(closes[-(period + 1) :], dtype=np.float64)
 
             tr1 = highs_arr[1:] - lows_arr[1:]
             tr2 = np.abs(highs_arr[1:] - closes_arr[:-1])
@@ -354,12 +384,12 @@ class TrendExpert(VotingExpertBase):
             if atr == 0:
                 return 20.0, 50.0, 50.0
 
-            plus_di = (plus_dm_avg / atr) * 100
-            minus_di = (minus_dm_avg / atr) * 100
+            plus_di = (plus_dm_avg / atr) * 100.0
+            minus_di = (minus_dm_avg / atr) * 100.0
 
             di_sum = plus_di + minus_di
-            dx = 0.0 if di_sum == 0 else abs(plus_di - minus_di) / di_sum * 100
-            adx = dx  # simplified
+            dx = 0.0 if di_sum == 0 else abs(plus_di - minus_di) / di_sum * 100.0
+            adx = dx  # simplified for robustness
 
             return (
                 float(np.clip(adx, 0, 100)),
@@ -368,12 +398,13 @@ class TrendExpert(VotingExpertBase):
             )
 
         except Exception:
+            # Fail-safe neutral defaults
             return 20.0, 50.0, 50.0
 
     def _calculate_parabolic_sar(
         self, highs: List[float], lows: List[float]
     ) -> Tuple[float, int]:
-        """Calculate Parabolic SAR (simplified)."""
+        """Calculate Parabolic SAR (simplified, robust)."""
         if len(highs) < 5 or len(lows) < 5:
             return 0.0, 0
 
@@ -390,10 +421,10 @@ class TrendExpert(VotingExpertBase):
                 sar = prev_high * (1 + self.sar_af_start)
                 direction = -1
             else:
-                sar = (prev_high + prev_low) / 2
+                sar = (prev_high + prev_low) / 2.0
                 direction = 0
 
-            return float(sar), direction
+            return float(sar), int(direction)
 
         except Exception:
             return 0.0, 0
@@ -401,7 +432,7 @@ class TrendExpert(VotingExpertBase):
     def _calculate_trend_slope(
         self, prices: List[float], lookback: int = 20
     ) -> float:
-        """Calculate linear regression slope for trend direction."""
+        """Calculate linear regression slope for trend direction (normalized)."""
         if len(prices) < lookback:
             return 0.0
 
@@ -419,15 +450,15 @@ class TrendExpert(VotingExpertBase):
     def _find_support_resistance(
         self, highs: List[float], lows: List[float]
     ) -> Tuple[List[float], List[float]]:
-        """Find key support and resistance levels."""
+        """Find key support and resistance levels using simple swing logic."""
         if len(highs) < self.sr_lookback or len(lows) < self.sr_lookback:
             return [], []
 
         try:
-            recent_highs = highs[-self.sr_lookback:]
-            recent_lows = lows[-self.sr_lookback:]
+            recent_highs = highs[-self.sr_lookback :]
+            recent_lows = lows[-self.sr_lookback :]
 
-            resistance = []
+            resistance: List[float] = []
             for i in range(2, len(recent_highs) - 2):
                 if (
                     recent_highs[i] > recent_highs[i - 1]
@@ -437,7 +468,7 @@ class TrendExpert(VotingExpertBase):
                 ):
                     resistance.append(recent_highs[i])
 
-            support = []
+            support: List[float] = []
             for i in range(2, len(recent_lows) - 2):
                 if (
                     recent_lows[i] < recent_lows[i - 1]
@@ -457,7 +488,7 @@ class TrendExpert(VotingExpertBase):
     def _check_sr_proximity(
         self, current_price: float, support: List[float], resistance: List[float]
     ) -> Tuple[bool, bool]:
-        """Check if price is near support or resistance."""
+        """Check if price is near support or resistance (relative threshold)."""
         near_support = False
         near_resistance = False
 
@@ -503,9 +534,10 @@ class TrendExpert(VotingExpertBase):
             highs = list(self.high_history)
             lows = list(self.low_history)
 
-            if len(prices) < self.slow_period + 10:
+            if len(prices) < self.min_price_history:
                 self.log_warning(
-                    f"[TREND] Insufficient data: {len(prices)} bars (need {self.slow_period + 10}) - returning flat"
+                    f"[TREND] Insufficient data: {len(prices)} bars "
+                    f"(need {self.min_price_history}) - returning flat"
                 )
                 return {
                     "action": "flat",
@@ -523,12 +555,12 @@ class TrendExpert(VotingExpertBase):
             ma_spread_fast_medium = (
                 (self.fast_ma - self.medium_ma) / self.medium_ma
                 if self.medium_ma
-                else 0
+                else 0.0
             )
             ma_spread_medium_slow = (
                 (self.medium_ma - self.slow_ma) / self.slow_ma
                 if self.slow_ma
-                else 0
+                else 0.0
             )
 
             self.ma_history.append(
@@ -564,10 +596,10 @@ class TrendExpert(VotingExpertBase):
             )
 
             price_vs_fast = (
-                (current_price - self.fast_ma) / self.fast_ma if self.fast_ma else 0
+                (current_price - self.fast_ma) / self.fast_ma if self.fast_ma else 0.0
             )
             price_vs_slow = (
-                (current_price - self.slow_ma) / self.slow_ma if self.slow_ma else 0
+                (current_price - self.slow_ma) / self.slow_ma if self.slow_ma else 0.0
             )
 
             bullish_score, bearish_score, total_weight = (
@@ -645,9 +677,7 @@ class TrendExpert(VotingExpertBase):
             )
 
             # Track signal performance counter
-            self.trend_performance.setdefault(action, {}).setdefault(
-                "signals", 0
-            )
+            self.trend_performance.setdefault(action, {}).setdefault("signals", 0)
             self.trend_performance[action]["signals"] += 1
 
             proposal = {
@@ -780,7 +810,8 @@ class TrendExpert(VotingExpertBase):
 
             if not market_data and not features:
                 self.log_debug(
-                    f"[TREND][BUS] empty fetch: market_data_keys={list(market_data.keys()) if isinstance(market_data, dict) else market_data}, "
+                    f"[TREND][BUS] empty fetch: "
+                    f"market_data_keys={list(market_data.keys()) if isinstance(market_data, dict) else market_data}, "
                     f"features_keys={list(features.keys()) if isinstance(features, dict) else features}"
                 )
                 self.log_warning("[TREND] No market data or features available")
@@ -795,6 +826,7 @@ class TrendExpert(VotingExpertBase):
                     inst_market = self._extract_instrument_data(market_data, inst)
                     inst_features = self._extract_instrument_data(features, inst)
 
+                    # Primary price series for this instrument
                     close_prices = self._extract_prices(
                         inst_market, inst_features, "close", inst
                     )
@@ -818,6 +850,7 @@ class TrendExpert(VotingExpertBase):
                             },
                         )
 
+                    # Seed state with historical bars
                     if len(close_prices) > 0:
                         state["price_history"] = deque(
                             close_prices[-200:], maxlen=200
@@ -837,40 +870,103 @@ class TrendExpert(VotingExpertBase):
 
                     prices = list(state.get("price_history", []))
 
-                    if len(prices) < self.slow_period + 10:
-                        tf_meta = {}
-                        # Fetch historical_prices from bus for MTF debug info
-                        try:
-                            historical = self.smart_bus.get("historical_prices", name, default=None)
-                        except Exception:
-                            historical = None
+                    # ═══════════════════════════════════════════════════════════════
+                    # REAL-TIME RESPONSIVENESS: Inject forming bar's current price
+                    # This makes the trend calculation update between M15 bar closes
+                    # instead of waiting 15 minutes for the next closed bar.
+                    # ═══════════════════════════════════════════════════════════════
+                    try:
+                        historical = self.smart_bus.get(
+                            "historical_prices", name, default=None
+                        )
                         if isinstance(historical, dict):
-                            # Find matching symbol in historical data
                             matched_sym = None
                             for sym in historical.keys():
                                 if normalize_instrument(sym) == inst_norm:
                                     matched_sym = sym
                                     break
-                            if matched_sym and isinstance(historical.get(matched_sym), dict):
+                            if matched_sym and isinstance(
+                                historical.get(matched_sym), dict
+                            ):
+                                m15_rec = historical[matched_sym].get("M15", {})
+                                if isinstance(m15_rec, dict):
+                                    cur_bar = m15_rec.get("current_bar", {})
+                                    if isinstance(cur_bar, dict):
+                                        forming_close = cur_bar.get("close")
+                                        forming_high = cur_bar.get("high")
+                                        forming_low = cur_bar.get("low")
+                                        # Append forming bar data if valid and different from last closed bar
+                                        if forming_close is not None and prices:
+                                            forming_close = float(forming_close)
+                                            # Only patch if price is meaningfully different (tick changed)
+                                            if abs(forming_close - prices[-1]) > 0.0001:
+                                                prices = prices[:-1] + [forming_close]
+                                                highs_list = list(
+                                                    state.get("high_history", [])
+                                                )
+                                                lows_list = list(
+                                                    state.get("low_history", [])
+                                                )
+                                                if forming_high is not None and highs_list:
+                                                    highs_list = highs_list[:-1] + [
+                                                        float(forming_high)
+                                                    ]
+                                                    state["high_history"] = deque(
+                                                        highs_list, maxlen=200
+                                                    )
+                                                if forming_low is not None and lows_list:
+                                                    lows_list = lows_list[:-1] + [
+                                                        float(forming_low)
+                                                    ]
+                                                    state["low_history"] = deque(
+                                                        lows_list, maxlen=200
+                                                    )
+                    except Exception as e:
+                        self.log_warning(f"[TREND] Failed to append forming bar: {e}")
+
+                    # Guard: need enough history for stable triple MA + ADX
+                    if len(prices) < self.min_price_history:
+                        tf_meta = {}
+                        # Fetch historical_prices from bus for MTF debug info
+                        try:
+                            historical = self.smart_bus.get(
+                                "historical_prices", name, default=None
+                            )
+                        except Exception:
+                            historical = None
+                        if isinstance(historical, dict):
+                            matched_sym = None
+                            for sym in historical.keys():
+                                if normalize_instrument(sym) == inst_norm:
+                                    matched_sym = sym
+                                    break
+                            if matched_sym and isinstance(
+                                historical.get(matched_sym), dict
+                            ):
                                 sym_block = historical[matched_sym]
                                 for tf in ("M15", "H1", "H4", "D1"):
                                     rec = sym_block.get(tf)
                                     if isinstance(rec, dict):
                                         bars_avail = rec.get("bars_available")
-                                        cur_bar = rec.get("current_bar") if isinstance(rec.get("current_bar"), dict) else {}
-                                        last_ts = cur_bar.get("timestamp") if isinstance(cur_bar, dict) else None
-                                        close_len = 0
+                                        cur_bar = rec.get("current_bar")
+                                        if isinstance(cur_bar, dict):
+                                            last_ts = cur_bar.get("timestamp")
+                                        else:
+                                            last_ts = None
                                         seq = rec.get("close")
                                         try:
                                             close_len = len(seq) if seq is not None else 0
                                         except Exception:
                                             close_len = 0
-                                        tf_meta[tf] = {"close_len": close_len, "bars_available": bars_avail, "last_ts": last_ts}
+                                        tf_meta[tf] = {
+                                            "close_len": close_len,
+                                            "bars_available": bars_avail,
+                                            "last_ts": last_ts,
+                                        }
                         self.log_debug(
-                            f"[TREND][DATA] {inst_norm} insufficient: price_len={len(prices)}, slow_period={self.slow_period}, tf_meta={tf_meta}"
-                        )
-                        self.log_debug(
-                            f"[TREND] Insufficient data for {inst}: {len(prices)} bars"
+                            f"[TREND][DATA] {inst_norm} insufficient: "
+                            f"price_len={len(prices)}, min_required={self.min_price_history}, "
+                            f"tf_meta={tf_meta}"
                         )
                         per_instrument_vote.set_proposal(
                             InstrumentProposal(
@@ -878,7 +974,10 @@ class TrendExpert(VotingExpertBase):
                                 action="flat",
                                 confidence=0.1,
                                 magnitude=0.0,
-                                rationale=f"Insufficient data for {inst}: {len(prices)} bars",
+                                rationale=(
+                                    f"Insufficient data for {inst}: "
+                                    f"{len(prices)} bars (need {self.min_price_history})"
+                                ),
                             )
                         )
                         per_instrument_analysis[inst_norm] = {
@@ -888,38 +987,47 @@ class TrendExpert(VotingExpertBase):
                             "confidence": 0.1,
                         }
                         continue
+
                     # Periodic debug snapshot of data freshness/lengths
                     now_ts = time.time()
                     last_log = self._debug_last_log.get(inst_norm, 0.0)
                     if now_ts - last_log > 15.0:
                         tf_meta = {}
-                        # Fetch historical_prices from bus for MTF debug info
                         try:
-                            historical = self.smart_bus.get("historical_prices", name, default=None)
+                            historical = self.smart_bus.get(
+                                "historical_prices", name, default=None
+                            )
                         except Exception:
                             historical = None
                         if isinstance(historical, dict):
-                            # Find matching symbol in historical data
                             matched_sym = None
                             for sym in historical.keys():
                                 if normalize_instrument(sym) == inst_norm:
                                     matched_sym = sym
                                     break
-                            if matched_sym and isinstance(historical.get(matched_sym), dict):
+                            if matched_sym and isinstance(
+                                historical.get(matched_sym), dict
+                            ):
                                 sym_block = historical[matched_sym]
                                 for tf in ("M15", "H1", "H4", "D1"):
                                     rec = sym_block.get(tf)
                                     if isinstance(rec, dict):
                                         bars_avail = rec.get("bars_available")
-                                        cur_bar = rec.get("current_bar") if isinstance(rec.get("current_bar"), dict) else {}
-                                        last_ts = cur_bar.get("timestamp") if isinstance(cur_bar, dict) else None
-                                        close_len = 0
+                                        cur_bar = rec.get("current_bar")
+                                        if isinstance(cur_bar, dict):
+                                            last_ts = cur_bar.get("timestamp")
+                                        else:
+                                            last_ts = None
                                         seq = rec.get("close")
                                         try:
                                             close_len = len(seq) if seq is not None else 0
                                         except Exception:
                                             close_len = 0
-                                        tf_meta[tf] = {"close_len": close_len, "bars_available": bars_avail, "last_ts": last_ts}
+                                        tf_meta[tf] = {
+                                            "close_len": close_len,
+                                            "bars_available": bars_avail,
+                                            "last_ts": last_ts,
+                                        }
                         self.log_debug(
                             f"[TREND][DATA] {inst_norm}: price_len={len(prices)}, "
                             f"latest={prices[-1] if prices else None}, tf_meta={tf_meta}"
@@ -930,33 +1038,38 @@ class TrendExpert(VotingExpertBase):
                     highs = list(state.get("high_history", prices))
                     lows = list(state.get("low_history", prices))
 
-                    # ═══════════════════════════════════════════════════════════════
-                    # PERFORMANCE CACHE: Skip expensive indicator calculations if data unchanged
-                    # ═══════════════════════════════════════════════════════════════
+                    # ─────────────────────────────────────────────────────────────
+                    # PERFORMANCE CACHE:
+                    # Skip expensive indicator calculations if data unchanged
+                    # (implementation lives in VotingExpertBase).
+                    # ─────────────────────────────────────────────────────────────
+                    mtf_analysis: Optional[Dict[str, Any]] = None
+                    mtf_adjustment: float = 0.0
+
                     cached = self._get_cached_indicators(inst_norm, prices)
                     if cached is not None:
                         # Cache hit - use cached indicator values
-                        fast_ma = cached.get('fast_ma', 0.0)
-                        medium_ma = cached.get('medium_ma', 0.0)
-                        slow_ma = cached.get('slow_ma', 0.0)
-                        ma_alignment = cached.get('ma_alignment', 0)
-                        adx_value = cached.get('adx_value', 0.0)
-                        plus_di = cached.get('plus_di', 0.0)
-                        minus_di = cached.get('minus_di', 0.0)
-                        sar_value = cached.get('sar_value', 0.0)
-                        sar_direction = cached.get('sar_direction', 0)
-                        trend_slope = cached.get('trend_slope', 0.0)
-                        support_levels = cached.get('support_levels', [])
-                        resistance_levels = cached.get('resistance_levels', [])
-                        near_support = cached.get('near_support', False)
-                        near_resistance = cached.get('near_resistance', False)
-                        bullish_score = cached.get('bullish_score', 0.0)
-                        bearish_score = cached.get('bearish_score', 0.0)
-                        total_weight = cached.get('total_weight', 1.0)
+                        fast_ma = cached.get("fast_ma", 0.0)
+                        medium_ma = cached.get("medium_ma", 0.0)
+                        slow_ma = cached.get("slow_ma", 0.0)
+                        ma_alignment = cached.get("ma_alignment", 0)
+                        adx_value = cached.get("adx_value", 0.0)
+                        plus_di = cached.get("plus_di", 0.0)
+                        minus_di = cached.get("minus_di", 0.0)
+                        sar_value = cached.get("sar_value", 0.0)
+                        sar_direction = cached.get("sar_direction", 0)
+                        trend_slope = cached.get("trend_slope", 0.0)
+                        support_levels = cached.get("support_levels", [])
+                        resistance_levels = cached.get("resistance_levels", [])
+                        near_support = cached.get("near_support", False)
+                        near_resistance = cached.get("near_resistance", False)
+                        bullish_score = cached.get("bullish_score", 0.0)
+                        bearish_score = cached.get("bearish_score", 0.0)
+                        total_weight = cached.get("total_weight", 1.0)
                     else:
                         # Cache miss - calculate all indicators
-                        fast_ma, medium_ma, slow_ma, ma_alignment = self._calculate_triple_ma(
-                            prices
+                        fast_ma, medium_ma, slow_ma, ma_alignment = (
+                            self._calculate_triple_ma(prices)
                         )
                         adx_value, plus_di, minus_di = self._calculate_adx(
                             highs, lows, prices
@@ -965,8 +1078,8 @@ class TrendExpert(VotingExpertBase):
                             highs, lows
                         )
                         trend_slope = self._calculate_trend_slope(prices, 20)
-                        support_levels, resistance_levels = self._find_support_resistance(
-                            highs, lows
+                        support_levels, resistance_levels = (
+                            self._find_support_resistance(highs, lows)
                         )
                         near_support, near_resistance = self._check_sr_proximity(
                             current_price, support_levels, resistance_levels
@@ -1003,25 +1116,29 @@ class TrendExpert(VotingExpertBase):
                         )
 
                         # Store in cache
-                        self._set_cached_indicators(inst_norm, prices, {
-                            'fast_ma': fast_ma,
-                            'medium_ma': medium_ma,
-                            'slow_ma': slow_ma,
-                            'ma_alignment': ma_alignment,
-                            'adx_value': adx_value,
-                            'plus_di': plus_di,
-                            'minus_di': minus_di,
-                            'sar_value': sar_value,
-                            'sar_direction': sar_direction,
-                            'trend_slope': trend_slope,
-                            'support_levels': support_levels,
-                            'resistance_levels': resistance_levels,
-                            'near_support': near_support,
-                            'near_resistance': near_resistance,
-                            'bullish_score': bullish_score,
-                            'bearish_score': bearish_score,
-                            'total_weight': total_weight,
-                        })
+                        self._set_cached_indicators(
+                            inst_norm,
+                            prices,
+                            {
+                                "fast_ma": fast_ma,
+                                "medium_ma": medium_ma,
+                                "slow_ma": slow_ma,
+                                "ma_alignment": ma_alignment,
+                                "adx_value": adx_value,
+                                "plus_di": plus_di,
+                                "minus_di": minus_di,
+                                "sar_value": sar_value,
+                                "sar_direction": sar_direction,
+                                "trend_slope": trend_slope,
+                                "support_levels": support_levels,
+                                "resistance_levels": resistance_levels,
+                                "near_support": near_support,
+                                "near_resistance": near_resistance,
+                                "bullish_score": bullish_score,
+                                "bearish_score": bearish_score,
+                                "total_weight": total_weight,
+                            },
+                        )
 
                     bullish_confluence = (
                         bullish_score / total_weight if total_weight > 0 else 0.0
@@ -1030,6 +1147,7 @@ class TrendExpert(VotingExpertBase):
                         bearish_score / total_weight if total_weight > 0 else 0.0
                     )
                     net_trend = bullish_confluence - bearish_confluence
+                    trend_strength_abs = abs(net_trend)
 
                     trend_history = state.setdefault(
                         "trend_history", deque(maxlen=100)
@@ -1080,51 +1198,144 @@ class TrendExpert(VotingExpertBase):
                     # M15 is the SOLE signal generator - H1/H4/D1 ONLY modify confidence
                     # Context TFs NEVER override M15 direction (ExitManager closes early)
                     # ═══════════════════════════════════════════════════════════════
-                    mtf_adjustment = 0.0
                     mtf_info = ""
-                    
                     if self.use_mtf_confirmation and action in ("long", "short"):
                         mtf_analysis = self._analyze_multi_timeframe_trend(inst)
-                        
                         if mtf_analysis.get("available"):
-                            dominant = mtf_analysis.get("dominant_direction", "neutral")
-                            alignment = mtf_analysis.get("alignment_score", 0.5)
-                            
-                            # Check if M15 signal direction matches context TF direction
+                            dominant = mtf_analysis.get(
+                                "dominant_direction", "neutral"
+                            )
+                            alignment = float(
+                                mtf_analysis.get("alignment_score", 0.5)
+                            )
+
                             signal_is_bullish = action == "long"
                             mtf_is_bullish = dominant == "bullish"
                             mtf_is_bearish = dominant == "bearish"
-                            
+
                             if signal_is_bullish and mtf_is_bullish:
                                 # M15 LONG confirmed by context TFs - boost confidence
                                 mtf_adjustment = self.mtf_agreement_bonus * alignment
-                                mtf_info = f"Context TFs AGREE ↑ (align={alignment:.2f})"
-                            elif not signal_is_bullish and mtf_is_bearish:
+                                mtf_info = (
+                                    f"Context TFs AGREE ↑ (align={alignment:.2f})"
+                                )
+                            elif (not signal_is_bullish) and mtf_is_bearish:
                                 # M15 SHORT confirmed by context TFs - boost confidence
                                 mtf_adjustment = self.mtf_agreement_bonus * alignment
-                                mtf_info = f"Context TFs AGREE ↓ (align={alignment:.2f})"
-                            elif (signal_is_bullish and mtf_is_bearish) or (not signal_is_bullish and mtf_is_bullish):
+                                mtf_info = (
+                                    f"Context TFs AGREE ↓ (align={alignment:.2f})"
+                                )
+                            elif (signal_is_bullish and mtf_is_bearish) or (
+                                (not signal_is_bullish) and mtf_is_bullish
+                            ):
                                 # M15 signal CONTRADICTS context TFs - penalize confidence ONLY
-                                # M15-PRIMARY: Never override direction, only reduce confidence
                                 mtf_adjustment = -self.mtf_disagreement_penalty * alignment
-                                mtf_info = f"Context TFs DISAGREE (align={alignment:.2f}, conf penalty applied)"
-                                # NOTE: We do NOT override action to flat - M15 is the decision maker
+                                mtf_info = (
+                                    f"Context TFs DISAGREE "
+                                    f"(align={alignment:.2f}, conf penalty applied)"
+                                )
                             else:
                                 # Neutral context TFs - slight reduction
                                 mtf_adjustment = -0.05
-                                mtf_info = f"Context TFs neutral (no confirmation)"
-                            
-                            # Apply MTF adjustment to confidence (NEVER change action)
-                            confidence = max(0.1, min(0.95, confidence + mtf_adjustment))
-                            
-                            # Store MTF info in analysis
-                            per_instrument_analysis[inst_norm] = per_instrument_analysis.get(inst_norm, {})
-                            per_instrument_analysis[inst_norm]["mtf_analysis"] = mtf_analysis
-                            per_instrument_analysis[inst_norm]["mtf_adjustment"] = mtf_adjustment
+                                mtf_info = "Context TFs neutral (no confirmation)"
 
-                    thesis = (
-                        f"{inst_norm}: {current_trend} → {action} "
-                        f"(ADX={adx_value:.1f}, conf={confidence:.2f}) {mtf_info}"
+                            # Apply MTF adjustment to confidence (NEVER change action)
+                            confidence = max(
+                                0.1, min(0.95, confidence + mtf_adjustment)
+                            )
+
+                    # ═══════════════════════════════════════════════════════════════
+                    # POSITION FOCUS MODE (PER-INSTRUMENT)
+                    # If we have a position in THIS instrument, reframe signal for position management
+                    # ═══════════════════════════════════════════════════════════════
+                    position_focus = self._get_position_focus_context()
+                    supports_position = True
+                    position_eval = "no_position"
+                    original_action = action
+
+                    if position_focus and self._has_position_for_instrument(inst_norm):
+                        position_side = self._get_position_side_for_instrument(
+                            inst_norm
+                        )
+                        inst_position = self._get_position_for_instrument(inst_norm)
+                        position_pnl = float(
+                            inst_position.get(
+                                "unrealized_pnl", inst_position.get("pnl", 0.0)
+                            )
+                        ) if inst_position else 0.0
+
+                        # Determine if signal supports or threatens position
+                        if position_side > 0:  # LONG position
+                            if action in ("long", "buy"):
+                                supports_position = True
+                                position_eval = "supports_long"
+                            elif action in ("short", "sell"):
+                                supports_position = False
+                                position_eval = "threatens_long"
+                            else:
+                                supports_position = True
+                                position_eval = "neutral_for_long"
+                        elif position_side < 0:  # SHORT position
+                            if action in ("short", "sell"):
+                                supports_position = True
+                                position_eval = "supports_short"
+                            elif action in ("long", "buy"):
+                                supports_position = False
+                                position_eval = "threatens_short"
+                            else:
+                                supports_position = True
+                                position_eval = "neutral_for_short"
+
+                        # Remap action for position management
+                        if supports_position:
+                            action = "hold"  # Strong support = confident hold
+                        else:
+                            if confidence > 0.7:
+                                action = "exit"  # Strong opposing signal
+                            elif confidence > 0.5:
+                                action = "tighten"  # Moderate opposing signal
+                            else:
+                                action = "hold"  # Weak opposing signal
+
+                        # Adjust confidence based on PnL
+                        if position_pnl > 0 and not supports_position:
+                            confidence *= 0.8  # Reduce exit confidence when in profit
+                        elif position_pnl < 0 and not supports_position:
+                            confidence = min(1.0, confidence * 1.2)  # Increase exit confidence in drawdown
+
+                        thesis = (
+                            f"{inst_norm}: POSITION_FOCUS({position_eval}) -> {action} "
+                            f"(original_action={original_action}, ADX={adx_value:.1f}, pnl={position_pnl:.2f})"
+                        )
+
+                        self.log_debug(
+                            f"[TREND] {inst_norm} POSITION_FOCUS: original_action={original_action} -> {action}, "
+                            f"supports={supports_position}, eval={position_eval}, pnl={position_pnl:.2f}"
+                        )
+                    else:
+                        thesis = (
+                            f"{inst_norm}: {current_trend} -> {action} "
+                            f"(ADX={adx_value:.1f}, conf={confidence:.2f}) {mtf_info}"
+                        )
+
+                    # Update per-instrument state for persistence / monitoring
+                    state.update(
+                        {
+                            "fast_ma": float(fast_ma),
+                            "medium_ma": float(medium_ma),
+                            "slow_ma": float(slow_ma),
+                            "adx_value": float(adx_value),
+                            "plus_di": float(plus_di),
+                            "minus_di": float(minus_di),
+                            "sar_value": float(sar_value),
+                            "sar_direction": int(sar_direction),
+                            "current_trend": current_trend,
+                            "trend_strength": float(trend_strength_abs),
+                            "trend_slope": float(trend_slope),
+                            "ma_alignment": int(ma_alignment),
+                            "support_levels": list(support_levels),
+                            "resistance_levels": list(resistance_levels),
+                        }
                     )
 
                     per_instrument_vote.set_proposal(
@@ -1139,7 +1350,7 @@ class TrendExpert(VotingExpertBase):
 
                     per_instrument_analysis[inst_norm] = {
                         "current_trend": current_trend,
-                        "trend_strength": abs(net_trend),
+                        "trend_strength": trend_strength_abs,
                         "trend_slope": trend_slope,
                         "trend_duration": trend_duration,
                         "bullish_confluence": bullish_confluence,
@@ -1153,6 +1364,14 @@ class TrendExpert(VotingExpertBase):
                         "near_resistance": near_resistance,
                         "action": action,
                         "confidence": confidence,
+                        "mtf_analysis": mtf_analysis,
+                        "mtf_adjustment": mtf_adjustment,
+                        "position_focus_mode": self._has_position_for_instrument(
+                            inst_norm
+                        ),
+                        "supports_position": supports_position,
+                        "position_evaluation": position_eval,
+                        "original_action": original_action,
                     }
 
                     self.log_debug(
@@ -1160,7 +1379,7 @@ class TrendExpert(VotingExpertBase):
                         f"trend={current_trend}, net={net_trend:.3f}"
                     )
 
-                # Global summary (backward compat)
+                # Global summary (backward compat: pick highest-confidence instrument)
                 if per_instrument_vote.proposals:
                     best_proposal = max(
                         per_instrument_vote.proposals.values(),
@@ -1169,10 +1388,20 @@ class TrendExpert(VotingExpertBase):
                     global_action = best_proposal.action
                     global_confidence = best_proposal.confidence
                     global_thesis = best_proposal.rationale
+                    best_inst = getattr(best_proposal, "instrument", None)
+                    if best_inst and best_inst in per_instrument_analysis:
+                        self.current_trend = per_instrument_analysis[best_inst][
+                            "current_trend"
+                        ]
+                        self.trend_strength = per_instrument_analysis[best_inst][
+                            "trend_strength"
+                        ]
                 else:
                     global_action = "flat"
                     global_confidence = 0.1
                     global_thesis = "No instrument data available"
+                    self.current_trend = "neutral"
+                    self.trend_strength = 0.0
 
                 proposals_dict = {
                     inst: {
@@ -1295,79 +1524,114 @@ class TrendExpert(VotingExpertBase):
     # ═══════════════════════════ HELPERS ═══════════════════════════
 
     def _extract_instrument_data(self, data: Dict, instrument: str) -> Dict:
-        """Extract data for a specific instrument from nested market data."""
+        """
+        Extract data for a specific instrument from nested market data.
+
+        Follows the same logic as Theme/Momentum experts to keep behaviour
+        consistent across the committee.
+        """
         if not isinstance(data, dict):
             return {}
 
         inst_norm = normalize_instrument(instrument)
 
+        # Direct instrument key
         for key in [instrument, inst_norm, instrument.upper(), instrument.lower()]:
             if key in data:
                 return data[key] if isinstance(data[key], dict) else data
 
+        # Simple FX/commodity aliases
         for sep in ["_", "/", "-", ""]:
             for pair in [f"EUR{sep}USD", f"XAU{sep}USD"]:
                 norm_pair = normalize_instrument(pair)
                 if norm_pair == inst_norm and pair in data:
                     return data[pair] if isinstance(data[pair], dict) else data
 
+        # Fallback: legacy flat dict format
         return data
 
     def _extract_prices(
         self, market_data: Dict, features: Dict, price_type: str, instrument: str = ""
     ) -> np.ndarray:
-        """Extract price array from market data or features for a specific instrument."""
-        inst_norm = normalize_instrument(instrument) if instrument else ""
-        inst_variations = [
-            instrument,
-            inst_norm,
-            f"{inst_norm[:3]}_{inst_norm[3:]}" if len(inst_norm) >= 6 else inst_norm,
-        ]
+        """
+        Extract price array from market data, features, or InfoBus.
 
+        Behaviour is aligned with Theme/Momentum experts:
+        - Prefer instrument-specific M15 series with enough history.
+        - Fall back to H1/H4/D1 (in that order) if needed.
+        - If no instrument-specific series is found, fall back to the first
+          symbol in historical_prices.
+        """
+        inst_norm = normalize_instrument(instrument) if instrument else ""
+
+        def _best_array_from_candidates(candidates: List[np.ndarray]) -> np.ndarray:
+            """Pick the best candidate, preferring sequences >= min_price_history, then longest."""
+            if not candidates:
+                return np.array([])
+            long_enough = [c for c in candidates if len(c) >= self.min_price_history]
+            if long_enough:
+                return max(long_enough, key=len)
+            return max(candidates, key=len)
+
+        candidates: List[np.ndarray] = []
+
+        # Direct in market_data
         if isinstance(market_data, dict):
             if price_type in market_data:
                 data = market_data[price_type]
                 if isinstance(data, (list, np.ndarray)):
-                    return np.array(data, dtype=float)
+                    candidates.append(np.array(data, dtype=float))
 
+            # Nested TF structure (M15 primary, context TFs as backup)
             for tf in ["M15", "H1", "H4", "D1"]:
-                if tf in market_data and isinstance(market_data[tf], dict):
-                    if price_type in market_data[tf]:
-                        data = market_data[tf][price_type]
-                        if isinstance(data, (list, np.ndarray)):
-                            return np.array(data, dtype=float)
+                tf_block = market_data.get(tf)
+                if isinstance(tf_block, dict) and price_type in tf_block:
+                    data = tf_block[price_type]
+                    if isinstance(data, (list, np.ndarray)):
+                        candidates.append(np.array(data, dtype=float))
 
+        # Features
         if isinstance(features, dict):
             if price_type in features:
                 data = features[price_type]
                 if isinstance(data, (list, np.ndarray)):
-                    return np.array(data, dtype=float)
+                    candidates.append(np.array(data, dtype=float))
 
+        if candidates:
+            return _best_array_from_candidates(candidates)
+
+        # Historical from InfoBus
         try:
             historical = self.smart_bus.get(
-                "historical_prices", self.__class__.__name__, default=None
+                "historical_prices", self.module_name, default=None
             )
         except Exception:
             historical = None
 
-        if isinstance(historical, dict):
+        if isinstance(historical, dict) and historical:
+            # Try to find the instrument explicitly
             matched_symbol = None
             for sym in historical.keys():
-                sym_norm = normalize_instrument(sym)
-                if sym_norm == inst_norm or sym in inst_variations:
+                if normalize_instrument(sym) == inst_norm:
                     matched_symbol = sym
                     break
 
-            if matched_symbol and matched_symbol in historical:
-                sym_block = historical[matched_symbol]
-                if isinstance(sym_block, dict):
-                    # M15 is primary, H1/H4/D1 are context (ordered by granularity)
-                    for tf in ["M15", "H1", "H4", "D1"]:
-                        tf_rec = sym_block.get(tf)
-                        if isinstance(tf_rec, dict):
-                            seq = tf_rec.get(price_type)
-                            if isinstance(seq, (list, np.ndarray)) and len(seq) > 0:
-                                return np.array(seq, dtype=float)
+            if matched_symbol is None:
+                # Fallback: first instrument in block
+                matched_symbol = next(iter(historical.keys()))
+
+            sym_block = historical.get(matched_symbol)
+            if isinstance(sym_block, dict):
+                tf_candidates: List[np.ndarray] = []
+                for tf in ("M15", "H1", "H4", "D1"):
+                    candidate = sym_block.get(tf)
+                    if not isinstance(candidate, dict):
+                        continue
+                    seq = candidate.get(price_type)
+                    if isinstance(seq, (list, np.ndarray)):
+                        tf_candidates.append(np.array(seq, dtype=float))
+                if tf_candidates:
+                    return _best_array_from_candidates(tf_candidates)
 
         return np.array([])
 
@@ -1391,7 +1655,7 @@ class TrendExpert(VotingExpertBase):
         bearish_score = 0.0
         total_weight = 0.0
 
-        # MA Alignment
+        # MA Alignment (trend structure)
         ma_weight = 2.5
         total_weight += ma_weight
         if ma_alignment == 1:
@@ -1399,31 +1663,31 @@ class TrendExpert(VotingExpertBase):
         elif ma_alignment == -1:
             bearish_score += ma_weight
 
-        # MA Spread
+        # MA Spread (trend separation)
         spread_weight = 1.5
         total_weight += spread_weight
         if ma_spread_fm > self.trend_threshold and ma_spread_ms > self.trend_threshold:
             bullish_score += spread_weight * min(
-                1.0, (ma_spread_fm + ma_spread_ms) * 50
+                1.0, (ma_spread_fm + ma_spread_ms) * 50.0
             )
         elif ma_spread_fm < -self.trend_threshold and ma_spread_ms < -self.trend_threshold:
             bearish_score += spread_weight * min(
-                1.0, abs(ma_spread_fm + ma_spread_ms) * 50
+                1.0, abs(ma_spread_fm + ma_spread_ms) * 50.0
             )
 
-        # Price position
+        # Price position vs fast/slow MA
         pos_weight = 1.5
         total_weight += pos_weight
         if price_vs_fast > 0 and price_vs_slow > 0:
             bullish_score += pos_weight * min(
-                1.0, (price_vs_fast + price_vs_slow) * 20
+                1.0, (price_vs_fast + price_vs_slow) * 20.0
             )
         elif price_vs_fast < 0 and price_vs_slow < 0:
             bearish_score += pos_weight * min(
-                1.0, abs(price_vs_fast + price_vs_slow) * 20
+                1.0, abs(price_vs_fast + price_vs_slow) * 20.0
             )
 
-        # ADX
+        # ADX (strength of trend)
         adx_weight = 2.0
         total_weight += adx_weight
         if adx_value >= self.adx_trending_threshold:
@@ -1433,7 +1697,7 @@ class TrendExpert(VotingExpertBase):
             else:
                 bearish_score += adx_weight * trend_strength_factor
 
-        # SAR
+        # SAR (stop-and-reverse regime)
         sar_weight = 1.2
         total_weight += sar_weight
         if sar_direction == 1:
@@ -1441,16 +1705,16 @@ class TrendExpert(VotingExpertBase):
         elif sar_direction == -1:
             bearish_score += sar_weight
 
-        # Slope
+        # Slope of price
         slope_weight = 1.8
         total_weight += slope_weight
         if trend_slope > self.trend_threshold:
             bullish_score += slope_weight * min(
-                1.0, trend_slope / (self.trend_threshold * 3)
+                1.0, trend_slope / (self.trend_threshold * 3.0)
             )
         elif trend_slope < -self.trend_threshold:
             bearish_score += slope_weight * min(
-                1.0, abs(trend_slope) / (self.trend_threshold * 3)
+                1.0, abs(trend_slope) / (self.trend_threshold * 3.0)
             )
 
         # S/R awareness
@@ -1468,25 +1732,27 @@ class TrendExpert(VotingExpertBase):
         instrument: str,
     ) -> Dict[str, Any]:
         """
-        Analyze trend direction across multiple timeframes (H1, H4, D1).
-        
-        Returns trend direction and strength for each timeframe, plus
-        an alignment score indicating how well the timeframes agree.
-        
-        This is critical for quality signals:
-        - If H1 says LONG but H4/D1 say SHORT, don't trust the H1 signal
-        - If all timeframes agree, boost confidence significantly
+        Analyze trend direction across multiple timeframes (M15 + context).
+
+        Returns trend direction/strength for each timeframe, plus an
+        alignment score indicating how well the timeframes agree.
+
+        Critical idea:
+        - M15 generates the trading signal.
+        - H1/H4/D1 are "voting spectators" that tweak confidence.
         """
         name = self.__class__.__name__
         inst_norm = normalize_instrument(instrument)
-        
+
         mtf_trends: Dict[str, Dict[str, Any]] = {}
-        
+
         try:
-            historical = self.smart_bus.get("historical_prices", name, default=None)
+            historical = self.smart_bus.get(
+                "historical_prices", name, default=None
+            )
         except Exception:
             historical = None
-        
+
         if not isinstance(historical, dict):
             return {
                 "available": False,
@@ -1494,14 +1760,14 @@ class TrendExpert(VotingExpertBase):
                 "alignment_score": 0.5,
                 "dominant_direction": "neutral",
             }
-        
+
         # Find the instrument in historical data
         matched_symbol = None
         for sym in historical.keys():
             if normalize_instrument(sym) == inst_norm:
                 matched_symbol = sym
                 break
-        
+
         if not matched_symbol or matched_symbol not in historical:
             return {
                 "available": False,
@@ -1509,8 +1775,8 @@ class TrendExpert(VotingExpertBase):
                 "alignment_score": 0.5,
                 "dominant_direction": "neutral",
             }
-        
-        sym_block = historical[matched_symbol]
+
+        sym_block = historical.get(matched_symbol)
         if not isinstance(sym_block, dict):
             return {
                 "available": False,
@@ -1518,69 +1784,73 @@ class TrendExpert(VotingExpertBase):
                 "alignment_score": 0.5,
                 "dominant_direction": "neutral",
             }
-        
+
         # Analyze each timeframe
         for tf in self.mtf_timeframes:
             tf_data = sym_block.get(tf)
             if not isinstance(tf_data, dict):
                 continue
-            
+
             close_arr = tf_data.get("close")
-            if not isinstance(close_arr, (list, np.ndarray)) or len(close_arr) < self.slow_period + 5:
+            if not isinstance(close_arr, (list, np.ndarray)):
                 continue
-            
+            if len(close_arr) < self.slow_period + 5:
+                continue
+
             prices = np.array(close_arr, dtype=float)
-            
-            # Calculate simple trend indicators for this timeframe
-            # Use EMA-based trend detection
+
+            # REAL-TIME: patch forming bar if present
+            cur_bar = tf_data.get("current_bar", {})
+            if isinstance(cur_bar, dict):
+                forming_close = cur_bar.get("close")
+                if forming_close is not None and len(prices) > 0:
+                    prices[-1] = float(forming_close)
+
+            # EMA-based trend for this timeframe
             fast_ma = self._ema(prices, min(self.fast_period, len(prices) - 1))
             slow_ma = self._ema(prices, min(self.slow_period, len(prices) - 1))
-            
+
             if fast_ma <= 0 or slow_ma <= 0:
                 continue
-            
-            # Trend direction: fast MA vs slow MA
+
             ma_spread = (fast_ma - slow_ma) / slow_ma
             current_price = float(prices[-1])
-            price_vs_slow = (current_price - slow_ma) / slow_ma if slow_ma > 0 else 0
-            
-            # Simple slope (last 10 bars or available)
+            price_vs_slow = (current_price - slow_ma) / slow_ma if slow_ma > 0 else 0.0
+
             slope_period = min(10, len(prices) - 1)
             if slope_period > 1:
                 slope = (prices[-1] - prices[-slope_period]) / prices[-slope_period]
             else:
                 slope = 0.0
-            
-            # Determine direction: bullish, bearish, or neutral
+
             bullish_signals = 0
             bearish_signals = 0
-            
-            if ma_spread > 0.001:  # Fast above slow
+
+            if ma_spread > 0.001:
                 bullish_signals += 1
             elif ma_spread < -0.001:
                 bearish_signals += 1
-            
-            if price_vs_slow > 0.002:  # Price above slow MA
+
+            if price_vs_slow > 0.002:
                 bullish_signals += 1
             elif price_vs_slow < -0.002:
                 bearish_signals += 1
-            
+
             if slope > 0.001:
                 bullish_signals += 1
             elif slope < -0.001:
                 bearish_signals += 1
-            
-            # Determine direction
+
             if bullish_signals >= 2 and bullish_signals > bearish_signals:
                 direction = "bullish"
-                strength = min(1.0, abs(ma_spread) * 20 + abs(slope) * 10)
+                strength = min(1.0, abs(ma_spread) * 20.0 + abs(slope) * 10.0)
             elif bearish_signals >= 2 and bearish_signals > bullish_signals:
                 direction = "bearish"
-                strength = min(1.0, abs(ma_spread) * 20 + abs(slope) * 10)
+                strength = min(1.0, abs(ma_spread) * 20.0 + abs(slope) * 10.0)
             else:
                 direction = "neutral"
                 strength = 0.2
-            
+
             mtf_trends[tf] = {
                 "direction": direction,
                 "strength": strength,
@@ -1588,7 +1858,7 @@ class TrendExpert(VotingExpertBase):
                 "slope": slope,
                 "price_vs_slow": price_vs_slow,
             }
-        
+
         if not mtf_trends:
             return {
                 "available": False,
@@ -1596,27 +1866,23 @@ class TrendExpert(VotingExpertBase):
                 "alignment_score": 0.5,
                 "dominant_direction": "neutral",
             }
-        
-        # Calculate alignment score
+
         directions = [t["direction"] for t in mtf_trends.values()]
         bullish_count = directions.count("bullish")
         bearish_count = directions.count("bearish")
         total_tf = len(directions)
-        
-        # Weighted alignment calculation
+
         weighted_bullish = sum(
-            self.mtf_weights.get(tf, 0.33) 
-            for tf, trend in mtf_trends.items() 
+            self.mtf_weights.get(tf, 0.33)
+            for tf, trend in mtf_trends.items()
             if trend["direction"] == "bullish"
         )
         weighted_bearish = sum(
-            self.mtf_weights.get(tf, 0.33) 
-            for tf, trend in mtf_trends.items() 
+            self.mtf_weights.get(tf, 0.33)
+            for tf, trend in mtf_trends.items()
             if trend["direction"] == "bearish"
         )
-        
-        # Alignment score: how much the timeframes agree
-        # 1.0 = all agree, 0.0 = completely mixed
+
         if bullish_count == total_tf:
             alignment_score = 1.0
             dominant = "bullish"
@@ -1632,14 +1898,13 @@ class TrendExpert(VotingExpertBase):
         else:
             alignment_score = 0.33
             dominant = "neutral"
-        
-        # Log MTF analysis
+
         self.log_debug(
-            f"[TREND MTF] {inst_norm}: " +
-            ", ".join(f"{tf}={t['direction']}" for tf, t in mtf_trends.items()) +
-            f" | alignment={alignment_score:.2f}, dominant={dominant}"
+            f"[TREND MTF] {inst_norm}: "
+            + ", ".join(f"{tf}={t['direction']}" for tf, t in mtf_trends.items())
+            + f" | alignment={alignment_score:.2f}, dominant={dominant}"
         )
-        
+
         return {
             "available": True,
             "trends": mtf_trends,
@@ -1648,12 +1913,13 @@ class TrendExpert(VotingExpertBase):
             "weighted_bullish": weighted_bullish,
             "weighted_bearish": weighted_bearish,
         }
-    
+
     def _ema(self, prices: np.ndarray, period: int) -> float:
         """Calculate EMA for the given period."""
-        if len(prices) < period or period < 1:
-            return float(prices[-1]) if len(prices) > 0 else 0.0
-        
+        if len(prices) == 0:
+            return 0.0
+        if period < 1 or len(prices) < period:
+            return float(prices[-1])
         multiplier = 2.0 / (period + 1)
         ema = float(prices[0])
         for price in prices[1:]:
@@ -1758,7 +2024,7 @@ class TrendExpert(VotingExpertBase):
         return action, float(base_conf), float(signal_strength), current_trend
 
     def _neutral_output(self, reason: str) -> Dict[str, Any]:
-        """Generate neutral output with explanation."""
+        """Generate neutral output with explanation and publish neutral keys."""
         thesis = f"Trend flat: {reason}"
         name = self.__class__.__name__
 
@@ -1771,13 +2037,22 @@ class TrendExpert(VotingExpertBase):
 
         try:
             self.smart_bus.set(
-                "TrendExpert_voting_proposal", proposal, module=name, thesis=thesis
+                "TrendExpert_voting_proposal",
+                proposal,
+                module=name,
+                thesis=thesis,
             )
             self.smart_bus.set(
-                "TrendExpert_confidence", 0.1, module=name, thesis="Confidence: 10%"
+                "TrendExpert_confidence",
+                0.1,
+                module=name,
+                thesis="Confidence: 10%",
             )
             self.smart_bus.set(
-                "trend_voting_proposal", proposal, module=name, thesis=thesis
+                "trend_voting_proposal",
+                proposal,
+                module=name,
+                thesis=thesis,
             )
             self.smart_bus.set(
                 "trend_confidence",
@@ -1794,7 +2069,11 @@ class TrendExpert(VotingExpertBase):
             "TrendExpert_per_instrument_votes": {},
             "trend_voting_proposal": proposal,
             "trend_confidence": 0.1,
-            "trend_analysis": {"current_trend": "unknown", "per_instrument": {}},
+            "trend_analysis": {
+                "current_trend": "unknown",
+                "trend_strength": 0.0,
+                "per_instrument": {},
+            },
             "voting_proposal": proposal,
             "confidence": 0.1,
             "_thesis": thesis,
@@ -1807,7 +2086,7 @@ class TrendExpert(VotingExpertBase):
     def _get_custom_state(self) -> Dict[str, Any]:
         """
         Get custom state for persistence.
-        
+
         Saves per-instrument computed state:
         - MA values and history
         - ADX values and history
@@ -1833,7 +2112,7 @@ class TrendExpert(VotingExpertBase):
                 "resistance_levels": list(state.get("resistance_levels", []))[-5:],
                 "trend_history": list(state.get("trend_history", []))[-20:],
             }
-        
+
         return {
             "instrument_state": instrument_states,
             "fast_ma": float(self.fast_ma),
@@ -1847,37 +2126,40 @@ class TrendExpert(VotingExpertBase):
         """
         if not state:
             return
-        
+
         # Restore per-instrument state
         inst_states = state.get("instrument_state", {})
         for inst, saved in inst_states.items():
-            if inst in self.instrument_state:
-                self.instrument_state[inst].update({
-                    "fast_ma": float(saved.get("fast_ma", 0.0)),
-                    "medium_ma": float(saved.get("medium_ma", 0.0)),
-                    "slow_ma": float(saved.get("slow_ma", 0.0)),
-                    "adx_value": float(saved.get("adx_value", 0.0)),
-                    "plus_di": float(saved.get("plus_di", 0.0)),
-                    "minus_di": float(saved.get("minus_di", 0.0)),
-                    "sar_value": float(saved.get("sar_value", 0.0)),
-                    "sar_direction": int(saved.get("sar_direction", 0)),
-                    "current_trend": saved.get("current_trend", "neutral"),
-                    "trend_strength": float(saved.get("trend_strength", 0.0)),
-                    "trend_duration": int(saved.get("trend_duration", 0)),
-                    "ma_alignment": int(saved.get("ma_alignment", 0)),
-                    "support_levels": list(saved.get("support_levels", [])),
-                    "resistance_levels": list(saved.get("resistance_levels", [])),
-                })
-                # Restore trend history as deque
+            inst_norm = normalize_instrument(inst)
+            if inst_norm in self.instrument_state:
+                self.instrument_state[inst_norm].update(
+                    {
+                        "fast_ma": float(saved.get("fast_ma", 0.0)),
+                        "medium_ma": float(saved.get("medium_ma", 0.0)),
+                        "slow_ma": float(saved.get("slow_ma", 0.0)),
+                        "adx_value": float(saved.get("adx_value", 0.0)),
+                        "plus_di": float(saved.get("plus_di", 0.0)),
+                        "minus_di": float(saved.get("minus_di", 0.0)),
+                        "sar_value": float(saved.get("sar_value", 0.0)),
+                        "sar_direction": int(saved.get("sar_direction", 0)),
+                        "current_trend": saved.get("current_trend", "neutral"),
+                        "trend_strength": float(saved.get("trend_strength", 0.0)),
+                        "trend_duration": int(saved.get("trend_duration", 0)),
+                        "ma_alignment": int(saved.get("ma_alignment", 0)),
+                        "support_levels": list(saved.get("support_levels", [])),
+                        "resistance_levels": list(saved.get("resistance_levels", [])),
+                    }
+                )
                 hist = saved.get("trend_history", [])
-                self.instrument_state[inst]["trend_history"] = deque(hist, maxlen=100)
-        
+                self.instrument_state[inst_norm]["trend_history"] = deque(
+                    hist, maxlen=100
+                )
+
         # Restore legacy single-instrument state
         self.fast_ma = float(state.get("fast_ma", 0.0))
         self.medium_ma = float(state.get("medium_ma", 0.0))
         self.slow_ma = float(state.get("slow_ma", 0.0))
-        
+
         self.log_info(
-            f"📂 TrendExpert state restored | "
-            f"instruments={len(inst_states)}"
+            f"📂 TrendExpert state restored | instruments={len(inst_states)}"
         )

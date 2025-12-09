@@ -9,8 +9,9 @@ This module defines the core data types for the PPO arbiter system:
 - MemoryGateInfo: Memory/risk gate information
 - RiskInfo: Risk assessment information
 - InstrumentStats / InstrumentStatsTracker: Per-instrument stats
+- GatingResult: Result of combined memory/risk/PPO gating
 
-Version: 3.0.0 (Multi-instrument architecture)
+Version: 3.1.0 (Smarter gating, safer parsing, richer diagnostics)
 """
 
 from __future__ import annotations
@@ -19,6 +20,8 @@ from collections import deque
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from typing import Any, Deque, Dict, List, Optional
+
+from modules.meta.numeric_utils import _safe_float, _clip
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -40,6 +43,13 @@ class MemoryGateInfo:
     loss_prob: float = 0.0            # 0..1, probability of loss
     reasons: List[str] = field(default_factory=list)
 
+    def __post_init__(self) -> None:
+        # Clamp to valid ranges
+        self.risk_multiplier = _clip(self.risk_multiplier, 0.0, 1.0)
+        self.risk_score = _clip(self.risk_score, 0.0, 1.0)
+        self.danger_similarity = _clip(self.danger_similarity, 0.0, 1.0)
+        self.loss_prob = _clip(self.loss_prob, 0.0, 1.0)
+
     @classmethod
     def from_bus_data(cls, memory_gate: Any, danger_zones: Any) -> "MemoryGateInfo":
         """Construct from SmartInfoBus data."""
@@ -48,7 +58,6 @@ class MemoryGateInfo:
             if isinstance(r, str):
                 return r
             if isinstance(r, dict):
-                # Extract meaningful text from dict reason
                 return (
                     r.get("message")
                     or r.get("reason")
@@ -56,24 +65,22 @@ class MemoryGateInfo:
                     or f"{r.get('type', 'unknown')}: {r.get('similarity', r.get('consecutive_losses', ''))}"
                 )
             return str(r)
-        
+
         # Parse memory_gate
         if isinstance(memory_gate, dict):
-            risk_mult = float(memory_gate.get("risk_multiplier", 1.0))
+            risk_mult = _safe_float(memory_gate.get("risk_multiplier", 1.0), 1.0)
             veto = bool(memory_gate.get("veto", False))
-            risk_score = float(memory_gate.get("risk_score", 0.0))
-            danger_sim = float(memory_gate.get("danger_similarity", 0.0))
-            loss_prob = float(memory_gate.get("loss_prob", 0.0))
-            raw_reasons = memory_gate.get("reasons", [])
-            # Convert any dict reasons to strings
-            reasons = [_reason_to_str(r) for r in raw_reasons] if raw_reasons else []
+            risk_score = _safe_float(memory_gate.get("risk_score", 0.0), 0.0)
+            danger_sim = _safe_float(memory_gate.get("danger_similarity", 0.0), 0.0)
+            loss_prob = _safe_float(memory_gate.get("loss_prob", 0.0), 0.0)
+            raw_reasons = memory_gate.get("reasons", []) or []
+            reasons = [_reason_to_str(r) for r in raw_reasons]
         elif memory_gate is not None:
-            try:
-                risk_mult = float(memory_gate)
-            except (TypeError, ValueError):
-                risk_mult = 1.0
+            # Scalar multiplier style
+            risk_mult = _safe_float(memory_gate, 1.0)
             veto = False
-            risk_score = max(0.0, min(1.0, 1.0 - risk_mult))
+            # Convert multiplier into a crude "risk_score" if no struct provided
+            risk_score = _clip(1.0 - risk_mult, 0.0, 1.0)
             danger_sim = 0.0
             loss_prob = 0.0
             reasons = []
@@ -87,24 +94,45 @@ class MemoryGateInfo:
 
         # Parse danger_zones for additional info
         if isinstance(danger_zones, dict):
-            zone_count = int(danger_zones.get("zone_count", 0))
-            if zone_count > 0 and "DANGER_ZONE" not in " ".join(reasons):
+            zone_count = int(danger_zones.get("zone_count", 0) or 0)
+            if zone_count > 0:
                 reasons.append(f"DANGER_ZONE_COUNT={zone_count}")
+            # Explicit max_similarity if provided
             if "max_similarity" in danger_zones:
-                try:
-                    dz_sim = float(danger_zones["max_similarity"])
-                except (TypeError, ValueError):
-                    dz_sim = 0.0
+                dz_sim = _safe_float(danger_zones.get("max_similarity", 0.0), 0.0)
                 danger_sim = max(danger_sim, dz_sim)
-        elif isinstance(danger_zones, list) and len(danger_zones) > 0:
+            # Zones list with similarities
+            zones = danger_zones.get("zones")
+            if isinstance(zones, list):
+                max_zone_sim = 0.0
+                for z in zones:
+                    if isinstance(z, dict) and "similarity" in z:
+                        max_zone_sim = max(
+                            max_zone_sim,
+                            _safe_float(z.get("similarity"), 0.0),
+                        )
+                danger_sim = max(danger_sim, max_zone_sim)
+        elif isinstance(danger_zones, list) and danger_zones:
             reasons.append(f"DANGER_ZONE_COUNT={len(danger_zones)}")
+            max_zone_sim = 0.0
+            for z in danger_zones:
+                if isinstance(z, dict) and "similarity" in z:
+                    max_zone_sim = max(
+                        max_zone_sim,
+                        _safe_float(z.get("similarity"), 0.0),
+                    )
+            danger_sim = max(danger_sim, max_zone_sim)
+
+        # Optional explicit logging of loss probability
+        if loss_prob > 0.0:
+            reasons.append(f"LOSS_PROB={loss_prob:.2f}")
 
         return cls(
-            risk_multiplier=max(0.0, min(1.0, risk_mult)),
+            risk_multiplier=risk_mult,
             veto=veto,
-            risk_score=max(0.0, min(1.0, risk_score)),
-            danger_similarity=max(0.0, min(1.0, danger_sim)),
-            loss_prob=max(0.0, min(1.0, loss_prob)),
+            risk_score=risk_score,
+            danger_similarity=danger_sim,
+            loss_prob=loss_prob,
             reasons=reasons,
         )
 
@@ -124,7 +152,7 @@ class RiskInfo:
     Normalized risk information from DynamicRiskController / PortfolioRiskSystem.
 
     Provides both features (for observation) and gates (for decision logic).
-    
+
     v4.2.0: Enhanced to consume full DynamicRiskController intelligence:
     - risk_scale (0.1-1.5 dynamic multiplier)
     - risk_level (NORMAL/ELEVATED/HIGH/CRITICAL)
@@ -138,12 +166,25 @@ class RiskInfo:
     hard_block: bool = False          # If True, cannot trade at all
     hard_cap: float = 1.0             # Max position size (0..1)
     reasons: List[str] = field(default_factory=list)
-    
+
     # v4.2.0: DynamicRiskController integration
     risk_scale: float = 1.0           # 0.1-1.5 from DynamicRiskController
     risk_level: str = "NORMAL"        # NORMAL/ELEVATED/HIGH/CRITICAL
     emergency_mode: bool = False      # True if DRC in emergency mode
     risk_factors: Dict[str, float] = field(default_factory=dict)  # drawdown/volatility/correlation factors
+
+    def __post_init__(self) -> None:
+        # Clamp numeric fields
+        self.portfolio_risk = _clip(self.portfolio_risk, 0.0, 1.0)
+        self.instrument_risk = _clip(self.instrument_risk, 0.0, 1.0)
+        self.max_dd = _clip(self.max_dd, 0.0, 1.0)
+        self.margin_usage = _clip(self.margin_usage, 0.0, 1.0)
+        self.hard_cap = _clip(self.hard_cap, 0.0, 1.0)
+        # Risk scale strictly bounded to reasonable dynamic range
+        self.risk_scale = max(0.1, min(1.5, _safe_float(self.risk_scale, 1.0)))
+        # Normalize risk_level to uppercase for consistency
+        if self.risk_level:
+            self.risk_level = str(self.risk_level).upper()
 
     @classmethod
     def from_bus_data(
@@ -156,58 +197,62 @@ class RiskInfo:
     ) -> "RiskInfo":
         """
         Construct from SmartInfoBus data.
-        
+
         v4.2.0: Enhanced to consume:
         - risk_data: Basic risk metrics
         - portfolio_risk: PortfolioRiskSystem output
-        - risk_scaling: DynamicRiskController scaling output (current_risk_scale, etc)
-        - risk_assessment: DynamicRiskController assessment (risk_level, emergency_active)
+        - risk_scaling: DynamicRiskController scaling output
+        - risk_assessment: DynamicRiskController assessment output
         """
         risk_data = risk_data or {}
-        portfolio_risk = portfolio_risk or {}
+        portfolio_risk_raw = portfolio_risk
         risk_scaling = risk_scaling or {}
         risk_assessment = risk_assessment or {}
 
-        # Parse portfolio risk
-        if isinstance(portfolio_risk, dict):
-            port_risk = float(
-                portfolio_risk.get("total_risk", portfolio_risk.get("risk_score", 0.0))
+        # Portfolio risk & margin usage
+        port_risk = 0.0
+        margin = 0.0
+        if isinstance(portfolio_risk_raw, dict):
+            port_risk = _safe_float(
+                portfolio_risk_raw.get("total_risk", portfolio_risk_raw.get("risk_score", 0.0)),
+                0.0,
             )
-            margin = float(portfolio_risk.get("margin_usage", 0.0))
+            margin = _safe_float(portfolio_risk_raw.get("margin_usage", 0.0), 0.0)
+        elif isinstance(portfolio_risk_raw, (int, float, str)):
+            port_risk = _safe_float(portfolio_risk_raw, 0.0)
+
+        # Basic risk_data metrics
+        if isinstance(risk_data, dict):
+            max_dd = _safe_float(
+                risk_data.get("max_drawdown", risk_data.get("drawdown", 0.0)),
+                0.0,
+            )
+            hard_block = bool(
+                risk_data.get("hard_block", risk_data.get("trading_blocked", False))
+            )
+            raw_cap = risk_data.get("position_cap", risk_data.get("max_position_size", 1.0))
         else:
-            port_risk = 0.0
-            margin = 0.0
+            max_dd = 0.0
+            hard_block = False
+            raw_cap = 1.0
 
-        # Parse risk_data
-        max_dd = float(risk_data.get("max_drawdown", risk_data.get("drawdown", 0.0)))
-        hard_block = bool(risk_data.get("hard_block", risk_data.get("trading_blocked", False)))
+        hard_cap = _safe_float(raw_cap, 1.0)
 
-        # Cap: prefer explicit numeric caps, fall back to 1.0 if not provided
-        raw_cap = risk_data.get("position_cap", risk_data.get("max_position_size", 1.0))
-        try:
-            hard_cap = float(raw_cap)
-        except (TypeError, ValueError):
-            hard_cap = 1.0
-
-        # Instrument-specific risk (if available)
+        # Instrument-specific risk (if instrument map provided)
         inst_risk = 0.0
-        if instrument and isinstance(risk_data.get("instruments"), dict):
-            inst_data = risk_data["instruments"].get(instrument, {})
-            if isinstance(inst_data, dict):
-                inst_risk = float(inst_data.get("risk", 0.0))
+        if instrument and isinstance(risk_data, dict):
+            inst_map = risk_data.get("instruments")
+            if isinstance(inst_map, dict):
+                inst_data = inst_map.get(instrument, {})
+                if isinstance(inst_data, dict):
+                    inst_risk = _safe_float(inst_data.get("risk", 0.0), 0.0)
 
-        # ═══════════════════════════════════════════════════════════════════
-        # v4.2.0: DynamicRiskController integration
-        # ═══════════════════════════════════════════════════════════════════
-        
-        # Extract risk_scale from risk_scaling
+        # DynamicRiskController integration
         risk_scale = 1.0
         if isinstance(risk_scaling, dict):
             rs = risk_scaling.get("current_risk_scale")
-            if isinstance(rs, (int, float)):
-                risk_scale = float(max(0.1, min(1.5, rs)))
-        
-        # Extract risk_level from risk_assessment
+            risk_scale = _safe_float(rs, 1.0) if rs is not None else 1.0
+
         risk_level = "NORMAL"
         emergency_mode = False
         if isinstance(risk_assessment, dict):
@@ -215,36 +260,26 @@ class RiskInfo:
             if isinstance(rl, str) and rl:
                 risk_level = rl.upper()
             emergency_mode = bool(risk_assessment.get("emergency_active", False))
-            
-            # Also extract risk_scale from assessment if not in scaling
+
             if risk_scale == 1.0:
                 rs = risk_assessment.get("risk_scale")
-                if isinstance(rs, (int, float)):
-                    risk_scale = float(max(0.1, min(1.5, rs)))
-        
+                if rs is not None:
+                    risk_scale = _safe_float(rs, 1.0)
+
         # Extract risk_factors if available
         risk_factors: Dict[str, float] = {}
         if isinstance(risk_data, dict):
             rf = risk_data.get("risk_factors")
             if isinstance(rf, dict):
                 for k, v in rf.items():
-                    try:
-                        risk_factors[k] = float(v)
-                    except (TypeError, ValueError):
-                        pass
-        
-        # ═══════════════════════════════════════════════════════════════════
-        # Apply risk_level to hard_block and hard_cap
-        # ═══════════════════════════════════════════════════════════════════
-        
-        # CRITICAL risk level = hard block
+                    risk_factors[k] = _safe_float(v, 0.0)
+
+        # Adjust block/cap based on risk_level and emergency
         if risk_level == "CRITICAL" or emergency_mode:
             hard_block = True
             hard_cap = 0.0
-        # HIGH risk level = reduced cap
         elif risk_level == "HIGH":
             hard_cap = min(hard_cap, 0.3)
-        # ELEVATED risk level = moderately reduced cap
         elif risk_level == "ELEVATED":
             hard_cap = min(hard_cap, 0.6)
 
@@ -261,14 +296,16 @@ class RiskInfo:
             reasons.append(f"HIGH_MARGIN={margin:.1%}")
         if risk_scale < 0.5:
             reasons.append(f"LOW_RISK_SCALE={risk_scale:.2f}")
+        if inst_risk > 0.0:
+            reasons.append(f"INSTRUMENT_RISK={inst_risk:.2f}")
 
         return cls(
-            portfolio_risk=max(0.0, min(1.0, port_risk)),
-            instrument_risk=max(0.0, min(1.0, inst_risk)),
+            portfolio_risk=port_risk,
+            instrument_risk=inst_risk,
             max_dd=max_dd,
-            margin_usage=max(0.0, min(1.0, margin)),
+            margin_usage=margin,
             hard_block=hard_block,
-            hard_cap=max(0.0, min(1.0, hard_cap)),
+            hard_cap=hard_cap,
             reasons=reasons,
             risk_scale=risk_scale,
             risk_level=risk_level,
@@ -332,6 +369,27 @@ class InstrumentDecision:
 
     # Timestamp
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+
+    @property
+    def numeric_direction(self) -> int:
+        """
+        Map direction to {-1, 0, 1} for analysis:
+        - long/buy   ->  1
+        - short/sell -> -1
+        - flat/hold/other -> 0
+        """
+        d = (self.direction or "").lower()
+        if d in ("long", "buy"):
+            return 1
+        if d in ("short", "sell"):
+            return -1
+        return 0
+
+    @property
+    def is_trade(self) -> bool:
+        """True if this decision corresponds to an executed trade."""
+        d = (self.direction or "").lower()
+        return self.gate_passed and d in ("long", "short", "buy", "sell")
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -434,26 +492,30 @@ class InstrumentStats:
         self._confidence_sum += decision.confidence
         self._size_sum += decision.position_size
 
-        self.avg_confidence = self._confidence_sum / max(self._decision_count, 1)
-        self.avg_position_size = self._size_sum / max(self._decision_count, 1)
+        denom = max(self._decision_count, 1)
+        self.avg_confidence = self._confidence_sum / denom
+        self.avg_position_size = self._size_sum / denom
 
-        if decision.direction == "long":
+        d = (decision.direction or "").lower()
+        if d in ("long", "buy"):
             self.longs += 1
-        elif decision.direction == "short":
+        elif d in ("short", "sell"):
             self.shorts += 1
         else:
             self.flats += 1
 
-        if decision.gate_passed:
+        if decision.gate_passed and decision.is_trade:
             self.trades += 1
 
         # Store summary for pattern analysis
         self.last_decisions.append(
             {
                 "direction": decision.direction,
+                "numeric_direction": decision.numeric_direction,
                 "confidence": decision.confidence,
                 "position_size": decision.position_size,
                 "gate_passed": decision.gate_passed,
+                "trust_score": decision.trust_score,
                 "timestamp": decision.timestamp,
             }
         )
@@ -540,7 +602,7 @@ class GatingResult:
 
     Stages:
     1. Hard veto (risk.hard_block or memory.veto)
-    2. Soft scaling (risk_multiplier, caps)
+    2. Soft scaling (risk_multiplier, caps, dynamic risk_scale)
     3. PPO decision (trust_score determines final action)
     """
     gate_passed: bool = True
@@ -563,21 +625,24 @@ class GatingResult:
         """
         Apply the 3-stage gating pipeline.
 
-        Stage 1: Hard veto (risk.hard_block, emergency_mode, or memory.veto)
-        Stage 2: Soft scaling (risk_multiplier, risk_scale, caps)
+        Stage 1: Hard veto (risk.hard_block, emergency_mode, memory.veto,
+                 or extreme memory risk/loss probability)
+        Stage 2: Soft scaling (risk_multiplier, risk_scale, caps, risk levels)
         Stage 3: PPO override check
-        
-        v4.2.0: Enhanced with DynamicRiskController's risk_scale and risk_level.
+
+        v4.2.0+: Uses DynamicRiskController's risk_scale and risk_level,
+        plus UnifiedMemory's loss_prob and risk_score.
         """
         result = cls()
 
+        # ─────────────────────────────────────────────────────────
         # Stage 1: Hard veto
+        # ─────────────────────────────────────────────────────────
         if risk.hard_block:
             result.gate_passed = False
             result.hard_veto_triggered = True
             result.reasons.append("RISK_HARD_BLOCK")
-        
-        # v4.2.0: Emergency mode from DynamicRiskController
+
         if risk.emergency_mode:
             result.gate_passed = False
             result.hard_veto_triggered = True
@@ -588,45 +653,54 @@ class GatingResult:
             result.hard_veto_triggered = True
             result.reasons.append("MEMORY_VETO")
 
+        # Extreme memory-based risk: treat as hard veto
+        if not result.hard_veto_triggered:
+            if memory.loss_prob >= 0.98 or memory.risk_score >= 0.98:
+                result.gate_passed = False
+                result.hard_veto_triggered = True
+                result.reasons.append("MEMORY_MAX_RISK")
+
         if result.hard_veto_triggered:
             result.position_size_cap = 0.0
             result.confidence_multiplier = 0.0
+            # No need to proceed with soft scaling or PPO
             return result
 
+        # ─────────────────────────────────────────────────────────
         # Stage 2: Soft scaling
+        # ─────────────────────────────────────────────────────────
 
-        # Apply memory risk multiplier
+        # Memory risk multiplier (0..1)
         if memory.risk_multiplier < 1.0:
-            result.confidence_multiplier *= max(0.0, min(1.0, memory.risk_multiplier))
+            mem_scale = _clip(memory.risk_multiplier, 0.0, 1.0)
+            result.confidence_multiplier *= mem_scale
             result.soft_scaling_applied = True
-            result.reasons.append(f"MEMORY_SCALE={memory.risk_multiplier:.2f}")
+            result.reasons.append(f"MEMORY_SCALE={mem_scale:.2f}")
 
-        # Apply risk hard cap
+        # Hard cap from risk policy
         if risk.hard_cap < 1.0:
-            cap = max(0.0, min(1.0, risk.hard_cap))
+            cap = _clip(risk.hard_cap, 0.0, 1.0)
             result.position_size_cap = min(result.position_size_cap, cap)
             result.soft_scaling_applied = True
             result.reasons.append(f"RISK_CAP={cap:.2f}")
 
-        # ═══════════════════════════════════════════════════════════════════
-        # v4.2.0: DynamicRiskController risk_scale integration
-        # Apply the dynamic risk scale (0.1-1.5) from DynamicRiskController
-        # This is the key intelligence from all risk modules aggregated
-        # ═══════════════════════════════════════════════════════════════════
+        # Dynamic risk_scale from DRC (0.1-1.5)
         if risk.risk_scale < 1.0:
             # Low risk_scale = reduce position size and confidence
-            result.position_size_cap *= risk.risk_scale
-            result.confidence_multiplier *= (0.5 + 0.5 * risk.risk_scale)  # 0.55-1.0
+            rs = max(0.1, min(1.0, risk.risk_scale))
+            result.position_size_cap *= rs
+            # Confidence less aggressive than size scaling
+            result.confidence_multiplier *= (0.5 + 0.5 * rs)  # 0.55-1.0
             result.soft_scaling_applied = True
-            result.reasons.append(f"DRC_SCALE={risk.risk_scale:.2f}")
+            result.reasons.append(f"DRC_SCALE={rs:.2f}")
         elif risk.risk_scale > 1.0:
-            # High risk_scale (recovery mode) = can boost slightly
-            boost = min(1.2, risk.risk_scale)  # Cap at 1.2x
+            # Recovery mode: limited boost
+            boost = min(1.2, risk.risk_scale)
             result.position_size_cap *= boost
             result.soft_scaling_applied = True
             result.reasons.append(f"DRC_BOOST={boost:.2f}")
-        
-        # v4.2.0: Risk level based scaling
+
+        # Risk level based scaling
         if risk.risk_level == "HIGH":
             result.position_size_cap = min(result.position_size_cap, 0.3)
             result.confidence_multiplier *= 0.6
@@ -638,12 +712,28 @@ class GatingResult:
             result.soft_scaling_applied = True
             result.reasons.append("RISK_LEVEL_ELEVATED")
 
-        # Danger zone penalty
+        # Memory danger similarity penalty
         if memory.danger_similarity > 0.5:
             penalty = max(0.0, 1.0 - (memory.danger_similarity - 0.5))
             result.confidence_multiplier *= penalty
             result.soft_scaling_applied = True
             result.reasons.append(f"DANGER_SIM={memory.danger_similarity:.2f}")
+
+        # Memory risk_score soft penalty (when not already hard veto)
+        if memory.risk_score > 0.7 and memory.risk_score < 0.98:
+            mem_penalty = 1.0 - 0.7 * (memory.risk_score - 0.7) / 0.28
+            mem_penalty = max(0.3, min(1.0, mem_penalty))
+            result.confidence_multiplier *= mem_penalty
+            result.soft_scaling_applied = True
+            result.reasons.append(f"MEM_RISK={memory.risk_score:.2f}")
+
+        # Loss probability soft penalty (0.5..1.0 -> 1.0..0.4)
+        if memory.loss_prob > 0.5 and memory.loss_prob < 0.98:
+            lp_penalty = 1.0 - 0.6 * (memory.loss_prob - 0.5) / 0.48
+            lp_penalty = max(0.4, min(1.0, lp_penalty))
+            result.confidence_multiplier *= lp_penalty
+            result.soft_scaling_applied = True
+            result.reasons.append(f"LOSS_PROB={memory.loss_prob:.2f}")
 
         # High portfolio risk penalty
         if risk.portfolio_risk > 0.7:
@@ -653,12 +743,30 @@ class GatingResult:
             result.soft_scaling_applied = True
             result.reasons.append(f"HIGH_RISK={risk.portfolio_risk:.2f}")
 
+        # Instrument-specific risk scaling
+        if risk.instrument_risk > 0.8:
+            result.position_size_cap *= 0.4
+            result.soft_scaling_applied = True
+            result.reasons.append(f"INSTR_RISK_HIGH={risk.instrument_risk:.2f}")
+        elif risk.instrument_risk > 0.6:
+            result.position_size_cap *= 0.7
+            result.soft_scaling_applied = True
+            result.reasons.append(f"INSTR_RISK_ELEVATED={risk.instrument_risk:.2f}")
+
+        # ─────────────────────────────────────────────────────────
         # Stage 3: PPO override check
-        # If trust_score is very negative, PPO is overriding committee
+        # ─────────────────────────────────────────────────────────
+        # If trust_score is very negative, PPO is explicitly overriding
+        # the committee/expert consensus; we can treat this as a "block"
+        # for safety when trust is deeply negative.
         if trust_score < -0.5:
             result.ppo_override = True
             result.gate_passed = False
             result.reasons.append(f"PPO_OVERRIDE={trust_score:.2f}")
+
+        # Final sanity clamps
+        result.position_size_cap = max(0.0, min(2.0, result.position_size_cap))
+        result.confidence_multiplier = max(0.0, min(2.0, result.confidence_multiplier))
 
         return result
 

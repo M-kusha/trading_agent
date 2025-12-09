@@ -5,6 +5,11 @@ Specialized base class for all voting experts.
 Extends VotingModuleBase with expert-specific functionality.
 
 This eliminates ~200 lines of duplicate code from each expert.
+
+Position Focus Mode:
+- When positions are open, experts switch to "position management" mode
+- Instead of looking for new trades, they evaluate: should we hold, scale, or exit?
+- Signals are reframed as "supports position" or "threatens position"
 """
 
 from __future__ import annotations
@@ -13,7 +18,7 @@ import datetime
 import time
 from abc import abstractmethod
 from collections import deque
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple, cast
 
 from modules.voting.core.base import VotingModuleBase
 from modules.voting.core.types import VotingProposal
@@ -211,6 +216,301 @@ class VotingExpertBase(VotingModuleBase):
             'timestamp': time.time(),
         }
     
+    # ────────────────────────────────────────────────────────────────
+    # Position Focus Mode (Per-Instrument)
+    # ────────────────────────────────────────────────────────────────
+    
+    def _get_position_focus_context(self) -> Optional[Dict[str, Any]]:
+        """
+        Get the position focus context from the bus.
+        Returns None if no position focus is active.
+        """
+        ctx = self.smart_bus.get('position_focus_context', self.__class__.__name__, default=None)
+        if not ctx or not isinstance(ctx, dict):
+            return None
+        if not ctx.get('focus_mode_active', False):
+            return None
+        return ctx
+    
+    def _is_position_focus_mode(self) -> bool:
+        """Check if we're in position focus mode (have active positions to manage)."""
+        ctx = self._get_position_focus_context()
+        return ctx is not None and ctx.get('focus_mode_active', False)
+    
+    def _get_position_for_instrument(self, instrument: str) -> Optional[Dict[str, Any]]:
+        """
+        Get position details for a specific instrument.
+        Returns None if no position exists for this instrument.
+        
+        This supports MULTIPLE instruments having positions simultaneously
+        (e.g., XAUUSD and EURUSD can both have active positions).
+        """
+        ctx = self._get_position_focus_context()
+        if not ctx:
+            return None
+        
+        positions = ctx.get('positions', {})
+        
+        # Normalize instrument name for lookup
+        inst_norm = instrument.upper().replace('/', '').replace('_', '').replace('-', '')
+        
+        # Direct lookup
+        if inst_norm in positions:
+            return positions[inst_norm]
+        
+        # Try variations
+        for key in positions.keys():
+            key_norm = key.upper().replace('/', '').replace('_', '').replace('-', '')
+            if key_norm == inst_norm:
+                return positions[key]
+        
+        return None
+    
+    def _has_position_for_instrument(self, instrument: str) -> bool:
+        """Check if we have a position for a specific instrument."""
+        return self._get_position_for_instrument(instrument) is not None
+    
+    def _get_position_side_for_instrument(self, instrument: str) -> int:
+        """
+        Get position side for instrument: 1=LONG, -1=SHORT, 0=FLAT.
+        """
+        pos = self._get_position_for_instrument(instrument)
+        if not pos:
+            return 0
+        return int(pos.get('side', 0))
+    
+    def _evaluate_signal_for_position(
+        self,
+        proposal: Dict[str, Any],
+        instrument: str,
+    ) -> Tuple[Dict[str, Any], float, bool]:
+        """
+        Evaluate an expert's signal in the context of an existing position FOR A SPECIFIC INSTRUMENT.
+        
+        This method is per-instrument aware - it checks if THIS instrument has a position
+        and evaluates the signal accordingly. Other instruments without positions
+        can still generate normal signals.
+        
+        Instead of generating a new trade signal, we evaluate:
+        - Does this signal SUPPORT holding the current position?
+        - Does this signal THREATEN the current position (suggest exit)?
+        - How confident are we in this assessment?
+        
+        Returns:
+            (modified_proposal, confidence, supports_position)
+        """
+        # Get position for THIS specific instrument
+        inst_position = self._get_position_for_instrument(instrument)
+        
+        if not inst_position:
+            # No position for this instrument - return original proposal unchanged
+            original_conf = float(proposal.get('confidence', proposal.get('signal_strength', 0.5)))
+            return proposal, original_conf, True
+        
+        position_side = int(inst_position.get('side', 0))
+        position_pnl = float(inst_position.get('unrealized_pnl', inst_position.get('pnl', 0.0)))
+        position_entry = float(inst_position.get('entry_price', 0.0))
+        
+        # Get the expert's original action for this instrument
+        action = str(proposal.get('action', 'hold')).lower()
+        original_confidence = float(proposal.get('confidence', proposal.get('signal_strength', 0.5)))
+        
+        # Check if this expert's signal is for our instrument (per-instrument proposals)
+        per_instrument = proposal.get('proposals', proposal.get('per_instrument', {}))
+        inst_norm = instrument.upper().replace('/', '').replace('_', '').replace('-', '')
+        
+        if isinstance(per_instrument, dict):
+            for key, inst_proposal in per_instrument.items():
+                key_norm = str(key).upper().replace('/', '').replace('_', '').replace('-', '')
+                if key_norm == inst_norm and isinstance(inst_proposal, dict):
+                    action = str(inst_proposal.get('action', action)).lower()
+                    original_confidence = float(
+                        inst_proposal.get('confidence', inst_proposal.get('signal_strength', original_confidence))
+                    )
+                    break
+        
+        # Determine if signal supports or threatens the position
+        supports_position = True
+        position_evaluation = "neutral"
+        
+        if position_side > 0:  # LONG position
+            if action in ('buy', 'long', 'scale_up'):
+                supports_position = True
+                position_evaluation = "supports_long"
+            elif action in ('sell', 'short', 'close', 'exit'):
+                supports_position = False
+                position_evaluation = "threatens_long"
+            else:  # hold, flat, abstain, tighten
+                supports_position = True
+                position_evaluation = "neutral_for_long"
+        elif position_side < 0:  # SHORT position
+            if action in ('sell', 'short', 'scale_up'):
+                supports_position = True
+                position_evaluation = "supports_short"
+            elif action in ('buy', 'long', 'close', 'exit'):
+                supports_position = False
+                position_evaluation = "threatens_short"
+            else:
+                supports_position = True
+                position_evaluation = "neutral_for_short"
+        
+        # Modify proposal to reflect position management context
+        modified_proposal: Dict[str, Any] = dict(proposal)
+        modified_proposal['position_management_mode'] = True
+        modified_proposal['position_instrument'] = instrument
+        modified_proposal['supports_position'] = supports_position
+        modified_proposal['position_evaluation'] = position_evaluation
+        modified_proposal['position_side'] = position_side
+        modified_proposal['original_action'] = action
+        modified_proposal['position_entry_price'] = position_entry
+        modified_proposal['position_unrealized_pnl'] = position_pnl
+        
+        # Remap action to position management actions
+        if supports_position:
+            # When signal supports position, default to HOLD; scaling decisions are handled upstream/downstream.
+            if action in ('buy', 'sell', 'long', 'short', 'scale_up'):
+                modified_proposal['action'] = 'hold'
+            else:
+                modified_proposal['action'] = 'hold'
+        else:
+            # Signal threatens position
+            if original_confidence > 0.7:
+                modified_proposal['action'] = 'exit'      # Strong opposing signal
+            elif original_confidence > 0.5:
+                modified_proposal['action'] = 'tighten'   # Moderate opposing signal
+            else:
+                modified_proposal['action'] = 'hold'      # Weak opposing signal, just watch
+        
+        # Adjust confidence based on position context
+        confidence = original_confidence
+        if position_pnl > 0:
+            # Position is profitable - be more conservative about exits
+            if not supports_position:
+                confidence *= 0.8  # Reduce exit confidence when in profit
+        elif position_pnl < 0:
+            # Position is losing - be more responsive to exit signals
+            if not supports_position:
+                confidence *= 1.2  # Increase exit confidence when losing
+        
+        confidence = max(0.0, min(1.0, confidence))
+        
+        return modified_proposal, confidence, supports_position
+    
+    def _evaluate_per_instrument_proposals_for_positions(
+        self,
+        proposals_dict: Dict[str, Any],
+        position_focus: Optional[Dict[str, Any]],
+    ) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, bool]]:
+        """
+        Evaluate all per-instrument proposals against their respective positions.
+        
+        For each instrument:
+        - If it has a position: reframe signal as supports/threatens
+        - If no position: keep original signal for potential new entry (but may be blocked downstream)
+        
+        Returns:
+            (modified_proposals_dict, supports_dict)
+            - modified_proposals_dict: Same structure but with position_management fields
+            - supports_dict: {instrument: bool} indicating if signal supports position
+        """
+        if not position_focus or not position_focus.get('focus_mode_active', False):
+            # No position focus mode - return originals
+            # Normalize proposals_dict into the expected shape
+            normalized: Dict[str, Dict[str, Any]] = {}
+            for k, v in proposals_dict.items():
+                if isinstance(v, dict):
+                    normalized[str(k)] = v
+            return normalized, {}
+        
+        modified_proposals: Dict[str, Dict[str, Any]] = {}
+        supports_dict: Dict[str, bool] = {}
+        
+        positions = position_focus.get('positions', {})
+        
+        for instrument, prop_any in proposals_dict.items():
+            # Ensure we are working with a dict
+            if not isinstance(prop_any, dict):
+                continue
+            prop: Dict[str, Any] = dict(prop_any)
+            inst_norm = str(instrument).upper().replace('/', '').replace('_', '').replace('-', '')
+            
+            # Check if this instrument has a position
+            inst_position = None
+            for pos_key, pos_data in positions.items():
+                pos_key_norm = str(pos_key).upper().replace('/', '').replace('_', '').replace('-', '')
+                if pos_key_norm == inst_norm:
+                    inst_position = pos_data
+                    break
+            
+            if inst_position:
+                # This instrument has a position - evaluate signal against it
+                position_side = int(inst_position.get('side', 0))
+                position_pnl = float(inst_position.get('unrealized_pnl', inst_position.get('pnl', 0.0)))
+                
+                action = str(prop.get('action', 'hold')).lower()
+                original_confidence = float(prop.get('confidence', prop.get('signal_strength', 0.5)))
+                
+                # Determine support
+                supports = True
+                evaluation = "neutral"
+                
+                if position_side > 0:  # LONG
+                    if action in ('sell', 'short', 'close', 'exit'):
+                        supports = False
+                        evaluation = "threatens_long"
+                    else:
+                        supports = True
+                        evaluation = "supports_long" if action in ('buy', 'long') else "neutral_for_long"
+                elif position_side < 0:  # SHORT
+                    if action in ('buy', 'long', 'close', 'exit'):
+                        supports = False
+                        evaluation = "threatens_short"
+                    else:
+                        supports = True
+                        evaluation = "supports_short" if action in ('sell', 'short') else "neutral_for_short"
+                
+                # Modify proposal
+                modified_prop: Dict[str, Any] = dict(prop)
+                modified_prop['position_management_mode'] = True
+                modified_prop['position_instrument'] = instrument
+                modified_prop['supports_position'] = supports
+                modified_prop['position_evaluation'] = evaluation
+                modified_prop['position_side'] = position_side
+                modified_prop['original_action'] = action
+                modified_prop['position_unrealized_pnl'] = position_pnl
+                
+                # Remap action for position management
+                if supports:
+                    modified_prop['action'] = 'hold'
+                else:
+                    if original_confidence > 0.7:
+                        modified_prop['action'] = 'exit'
+                    elif original_confidence > 0.5:
+                        modified_prop['action'] = 'tighten'
+                    else:
+                        modified_prop['action'] = 'hold'
+                
+                # Adjust confidence
+                conf = original_confidence
+                if position_pnl > 0 and not supports:
+                    conf *= 0.8
+                elif position_pnl < 0 and not supports:
+                    conf *= 1.2
+                conf = max(0.0, min(1.0, conf))
+                modified_prop['confidence'] = conf
+                
+                modified_proposals[str(instrument)] = modified_prop
+                supports_dict[str(instrument)] = supports
+            else:
+                # No position for this instrument - keep original but mark for potential blocking
+                modified_prop = dict(prop)
+                modified_prop['position_management_mode'] = False
+                modified_prop['no_position_for_instrument'] = True
+                modified_proposals[str(instrument)] = modified_prop
+                supports_dict[str(instrument)] = True  # N/A really
+        
+        return modified_proposals, supports_dict
+
     # ────────────────────────────────────────────────────────────────
     # Market context
     # ────────────────────────────────────────────────────────────────
@@ -500,16 +800,66 @@ class VotingExpertBase(VotingModuleBase):
             # 3. Context
             self._update_market_context(market_data)
             
+            # 3.5 CHECK POSITION FOCUS MODE
+            # If we have active positions, switch to position management mode
+            position_focus = self._get_position_focus_context()
+            in_position_focus_mode = position_focus is not None and position_focus.get('focus_mode_active', False)
+            
             # 4. Expert-specific proposal
-            proposal = await self._generate_expert_specific_proposal(market_data)
-            if not isinstance(proposal, dict):
-                proposal = {'action': 'abstain', 'reason': 'invalid_proposal_type'}
+            raw_proposal = await self._generate_expert_specific_proposal(market_data)
+            if not isinstance(raw_proposal, dict):
+                proposal: Dict[str, Any] = {'action': 'abstain', 'reason': 'invalid_proposal_type'}
+            else:
+                # Copy to avoid weird aliasing if subclass keeps references
+                proposal = dict(raw_proposal)
             
             # 5. Expert-specific confidence
             confidence = await self._calculate_expert_specific_confidence(
                 proposal, market_data
             )
             confidence = max(0.0, min(1.0, float(confidence)))
+            
+            # 5.5 POSITION FOCUS MODE: Reframe signals for position management (PER-INSTRUMENT)
+            supports_position = True
+            if in_position_focus_mode and position_focus is not None:
+                # Evaluate per-instrument proposals against their positions
+                per_inst_raw: Any = proposal.get('proposals')
+                if not isinstance(per_inst_raw, dict):
+                    per_inst_raw = proposal.get('per_instrument')
+                
+                per_inst_proposals: Dict[str, Any] = {}
+                if isinstance(per_inst_raw, dict):
+                    # Normalize keys to str and ensure dict values
+                    for k, v in per_inst_raw.items():
+                        if isinstance(v, dict):
+                            per_inst_proposals[str(k)] = v
+                
+                if per_inst_proposals:
+                    modified_proposals, supports_dict = self._evaluate_per_instrument_proposals_for_positions(
+                        per_inst_proposals, position_focus
+                    )
+                    proposal_mut = cast(Dict[str, Any], proposal)
+                    proposal_mut['proposals'] = modified_proposals
+                    proposal_mut['per_instrument'] = modified_proposals
+                    proposal_mut['position_supports'] = supports_dict
+                    proposal = proposal_mut
+                    
+                    # Log per-instrument position evaluations
+                    for inst, supports in supports_dict.items():
+                        inst_eval = modified_proposals.get(inst, {}).get('position_evaluation', 'N/A')
+                        self.logger.debug(
+                            f"[{name}] {inst}: supports_position={supports}, eval={inst_eval}"
+                        )
+                else:
+                    # No per-instrument proposals - evaluate global against primary instrument
+                    primary_inst = position_focus.get('primary_instrument', 'EURUSD')
+                    proposal, confidence, supports_position = self._evaluate_signal_for_position(
+                        proposal, primary_inst
+                    )
+                    self.logger.debug(
+                        f"[{name}] Position focus mode: supports={supports_position}, "
+                        f"action={proposal.get('action')}, conf={confidence:.2%}"
+                    )
             
             # 6. Mode-aware gating / normalization
             proposal, confidence = self._postprocess_proposal_for_voting(
@@ -547,9 +897,16 @@ class VotingExpertBase(VotingModuleBase):
             
             # 10. Build output payload with per-instrument votes for contract compliance
             per_instrument_key = f"{name}_per_instrument_votes"
-            per_instrument_votes = proposal.get('proposals', proposal.get('per_instrument', {}))
+            per_instrument_votes_raw: Any = (
+                proposal.get('proposals') or proposal.get('per_instrument') or {}
+            )
+            if isinstance(per_instrument_votes_raw, dict):
+                per_instrument_votes: Dict[str, Any] = dict(per_instrument_votes_raw)
+            else:
+                per_instrument_votes = {}
             
-            return {
+            # Add position management info to output
+            output: Dict[str, Any] = {
                 'voting_proposal': proposal,
                 'confidence': confidence,
                 'thesis': thesis,
@@ -562,6 +919,14 @@ class VotingExpertBase(VotingModuleBase):
                 per_instrument_key: per_instrument_votes,  # Per-instrument votes for contract
                 '_thesis': thesis,
             }
+            
+            # Include position management context in output
+            if in_position_focus_mode:
+                output['position_focus_mode'] = True
+                output['supports_position'] = supports_position
+                output['position_evaluation'] = proposal.get('position_evaluation', 'neutral')
+            
+            return output
         
         except Exception as e:
             self._record_error(e)
@@ -582,7 +947,7 @@ class VotingExpertBase(VotingModuleBase):
         self, 
         proposal: Dict[str, Any], 
         confidence: float,
-    ) -> tuple[Dict[str, Any], float]:
+    ) -> Tuple[Dict[str, Any], float]:
         """
         Normalize and gate the proposal using mode-aware thresholds.
         
@@ -590,6 +955,7 @@ class VotingExpertBase(VotingModuleBase):
         - Ensures position_size respects max_signal_strength
         - Soft-kills weak directional signals (turns into 'flat')
         - Keeps per-instrument payloads intact (we only touch top-level fields)
+        - PRESERVES 'exit'/'tighten' actions for position management mode
         """
         # Extract and normalize action
         action_raw = str(proposal.get('action', 'abstain')).lower().strip()
@@ -630,6 +996,8 @@ class VotingExpertBase(VotingModuleBase):
         is_directional = is_long or is_short
         is_flat_like = action_raw in ('flat', 'hold')
         is_abstain_like = action_raw in ('abstain', 'none', 'skip')
+        is_exit = (action_raw == 'exit')
+        is_tighten = (action_raw == 'tighten')
         
         # Directional signals: apply hard gating
         if is_directional:
@@ -656,7 +1024,19 @@ class VotingExpertBase(VotingModuleBase):
                 )
                 confidence = max(conf_floor, min(confidence, high_conf))
         
-        # Flat-like or abstain: keep weak, low-strength
+        # Exit / tighten: keep semantics; they are critical for position lock-in
+        elif is_exit or is_tighten:
+            proposal['action'] = action_raw
+            # For exits/tighten, treat weak signals as soft, but don't kill them.
+            effective_min = min_strength * 0.75
+            proposal['signal_strength'] = max(sig_f, effective_min)
+            proposal['position_size'] = min(
+                proposal['signal_strength'], self.max_signal_strength
+            )
+            # Allow lower confidence floor than directional entries, but don't clamp to 0
+            confidence = max(conf_floor * 0.5, min(confidence, 1.0))
+        
+        # Flat-like: explicit "no trade" stance
         elif is_flat_like:
             proposal['action'] = 'flat'
             proposal['signal_strength'] = min(sig_f, min_strength * 0.5)
@@ -704,7 +1084,7 @@ class VotingExpertBase(VotingModuleBase):
         confidence_key = VotingBusKeys.expert_confidence(name)
         per_instrument_key = f"{name}_per_instrument_votes"
         
-        proposal = {
+        proposal: Dict[str, Any] = {
             'action': 'abstain',
             'reason': reason,
             'signal_strength': 0.0,

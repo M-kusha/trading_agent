@@ -1,8 +1,9 @@
+# modules/executor/adapters/base_adapter.py
 from __future__ import annotations
 
 import time
 import math
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 
@@ -76,12 +77,13 @@ class BaseLiveAdapter:
     Implement the *_impl methods in concrete adapters:
       - _connect_impl() -> bool
       - _disconnect_impl() -> None
-      - _get_account_info_impl() -> Dict[str, float]
+      - _get_account_info_impl() -> Dict[str, float | str]
       - _get_prices_impl(instrument) -> Dict[str, float]  # {'bid','ask','mid','ts'}
       - _market_order_impl(instrument, side, lots) -> Dict[str, Any]
       - _reduce_position_impl(instrument, lots, side) -> Dict[str, Any]
       - _close_position_impl(instrument) -> Dict[str, Any]
       - _sync_positions_impl() -> Dict[str, Dict[str, Any]]
+      - _modify_position_impl(ticket, sl, tp) -> Dict[str, Any]
 
     Public methods (used by Executor) run through robust wrappers providing:
       - rate limiting, retries + backoff, circuit breaking
@@ -201,15 +203,40 @@ class BaseLiveAdapter:
     # ─────────────────────────────────────────────────────
     # Account & market data
     # ─────────────────────────────────────────────────────
-    def get_account_info(self) -> Dict[str, float]:
-        """Return {'balance','equity','margin','free_margin','margin_level'} — missing keys default to 0.0."""
-        out = {"balance": 0.0, "equity": 0.0, "margin": 0.0, "free_margin": 0.0, "margin_level": 0.0}
+    def get_account_info(self) -> Dict[str, Any]:
+        """
+        Return account info with at least:
+        {
+            'balance': float,
+            'equity': float,
+            'margin': float,
+            'free_margin': float,
+            'margin_level': float,
+            'leverage': float,
+            'currency': str,
+        }
+        Missing numeric keys default to 0.0, currency falls back to config/account default.
+        """
+        out: Dict[str, Any] = {
+            "balance": 0.0,
+            "equity": 0.0,
+            "margin": 0.0,
+            "free_margin": 0.0,
+            "margin_level": 0.0,
+            "leverage": 0.0,
+            "currency": self.cfg.account_currency,
+        }
         if not self._ensure_ready():
             return out
         try:
             raw = self._get_account_info_impl() or {}
-            for k in out.keys():
+            # numeric fields
+            for k in ("balance", "equity", "margin", "free_margin", "margin_level", "leverage"):
                 out[k] = _safe_float(raw.get(k, out[k]), out[k])
+            # currency (string)
+            cur = raw.get("currency")
+            if isinstance(cur, str) and cur:
+                out["currency"] = cur
             return out
         except Exception:
             self._cb_note_failure()
@@ -451,6 +478,53 @@ class BaseLiveAdapter:
         return result
 
     # ─────────────────────────────────────────────────────
+    # Position modification (SL/TP)
+    # ─────────────────────────────────────────────────────
+    def modify_position(
+        self,
+        ticket: int,
+        sl: Optional[float] = None,
+        tp: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """
+        Modify SL/TP of an existing position by ticket.
+        Return {'ok': bool, 'sl': float, 'tp': float, 'error'?: str}
+        """
+        result: Dict[str, Any] = {"ok": False, "sl": 0.0, "tp": 0.0}
+        if not self._ensure_ready():
+            result["error"] = "not_connected_or_circuit_open"
+            return result
+        if not self._rate_ok():
+            result["error"] = "rate_limited"
+            return result
+
+        delay = int(self.cfg.initial_backoff_ms)
+        last_err: Optional[str] = None
+        for attempt in range(self.cfg.max_retries + 1):
+            try:
+                raw = self._modify_position_impl(ticket, sl, tp) or {}
+                ok = bool(raw.get("ok", False))
+                result.update({
+                    "ok": ok,
+                    "sl": _safe_float(raw.get("sl", sl or 0.0)),
+                    "tp": _safe_float(raw.get("tp", tp or 0.0)),
+                })
+                if ok:
+                    self._cb_reset()
+                    return result
+                last_err = raw.get("error", "unknown_error")
+            except Exception as e:
+                last_err = str(e)
+
+            self._cb_note_failure()
+            if attempt < self.cfg.max_retries:
+                _sleep_ms(delay)
+                delay = int(delay * self.cfg.backoff_multiplier)
+
+        result["error"] = last_err or "modify_failed"
+        return result
+
+    # ─────────────────────────────────────────────────────
     # Positions snapshot
     # ─────────────────────────────────────────────────────
     def sync_positions(self) -> Dict[str, Dict[str, Any]]:
@@ -462,7 +536,12 @@ class BaseLiveAdapter:
              'units': float,
              'entry_price': float,
              'notional_eur': float,
-             'open_time': iso|unix (optional)
+             'open_time': iso|unix (optional),
+             'unrealized_pnl': float,  # Current P&L
+             'current_price': float,   # Current market price
+             'ticket': int,            # MT5 ticket for modifications
+             'sl': float,              # Stop loss price
+             'tp': float,              # Take profit price
           }, ...
         }
         """
@@ -488,6 +567,15 @@ class BaseLiveAdapter:
                             "entry_price": entry,
                             "notional_eur": notional,
                             "open_time": node.get("open_time", node.get("time", None)),
+                            # Pass through P&L and price data
+                            "unrealized_pnl": _safe_float(node.get("unrealized_pnl", node.get("profit", 0.0))),
+                            "profit": _safe_float(node.get("profit", node.get("unrealized_pnl", 0.0))),
+                            "current_price": _safe_float(node.get("current_price", node.get("price_current", 0.0))),
+                            "price_current": _safe_float(node.get("price_current", node.get("current_price", 0.0))),
+                            "ticket": int(node.get("ticket", 0) or 0),
+                            "sl": _safe_float(node.get("sl", 0.0)),
+                            "tp": _safe_float(node.get("tp", 0.0)),
+                            "lots": _safe_float(node.get("lots", node.get("volume", 0.0))),
                         }
                     except Exception:
                         continue
@@ -522,6 +610,15 @@ class BaseLiveAdapter:
         raise NotImplementedError
 
     def _sync_positions_impl(self) -> Dict[str, Dict[str, Any]]:
+        raise NotImplementedError
+
+    def _modify_position_impl(
+        self,
+        ticket: int,
+        sl: Optional[float] = None,
+        tp: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Override in concrete adapter to modify SL/TP by ticket."""
         raise NotImplementedError
 
     # ─────────────────────────────────────────────────────
