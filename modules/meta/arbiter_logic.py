@@ -978,8 +978,14 @@ class ArbiterLogic:
         # 1) Run PPO policy
         action, log_prob, value = self.ppo_core.select_action(observation)
         
-        trust_score = float(action[0]) if len(action) > 0 else 0.0
+        # ACTION SEMANTICS (v4.1 - Autonomous PPO):
+        # action[0] = direction_score ∈ [-1, 1]: PPO's directional intent
+        # action[1] = size_score ∈ [-1, 1]: Position sizing signal
+        direction_score = float(action[0]) if len(action) > 0 else 0.0
         size_score = float(action[1]) if len(action) > 1 else 0.0
+        
+        # Legacy alias for backwards compatibility in decision metadata
+        trust_score = direction_score
         
         # 2) Extract committee/expert info
         committee_action = str(committee.get("action", "hold")).lower()
@@ -995,12 +1001,13 @@ class ArbiterLogic:
             self.logger.info(
                 f"[PPO_DIRECTION] {instrument}: committee_action={committee_action}, "
                 f"expert_consensus={expert_consensus}, expert_conf={expert_confidence:.2f}, "
-                f"trust_score={trust_score:.2f}"
+                f"direction_score={direction_score:.2f}"
             )
         
-        # 3) Interpret trust_score into raw direction & confidence
-        direction, confidence, reasoning = self._interpret_trust_score(
-            trust_score=trust_score,
+        # 3) Interpret direction_score into PPO direction & confidence
+        #    Uses phase-based blending with experts
+        direction, confidence, reasoning = self._interpret_direction(
+            direction_score=direction_score,
             committee_action=committee_action,
             committee_confidence=committee_confidence,
             expert_consensus=expert_consensus,
@@ -1009,21 +1016,21 @@ class ArbiterLogic:
         )
         
         # 4) Hysteresis on direction
-        # In EXPERT_LED mode, use committee_confidence for hysteresis threshold
-        # so that PPO's random trust_score doesn't override expert decisions
+        # Use direction_score magnitude for hysteresis, adjusted by autonomy phase
         autonomy_phase = self.autonomy_tracker.state.phase
         if autonomy_phase == "EXPERT_LED":
-            # Use committee confidence scaled to [-1, 1] range for hysteresis
-            hysteresis_score = (committee_confidence - 0.5) * 2.0  # 0.34 -> -0.32, 0.7 -> 0.4
-            # If committee has a direction, use stronger signal
+            # In expert-led mode, use committee confidence for hysteresis
+            # to prevent PPO's random scores from overriding expert decisions
+            hysteresis_score = (committee_confidence - 0.5) * 2.0  # Scale to [-1, 1]
             if committee_action in ("long", "short", "buy", "sell"):
-                hysteresis_score = max(0.2, committee_confidence)  # Ensure we pass entry threshold
+                hysteresis_score = max(0.2, committee_confidence)
         else:
-            hysteresis_score = trust_score
+            # In higher autonomy phases, use PPO's direction_score directly
+            hysteresis_score = direction_score
         direction = self._apply_hysteresis(instrument, direction, hysteresis_score)
         
-        # 5) Gating pipeline
-        gating_result = GatingResult.apply_gates(memory_info, risk_info, trust_score)
+        # 5) Gating pipeline (use direction_score for gating decisions)
+        gating_result = GatingResult.apply_gates(memory_info, risk_info, direction_score)
         
         # 5b) CRITICAL: Also check FinalArbiter's per-instrument gate decision
         # The FinalArbiter applies voting confidence/consensus thresholds that PPO must respect
@@ -1167,13 +1174,14 @@ class ArbiterLogic:
                 f"reasons={gating_result.reasons + strategy_reasons + tm_reasons + wm_reasons}"
             )
         
-        # Decision object
+        # Decision object (v4.1: direction_score is the primary autonomous signal)
         decision = InstrumentDecision(
             instrument=instrument,
             direction=direction,
             confidence=confidence,
             position_size=position_size,
-            trust_score=trust_score,
+            direction_score=direction_score,  # v4.1: Raw PPO autonomous signal
+            trust_score=trust_score,          # Legacy alias (equals direction_score)
             committee_action=committee_action,
             committee_confidence=committee_confidence,
             expert_consensus=expert_consensus,
@@ -1210,12 +1218,35 @@ class ArbiterLogic:
 
     
     # ─────────────────────────────────────────────────────────────
-    # Trust Score Interpretation
+    # Direction Interpretation (v4.1 - Autonomous PPO)
     # ─────────────────────────────────────────────────────────────
     
-    def _interpret_trust_score(
+    def _score_to_direction(
         self,
-        trust_score: float,
+        score: float,
+        long_threshold: float = 0.3,
+        short_threshold: float = -0.3,
+    ) -> str:
+        """
+        Convert a direction_score to a discrete direction.
+        
+        Args:
+            score: Direction score from PPO in [-1, 1]
+            long_threshold: Score above this → LONG
+            short_threshold: Score below this → SHORT
+            
+        Returns:
+            "long", "short", or "flat"
+        """
+        if score > long_threshold:
+            return "long"
+        if score < short_threshold:
+            return "short"
+        return "flat"
+    
+    def _interpret_direction(
+        self,
+        direction_score: float,
         committee_action: str,
         committee_confidence: float,
         expert_consensus: str,
@@ -1223,12 +1254,20 @@ class ArbiterLogic:
         instrument: str,
     ) -> Tuple[str, float, str]:
         """
-        Interpret trust_score to determine direction and confidence.
+        Interpret PPO's direction_score with phase-based blending.
         
-        Uses ADAPTIVE AUTONOMY system:
-        - PPO autonomy mode adjusts based on performance (win rate, agreement, consistency)
-        - Phases: EXPERT_LED -> BLENDED -> PPO_LED -> FULL_AUTONOMY
-        - Weights shift dynamically from experts to PPO as PPO proves itself
+        AUTONOMOUS PPO LOGIC (v4.1):
+        =============================
+        PPO's direction_score directly encodes its directional intent:
+        - > +0.3 ⇒ PPO wants LONG
+        - < -0.3 ⇒ PPO wants SHORT
+        - |score| ≤ 0.3 ⇒ PPO is uncertain (FLAT)
+        
+        The autonomy phase determines how PPO direction blends with experts:
+        - EXPERT_LED: Experts lead, but strong PPO signals can influence
+        - BLENDED: 50/50 weighting, agreement boosts confidence
+        - PPO_LED: PPO leads, experts provide secondary input
+        - FULL_AUTONOMY: PPO direction is primary, experts only affect sizing
         
         Returns:
             (direction, confidence, reasoning)
@@ -1239,7 +1278,11 @@ class ArbiterLogic:
         autonomy_level = autonomy_summary["autonomy_level"]
         ppo_win_rate = autonomy_summary["ppo_win_rate"]
         
-        # Committee direction
+        # PPO's autonomous direction from direction_score
+        ppo_dir = self._score_to_direction(direction_score)
+        ppo_conf = float(np.clip(abs(direction_score), 0.0, 1.0))
+        
+        # Parse committee direction
         if committee_action in ("long", "buy", "bullish"):
             committee_dir = "long"
         elif committee_action in ("short", "sell", "bearish"):
@@ -1247,7 +1290,7 @@ class ArbiterLogic:
         else:
             committee_dir = "flat"
         
-        # Expert consensus direction
+        # Parse expert consensus direction
         if expert_consensus in ("long", "buy", "bullish"):
             expert_dir = "long"
         elif expert_consensus in ("short", "sell", "bearish"):
@@ -1255,67 +1298,106 @@ class ArbiterLogic:
         else:
             expert_dir = "flat"
         
-        # PPO's own inclination from trust_score
-        if trust_score > 0.3:
-            ppo_dir = committee_dir  # PPO supports committee
-            ppo_conf = abs(trust_score)
-        elif trust_score < -0.3:
-            ppo_dir = "flat"  # PPO wants to override by standing aside
-            ppo_conf = abs(trust_score)
-        else:
-            ppo_dir = committee_dir  # Uncertain: lean to committee
-            ppo_conf = 0.3
+        # Combined expert direction (prefer committee if confident)
+        combined_expert_dir = committee_dir if committee_confidence >= expert_confidence else expert_dir
+        combined_expert_conf = max(committee_confidence, expert_confidence)
         
-        # Phase-based blending
+        # ═══════════════════════════════════════════════════════════════
+        # PHASE-BASED BLENDING
+        # ═══════════════════════════════════════════════════════════════
+        
         if phase == "EXPERT_LED":
-            direction = committee_dir if committee_confidence > 0.3 else expert_dir
-            confidence = (
-                max(committee_confidence, expert_confidence) * expert_weight
-                + ppo_conf * ppo_weight
-            )
-            reasoning = f"[{phase}] Committee leads ({expert_weight:.0%}): {direction} (comm={committee_dir}, exp={expert_dir})"
-            
-        elif phase == "BLENDED":
-            if expert_dir == ppo_dir:
-                direction = expert_dir
-                confidence = (expert_confidence * expert_weight + ppo_conf * ppo_weight) * 1.1
-                reasoning = f"[{phase}] Agreement: {direction} (PPO+experts aligned)"
+            # Experts lead, but PPO can nudge if strongly confident
+            if ppo_dir != "flat" and abs(direction_score) > 0.7:
+                # Strong PPO hint - allow it to influence
+                direction = ppo_dir
+                confidence = 0.5 * ppo_conf + 0.5 * combined_expert_conf
+                reasoning = f"[{phase}] Strong PPO hint ({direction_score:.2f}): {direction}"
             else:
-                direction = expert_dir
-                confidence = expert_confidence * 0.7
-                reasoning = f"[{phase}] Conflict - experts say {expert_dir}, PPO says {ppo_dir}"
+                # Default: follow experts
+                direction = combined_expert_dir
+                confidence = combined_expert_conf
+                reasoning = f"[{phase}] Experts lead: {direction} (comm={committee_dir}, exp={expert_dir})"
+                
+        elif phase == "BLENDED":
+            # Balanced blending - agreement boosts confidence
+            if ppo_dir == combined_expert_dir and ppo_dir != "flat":
+                # Agreement: boost confidence
+                direction = ppo_dir
+                confidence = (ppo_conf * ppo_weight + combined_expert_conf * expert_weight) * 1.1
+                reasoning = f"[{phase}] Agreement: {direction} (PPO+experts aligned)"
+            elif ppo_dir == "flat":
+                # PPO uncertain: lean to experts with reduced confidence
+                direction = combined_expert_dir
+                confidence = combined_expert_conf * 0.8
+                reasoning = f"[{phase}] PPO flat, experts suggest: {direction}"
+            else:
+                # Disagreement: pick by weights
+                if ppo_weight > expert_weight:
+                    direction = ppo_dir
+                    confidence = ppo_conf * ppo_weight * 0.9  # Slight penalty for conflict
+                else:
+                    direction = combined_expert_dir
+                    confidence = combined_expert_conf * expert_weight * 0.9
+                reasoning = f"[{phase}] Conflict (PPO={ppo_dir}, EXP={combined_expert_dir}): {direction}"
                 
         elif phase == "PPO_LED":
-            if ppo_dir == expert_dir:
+            # PPO leads unless it's uncertain
+            if ppo_dir != "flat":
                 direction = ppo_dir
-                confidence = (ppo_conf * ppo_weight + expert_confidence * expert_weight) * 1.15
-                reasoning = f"[{phase}] PPO-led agreement: {direction}"
-            elif trust_score > 0.5:
-                direction = ppo_dir
-                confidence = ppo_conf * 0.85
-                reasoning = f"[{phase}] PPO confident ({trust_score:.2f}): {direction}"
+                confidence = (ppo_conf * ppo_weight + combined_expert_conf * expert_weight) * 1.1
+                reasoning = f"[{phase}] PPO-led: {direction} (score={direction_score:.2f})"
             else:
-                direction = expert_dir
-                confidence = expert_confidence * 0.6
-                reasoning = f"[{phase}] PPO uncertain, defer to experts: {direction}"
+                # PPO flat: allow experts to suggest, but with reduced confidence
+                direction = combined_expert_dir
+                confidence = combined_expert_conf * 0.7
+                reasoning = f"[{phase}] PPO flat, leaning on experts: {direction}"
                 
         else:  # FULL_AUTONOMY
-            if trust_score > 0.2:
+            # PPO has full control; experts only influence sizing (not direction)
+            if ppo_dir != "flat":
                 direction = ppo_dir
-                confidence = ppo_conf * 0.95
-                reasoning = f"[{phase}] PPO autonomous: {direction} (trust={trust_score:.2f})"
-            elif trust_score < -0.2:
-                direction = "flat"
-                confidence = 0.4
-                reasoning = f"[{phase}] PPO override: FLAT (trust={trust_score:.2f})"
+                confidence = ppo_conf
+                reasoning = f"[{phase}] PPO autonomous: {direction} (score={direction_score:.2f})"
             else:
-                direction = expert_dir if expert_confidence > 0.4 else "flat"
-                confidence = expert_confidence * 0.5
-                reasoning = f"[{phase}] PPO uncertain, checking experts: {direction}"
+                # PPO sees nothing - optionally follow strong expert signals
+                if combined_expert_conf > 0.6:
+                    direction = combined_expert_dir
+                    confidence = combined_expert_conf * 0.5  # Heavy discount
+                    reasoning = f"[{phase}] PPO flat, high-conf experts: {direction}"
+                else:
+                    direction = "flat"
+                    confidence = 0.3
+                    reasoning = f"[{phase}] PPO flat, no strong signal: FLAT"
         
-        reasoning += f" | Score={autonomy_level:.2f}, WR={ppo_win_rate:.0%}"
+        # Append autonomy metrics to reasoning
+        reasoning += f" | Autonomy={autonomy_level:.2f}, WR={ppo_win_rate:.0%}"
         
         return direction, float(np.clip(confidence, 0.0, 1.0)), reasoning
+    
+    # Legacy alias for backwards compatibility
+    def _interpret_trust_score(
+        self,
+        trust_score: float,
+        committee_action: str,
+        committee_confidence: float,
+        expert_consensus: str,
+        expert_confidence: float,
+        instrument: str,
+    ) -> Tuple[str, float, str]:
+        """
+        Legacy method - redirects to _interpret_direction.
+        
+        In v4.1+, trust_score is now direction_score with new semantics.
+        """
+        return self._interpret_direction(
+            direction_score=trust_score,
+            committee_action=committee_action,
+            committee_confidence=committee_confidence,
+            expert_consensus=expert_consensus,
+            expert_confidence=expert_confidence,
+            instrument=instrument,
+        )
     
     # ─────────────────────────────────────────────────────────────
     # Expert Signal Processing

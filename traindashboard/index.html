@@ -896,28 +896,52 @@
                     <div className="glass-card p-5">
                         <div className="section-header mb-4">Learning Metrics</div>
                         <div className="grid grid-cols-2 gap-4">
-                            <div>
-                                <div className="text-[0.6rem] text-slate-500 uppercase">Policy Loss</div>
-                                <div className="mono text-lg font-semibold metric-value accent">
+                            <div className="group relative">
+                                <div className="text-[0.6rem] text-slate-500 uppercase flex items-center gap-1">
+                                    Policy Loss
+                                    <span className={`w-2 h-2 rounded-full ${(learning.policy_loss || 0) < 0 ? 'bg-emerald-400' : 'bg-amber-400'}`}></span>
+                                </div>
+                                <div className={`mono text-lg font-semibold ${(learning.policy_loss || 0) < 0 ? 'text-emerald-400' : 'text-amber-400'}`}>
                                     {fmtNum(learning.policy_loss || 0, 4)}
                                 </div>
+                                <div className="text-[0.5rem] text-slate-600 mt-0.5">
+                                    {(learning.policy_loss || 0) < 0 ? '✓ Learning' : '○ Exploring'}
+                                </div>
                             </div>
-                            <div>
-                                <div className="text-[0.6rem] text-slate-500 uppercase">Expl. Variance</div>
-                                <div className="mono text-lg font-semibold text-violet-400">
+                            <div className="group relative">
+                                <div className="text-[0.6rem] text-slate-500 uppercase flex items-center gap-1">
+                                    Expl. Variance
+                                    <span className={`w-2 h-2 rounded-full ${(learning.explained_variance || 0) > 0.3 ? 'bg-emerald-400' : (learning.explained_variance || 0) > 0.1 ? 'bg-amber-400' : 'bg-rose-400'}`}></span>
+                                </div>
+                                <div className={`mono text-lg font-semibold ${(learning.explained_variance || 0) > 0.3 ? 'text-emerald-400' : (learning.explained_variance || 0) > 0.1 ? 'text-amber-400' : 'text-rose-400'}`}>
                                     {fmtNum(learning.explained_variance || 0, 2)}
                                 </div>
-                            </div>
-                            <div>
-                                <div className="text-[0.6rem] text-slate-500 uppercase">Entropy</div>
-                                <div className="mono text-sm font-medium text-slate-300">
-                                    {fmtNum(learning.entropy || 0, 2)}
+                                <div className="text-[0.5rem] text-slate-600 mt-0.5">
+                                    {(learning.explained_variance || 0) > 0.5 ? '✓ Excellent' : (learning.explained_variance || 0) > 0.3 ? '✓ Good' : (learning.explained_variance || 0) > 0.1 ? '○ OK' : '✗ Poor'}
                                 </div>
                             </div>
-                            <div>
-                                <div className="text-[0.6rem] text-slate-500 uppercase">KL Div</div>
-                                <div className="mono text-sm font-medium text-slate-300">
+                            <div className="group relative">
+                                <div className="text-[0.6rem] text-slate-500 uppercase flex items-center gap-1">
+                                    Entropy
+                                    <span className={`w-2 h-2 rounded-full ${Math.abs(learning.entropy || 0) > 5 && Math.abs(learning.entropy || 0) < 10 ? 'bg-emerald-400' : 'bg-amber-400'}`}></span>
+                                </div>
+                                <div className={`mono text-sm font-medium ${Math.abs(learning.entropy || 0) > 5 && Math.abs(learning.entropy || 0) < 10 ? 'text-emerald-400' : 'text-amber-400'}`}>
+                                    {fmtNum(learning.entropy || 0, 2)}
+                                </div>
+                                <div className="text-[0.5rem] text-slate-600 mt-0.5">
+                                    {Math.abs(learning.entropy || 0) < 3 ? '✗ Collapsed' : Math.abs(learning.entropy || 0) < 5 ? '○ Focused' : Math.abs(learning.entropy || 0) < 10 ? '✓ Balanced' : '○ Random'}
+                                </div>
+                            </div>
+                            <div className="group relative">
+                                <div className="text-[0.6rem] text-slate-500 uppercase flex items-center gap-1">
+                                    KL Div
+                                    <span className={`w-2 h-2 rounded-full ${(learning.kl_divergence || 0) < 0.015 ? 'bg-emerald-400' : (learning.kl_divergence || 0) < 0.03 ? 'bg-amber-400' : 'bg-rose-400'}`}></span>
+                                </div>
+                                <div className={`mono text-sm font-medium ${(learning.kl_divergence || 0) < 0.015 ? 'text-emerald-400' : (learning.kl_divergence || 0) < 0.03 ? 'text-amber-400' : 'text-rose-400'}`}>
                                     {fmtNum(learning.kl_divergence || 0, 5)}
+                                </div>
+                                <div className="text-[0.5rem] text-slate-600 mt-0.5">
+                                    {(learning.kl_divergence || 0) < 0.01 ? '✓ Stable' : (learning.kl_divergence || 0) < 0.015 ? '✓ Good' : (learning.kl_divergence || 0) < 0.03 ? '○ High' : '✗ Too High'}
                                 </div>
                             </div>
                         </div>
@@ -1277,6 +1301,49 @@
         const learning = data?.learning || {};
         const ppo      = data?.ppo || {};
 
+        // Helper function to get metric status with color, icon, and tooltip
+        const getLearningMetricStatus = (metric, value) => {
+            const thresholds = {
+                policy_loss: { 
+                    good: v => v < 0, 
+                    ok: v => v < 0.05,
+                    tooltip: "Negative = learning, Near 0 = converged, >0.05 = unstable"
+                },
+                value_loss: { 
+                    good: v => v < 0.1, 
+                    ok: v => v < 0.5,
+                    tooltip: "Lower = value function accurate, <0.1 = excellent"
+                },
+                entropy: { 
+                    good: v => v > -9, 
+                    ok: v => v > -10,
+                    tooltip: ">-9 = exploring well, <-10 = policy collapsed (bad)"
+                },
+                kl_divergence: { 
+                    good: v => v < 0.015, 
+                    ok: v => v < 0.02,
+                    tooltip: "<0.015 = stable updates, >0.02 = too aggressive"
+                },
+                clip_fraction: { 
+                    good: v => v > 0.05 && v < 0.2, 
+                    ok: v => v > 0.02 && v < 0.3,
+                    tooltip: "0.05-0.2 = optimal, <0.02 = not learning, >0.3 = unstable"
+                },
+                explained_variance: { 
+                    good: v => v > 0.5, 
+                    ok: v => v > 0.2,
+                    tooltip: ">0.5 = value function learning well, <0.2 = poor predictions"
+                }
+            };
+            
+            const t = thresholds[metric];
+            if (!t) return { color: "text-slate-200", icon: "", status: "unknown", tooltip: "" };
+            
+            if (t.good(value)) return { color: "text-emerald-400", icon: "✓", status: "good", tooltip: t.tooltip };
+            if (t.ok(value)) return { color: "text-yellow-400", icon: "◐", status: "ok", tooltip: t.tooltip };
+            return { color: "text-rose-400", icon: "✗", status: "bad", tooltip: t.tooltip };
+        };
+
         return (
             <div className="flex flex-col gap-5">
                 <section className="glass-panel p-6">
@@ -1299,29 +1366,185 @@
 
                     <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
                         {[
-                            { label: "Policy Loss", value: learning.policy_loss || 0, digits: 4, color: "text-cyan-400" },
-                            { label: "Value Loss", value: learning.value_loss || 0, digits: 4, color: "text-slate-200" },
-                            { label: "Entropy", value: learning.entropy || 0, digits: 2, color: "text-slate-200" },
-                            { label: "KL Divergence", value: learning.kl_divergence || 0, digits: 5, color: "text-slate-200" },
-                            { label: "Clip Fraction", value: learning.clip_fraction || 0, digits: 3, color: "text-slate-200" },
-                        ].map((m, idx) => (
-                            <div key={idx} className="glass-card p-5">
-                                <div className="text-[0.6rem] text-slate-500 uppercase tracking-wider font-medium">{m.label}</div>
-                                <div className={`mono text-2xl font-bold ${m.color} mt-2`}>
-                                    {fmtNum(m.value, m.digits)}
+                            { label: "Policy Loss", key: "policy_loss", value: learning.policy_loss || 0, digits: 4 },
+                            { label: "Value Loss", key: "value_loss", value: learning.value_loss || 0, digits: 4 },
+                            { label: "Entropy", key: "entropy", value: learning.entropy || 0, digits: 2 },
+                            { label: "KL Divergence", key: "kl_divergence", value: learning.kl_divergence || 0, digits: 5 },
+                            { label: "Clip Fraction", key: "clip_fraction", value: learning.clip_fraction || 0, digits: 3 },
+                        ].map((m, idx) => {
+                            const status = getLearningMetricStatus(m.key, m.value);
+                            return (
+                                <div key={idx} className="glass-card p-5 relative group">
+                                    <div className="flex items-center justify-between">
+                                        <div className="text-[0.6rem] text-slate-500 uppercase tracking-wider font-medium">{m.label}</div>
+                                        <span className={`text-sm ${status.color}`} title={status.tooltip}>{status.icon}</span>
+                                    </div>
+                                    <div className={`mono text-2xl font-bold ${status.color} mt-2`}>
+                                        {fmtNum(m.value, m.digits)}
+                                    </div>
+                                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 bg-slate-800 text-xs text-slate-300 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-50 pointer-events-none">
+                                        {status.tooltip}
+                                    </div>
                                 </div>
+                            );
+                        })}
+                        {(() => {
+                            const expVarStatus = getLearningMetricStatus("explained_variance", learning.explained_variance || 0);
+                            return (
+                                <div className="glass-card p-5 relative group">
+                                    <div className="flex items-center justify-between">
+                                        <div className="text-[0.6rem] text-slate-500 uppercase tracking-wider font-medium">Explained Variance</div>
+                                        <span className={`text-sm ${expVarStatus.color}`} title={expVarStatus.tooltip}>{expVarStatus.icon}</span>
+                                    </div>
+                                    <div className={`mono text-2xl font-bold ${expVarStatus.color} mt-2`}>
+                                        {fmtNum(learning.explained_variance || 0, 2)}
+                                    </div>
+                                    <div className="progress-bar mt-3">
+                                        <div
+                                            className={`h-full rounded-lg ${
+                                                expVarStatus.status === "good" ? "bg-gradient-to-r from-emerald-500 to-green-500" :
+                                                expVarStatus.status === "ok" ? "bg-gradient-to-r from-yellow-500 to-amber-500" :
+                                                "bg-gradient-to-r from-rose-500 to-red-500"
+                                            }`}
+                                            style={{ width: (Math.max(0, Math.min(1, learning.explained_variance || 0)) * 100) + "%" }}
+                                        />
+                                    </div>
+                                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 bg-slate-800 text-xs text-slate-300 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-50 pointer-events-none">
+                                        {expVarStatus.tooltip}
+                                    </div>
+                                </div>
+                            );
+                        })()}
+                    </div>
+                </section>
+
+                {/* Training Performance Section */}
+                <section className="glass-panel p-6">
+                    <div className="flex items-center gap-3 mb-5">
+                        <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center shadow-lg shadow-cyan-500/30">
+                            <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                            </svg>
+                        </div>
+                        <div>
+                            <div className="text-[0.65rem] uppercase tracking-[0.2em] text-cyan-400 font-semibold">
+                                Training Performance
                             </div>
-                        ))}
-                        <div className="glass-card p-5">
-                            <div className="text-[0.6rem] text-slate-500 uppercase tracking-wider font-medium">Explained Variance</div>
+                            <div className="accent-line mt-1"></div>
+                        </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                        {/* Steps Per Second */}
+                        <div className="glass-card p-4 relative group">
+                            <div className="text-[0.6rem] text-slate-500 uppercase tracking-wider font-medium">Steps/Sec</div>
+                            <div className={`mono text-2xl font-bold mt-2 ${
+                                (learning.steps_per_second || 0) > 100 ? "text-emerald-400" :
+                                (learning.steps_per_second || 0) > 50 ? "text-yellow-400" : "text-rose-400"
+                            }`}>
+                                {fmtNum(learning.steps_per_second || 0, 0)}
+                            </div>
+                            <div className="text-[0.55rem] text-slate-600 mt-1">Training speed</div>
+                            <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 bg-slate-800 text-xs text-slate-300 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-50 pointer-events-none">
+                                &gt;100 = fast, 50-100 = ok, &lt;50 = slow
+                            </div>
+                        </div>
+
+                        {/* Episode Length */}
+                        <div className="glass-card p-4 relative group">
+                            <div className="text-[0.6rem] text-slate-500 uppercase tracking-wider font-medium">Avg Ep Length</div>
                             <div className="mono text-2xl font-bold text-violet-400 mt-2">
-                                {fmtNum(learning.explained_variance || 0, 2)}
+                                {fmtNum(learning.avg_episode_length || learning.ep_len_mean || 0, 0)}
                             </div>
-                            <div className="progress-bar mt-3">
-                                <div
-                                    className="h-full rounded-lg bg-gradient-to-r from-violet-500 via-purple-500 to-fuchsia-500"
-                                    style={{ width: ((learning.explained_variance || 0) * 100) + "%" }}
-                                />
+                            <div className="text-[0.55rem] text-slate-600 mt-1">Steps per episode</div>
+                            <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 bg-slate-800 text-xs text-slate-300 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-50 pointer-events-none">
+                                Longer = more stable trading patterns
+                            </div>
+                        </div>
+
+                        {/* Loss Ratio */}
+                        {(() => {
+                            const pLoss = Math.abs(learning.policy_loss || 0.001);
+                            const vLoss = Math.abs(learning.value_loss || 0.001);
+                            const ratio = vLoss / Math.max(pLoss, 0.0001);
+                            const ratioStatus = ratio > 0.5 && ratio < 5 ? "good" : ratio > 0.1 && ratio < 10 ? "ok" : "bad";
+                            return (
+                                <div className="glass-card p-4 relative group">
+                                    <div className="text-[0.6rem] text-slate-500 uppercase tracking-wider font-medium">Loss Ratio</div>
+                                    <div className={`mono text-2xl font-bold mt-2 ${
+                                        ratioStatus === "good" ? "text-emerald-400" :
+                                        ratioStatus === "ok" ? "text-yellow-400" : "text-rose-400"
+                                    }`}>
+                                        {fmtNum(ratio, 2)}
+                                    </div>
+                                    <div className="text-[0.55rem] text-slate-600 mt-1">Value / Policy</div>
+                                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 bg-slate-800 text-xs text-slate-300 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-50 pointer-events-none">
+                                        0.5-5 = balanced, &lt;0.1 or &gt;10 = one loss dominates
+                                    </div>
+                                </div>
+                            );
+                        })()}
+
+                        {/* Policy Updates */}
+                        <div className="glass-card p-4 relative group">
+                            <div className="text-[0.6rem] text-slate-500 uppercase tracking-wider font-medium">Policy Updates</div>
+                            <div className="mono text-2xl font-bold text-amber-400 mt-2">
+                                {(learning.n_updates || 0).toLocaleString()}
+                            </div>
+                            <div className="text-[0.55rem] text-slate-600 mt-1">Total PPO updates</div>
+                            <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 bg-slate-800 text-xs text-slate-300 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-50 pointer-events-none">
+                                # of times PPO updated the network
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Second Row - Additional Metrics */}
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4">
+                        {/* Entropy Coefficient (effective) */}
+                        <div className="glass-card p-4 relative group">
+                            <div className="text-[0.6rem] text-slate-500 uppercase tracking-wider font-medium">Ent Coef</div>
+                            <div className="mono text-2xl font-bold text-pink-400 mt-2">
+                                {fmtNum(learning.ent_coef || 0.01, 3)}
+                            </div>
+                            <div className="text-[0.55rem] text-slate-600 mt-1">Exploration weight</div>
+                            <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 bg-slate-800 text-xs text-slate-300 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-50 pointer-events-none">
+                                Higher = more exploration, Lower = more exploitation
+                            </div>
+                        </div>
+
+                        {/* Clip Range */}
+                        <div className="glass-card p-4 relative group">
+                            <div className="text-[0.6rem] text-slate-500 uppercase tracking-wider font-medium">Clip Range</div>
+                            <div className="mono text-2xl font-bold text-teal-400 mt-2">
+                                {fmtNum(learning.clip_range || 0.2, 2)}
+                            </div>
+                            <div className="text-[0.55rem] text-slate-600 mt-1">PPO clip param</div>
+                            <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 bg-slate-800 text-xs text-slate-300 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-50 pointer-events-none">
+                                Limits policy update size (0.2 = standard)
+                            </div>
+                        </div>
+
+                        {/* GAE Lambda */}
+                        <div className="glass-card p-4 relative group">
+                            <div className="text-[0.6rem] text-slate-500 uppercase tracking-wider font-medium">GAE Lambda</div>
+                            <div className="mono text-2xl font-bold text-indigo-400 mt-2">
+                                {fmtNum(learning.gae_lambda || 0.95, 2)}
+                            </div>
+                            <div className="text-[0.55rem] text-slate-600 mt-1">Advantage discount</div>
+                            <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 bg-slate-800 text-xs text-slate-300 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-50 pointer-events-none">
+                                0.95 = balanced bias-variance tradeoff
+                            </div>
+                        </div>
+
+                        {/* Gamma */}
+                        <div className="glass-card p-4 relative group">
+                            <div className="text-[0.6rem] text-slate-500 uppercase tracking-wider font-medium">Gamma</div>
+                            <div className="mono text-2xl font-bold text-orange-400 mt-2">
+                                {fmtNum(learning.gamma || 0.99, 2)}
+                            </div>
+                            <div className="text-[0.55rem] text-slate-600 mt-1">Reward discount</div>
+                            <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-3 py-2 bg-slate-800 text-xs text-slate-300 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-50 pointer-events-none">
+                                0.99 = values long-term rewards highly
                             </div>
                         </div>
                     </div>

@@ -15,7 +15,7 @@ from modules.utils.info_bus import InfoBusManager
 from modules.utils.audit_utils import RotatingLogger, format_operator_message
 from modules.utils.lot_calculator import UnifiedLotCalculator
 
-from .shared.types import PositionSnap, TradeFill
+from .shared.types import PositionSnap, TradeFill, _parse_timestamp
 from .shared.utils import SafeBus, resolve_symbol
 from .debug.debugger import ExecutorDebugManager
 from .adapters.base_adapter import BaseLiveAdapter, LiveAdapterConfig
@@ -1269,10 +1269,8 @@ class Executor(BaseModule):
             if unrealized_pnl > pos.peak_unrealized:
                 pos.peak_unrealized = unrealized_pnl
 
-            try:
-                open_ts = float(pos.open_time) if pos.open_time is not None else None
-            except Exception:
-                open_ts = None
+            # Parse open_time (may be ISO string '2025-12-09T20:10:59Z' or Unix float)
+            open_ts = _parse_timestamp(pos.open_time)
             age_hours = (time.time() - open_ts) / 3600.0 if open_ts else 0.0
 
             exit_reason = None

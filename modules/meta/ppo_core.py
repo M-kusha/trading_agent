@@ -42,11 +42,29 @@ class PPOCoreConfig:
     Note: obs_size should be set to match your observation builder.
     The default of 64 matches PPO_OBS_SIZE v4.0 from ppo_observation_builder
     (includes world_model and trading_mode features).
+    
+    ACTION SEMANTICS (v4.1 - Autonomous PPO):
+    ===========================================
+    PPO outputs a 2D continuous action in [-1, 1]:
+    
+    action[0] = direction_score ∈ [-1.0, 1.0]
+        - > +0.3 ⇒ LONG signal
+        - < -0.3 ⇒ SHORT signal  
+        - |score| ≤ 0.3 ⇒ FLAT (uncertain/no position)
+        - Magnitude indicates conviction strength
+    
+    action[1] = size_score ∈ [-1.0, 1.0]
+        - Mapped to [0.0, 1.0] for position sizing
+        - Then scaled by risk/memory/mode gates
+    
+    The direction_score is the PRIMARY autonomous signal from PPO.
+    In training, PPO learns direction entirely from market observations.
+    In live trading, direction is blended with experts based on autonomy phase.
     """
 
     # Network dimensions
     obs_size: int = 64
-    act_size: int = 2  # (trust_score, position_size_score)
+    act_size: int = 2  # (direction_score, size_score)
     hidden_size: int = 128
 
     # Device
@@ -60,13 +78,17 @@ class PPOCoreConfig:
     value_coeff: float = 0.5
     entropy_coeff: float = 0.01
     gae_lambda: float = 0.95
-    gamma: float = 0.99
+    gamma: float = 0.95  # SHORT-TERM: ~5h horizon matches M15 + ExitEngine timeouts
     max_grad_norm: float = 0.5
     ppo_epochs: int = 4
 
     # Buffer / update settings
     batch_size: int = 64  # Minimum samples before update AND mini-batch size
     buffer_size: int = 2048  # Soft cap on buffer length
+
+    # Direction thresholds (for interpreting direction_score)
+    direction_long_threshold: float = 0.3   # score > this = LONG
+    direction_short_threshold: float = -0.3  # score < this = SHORT
 
     # Debug
     debug: bool = False
@@ -307,13 +329,27 @@ class PPOCore:
     ) -> Tuple[np.ndarray, float, float]:
         """
         Select action given observation.
+        
+        ACTION SEMANTICS (v4.1 - Autonomous PPO):
+        =========================================
+        Returns action array of shape (2,) with values in [-1, 1]:
+        
+        action[0] = direction_score:
+            - > +0.3 ⇒ LONG signal
+            - < -0.3 ⇒ SHORT signal
+            - |score| ≤ 0.3 ⇒ FLAT
+            
+        action[1] = size_score:
+            - Raw position size signal in [-1, 1]
+            - Mapped to [0, 1] by caller: (size_score + 1) / 2
+            - Then scaled by risk/memory/mode gates
 
         Args:
             obs: Observation array of shape (obs_size,) or compatible
             deterministic: If True, use mean action instead of sampling
 
         Returns:
-            action: Action array of shape (act_size,)
+            action: Action array of shape (act_size,) with values in [-1, 1]
             log_prob: Log probability of the action
             value: State value estimate
         """

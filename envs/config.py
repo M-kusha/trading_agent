@@ -260,19 +260,18 @@ class TradingConfig:
     enable_visualization: bool = True
 
     # ===================================================================
-    # PPO Hyperparameters (tuned for trading - v4.1)
+    # PPO Hyperparameters (tuned for trading - v4.1 Autonomous PPO)
     # ===================================================================
-    # NOTE: Fine-tuned based on 100k training analysis:
-    # - Lower LR (1e-4) for more stable convergence in noisy trading env
-    # - Larger batch_size (128) for better gradient estimates
-    # - Higher ent_coef (0.02) to encourage exploration beyond HOLD
-    # - Tighter clip_range (0.15) to prevent policy collapse
-    # - Slightly lower gamma (0.97) for shorter-horizon trading decisions
+    # NOTE: Fine-tuned for M15-PRIMARY short-term trading:
+    # - M15 = primary signal timeframe (15-min bars)
+    # - ExitEngine closes positions after ~1.5-4 hours (time_decay_hours=1.5)
+    # - Tight trailing TP means H1/H4/D1 trends rarely play out
+    # - gamma=0.95 → horizon ~20 steps = ~5 hours = matches exit horizon
     learning_rate: float = 1e-4          # Reduced from 3e-4 for stability
     n_steps: int = 2048                  # Keep - good for trading episodes
     batch_size: int = 128                # Increased from 64 for better gradients
     n_epochs: int = 10                   # Keep - good balance
-    gamma: float = 0.97                  # Reduced from 0.99 - trades resolve faster
+    gamma: float = 0.95                  # SHORT-TERM: ~5h horizon matches ExitEngine timeouts
     gae_lambda: float = 0.95             # Keep - standard
     clip_range: float = 0.15             # Reduced from 0.2 - more conservative updates
     clip_range_vf: Optional[float] = None
@@ -280,6 +279,14 @@ class TradingConfig:
     vf_coef: float = 0.5                 # Keep - standard
     max_grad_norm: float = 0.5           # Keep - standard
     target_kl: Optional[float] = 0.015   # Slightly higher for more exploration
+    
+    # Direction thresholds for interpreting PPO action[0] (v4.1)
+    direction_long_threshold: float = 0.3   # action[0] > this = LONG
+    direction_short_threshold: float = -0.3  # action[0] < this = SHORT
+    
+    # Autonomous PPO training mode (v4.1)
+    # When True, PPO direction is used directly without expert blending
+    ppo_autonomous_training: bool = True
 
     # ===================================================================
     # Network Architecture (legacy defaults; agent modules own live nets)
@@ -698,11 +705,12 @@ class ConfigPresets:
             min_intensity=0.0,
 
             # PPO training settings tuned for exploration
+            # NOTE: gamma=0.95 for M15 short-term trading (5h horizon matches ExitEngine)
             learning_rate=3e-4,
             n_steps=2048,
             batch_size=64,
             n_epochs=10,
-            gamma=0.99,
+            gamma=0.95,             # SHORT-TERM: ~5h horizon for M15 trading
             gae_lambda=0.95,
             clip_range=0.2,
             ent_coef=0.02,

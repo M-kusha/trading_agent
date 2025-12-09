@@ -808,6 +808,41 @@ class ModernEnhancedTrainingCallback(BaseCallback):
             self.smart_bus.set("n_updates", metrics.get("n_updates", 0),
                              module="TrainingCallback", thesis="Number of policy updates")
             
+            # ═══════════════════════════════════════════════════════════════
+            # Additional Training Performance Metrics (new for dashboard)
+            # ═══════════════════════════════════════════════════════════════
+            # Episode length
+            avg_ep_len = 0
+            if self.episode_lengths:
+                avg_ep_len = int(float(np.mean(list(self.episode_lengths)[-100:])))
+            self.smart_bus.set("avg_episode_length", avg_ep_len,
+                             module="TrainingCallback", thesis="Average episode length")
+            
+            # PPO hyperparameters (from model if available)
+            try:
+                ent_coef = getattr(self.model, "ent_coef", 0.01)
+                if callable(ent_coef):
+                    ent_coef = 0.01  # Default if it's a schedule
+                clip_range = getattr(self.model, "clip_range", 0.2)
+                if callable(clip_range):
+                    try:
+                        clip_range = clip_range(1.0)  # Get value at start
+                    except:
+                        clip_range = 0.2
+                gae_lambda = getattr(self.model, "gae_lambda", 0.95)
+                gamma = getattr(self.model, "gamma", 0.99)
+                
+                self.smart_bus.set("ent_coef", float(ent_coef),
+                                 module="TrainingCallback", thesis="Entropy coefficient")
+                self.smart_bus.set("clip_range", float(clip_range),
+                                 module="TrainingCallback", thesis="PPO clip range")
+                self.smart_bus.set("gae_lambda", float(gae_lambda),
+                                 module="TrainingCallback", thesis="GAE lambda")
+                self.smart_bus.set("gamma", float(gamma),
+                                 module="TrainingCallback", thesis="Reward discount factor")
+            except Exception:
+                pass  # Non-critical
+            
             # Reward metrics
             self.smart_bus.set("current_episode_reward", metrics.get("current_episode_reward", 0),
                              module="TrainingCallback", thesis="Current episode reward")
@@ -876,26 +911,30 @@ class ModernEnhancedTrainingCallback(BaseCallback):
             if actions is None:
                 return
             
+            # Get direction thresholds from config (v4.1 autonomous PPO uses 0.3)
+            long_thresh = float(getattr(self.config, "direction_long_threshold", 0.3))
+            short_thresh = float(getattr(self.config, "direction_short_threshold", -0.3))
+            
             # Extract action (handle array/scalar)
             if isinstance(actions, (list, tuple, np.ndarray)):
                 if len(actions) > 0:
                     action_arr = np.asarray(actions).flatten()
-                    # For continuous action space, interpret: >0.5 = BUY, <-0.5 = SELL, else HOLD
-                    # Using 0.5 threshold to be more selective
+                    # For continuous action space: use config thresholds (default ±0.3)
                     if len(action_arr) >= 2:
                         direction_val = float(action_arr[0])
-                        if direction_val > 0.5:
+                        if direction_val > long_thresh:
                             action = 1  # BUY
-                        elif direction_val < -0.5:
+                        elif direction_val < short_thresh:
                             action = 2  # SELL
                         else:
                             action = 0  # HOLD
                     else:
-                        action = int(action_arr[0]) if abs(action_arr[0]) > 0.5 else 0
+                        action = int(action_arr[0]) if action_arr[0] > long_thresh else (2 if action_arr[0] < short_thresh else 0)
                 else:
                     return
             else:
-                action = int(actions) if abs(float(actions)) > 0.5 else 0
+                val = float(actions)
+                action = 1 if val > long_thresh else (2 if val < short_thresh else 0)
             
             # Get current prices from environment data for ALL instruments
             env = None
@@ -1253,6 +1292,27 @@ class ModernEnhancedTrainingCallback(BaseCallback):
 
             if env is None:
                 return {"env_smartinfobus_status": "not_available"}
+
+            # Check if this is ExplorationTradingEnv (lightweight, no smart_bus)
+            env_class_name = env.__class__.__name__
+            if env_class_name == "ExplorationTradingEnv" or hasattr(env, "balance") and not getattr(env, "smart_bus", None):
+                # ExplorationTradingEnv has direct balance/equity attributes
+                balance = float(getattr(env, "balance", 0.0))
+                initial_balance = float(getattr(env, "initial_balance", 100000.0))
+                drawdown = max(0.0, (initial_balance - balance) / initial_balance) if initial_balance > 0 else 0.0
+                
+                return {
+                    "env_smartinfobus_status": "exploration_mode",
+                    "env_current_step": int(getattr(env, "current_step", 0)),
+                    "env_drawdown": drawdown,
+                    "env_balance": balance,
+                    "env_equity": balance,  # In exploration mode, equity = balance (no open positions tracked separately)
+                    "env_modules": 0,  # Exploration mode has no modules
+                    "instruments": getattr(env, "instruments", ["EURUSD", "XAUUSD"]),
+                    "exploration_mode": True,
+                    "total_trades": int(getattr(env, "total_trades", 0)),
+                    "winning_trades": int(getattr(env, "winning_trades", 0)),
+                }
 
             if getattr(env, "smart_bus", None):
                 ms = getattr(env, "market_state", None)

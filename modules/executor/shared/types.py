@@ -33,6 +33,33 @@ def _iso(ts: Union[str, int, float, None]) -> Optional[str]:
         return None
 
 
+def _parse_timestamp(ts: Union[str, int, float, None]) -> Optional[float]:
+    """Parse ISO8601 string or numeric timestamp to Unix float."""
+    if ts is None:
+        return None
+    # Already numeric
+    if isinstance(ts, (int, float)):
+        try:
+            f = float(ts)
+            return f if math.isfinite(f) else None
+        except Exception:
+            return None
+    # ISO string: '2025-12-09T20:10:59Z' or similar
+    if isinstance(ts, str):
+        try:
+            # Try parsing ISO format
+            s = ts.rstrip("Z")  # Remove trailing Z
+            dt = _dt.datetime.fromisoformat(s.replace("Z", ""))
+            return dt.timestamp()
+        except Exception:
+            # Fallback: try direct float conversion (might be numeric string)
+            try:
+                return float(ts)
+            except Exception:
+                return None
+    return None
+
+
 def _contract_size_for_symbol(symbol: str) -> float:
     """
     Symbol-specific contract size (units per 1.0 lot).

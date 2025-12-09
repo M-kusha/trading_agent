@@ -616,6 +616,43 @@ class ModernTradingEnv(gym.Env):
         if self.current_step % 5 == 0:
             self._cleanup_pending_futures()
 
+        # ═══════════════════════════════════════════════════════════════
+        # AUTONOMOUS PPO ACTION INTERPRETATION (v4.1)
+        # ═══════════════════════════════════════════════════════════════
+        # Interpret PPO action semantics:
+        #   action[0] = direction_score ∈ [-1, 1]
+        #   action[1] = size_score ∈ [-1, 1]
+        #
+        # For autonomous training, PPO's direction is derived directly from
+        # direction_score without expert blending.
+        # ═══════════════════════════════════════════════════════════════
+        
+        # Get per-instrument actions (action array has 2 dims per instrument)
+        ppo_direction = "flat"
+        ppo_direction_score = 0.0
+        ppo_size_score = 0.0
+        ppo_confidence = 0.0
+        
+        if action is not None and len(action) >= 2:
+            # For first instrument (or global action)
+            ppo_direction_score = float(action[0])
+            ppo_size_score = float(action[1])
+            ppo_confidence = float(np.clip(abs(ppo_direction_score), 0.0, 1.0))
+            
+            # Interpret direction using configurable thresholds
+            long_th = float(getattr(self.config, "direction_long_threshold", 0.3))
+            short_th = float(getattr(self.config, "direction_short_threshold", -0.3))
+            
+            if ppo_direction_score > long_th:
+                ppo_direction = "long"
+            elif ppo_direction_score < short_th:
+                ppo_direction = "short"
+            else:
+                ppo_direction = "flat"
+        
+        # Compute position size from size_score: [-1,1] → [0,1]
+        raw_position_size = (ppo_size_score + 1.0) / 2.0
+
         # publish action & legacy alias
         try:
             if self.smart_bus:
@@ -630,6 +667,23 @@ class ModernTradingEnv(gym.Env):
                     action,
                     module="Environment",
                     thesis="Environment echo of action",
+                )
+                
+                # Publish interpreted PPO decision for autonomous training
+                # This is the PPO's direct intent, before any expert blending
+                self.smart_bus.set(
+                    "ppo_autonomous_decision",
+                    {
+                        "direction": ppo_direction,
+                        "direction_score": ppo_direction_score,
+                        "size_score": ppo_size_score,
+                        "raw_position_size": raw_position_size,
+                        "confidence": ppo_confidence,
+                        "step": self.current_step,
+                        "autonomous_training": bool(getattr(self.config, "ppo_autonomous_training", True)),
+                    },
+                    module="Environment",
+                    thesis=f"PPO autonomous direction: {ppo_direction} (score={ppo_direction_score:.2f})",
                 )
         except Exception:
             pass

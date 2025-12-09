@@ -336,12 +336,27 @@ class InstrumentDecision:
     - What to do (direction, size)
     - Why (reasoning, meta contributors)
     - Whether it's allowed (gate_passed)
+    
+    ACTION SEMANTICS (v4.1 - Autonomous PPO):
+    =========================================
+    direction_score: Raw PPO output from action[0] in [-1, 1]
+        - > +0.3 ⇒ PPO intends LONG
+        - < -0.3 ⇒ PPO intends SHORT
+        - |score| ≤ 0.3 ⇒ PPO is uncertain (FLAT)
+    
+    trust_score: Legacy alias for direction_score (backwards compat)
+    
+    The final 'direction' field is derived from direction_score,
+    potentially blended with experts based on autonomy phase.
     """
     instrument: str
     direction: str = "flat"           # "long" | "short" | "flat"
     confidence: float = 0.0           # 0..1
     position_size: float = 0.0        # 0..1 (risk-normalized)
-    trust_score: float = 0.0          # PPO trust vs committee
+    
+    # PPO autonomous direction (v4.1)
+    direction_score: float = 0.0      # Raw PPO output: action[0] in [-1, 1]
+    trust_score: float = 0.0          # Legacy alias for direction_score
 
     # Committee/expert context
     committee_action: str = "hold"

@@ -31,7 +31,8 @@ import platform
 import logging
 import argparse
 from datetime import datetime
-from typing import Dict, Any, Optional, Protocol
+from threading import Thread
+from typing import Dict, Any, Optional, Protocol, Callable
 from pathlib import Path
 
 import numpy as np
@@ -54,8 +55,12 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.utils import set_random_seed
 
 from envs.modern_env import ModernTradingEnv
+from envs.exploration_env import ExplorationTradingEnv, ExplorationConfig
 from envs.config import TradingConfig, ConfigPresets, ConfigFactory
 from modules.core.module_system import ModuleOrchestrator
+
+# Global flag to track exploration mode (set by main())
+_EXPLORATION_MODE = False
 
 # ───────────────────────────────────────────────────────────────────
 # Logging / InfoBus (treat external types as Any to avoid collisions)
@@ -119,6 +124,8 @@ except Exception:
 from train.enhanced_training_callback import ModernEnhancedTrainingCallback
 
 # Dashboard server (runs in background thread, shares InfoBus instance)
+StartDashboardServer = Callable[..., Optional[Thread]]
+start_dashboard_server: StartDashboardServer
 try:
     from traindashboard.server import start_dashboard_server
     import webbrowser
@@ -126,7 +133,7 @@ try:
 except ImportError:
     DASHBOARD_AVAILABLE = False
     webbrowser = None
-    def start_dashboard_server(*args, **kwargs):
+    def start_dashboard_server(*args: Any, **kwargs: Any) -> Optional[Thread]:
         print("[WARN] Dashboard not available - traindashboard package not found")
         return None
 
@@ -333,16 +340,37 @@ def create_dummy_data(config: TradingConfig) -> Dict[str, Dict[str, pd.DataFrame
 # ───────────────────────────────────────────────────────────────────
 # ENV / MODEL BUILDERS
 # ───────────────────────────────────────────────────────────────────
+def _create_env_instance(data: Dict, config: TradingConfig):
+    """Create the appropriate environment based on mode."""
+    global _EXPLORATION_MODE
+    if _EXPLORATION_MODE:
+        # Use lightweight exploration env (no modules)
+        exploration_config = ExplorationConfig(
+            initial_balance=float(getattr(config, "initial_balance", 100_000)),
+            instruments=getattr(config, "instruments", None) or ["EURUSD", "XAUUSD"],
+            primary_timeframe=getattr(config, "primary_timeframe", "M15"),
+            gamma=float(getattr(config, "gamma", 0.95)),
+            direction_long_threshold=float(getattr(config, "direction_long_threshold", 0.3)),
+            direction_short_threshold=float(getattr(config, "direction_short_threshold", -0.3)),
+            max_steps_per_episode=int(getattr(config, "max_steps", 2000)),
+        )
+        return ExplorationTradingEnv(data, exploration_config)
+    else:
+        # Use full ModernTradingEnv with modules
+        return ModernTradingEnv(data, config)
+
+
 def test_environment_creation(data: Dict, config: TradingConfig) -> bool:
     try:
         print("[TOOL] Testing environment creation...")
-        env = ModernTradingEnv(data, config)
+        env = _create_env_instance(data, config)
         obs, _ = env.reset(seed=getattr(config, "init_seed", 42))
         if not isinstance(obs, np.ndarray) or not np.all(np.isfinite(obs)):
             raise ValueError("Invalid observation")
         env.step(env.action_space.sample())
         env.close()
-        print(f"[OK] Environment test passed")
+        env_type = "ExplorationTradingEnv" if _EXPLORATION_MODE else "ModernTradingEnv"
+        print(f"[OK] Environment test passed ({env_type})")
         return True
     except Exception as e:
         print(f"[FAIL] Env test failed: {e}")
@@ -361,7 +389,7 @@ def create_environments(data: Dict, config: TradingConfig, n_envs: int = 1, seed
 
     def make(rank: int):
         def _init():
-            env = ModernTradingEnv(data, config)
+            env = _create_env_instance(data, config)
             Path("logs/training").mkdir(parents=True, exist_ok=True)
             return Monitor(env, filename=f"logs/training/monitor_{rank}.csv", info_keywords=())
         set_random_seed(seed + rank)
@@ -589,6 +617,223 @@ def train_modern_ppo(config: TradingConfig, data_source: str, pretrained_model_p
     except Exception:
         pass
 
+
+# ───────────────────────────────────────────────────────────────────
+# EVALUATION
+# ───────────────────────────────────────────────────────────────────
+def evaluate_model(
+    model_path: str,
+    config: TradingConfig,
+    data_source: str = "auto",
+    n_episodes: int = 20,
+    render: bool = False,
+    verbose: bool = True,
+) -> Dict[str, Any]:
+    """
+    Evaluate a trained model on test data.
+    
+    Args:
+        model_path: Path to trained model (.zip)
+        config: Trading configuration
+        data_source: Where to load data from
+        n_episodes: Number of evaluation episodes
+        render: Whether to print per-episode details
+        verbose: Print summary statistics
+        
+    Returns:
+        Dictionary with evaluation metrics
+    """
+    import json
+    from collections import defaultdict
+    
+    print(f"\n{'='*60}")
+    print(f"MODEL EVALUATION")
+    print(f"{'='*60}")
+    print(f"Model: {model_path}")
+    print(f"Episodes: {n_episodes}")
+    
+    # Load model
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"Model not found: {model_path}")
+    
+    model = PPO.load(model_path)
+    print(f"[OK] Model loaded successfully")
+    
+    # Load data
+    provider = resolve_data_provider(data_source)
+    data = provider.load(config)
+    
+    # Create evaluation environment
+    global _EXPLORATION_MODE
+    if _EXPLORATION_MODE:
+        exp_config = ExplorationConfig(
+            initial_balance=getattr(config, "initial_balance", 100_000.0),
+            max_steps_per_episode=getattr(config, "episode_length", 800),
+            take_profit_eur=500.0,
+            stop_loss_eur=200.0,
+            max_drawdown_pct=0.20,
+            max_position_age=100,
+            direction_long_threshold=0.3,
+            direction_short_threshold=-0.3,
+        )
+        env = ExplorationTradingEnv(data_dict=data, config=exp_config)
+    else:
+        env = ModernTradingEnv(data_dict=data, config=config)
+    
+    # Track metrics
+    episode_rewards = []
+    episode_lengths = []
+    episode_balances = []
+    episode_trades = []
+    episode_wins = []
+    episode_drawdowns = []
+    actions_taken = defaultdict(int)  # Track action distribution
+    
+    print(f"\nRunning {n_episodes} evaluation episodes...")
+    
+    for ep in range(n_episodes):
+        obs, info = env.reset()
+        done = False
+        truncated = False
+        ep_reward = 0.0
+        ep_steps = 0
+        start_balance = env.balance if hasattr(env, 'balance') else 100_000.0
+        max_balance = start_balance
+        min_balance = start_balance
+        
+        while not done and not truncated:
+            action, _ = model.predict(obs, deterministic=True)
+            obs, reward, done, truncated, info = env.step(action)
+            
+            ep_reward += reward
+            ep_steps += 1
+            
+            # Track balance for drawdown
+            current_balance = env.balance if hasattr(env, 'balance') else start_balance
+            max_balance = max(max_balance, current_balance)
+            min_balance = min(min_balance, current_balance)
+            
+            # Track action distribution
+            if hasattr(action, '__iter__'):
+                dir_score = action[0] if len(action) > 0 else 0
+                if dir_score > 0.3:
+                    actions_taken['long'] += 1
+                elif dir_score < -0.3:
+                    actions_taken['short'] += 1
+                else:
+                    actions_taken['flat'] += 1
+        
+        # Episode metrics
+        final_balance = env.balance if hasattr(env, 'balance') else start_balance
+        drawdown = (max_balance - min_balance) / max_balance if max_balance > 0 else 0
+        
+        episode_rewards.append(ep_reward)
+        episode_lengths.append(ep_steps)
+        episode_balances.append(final_balance)
+        episode_drawdowns.append(drawdown)
+        
+        # Trade stats from env (use getattr to avoid errors)
+        episode_trades.append(getattr(env, 'total_trades', getattr(env, 'trade_count', 0)))
+        episode_wins.append(getattr(env, 'winning_trades', getattr(env, 'win_count', 0)))
+        
+        if render:
+            pnl_pct = ((final_balance - start_balance) / start_balance) * 100
+            print(f"  Episode {ep+1:3d}: Reward={ep_reward:+7.2f}, "
+                  f"Balance=€{final_balance:,.0f} ({pnl_pct:+.1f}%), "
+                  f"Steps={ep_steps}, Drawdown={drawdown:.1%}")
+    
+    env.close()
+    
+    # Compute statistics
+    results = {
+        "model_path": model_path,
+        "n_episodes": n_episodes,
+        "reward_mean": float(np.mean(episode_rewards)),
+        "reward_std": float(np.std(episode_rewards)),
+        "reward_min": float(np.min(episode_rewards)),
+        "reward_max": float(np.max(episode_rewards)),
+        "balance_mean": float(np.mean(episode_balances)),
+        "balance_std": float(np.std(episode_balances)),
+        "balance_min": float(np.min(episode_balances)),
+        "balance_max": float(np.max(episode_balances)),
+        "episode_length_mean": float(np.mean(episode_lengths)),
+        "drawdown_mean": float(np.mean(episode_drawdowns)),
+        "drawdown_max": float(np.max(episode_drawdowns)),
+        "action_distribution": dict(actions_taken),
+    }
+    
+    # Add trade stats if available
+    if episode_trades:
+        results["trades_per_episode"] = float(np.mean(episode_trades))
+    if episode_wins and episode_trades:
+        total_trades = sum(episode_trades)
+        total_wins = sum(episode_wins)
+        results["win_rate"] = total_wins / total_trades if total_trades > 0 else 0.0
+    
+    # Profit metrics
+    initial_balance = getattr(config, "initial_balance", 100_000.0)
+    results["profitable_episodes"] = sum(1 for b in episode_balances if b > initial_balance)
+    results["profitable_pct"] = results["profitable_episodes"] / n_episodes
+    results["avg_return_pct"] = ((results["balance_mean"] - initial_balance) / initial_balance) * 100
+    
+    if verbose:
+        print(f"\n{'='*60}")
+        print(f"EVALUATION RESULTS")
+        print(f"{'='*60}")
+        print(f"Episodes:          {n_episodes}")
+        print(f"")
+        print(f"REWARDS:")
+        print(f"  Mean:            {results['reward_mean']:+.3f}")
+        print(f"  Std:             {results['reward_std']:.3f}")
+        print(f"  Range:           [{results['reward_min']:+.2f}, {results['reward_max']:+.2f}]")
+        print(f"")
+        print(f"BALANCE:")
+        print(f"  Mean:            €{results['balance_mean']:,.0f}")
+        print(f"  Range:           [€{results['balance_min']:,.0f}, €{results['balance_max']:,.0f}]")
+        print(f"  Avg Return:      {results['avg_return_pct']:+.2f}%")
+        print(f"  Profitable:      {results['profitable_episodes']}/{n_episodes} ({results['profitable_pct']:.0%})")
+        print(f"")
+        print(f"RISK:")
+        print(f"  Avg Drawdown:    {results['drawdown_mean']:.1%}")
+        print(f"  Max Drawdown:    {results['drawdown_max']:.1%}")
+        print(f"")
+        print(f"ACTIONS:")
+        total_actions = sum(actions_taken.values())
+        if total_actions > 0:
+            print(f"  Long:            {actions_taken['long']:,} ({actions_taken['long']/total_actions:.1%})")
+            print(f"  Short:           {actions_taken['short']:,} ({actions_taken['short']/total_actions:.1%})")
+            print(f"  Flat:            {actions_taken['flat']:,} ({actions_taken['flat']/total_actions:.1%})")
+        if "win_rate" in results:
+            print(f"")
+            print(f"TRADING:")
+            print(f"  Trades/Episode:  {results['trades_per_episode']:.0f}")
+            print(f"  Win Rate:        {results['win_rate']:.1%}")
+        print(f"{'='*60}")
+        
+        # Overall assessment
+        print(f"\n📊 ASSESSMENT:")
+        if results['reward_mean'] > 0.5 and results['profitable_pct'] > 0.6:
+            print(f"   ✅ EXCELLENT - Model is profitable and consistent")
+        elif results['reward_mean'] > 0 and results['profitable_pct'] > 0.5:
+            print(f"   ✅ GOOD - Model is net profitable")
+        elif results['reward_mean'] > -0.5:
+            print(f"   ⚠️  MARGINAL - Model near breakeven, needs more training")
+        else:
+            print(f"   ❌ POOR - Model is losing money, investigate issues")
+        
+        if results['drawdown_max'] > 0.15:
+            print(f"   ⚠️  HIGH RISK - Max drawdown {results['drawdown_max']:.1%} exceeds 15%")
+    
+    # Save results
+    os.makedirs("logs/eval", exist_ok=True)
+    eval_file = f"logs/eval/eval_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    with open(eval_file, "w") as f:
+        json.dump(results, f, indent=2)
+    print(f"\n[OK] Results saved: {eval_file}")
+    
+    return results
+
+
 # ───────────────────────────────────────────────────────────────────
 # MAIN
 # ───────────────────────────────────────────────────────────────────
@@ -599,7 +844,8 @@ def main():
 
     # Parse args first to check if exploration mode
     p = argparse.ArgumentParser(description="Modern PPO Training")
-    p.add_argument("--mode", choices=["offline", "online", "test"], default="offline")
+    p.add_argument("--mode", choices=["offline", "online", "test", "eval"], default="offline",
+                   help="Mode: offline=train, online=live train, test=quick test, eval=evaluate model")
     p.add_argument("--preset", choices=["conservative", "aggressive", "research", "production", "exploration"],
                    help="Config preset: 'exploration' disables modules for free exploration")
     p.add_argument("--timesteps", type=int)
@@ -622,6 +868,9 @@ def main():
     p.add_argument("--auto-pretrained", action="store_true")
     p.add_argument("--debug", action="store_true")
     p.add_argument("--no-dashboard", action="store_true", help="Disable web dashboard")
+    p.add_argument("--model", type=str, help="Model path for evaluation (--mode eval)")
+    p.add_argument("--eval-episodes", type=int, default=50, help="Number of evaluation episodes (default: 50)")
+    p.add_argument("--render", action="store_true", help="Print per-episode details during eval")
     p.add_argument(
         "--data-source",
         choices=["auto", "files", "orchestrator"],
@@ -632,6 +881,10 @@ def main():
 
     # Determine if exploration mode (no modules)
     exploration_mode = (args.preset == "exploration")
+    
+    # Set global flag for environment creation
+    global _EXPLORATION_MODE
+    _EXPLORATION_MODE = exploration_mode
     
     # Initialize the ModuleOrchestrator ONLY if not in exploration mode
     orchestrator = None
@@ -797,15 +1050,66 @@ def main():
         pass
 
     # Display summary
-    print(f"Training Mode: {args.mode.upper()}")
-    print(f"Training Steps: {config.final_training_steps:,}")
-    print(f"Learning Rate: {config.learning_rate}")
+    print(f"Mode: {args.mode.upper()}")
+    if args.mode != "eval":
+        print(f"Training Steps: {config.final_training_steps:,}")
+        print(f"Learning Rate: {config.learning_rate}")
     print(f"Initial Balance: ${config.initial_balance:,.0f}")
     print(f"Data Source: {args.data_source}")
 
     # Bus visibility (non-fatal if fallback)
     # Debug prints removed - bus info available in logs if needed
 
+    # ═══════════════════════════════════════════════════════════════
+    # EVALUATION MODE
+    # ═══════════════════════════════════════════════════════════════
+    if args.mode == "eval":
+        # Find model to evaluate
+        model_path = args.model
+        if not model_path:
+            # Auto-find best model
+            candidates = []
+            for search_dir in ["checkpoints", "models", "models/best"]:
+                if os.path.exists(search_dir):
+                    for f in os.listdir(search_dir):
+                        if f.endswith(".zip"):
+                            candidates.append(os.path.join(search_dir, f))
+            
+            if not candidates:
+                print("ERROR: No model found. Specify with --model PATH")
+                sys.exit(1)
+            
+            # Prefer 'best' or 'final' models
+            def model_priority(p):
+                name = os.path.basename(p).lower()
+                if "best" in name: return (0, os.path.getmtime(p))
+                if "final" in name: return (1, os.path.getmtime(p))
+                return (2, os.path.getmtime(p))
+            
+            candidates.sort(key=model_priority)
+            model_path = candidates[0]
+            print(f"[AUTO] Using model: {model_path}")
+        
+        try:
+            results = evaluate_model(
+                model_path=model_path,
+                config=config,
+                data_source=args.data_source,
+                n_episodes=args.eval_episodes,
+                render=args.render,
+                verbose=True,
+            )
+            print("\nEVALUATION COMPLETED!")
+            sys.exit(0)
+        except Exception as e:
+            print(f"Evaluation failed: {e}")
+            import traceback
+            traceback.print_exc()
+            sys.exit(1)
+
+    # ═══════════════════════════════════════════════════════════════
+    # TRAINING MODE
+    # ═══════════════════════════════════════════════════════════════
     try:
         train_modern_ppo(config, data_source=args.data_source, pretrained_model_path=pretrained_path)
         print("TRAINING COMPLETED SUCCESSFULLY!")

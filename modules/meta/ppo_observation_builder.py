@@ -522,9 +522,30 @@ class PPOObservationBuilder:
     # ─────────────────────────────────────────────────────────────
     # Voting Expert Signals - 8 dims
     # ─────────────────────────────────────────────────────────────
+    #
+    # IMPORTANT (v4.1 - Autonomous PPO):
+    # We NO LONGER encode expert directions (long/short/flat) as categorical signals.
+    # This prevents PPO from simply copying expert directions during training.
+    #
+    # Instead, we encode:
+    # - feats[i*2]: Expert numeric strength/score (if available), or 0.0
+    # - feats[i*2+1]: Expert confidence (clipped to [0,1])
+    #
+    # PPO should learn to derive its own directional decisions from market features,
+    # while using expert confidence/strength as auxiliary information.
+    # ─────────────────────────────────────────────────────────────
 
     def _build_voting_features(self, expert_signals: Optional[Dict[str, Any]]) -> np.ndarray:
-        """Build voting expert features."""
+        """
+        Build voting expert features WITHOUT direction leakage.
+        
+        For autonomous PPO training, we intentionally DO NOT encode expert directions.
+        Instead, we encode:
+        - Expert numeric strength/score (if available)
+        - Expert confidence levels
+        
+        This forces PPO to learn its own directional decisions from market data.
+        """
         feats = np.zeros(8, dtype=np.float32)
 
         if not expert_signals:
@@ -540,11 +561,17 @@ class PPOObservationBuilder:
             if not isinstance(sig, dict):
                 sig = {}
 
-            # Direction
-            direction = self._extract_direction(sig.get("proposal", "flat"))
-            feats[i * 2] = float(direction)
+            # Expert numeric strength/score (NOT direction)
+            # This could be magnitude of signal, z-score, etc.
+            # If score not available, we use 0.0 (neutral)
+            score_raw = sig.get("score", sig.get("strength", sig.get("magnitude", 0.0)))
+            try:
+                score_val = float(score_raw)
+            except (TypeError, ValueError):
+                score_val = 0.0
+            feats[i * 2] = float(np.clip(score_val, -1.0, 1.0))
 
-            # Confidence
+            # Confidence (unchanged)
             conf_raw = sig.get("confidence", 0.0)
             try:
                 conf_val = float(conf_raw)
@@ -557,61 +584,97 @@ class PPOObservationBuilder:
     # ─────────────────────────────────────────────────────────────
     # Committee/Consensus Metrics - 8 dims
     # ─────────────────────────────────────────────────────────────
+    #
+    # IMPORTANT (v4.1 - Autonomous PPO):
+    # We NO LONGER encode committee direction as a categorical signal.
+    # Instead, we encode:
+    # - [0] consensus_strength: How strongly aligned are experts (0-1)?
+    # - [1] committee_conf: Committee's confidence level
+    # - Other features remain focused on agreement/regime/strength metrics
+    # ─────────────────────────────────────────────────────────────
 
     def _build_committee_features(
         self,
         committee_state: Optional[Dict[str, Any]],
         expert_signals: Optional[Dict[str, Any]],
     ) -> np.ndarray:
-        """Build committee/consensus features."""
+        """
+        Build committee/consensus features WITHOUT direction leakage.
+        
+        For autonomous PPO training, we intentionally DO NOT encode committee direction.
+        Instead, we encode consensus strength, confidence, and agreement metrics.
+        """
         feats = np.zeros(8, dtype=np.float32)
 
         committee_state = committee_state or {}
         expert_signals = expert_signals or {}
 
-        # [0] committee_dir
-        action = committee_state.get("action", "hold")
-        feats[0] = float(self._extract_direction(action))
+        # [0] consensus_strength: How strong is the committee consensus? (NOT direction)
+        # This measures agreement magnitude without revealing the direction
+        consensus_score = committee_state.get("consensus_score", 0.5)
+        feats[0] = float(np.clip(consensus_score, 0.0, 1.0))
 
         # [1] committee_conf
         feats[1] = float(np.clip(committee_state.get("confidence", 0.5), 0.0, 1.0))
 
-        # [2] consensus_score
-        feats[2] = float(np.clip(committee_state.get("consensus_score", 0.5), 0.0, 1.0))
-
-        # [3] expert_agreement: do experts agree with committee?
-        committee_dir = feats[0]
-        expert_dirs: list[float] = []
+        # [2] vote_alignment: Do experts agree with EACH OTHER? (not direction)
+        # Calculate inter-expert agreement without exposing the direction
         experts = expert_signals.get("experts", {}) if isinstance(expert_signals, dict) else {}
+        expert_scores: list[float] = []
         if isinstance(experts, dict):
             for name in ["trend", "momentum", "theme", "seasonality"]:
                 sig = experts.get(name, {})
                 if not isinstance(sig, dict):
                     continue
-                d = self._extract_direction(sig.get("proposal", "flat"))
-                if abs(d) > 0.1:
-                    expert_dirs.append(d)
+                # Get score/strength if available, otherwise use 0
+                score = sig.get("score", sig.get("strength", 0.0))
+                try:
+                    score_val = float(score)
+                    expert_scores.append(score_val)
+                except (TypeError, ValueError):
+                    pass
 
-        if expert_dirs and abs(committee_dir) > 0.1:
-            agreement = sum(1 for d in expert_dirs if d * committee_dir > 0) / len(expert_dirs)
-            feats[3] = float(agreement * 2.0 - 1.0)  # Map [0,1] to [-1,1]
+        if len(expert_scores) >= 2:
+            # Agreement = low variance among scores
+            variance = float(np.var(expert_scores))
+            feats[2] = float(np.clip(1.0 / (1.0 + variance * 10), 0.0, 1.0))
+        else:
+            feats[2] = 0.5  # Neutral when insufficient data
+
+        # [3] average_expert_confidence: How confident are experts overall?
+        expert_confidences: list[float] = []
+        if isinstance(experts, dict):
+            for name in ["trend", "momentum", "theme", "seasonality"]:
+                sig = experts.get(name, {})
+                if isinstance(sig, dict):
+                    conf = sig.get("confidence", 0.0)
+                    try:
+                        expert_confidences.append(float(conf))
+                    except (TypeError, ValueError):
+                        pass
+        if expert_confidences:
+            feats[3] = float(np.clip(np.mean(expert_confidences), 0.0, 1.0))
+        else:
+            feats[3] = 0.5
 
         # [4] fragility
         feats[4] = float(np.clip(committee_state.get("fragility", 0.5), 0.0, 1.0))
 
-        # [5] regime_encoded
+        # [5] regime_encoded (regime type, NOT direction)
+        # Maps regime to a characteristic, not directional bias
         market = expert_signals.get("market", {}) if isinstance(expert_signals, dict) else {}
         regime = (market.get("regime", "unknown") if isinstance(market, dict) else "unknown")
         regime_map = {
-            "trending": 0.8,
-            "uptrend": 0.8,
-            "downtrend": -0.8,
-            "mean_reverting": 0.0,
-            "ranging": 0.0,
-            "volatile": -0.5,
-            "unknown": 0.0,
+            # Regime encodes market character, not directional bias
+            "trending": 0.8,      # High trend strength
+            "uptrend": 0.8,       # Directional trending (strength, not direction)
+            "downtrend": 0.8,     # Same as uptrend (strength indicator only)
+            "mean_reverting": 0.3,
+            "ranging": 0.2,
+            "volatile": 0.5,      # Neutral (high volatility)
+            "unknown": 0.5,
         }
-        feats[5] = float(regime_map.get(str(regime).lower(), 0.0))
+        feats[5] = float(regime_map.get(str(regime).lower(), 0.5))
 
         # [6] regime_strength
         regime_strength = 0.5
@@ -619,11 +682,9 @@ class PPOObservationBuilder:
             regime_strength = float(market.get("regime_strength", 0.5))
         feats[6] = float(np.clip(regime_strength, 0.0, 1.0))
 
-        # [7] vote_spread: spread between long/short expert votes
-        long_count = sum(1 for d in expert_dirs if d > 0.1)
-        short_count = sum(1 for d in expert_dirs if d < -0.1)
-        total = max(len(expert_dirs), 1)
-        feats[7] = float(abs(long_count - short_count) / total)
+        # [7] expert_conviction: How many experts have strong conviction?
+        strong_conviction_count = sum(1 for s in expert_scores if abs(s) > 0.5)
+        feats[7] = float(strong_conviction_count / max(len(expert_scores), 1))
 
         return feats
 
