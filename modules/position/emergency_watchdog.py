@@ -45,6 +45,8 @@ class WatchdogConfig:
 
     The watchdog should only trigger on truly critical conditions that the
     main loop missed due to being slow or hung.
+    
+    CRITICAL: Account closes at EXACTLY 10% drawdown. We MUST stay under!
     """
 
     # Check interval (seconds)
@@ -58,8 +60,15 @@ class WatchdogConfig:
     # This is ABOVE hard stop - a true failsafe.
     emergency_stop_eur: float = 300.0
 
-    # Account-level daily loss limit (EUR)
+    # Account-level daily loss limit (EUR) - 5% of €100k = €5000
     daily_loss_limit_eur: float = 5000.0
+    
+    # Account-level MAX drawdown limit (EUR) - CRITICAL: 10% = account closed!
+    # Set to 9% (€9000) to leave €1000 buffer for slippage
+    max_loss_limit_eur: float = 9000.0
+    
+    # Starting balance for drawdown calculation
+    starting_balance_eur: float = 100_000.0
 
     # Enable/disable watchdog
     enabled: bool = True
@@ -126,6 +135,17 @@ def load_watchdog_config() -> WatchdogConfig:
                 daily_limit = account_size * daily_dd_pct * safety_margin
             daily_limit = float(daily_limit)
 
+            # --- MAX DRAWDOWN limit (CRITICAL: 10% = account closed!) -------
+            account_size = float(prop_firm.get("account_size", 100_000.0) or 100_000.0)
+            max_limit = watchdog_cfg.get("max_loss_limit_eur")
+            if max_limit is None:
+                max_dd_pct = float(
+                    prop_firm.get("max_drawdown_limit", 0.10) or 0.10
+                )  # 10%
+                # Safety margin: stop at 90% of limit (9% instead of 10%)
+                max_limit = account_size * max_dd_pct * 0.90
+            max_limit = float(max_limit)
+
             # --- Misc options -----------------------------------------------
             check_interval = float(watchdog_cfg.get("check_interval_s", 2.0))
             enabled = bool(watchdog_cfg.get("enabled", True))
@@ -136,6 +156,8 @@ def load_watchdog_config() -> WatchdogConfig:
                 hard_stop_eur=hard_stop,
                 emergency_stop_eur=emergency_stop,
                 daily_loss_limit_eur=daily_limit,
+                max_loss_limit_eur=max_limit,
+                starting_balance_eur=account_size,
                 enabled=enabled,
                 verbose=verbose,
             )
@@ -308,6 +330,33 @@ class EmergencyPositionWatchdog:
                 # Close ALL positions
                 for pos in positions:
                     self._emergency_close(pos, "DAILY_LIMIT", "Daily loss limit breached")
+                return  # Don't check further after closing all
+
+            # ══════════════════════════════════════════════════════════════
+            # CHECK MAX DRAWDOWN (CRITICAL: 10% = ACCOUNT CLOSED!)
+            # This is the absolute last line of defense before account death
+            # ══════════════════════════════════════════════════════════════
+            try:
+                account_info = mt5.account_info()
+                if account_info:
+                    # Use starting balance from config
+                    starting_balance = self.config.starting_balance_eur
+                    
+                    current_equity = float(account_info.equity)
+                    total_drawdown = starting_balance - current_equity
+                    
+                    if total_drawdown >= self.config.max_loss_limit_eur:
+                        self.logger.critical(
+                            f"[Watchdog] 🚨🚨🚨 MAX DRAWDOWN BREACH! "
+                            f"Drawdown: €{total_drawdown:.2f} >= limit €{self.config.max_loss_limit_eur:.2f} "
+                            f"(Starting: €{starting_balance:.2f}, Current Equity: €{current_equity:.2f})"
+                        )
+                        # CLOSE ALL POSITIONS IMMEDIATELY
+                        for pos in positions:
+                            self._emergency_close(pos, "MAX_DRAWDOWN", 
+                                f"Max drawdown €{total_drawdown:.2f} breached - PROTECTING ACCOUNT")
+            except Exception as e:
+                self.logger.warning(f"[Watchdog] Could not check max drawdown: {e}")
 
         except Exception as e:  # pragma: no cover - defensive
             self.logger.error(f"[Watchdog] Position check failed: {e}")

@@ -743,98 +743,39 @@ class PositionManagerBase(
 
     def _check_voting_consensus(self) -> bool:
         """
-        SMART MULTI-LAYER CONSENSUS GATE WITH STRATEGY INTELLIGENCE.
+        SIMPLIFIED RISK-ONLY CONSENSUS GATE (v3.2.0).
 
-        The committee has two types of voters:
-        1. DIRECTION VOTERS (vote BUY/SELL): EnhancedThemeExpert, PPOAgent, memory
-        2. RISK VOTERS (vote GO/NO-GO): DynamicRiskController, PortfolioRiskSystem,
-           EnhancedAnomalyDetector, ExecutionQualityMonitor, MetaAgent
+        PositionManager's job is NOT to second-guess expert/PPO decisions.
+        The voting system (CommitteeCoordinator, PPOAgent, experts) already
+        made the directional decision. PositionManager only checks:
 
-        Logic:
-        - Layer 0: Get strategy confidence boost from ThesisEngine, BiasAuditor, etc.
-        - Layer 1: Check if any RISK voter says HALT/EMERGENCY -> BLOCK
-        - Layer 2: Check if DIRECTION consensus exists (>=50% BUY/SELL agreement)
-        - Layer 3: Check trade_vote_v2 with strategy boost applied
-        - Layer 4: Committee consensus fallback
+        1. RISK VETOES: If DynamicRiskController/PortfolioRiskSystem says
+           HALT/EMERGENCY, we block. This is a hard safety gate.
 
-        This allows trades when direction voters agree, while risk voters can veto.
-        Strategy modules can boost confidence to help borderline cases pass.
+        2. ABSTAIN CHECK: If trade_vote_v2 explicitly says ABSTAIN, respect it.
+
+        All other direction/confidence logic is handled by position_logic.py
+        which trusts the expert signals.
         """
         if not bool(self.config.get("require_voting_consensus", True)):
             return True
 
         try:
-            # Risk-aware modifiers (fragility/collusion dampen thresholds)
-            # Prefer per-instrument fragility (use min across instruments) over global
-            fragility = 0.0
-            collusion_score = 0.0
-            try:
-                # Try per-instrument fragility first (more accurate)
-                inst_frag = self.smart_bus.get("instrument_fragility", "PositionManager")
-                if isinstance(inst_frag, dict) and inst_frag:
-                    # Use minimum fragility across instruments (most favorable)
-                    fragility = min(inst_frag.values())
-                else:
-                    # Fallback to global fragility
-                    fragility = float(
-                        self.smart_bus.get("fragility", "PositionManager")
-                        or self.smart_bus.get("sampling_fragility", "PositionManager")
-                        or 0.0
-                    )
-                collusion_score = float(
-                    self.smart_bus.get("collusion_score", "PositionManager") or 0.0
-                )
-            except Exception:
-                pass
-
-            risk_factor = 1.0 + 0.6 * fragility + 0.5 * collusion_score
-
-            # During training/simulation, be more lenient on collusion
-            # During live trading, be stricter
-            exec_mode = "simulation"
-            try:
-                exec_mode = str(
-                    self.smart_bus.get("execution_mode", "PositionManager") or "simulation"
-                ).lower()
-            except Exception:
-                pass
-
-            # Thresholds based on mode
-            if exec_mode in ("live", "paper"):
-                # Live mode: Block on extreme fragility (>=0.95) or very high collusion (>=0.95)
-                risk_block = (fragility >= 0.95) or (collusion_score >= 0.95)
-            else:
-                # Training/sim mode: Only block on truly extreme values
-                risk_block = (fragility >= 0.98) or (collusion_score >= 0.99)
-
-            # Define action categories
-            RISK_BLOCK_ACTIONS = {"halt", "emergency", "reduce_risk", "block"}
-            RISK_CAUTION_ACTIONS = {"caution", "reduce", "warning"}
-            RISK_APPROVE_ACTIONS = {"proceed", "hold", "maintain", "increase_risk", "safe", "approve"}
-            _ = RISK_CAUTION_ACTIONS  # reserved for future nuance
-            _ = RISK_APPROVE_ACTIONS
-
-            # Get committee data
-            consensus = self.smart_bus.get("committee_consensus", "PositionManager")
+            # ═══════════════════════════════════════════════════════════════════
+            # CHECK 1: RISK VETO - Hard safety gate
+            # If any risk module (DynamicRiskController, etc.) says HALT/EMERGENCY
+            # ═══════════════════════════════════════════════════════════════════
             expert_votes = self.smart_bus.get("expert_votes", "PositionManager")
-            if not isinstance(expert_votes, list):
-                expert_votes = []
-
-            # ═══════════════════════════════════════════════════════════════════
-            # LAYER 1: RISK VETO CHECK
-            # If any risk module says HALT/EMERGENCY, block immediately
-            # ═══════════════════════════════════════════════════════════════════
             if isinstance(expert_votes, list):
                 risk_voters = [
                     "DynamicRiskController",
                     "PortfolioRiskSystem",
                     "EnhancedAnomalyDetector",
                     "ExecutionQualityMonitor",
-                    "MetaAgent",
                 ]
+                RISK_BLOCK_ACTIONS = {"halt", "emergency", "block"}
 
                 for vote in expert_votes:
-                    # Skip non-dict votes (defensive)
                     if not isinstance(vote, dict):
                         continue
                     expert = vote.get("expert", "")
@@ -844,122 +785,56 @@ class PositionManagerBase(
                     action = str(vote_obj.get("action", "")).lower()
                     confidence = float(vote.get("confidence", 0.0) or 0.0)
 
-                    if expert in risk_voters and action in RISK_BLOCK_ACTIONS and confidence > 0.5:
+                    # Only block on high-confidence risk vetoes
+                    if expert in risk_voters and action in RISK_BLOCK_ACTIONS and confidence > 0.7:
                         if self.debug:
                             self.logger.debug(
                                 f"[GATE] Risk veto by {expert}: action={action}, conf={confidence:.1%}"
                             )
                         return False
 
-            # If fragility/collusion are extreme, WARN but don't block when experts agree
-            if risk_block:
-                self.logger.warning(
-                    f"[GATE] ⚠️ HIGH FRAGILITY/COLLUSION WARNING - PROCEEDING: "
-                    f"fragility={fragility:.2f}, collusion={collusion_score:.2f} (mode={exec_mode})"
-                )
-                # Do NOT return False - just warn and continue
-
             # ═══════════════════════════════════════════════════════════════════
-            # LAYER 2: DIRECTION CONSENSUS CHECK (RELAXED)
-            # Need at least 1 direction voter AND 50% agreement to pass this layer
+            # CHECK 2: ABSTAIN - If committee explicitly abstains, respect it
             # ═══════════════════════════════════════════════════════════════════
-            direction_votes = {"buy": 0.0, "sell": 0.0}
-            direction_voters = 0
-
-            if isinstance(expert_votes, list):
-                for vote in expert_votes:
-                    # Skip non-dict votes (defensive)
-                    if not isinstance(vote, dict):
-                        continue
-                    vote_obj = vote.get("vote", {}) or {}
-                    if not isinstance(vote_obj, dict):
-                        vote_obj = {}
-                    action = str(vote_obj.get("action", "")).lower()
-                    confidence = float(vote.get("confidence", 0.0) or 0.0)
-
-                    # Only count votes with meaningful confidence
-                    if confidence > 0.2:
-                        if action in ("buy", "long"):
-                            direction_votes["buy"] += confidence
-                            direction_voters += 1
-                        elif action in ("sell", "short"):
-                            direction_votes["sell"] += confidence
-                            direction_voters += 1
-
-            direction_total = direction_votes["buy"] + direction_votes["sell"]
-
-            if direction_total > 0 and direction_voters >= 1:
-                buy_pct = direction_votes["buy"] / direction_total
-                sell_pct = direction_votes["sell"] / direction_total
-                direction_consensus = max(buy_pct, sell_pct)
-
-                if direction_consensus >= 0.50:  # 50% direction consensus
-                    if self.debug:
-                        dominant = "BUY" if buy_pct > sell_pct else "SELL"
-                        self.logger.debug(
-                            f"[GATE] Direction consensus: {dominant} at "
-                            f"{direction_consensus:.1%} ({direction_voters} voters)"
-                        )
-                    return True
-
-            # ═══════════════════════════════════════════════════════════════════
-            # LAYER 3: TRADE_VOTE_V2 CHECK (STRICTER THRESHOLDS)
-            # Require clear BUY/SELL action (not ABSTAIN) with good confidence
-            # ═══════════════════════════════════════════════════════════════════
-            strategy_boost, boost_reason = self._get_strategy_confidence_boost()
-
             trade_vote = self.smart_bus.get("trade_vote_v2", "PositionManager")
             if isinstance(trade_vote, dict):
-                vote_confidence = float(trade_vote.get("confidence", 0.0) or 0.0)
                 vote_action = str(trade_vote.get("action", "")).lower()
-                consensus_score = float(trade_vote.get("consensus_score", 0.0) or 0.0)
-
-                # ABSTAIN = NO TRADE
                 if vote_action == "abstain":
                     if self.debug:
                         self.logger.debug("[GATE] ABSTAIN vote - blocking trade")
                     return False
 
-                # Apply strategy boost to confidence (max +10%)
-                boosted_confidence = vote_confidence + min(strategy_boost, 0.10)
-
-                # Risk-aware thresholds
-                conf_threshold = min(0.90, 0.28 * risk_factor)
-                consensus_threshold = min(0.95, 0.60 * risk_factor)
-
-                if (
-                    vote_action in ("buy", "sell")
-                    and boosted_confidence > conf_threshold
-                    and consensus_score > consensus_threshold
-                ):
-                    if self.debug:
-                        self.logger.debug(
-                            f"[GATE] trade_vote_v2 pass: {vote_action}, "
-                            f"conf={vote_confidence:.1%}+{strategy_boost:+.1%}="
-                            f"{boosted_confidence:.1%}, "
-                            f"consensus={consensus_score:.1%}, strategy={boost_reason}"
-                        )
-                    return True
-
             # ═══════════════════════════════════════════════════════════════════
-            # LAYER 4: COMMITTEE CONSENSUS (RELAXED FOR TRAINING)
-            # Require 35%+ consensus strength (risk-adjusted)
+            # CHECK 3: EXTREME FRAGILITY WARNING (but don't block)
             # ═══════════════════════════════════════════════════════════════════
-            if isinstance(consensus, dict):
-                consensus_strength = float(
-                    consensus.get("consensus_strength", 0.0) or 0.0
+            fragility = 0.0
+            try:
+                inst_frag = self.smart_bus.get("instrument_fragility", "PositionManager")
+                if isinstance(inst_frag, dict) and inst_frag:
+                    fragility = min(inst_frag.values())
+                else:
+                    fragility = float(
+                        self.smart_bus.get("fragility", "PositionManager") or 0.0
+                    )
+            except Exception:
+                pass
+
+            if fragility >= 0.95:
+                self.logger.warning(
+                    f"[GATE] ⚠️ HIGH FRAGILITY WARNING: {fragility:.2f} - proceeding anyway"
                 )
-                committee_threshold = min(0.90, 0.35 * risk_factor)
-                if consensus_strength > committee_threshold:
-                    return True
 
-            # No consensus achieved through any layer
-            return False
+            # ═══════════════════════════════════════════════════════════════════
+            # DEFAULT: ALLOW - Trust the expert system's decision
+            # Direction/confidence thresholds are handled by position_logic.py
+            # ═══════════════════════════════════════════════════════════════════
+            return True
 
         except Exception as e:
             if self.debug:
                 self.logger.warning(f"[GATE] Consensus check error: {e}")
-            return False
+            # On error, default to allowing (fail-open for trading, not fail-closed)
+            return True
 
     def _check_trade_cooldown(self, instrument: str, intent: str) -> bool:
         """

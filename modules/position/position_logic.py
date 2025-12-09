@@ -195,8 +195,8 @@ class PositionManager(PositionManagerBase):
                 "strategy": "confidence_weighted",
                 "ppo_weight": 0.6,
                 "committee_weight": 0.4,
-                "ppo_min_confidence": 0.55,  # Raised for expert trading
-                "committee_min_confidence": 0.55,  # Raised for expert trading
+                "ppo_min_confidence": 0.30,  # Low - trust expert decisions
+                "committee_min_confidence": 0.30,  # Low - trust expert decisions
                 "conflict_resolution": "higher_confidence",
             },
         )
@@ -474,7 +474,9 @@ class PositionManager(PositionManagerBase):
                 )
 
         # ---------- Signal & portfolio gates
-        min_sig = float(self.Cval("min_signal_threshold", 0.20))
+        # NOTE: Keep threshold LOW - experts already filter weak signals.
+        # PositionManager validates risk/execution, NOT signal quality.
+        min_sig = float(self.Cval("min_signal_threshold", 0.10))
         sig_strength = abs(float(context.market_intensity))
 
         # Portfolio health brake for opening new exposure
@@ -995,10 +997,40 @@ class PositionManager(PositionManagerBase):
 
         rationale["decision_source"] = decision_source
 
-        # Use voting direction if available; otherwise fall back to raw agent direction
-        effective_direction = (
-            voting_direction if voting_direction is not None else context.market_direction
-        )
+        # ──────────────────────────────────────────────────────
+        # DIRECTION FALLBACK LOGIC (v3.2.0)
+        # PositionManager should NOT override expert decisions.
+        # If voting_direction is None (thresholds not met), use best available
+        # signal rather than raw agent_action which may be stale/wrong.
+        # ──────────────────────────────────────────────────────
+        if voting_direction is not None:
+            effective_direction = voting_direction
+        elif ppo_direction is not None and ppo_direction != 0:
+            # PPO has a direction but below threshold - still use it
+            effective_direction = ppo_direction
+            decision_source = "ppo (below threshold, trusted)"
+            rationale["factors"].append(
+                f"Using PPO direction {ppo_direction} despite low confidence "
+                f"({ppo_conf:.2f}) - trusting expert system"
+            )
+        elif committee_direction is not None and committee_direction != 0:
+            # Committee has a direction but below threshold - still use it
+            effective_direction = committee_direction
+            decision_source = "committee (below threshold, trusted)"
+            rationale["factors"].append(
+                f"Using committee direction {committee_direction} despite low confidence "
+                f"({committee_conf:.2f}) - trusting expert system"
+            )
+        else:
+            # No expert signal at all - only then use raw market direction
+            effective_direction = context.market_direction
+            if context.market_direction != 0:
+                rationale["factors"].append(
+                    "WARNING: No expert direction available, using raw market_direction"
+                )
+        
+        rationale["decision_source"] = decision_source
+
         if effective_direction == 0 or effective_direction is None:
             rationale["stage"] = "no_direction"
             rationale["factors"].append(

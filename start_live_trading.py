@@ -20,7 +20,8 @@ import argparse
 import subprocess
 import requests
 import json
-from typing import Optional, Any
+import yaml
+from typing import Optional, Any, Dict
 from datetime import datetime
 from pathlib import Path
 
@@ -246,22 +247,54 @@ class LiveTradingLauncher:
             self.logger.debug(traceback.format_exc())
             return False
 
+    def _load_risk_policy(self) -> Dict[str, Any]:
+        """Load risk policy from YAML config."""
+        try:
+            config_path = Path("config/risk_policy.yaml")
+            if config_path.exists():
+                with open(config_path, "r", encoding="utf-8") as f:
+                    return yaml.safe_load(f) or {}
+        except Exception as e:
+            self.logger.warning(f"Failed to load risk_policy.yaml: {e}")
+        return {}
+
     def start_trading(self) -> bool:
         """Start live trading (initializes orchestrator)"""
         self.logger.info("Starting live trading system...")
 
         try:
+            # Load settings from risk_policy.yaml (single source of truth)
+            risk_policy = self._load_risk_policy()
+            prop_firm = risk_policy.get("prop_firm", {})
+            limits = risk_policy.get("limits", {})
+            lot_sizing = risk_policy.get("lot_sizing", {})
+
+            # Get proper prop firm limits
+            daily_dd_limit = float(prop_firm.get("daily_drawdown_limit", 0.05))
+            max_dd_limit = float(prop_firm.get("max_drawdown_limit", 0.10))
+            daily_buffer = float(prop_firm.get("daily_dd_safety_buffer", 0.008))
+            max_buffer = float(prop_firm.get("max_dd_safety_buffer", 0.015))
+
+            # Use buffered limits for emergency (stop BEFORE hitting actual limit)
+            emergency_dd = min(daily_dd_limit - daily_buffer, max_dd_limit - max_buffer)
+
+            # Position limits from YAML
+            max_pos_size = float(limits.get("max_position_size", 0.05))
+            max_exposure = float(limits.get("max_exposure_pct", 0.30))
+
+            self.logger.info(f"Prop firm limits: Daily={daily_dd_limit:.1%}, Max={max_dd_limit:.1%}, Emergency={emergency_dd:.1%}")
+
             # Call start trading endpoint
             url = f"{self.backend_url}/api/trading/start"
             payload = {
                 "instruments": self.instruments,
                 "timeframes": ["M15", "H1", "H4", "D1"],
                 "update_interval": 5,
-                "max_position_size": 0.05,
-                "max_total_exposure": 0.30,
+                "max_position_size": max_pos_size,
+                "max_total_exposure": max_exposure,
                 "min_trade_interval": 60,
                 "use_trailing_stop": True,
-                "emergency_drawdown_limit": 0.25,
+                "emergency_drawdown_limit": emergency_dd,
                 "debug": False
             }
 

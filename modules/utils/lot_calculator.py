@@ -63,9 +63,10 @@ class LotSizeConfig:
     # Prop firm specific
     prop_firm_mode: bool = True              # Enable prop firm protections
     daily_dd_limit: float = 0.05             # 5% daily drawdown limit
-    max_dd_limit: float = 0.10               # 10% max drawdown limit
+    max_dd_limit: float = 0.10               # 10% max drawdown limit (ACCOUNT CLOSED!)
     daily_dd_safety_buffer: float = 0.008    # Stop at 4.2% (buffer before 5%)
     max_dd_safety_buffer: float = 0.015      # Stop at 8.5% (buffer before 10%)
+    emergency_close_all_pct: float = 0.09    # CLOSE ALL at 9% (€1000 buffer before death)
 
     # Per-instrument contract sizes
     contract_sizes: Dict[str, float] = field(default_factory=lambda: {
@@ -225,6 +226,8 @@ class UnifiedLotCalculator:
                     "max_dd_limit": float(prop_firm.get("max_drawdown_limit", 0.10)),
                     "daily_dd_safety_buffer": float(prop_firm.get("daily_dd_safety_buffer", 0.008)),
                     "max_dd_safety_buffer": float(prop_firm.get("max_dd_safety_buffer", 0.015)),
+                    # CRITICAL: Close ALL at 9% to protect €1000 buffer before 10%
+                    "emergency_close_all_pct": float(prop_firm.get("emergency_close_all_threshold", 0.09)),
                 }
         except Exception as e:
             print(f"[LotCalculator] Config load warning: {e}")
@@ -617,7 +620,19 @@ class UnifiedLotCalculator:
             )
 
         # Max drawdown checks
-        if total_dd >= self.config.max_dd_limit:
+        # CRITICAL: 10% = ACCOUNT CLOSED! We have 3 thresholds:
+        # 1) 8.5% (effective_max_limit) = Stop new trades
+        # 2) 9.0% (emergency_close_all_pct) = CLOSE ALL POSITIONS
+        # 3) 10% (max_dd_limit) = Account death (should never reach)
+        
+        if total_dd >= self.config.emergency_close_all_pct:
+            # EMERGENCY: Close everything at 9%
+            result["can_trade"] = False
+            result["must_close_all"] = True
+            result["warnings"].append(
+                f"🚨 EMERGENCY: DD at {total_dd:.2%} >= {self.config.emergency_close_all_pct:.2%} - CLOSE ALL!"
+            )
+        elif total_dd >= self.config.max_dd_limit:
             result["can_trade"] = False
             result["must_close_all"] = True
             result["warnings"].append(

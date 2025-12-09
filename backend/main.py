@@ -159,16 +159,25 @@ class LoginRequest(BaseModel):
 
 
 class LiveTradingConfig(BaseModel):
-    """Live trading configuration."""
+    """Live trading configuration.
+    
+    NOTE: These defaults are conservative fallbacks. The actual values should
+    come from risk_policy.yaml via start_live_trading.py which reads:
+    - prop_firm.daily_drawdown_limit (5%)
+    - prop_firm.max_drawdown_limit (10%)
+    - limits.max_position_size
+    - limits.max_exposure_pct
+    """
 
     instruments: List[str] = Field(default=["EURUSD", "XAUUSD"])
     timeframes: List[str] = Field(default=["M15", "H1", "H4", "D1"])
     update_interval: int = Field(default=1, ge=1, le=60)  # Changed to 1 for real-time tick updates
-    max_position_size: float = Field(default=0.1, gt=0, le=1)
-    max_total_exposure: float = Field(default=0.3, gt=0, le=1)
+    max_position_size: float = Field(default=0.05, gt=0, le=1)  # Conservative default
+    max_total_exposure: float = Field(default=0.15, gt=0, le=1)  # Conservative default
     min_trade_interval: int = Field(default=60, ge=10, le=3600)
     use_trailing_stop: bool = True
-    emergency_drawdown_limit: float = Field(default=0.25, gt=0, le=0.5)
+    # CRITICAL: Default to conservative 4.2% (below 5% daily limit)
+    emergency_drawdown_limit: float = Field(default=0.042, gt=0, le=0.5)
     debug: bool = False
 
 

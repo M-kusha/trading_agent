@@ -1821,6 +1821,26 @@ class Executor(BaseModule):
             return fills, 0.0
 
         prop_limits = self.lot_calculator.check_prop_firm_limits()
+        
+        # ══════════════════════════════════════════════════════════════════
+        # CRITICAL: Check if we need to CLOSE ALL (9% drawdown protection)
+        # This is the primary defense before account death at 10%
+        # ══════════════════════════════════════════════════════════════════
+        if prop_limits.get("must_close_all", False):
+            self.logger.critical(
+                f"[SMART] 🚨🚨🚨 EMERGENCY CLOSE ALL! {prop_limits.get('warnings', [])}"
+            )
+            # Force close all positions immediately
+            try:
+                import MetaTrader5 as mt5
+                positions = mt5.positions_get()
+                if positions:
+                    for pos in positions:
+                        self._emergency_close_position(pos)
+            except Exception as e:
+                self.logger.error(f"[SMART] Emergency close failed: {e}")
+            return fills, 0.0
+        
         if not prop_limits.get("can_trade", True):
             self.logger.warning(
                 f"[SMART] 🚫 PROP FIRM BLOCK: Trading halted - {prop_limits.get('warnings', [])}"
@@ -2583,6 +2603,63 @@ class Executor(BaseModule):
         if d in ("sell", "short", "-1"):
             return -1
         return 0
+
+    def _emergency_close_position(self, pos) -> bool:
+        """Emergency close a single position. Called when 9% drawdown threshold hit.
+        
+        This is the LAST DEFENSE before account closure at 10%.
+        No profit checks, no analysis - just close immediately.
+        """
+        try:
+            import MetaTrader5 as mt5
+            
+            ticket = getattr(pos, "ticket", 0)
+            symbol = getattr(pos, "symbol", "")
+            lots = getattr(pos, "volume", 0.0)
+            pos_type = getattr(pos, "type", 0)
+            
+            self.logger.warning(
+                f"[EMERGENCY] 🚨 Closing position: ticket={ticket}, symbol={symbol}, lots={lots}"
+            )
+            
+            close_type = (
+                mt5.ORDER_TYPE_SELL
+                if pos_type == mt5.POSITION_TYPE_BUY
+                else mt5.ORDER_TYPE_BUY
+            )
+            
+            tick = mt5.symbol_info_tick(symbol)
+            if not tick:
+                self.logger.error(f"[EMERGENCY] No tick for {symbol}")
+                return False
+                
+            price = tick.bid if close_type == mt5.ORDER_TYPE_SELL else tick.ask
+            
+            request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": symbol,
+                "volume": lots,
+                "type": close_type,
+                "position": ticket,
+                "price": price,
+                "magic": 123456,
+                "comment": "EMERGENCY_9PCT",
+                "type_filling": mt5.ORDER_FILLING_IOC,
+            }
+            
+            result = mt5.order_send(request)
+            
+            if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+                self.logger.warning(f"[EMERGENCY] ✅ CLOSED ticket {ticket}")
+                return True
+            else:
+                retcode = getattr(result, "retcode", "unknown") if result else "no_result"
+                self.logger.error(f"[EMERGENCY] ❌ Failed to close {ticket}: {retcode}")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"[EMERGENCY] Exception closing position: {e}")
+            return False
 
     def _close_position_by_ticket(self, ticket: int, symbol: str) -> Dict[str, Any]:
         """Close a specific position by ticket number via MT5."""
