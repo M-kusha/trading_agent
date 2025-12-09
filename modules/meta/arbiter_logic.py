@@ -773,6 +773,69 @@ class ArbiterLogic:
             adaptation_rate=0.02,
             min_trades=20,
         )
+        
+        # Bus reference for arbiter gate checks
+        self._smart_bus: Optional[Any] = None
+        try:
+            from modules.utils.info_bus import InfoBusManager
+            self._smart_bus = InfoBusManager.get_instance()
+        except Exception:
+            pass
+    
+    def _check_arbiter_instrument_gate(self, instrument: str) -> bool:
+        """
+        Check if FinalArbiter has approved this instrument for trading.
+        
+        The FinalArbiter applies voting consensus/confidence thresholds.
+        PPO must respect these decisions to avoid opening trades on
+        weak/blocked signals.
+        
+        Returns:
+            True if arbiter approved (or no data), False if blocked
+        """
+        if self._smart_bus is None:
+            return True  # No bus access, default to allow
+        
+        try:
+            # Read instrument_signals from FinalArbiter
+            inst_signals = self._smart_bus.get("instrument_signals", "ArbiterLogic") or {}
+            
+            if not isinstance(inst_signals, dict):
+                return True
+            
+            # Normalize instrument name for lookup
+            inst_norm = instrument.upper().replace("/", "").replace("_", "")
+            
+            # Try direct match
+            signal = inst_signals.get(instrument)
+            if signal is None:
+                # Try normalized match
+                for key, val in inst_signals.items():
+                    key_norm = key.upper().replace("/", "").replace("_", "")
+                    if key_norm == inst_norm:
+                        signal = val
+                        break
+            
+            if isinstance(signal, dict):
+                # Check gate_passed flag from arbiter
+                arbiter_gate = signal.get("gate_passed")
+                if arbiter_gate is False:
+                    # Also check action - HOLD means blocked
+                    action = str(signal.get("action", "")).upper()
+                    if action in ("HOLD", "FLAT", "ABSTAIN"):
+                        return False
+                    return False  # Explicit gate_passed=False
+                
+                # Also block if action is HOLD regardless of gate_passed
+                action = str(signal.get("action", "")).upper()
+                if action in ("HOLD", "FLAT", "ABSTAIN"):
+                    return False
+            
+            return True
+            
+        except Exception as e:
+            self.logger.warning(f"[ARBITER_GATE] Error checking gate for {instrument}: {e}")
+            return True  # Default to allow on error
     
     # ─────────────────────────────────────────────────────────────
     # Main Decision Method
@@ -961,6 +1024,16 @@ class ArbiterLogic:
         
         # 5) Gating pipeline
         gating_result = GatingResult.apply_gates(memory_info, risk_info, trust_score)
+        
+        # 5b) CRITICAL: Also check FinalArbiter's per-instrument gate decision
+        # The FinalArbiter applies voting confidence/consensus thresholds that PPO must respect
+        arbiter_gate_passed = self._check_arbiter_instrument_gate(instrument)
+        if not arbiter_gate_passed:
+            gating_result.gate_passed = False
+            gating_result.reasons.append("ARBITER_BLOCKED")
+            self.logger.warning(
+                f"[ARBITER_GATE] {instrument}: FinalArbiter blocked this signal - PPO respecting"
+            )
         
         # Apply gate confidence multiplier
         confidence *= gating_result.confidence_multiplier
