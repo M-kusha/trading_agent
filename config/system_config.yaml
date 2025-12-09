@@ -695,7 +695,7 @@ modules:
       local_hard_close_hour: 23
       no_trade_last_minutes: 30
       # TEST MODE: Set to true to allow trades during off-hours (for testing only)
-      allow_off_hours_trading: true
+      allow_off_hours_trading: false
 
   # DEPRECATED - use SeasonalityRiskExpert instead
   EnhancedSeasonalityRiskExpert:
