@@ -162,7 +162,8 @@ smart_position:
     build_max_age_hours: 1.0         # Up to ~1 hour = BUILD (let it develop)
     build_max_profit_r: 1.0          # Exit BUILD if gains 1R profit
     ride_min_profit_r: 0.5           # Need 0.5R profit to enter RIDE
-    defend_trigger_drawdown_pct: 0.3 # If profit drops 30% from peak, enter DEFEND
+    # DEFEND triggers BEFORE trailing close (20% < 30%) so it has time to act
+    defend_trigger_drawdown_pct: 0.20 # If profit drops 20% from peak, enter DEFEND
 
   # ═════════════════════════════════════════════════════════════
   # DRAWDOWN-AWARE AGGRESSION CONTROL
@@ -287,26 +288,42 @@ exit_strategies:
 
 # ═══════════════════════════════════════════════════════════════
 # Stop Loss / Take Profit Settings (in pips)
-# Emergency safety net, separate from ExitEngine logic
+# EMERGENCY safety net ONLY - wider than ExitEngine thresholds!
+# Real exit logic is handled by SmartPositionManager/ExitEngine.
+# Native SL should only trigger if ExitEngine fails.
 # ═══════════════════════════════════════════════════════════════
 sl_tp_settings:
+  # ═════════════════════════════════════════════════════════════
+  # ADAPTIVE ATR-BASED SL/TP (Preferred - volatility-aware)
+  # When enabled, SL/TP are calculated from real-time ATR data.
+  # Falls back to fixed pips if ATR unavailable.
+  # ═════════════════════════════════════════════════════════════
+  use_adaptive_sl_tp: true           # Enable ATR-based adaptive SL/TP
+  adaptive_sl_atr_multiplier: 2.5    # SL = 2.5x ATR (emergency backup)
+  adaptive_tp_atr_multiplier: 4.0    # TP = 4x ATR (if auto_tp_enabled)
+  
+  # ═════════════════════════════════════════════════════════════
+  # FIXED PIP FALLBACK VALUES (Used when ATR unavailable)
   # Default values per instrument (in pips)
+  # ═════════════════════════════════════════════════════════════
   EURUSD:
-    stop_loss_pips: 100      # 100 pips SL (~€100 at 0.1 lots)
-    take_profit_pips: 150    # TP chosen for prop-firm-friendly R/R
+    stop_loss_pips: 200      # 200 pips SL (~€200 at 0.1 lots) - WIDER than ExitEngine
+    take_profit_pips: 0      # Let ExitEngine handle TP
 
   XAUUSD:
-    stop_loss_pips: 1000     # Gold SL: $10 (1000 "pips" at 0.01)
-    take_profit_pips: 1500   # Gold TP: $15 (1500 "pips" at 0.01)
+    # ExitEngine hard_stop is €400. At 0.2 lots, that's ~$20 move.
+    # Native SL should be WIDER (e.g., $25-30) as emergency backup.
+    stop_loss_pips: 2500     # Gold SL: $25 (2500 "pips" at 0.01) - EMERGENCY ONLY
+    take_profit_pips: 0      # Let ExitEngine handle exits via trailing
 
   # Default fallback for any other symbol
   default:
-    stop_loss_pips: 100      # Tight emergency SL
-    take_profit_pips: 150    # Reasonable default TP
+    stop_loss_pips: 200      # Wide emergency SL
+    take_profit_pips: 0      # Let ExitEngine handle TP
 
   # Enable automatic SL/TP on new orders
   auto_sl_enabled: true      # ALWAYS have an emergency SL
-  auto_tp_enabled: true      # Enable TP for consistency
+  auto_tp_enabled: false     # DISABLE native TP - ExitEngine handles this
   fix_missing_sl_tp: true    # Repair orders with missing SL/TP
 
 

@@ -42,6 +42,91 @@ def _load_sl_tp_config() -> Dict[str, Any]:
     return {}
 
 
+def _get_current_atr(symbol: str) -> Optional[float]:
+    """
+    Get current ATR from InfoBus or calculate from recent bars.
+    
+    Returns ATR in PRICE units (e.g., $15.50 for gold, 0.0080 for EURUSD).
+    """
+    try:
+        # Try to get ATR from InfoBus first
+        from modules.utils.info_bus import InfoBusManager
+        bus = InfoBusManager.get_instance()
+        
+        # Check multiple possible bus keys
+        for key in ["price_data", "technical_indicators", "indicators"]:
+            data = bus.get(key, "MT5Adapter", default=None)
+            if isinstance(data, dict):
+                sym_data = data.get(symbol) or data.get(symbol.upper())
+                if isinstance(sym_data, dict):
+                    atr = sym_data.get("atr") or sym_data.get("ATR") or sym_data.get("atr_14")
+                    if atr and isinstance(atr, (int, float)) and atr > 0:
+                        return float(atr)
+        
+        # Fallback: Calculate ATR from MT5 bars directly
+        if _MT5 and mt5:
+            bars = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M15, 0, 20)
+            if bars is not None and len(bars) >= 14:
+                import numpy as np
+                highs = np.array([b[2] for b in bars])  # high
+                lows = np.array([b[3] for b in bars])   # low
+                closes = np.array([b[4] for b in bars]) # close
+                
+                # True Range calculation
+                tr = np.maximum(
+                    highs[1:] - lows[1:],
+                    np.maximum(
+                        np.abs(highs[1:] - closes[:-1]),
+                        np.abs(lows[1:] - closes[:-1])
+                    )
+                )
+                atr = float(np.mean(tr[-14:]))  # 14-period ATR
+                return atr
+                
+    except Exception:
+        pass
+    
+    return None
+
+
+def _get_adaptive_sl_distance(symbol: str, side: int, current_price: float) -> float:
+    """
+    Calculate adaptive SL distance based on ATR.
+    
+    Uses 2.5x ATR as SL distance (gives room for normal volatility).
+    Falls back to fixed pip-based SL if ATR unavailable.
+    
+    Args:
+        symbol: Trading symbol
+        side: +1 for BUY, -1 for SELL
+        current_price: Current entry price
+        
+    Returns:
+        SL distance in price units
+    """
+    atr = _get_current_atr(symbol)
+    
+    if atr and atr > 0:
+        # ATR-based SL: 2.5x ATR gives room for normal volatility
+        # This is still an EMERGENCY SL - ExitEngine handles normal exits
+        sl_distance = atr * 2.5
+        
+        # Sanity bounds: min 0.1% of price, max 2% of price
+        min_sl = current_price * 0.001
+        max_sl = current_price * 0.02
+        sl_distance = max(min_sl, min(max_sl, sl_distance))
+        
+        return sl_distance
+    
+    # Fallback to fixed pips if ATR not available
+    config = _load_sl_tp_config()
+    symbol_config = config.get(symbol, config.get("default", {}))
+    sl_pips = float(symbol_config.get("stop_loss_pips", 2500))
+    sl_distance = _pips_to_price(symbol, sl_pips)
+    
+    return sl_distance
+
+
 def _get_sl_tp_pips(symbol: str) -> Tuple[float, float]:
     """
     Get SL/TP pips for a symbol from config.
@@ -357,20 +442,48 @@ class MT5Adapter(BaseLiveAdapter):
 
             # Calculate SL/TP if not provided
             if sl_price is None or tp_price is None:
-                sl_pips, tp_pips = _get_sl_tp_pips(sym)
-                sl_distance = _pips_to_price(sym, sl_pips)
-                tp_distance = _pips_to_price(sym, tp_pips)
+                # Try adaptive ATR-based SL/TP first (if enabled and ATR available)
+                use_adaptive = _load_risk_config().get("use_adaptive_sl_tp", True)  # Default to adaptive
+                adaptive_sl, adaptive_tp = None, None
+                
+                if use_adaptive:
+                    try:
+                        adaptive_sl, adaptive_tp = _calculate_adaptive_sl_tp_prices(
+                            symbol=sym,
+                            side=side,
+                            entry_price=current_price,
+                            atr_multiplier_sl=2.5,  # 2.5x ATR for SL (emergency backup)
+                            atr_multiplier_tp=4.0   # 4x ATR for TP (disabled anyway, ExitEngine handles)
+                        )
+                        if adaptive_sl:
+                            self.log.info(f"[MT5] Using ADAPTIVE SL for {sym}: {adaptive_sl:.5f} (ATR-based)")
+                    except Exception as e:
+                        self.log.warning(f"[MT5] Adaptive SL calculation failed for {sym}: {e}, falling back to fixed pips")
+                
+                # Use adaptive SL/TP if available, otherwise fall back to fixed pips
+                if adaptive_sl and sl_price is None:
+                    sl_price = adaptive_sl
+                if adaptive_tp and tp_price is None:
+                    tp_price = adaptive_tp
+                
+                # Fallback to fixed pip-based SL/TP if adaptive didn't work
+                if sl_price is None or tp_price is None:
+                    sl_pips, tp_pips = _get_sl_tp_pips(sym)
+                    sl_distance = _pips_to_price(sym, sl_pips)
+                    tp_distance = _pips_to_price(sym, tp_pips)
 
-                if side > 0:  # BUY
-                    if sl_price is None and sl_pips > 0:
-                        sl_price = current_price - sl_distance
-                    if tp_price is None and tp_pips > 0:
-                        tp_price = current_price + tp_distance
-                else:  # SELL
-                    if sl_price is None and sl_pips > 0:
-                        sl_price = current_price + sl_distance
-                    if tp_price is None and tp_pips > 0:
-                        tp_price = current_price - tp_distance
+                    if side > 0:  # BUY
+                        if sl_price is None and sl_pips > 0:
+                            sl_price = current_price - sl_distance
+                            self.log.info(f"[MT5] Using FIXED SL for {sym}: {sl_price:.5f} ({sl_pips} pips)")
+                        if tp_price is None and tp_pips > 0:
+                            tp_price = current_price + tp_distance
+                    else:  # SELL
+                        if sl_price is None and sl_pips > 0:
+                            sl_price = current_price + sl_distance
+                            self.log.info(f"[MT5] Using FIXED SL for {sym}: {sl_price:.5f} ({sl_pips} pips)")
+                        if tp_price is None and tp_pips > 0:
+                            tp_price = current_price - tp_distance
 
             # Round prices to symbol's digits
             symbol_info = mt5.symbol_info(sym)

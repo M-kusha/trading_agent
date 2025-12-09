@@ -410,7 +410,8 @@ class SmartPositionConfig:
     build_max_age_hours: float = 2.0         # Hours 0.5-2 = BUILD
     build_max_profit_r: float = 1.0          # Exit BUILD if gains 1R
     ride_min_profit_r: float = 0.5           # Need 0.5R profit to enter RIDE
-    defend_trigger_drawdown_pct: float = 0.3 # Enter DEFEND if profit drops 30%
+    # DEFEND triggers at 20% retrace (BEFORE ExitEngine's 30% trailing close)
+    defend_trigger_drawdown_pct: float = 0.20 # Enter DEFEND if profit drops 20%
 
     # ═══════════════════════════════════════════════════════════════════════════
     # DRAWDOWN-AWARE AGGRESSION (v4.0)
@@ -1088,6 +1089,8 @@ class SmartPositionManager:
             self._profit_peaks[symbol] = position.unrealized_pnl
 
         # Case 2: Existing position – unified ExitEngine first
+        lifecycle = self._get_lifecycle_state(position)
+        
         exit_ctx = PositionContext(
             symbol=symbol,
             side=position.side,
@@ -1102,6 +1105,8 @@ class SmartPositionManager:
             signal_strength=signal_strength,
             signal_valid=signal_valid,
             consensus_confidence=consensus_confidence,
+            # Pass lifecycle as regime - "defend" triggers tighter trailing in ExitEngine
+            regime=lifecycle.value if lifecycle else "normal",
         )
 
         exit_engine = get_exit_engine()
@@ -1359,8 +1364,30 @@ class SmartPositionManager:
           - Experts confident
           - Position profitable enough (R-based or EUR-based)
           - Cooldown passed
+          - NOT in DEFEND state (profit retracing from peak)
         """
         cfg = self.config
+        symbol = position.symbol
+
+        # ═══════════════════════════════════════════════════════════════════
+        # DEFEND MODE CHECK - Block scale-up when profit is retracing!
+        # This is the PRIMARY purpose of DEFEND state.
+        # ═══════════════════════════════════════════════════════════════════
+        lifecycle = self._get_lifecycle_state(position)
+        if lifecycle == PositionLifecycle.DEFEND:
+            r_mult = self._get_r_multiple(symbol, position.unrealized_pnl)
+            peak_pnl = self._profit_peaks.get(symbol, position.unrealized_pnl)
+            retrace_pct = (peak_pnl - position.unrealized_pnl) / peak_pnl if peak_pnl > 0 else 0.0
+            reasons.append(
+                f"🛡️ DEFEND MODE: Profit retracing ({retrace_pct:.0%} from peak €{peak_pnl:.2f}), "
+                f"blocking scale-up. Current €{position.unrealized_pnl:.2f} ({r_mult:.1f}R)"
+            )
+            return self._make_decision(
+                action=PositionAction.HOLD,
+                symbol=symbol,
+                confidence=0.60,
+                reasons=reasons,
+            )
 
         last_scale = self._last_scale_time.get(symbol, 0.0)
         scale_cooldown_ok = (time.time() - last_scale) >= cfg.scale_up_cooldown_seconds

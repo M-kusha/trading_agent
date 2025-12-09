@@ -324,12 +324,45 @@ class ExitStrategyEngine:
 
     def _regime_adjusted_config(self, ctx: PositionContext) -> ExitConfig:
         """
-        Adjust config thresholds based on market regime and volatility.
+        Adjust config thresholds based on market regime, volatility, or lifecycle.
 
-        - If ctx.regime is explicitly set (volatile/ranging/trending), use it.
+        - If ctx.regime is explicitly set (volatile/ranging/trending/defend), use it.
         - If ctx.regime is "auto"/"normal", infer from ctx.volatility.
+        - "defend" = lifecycle DEFEND state = tighten trailing (profit retracing)
         """
         regime = (ctx.regime or "normal").lower()
+
+        # ═══════════════════════════════════════════════════════════════════
+        # DEFEND LIFECYCLE STATE - Tighten trailing stop!
+        # When profit is retracing from peak, be more aggressive about exiting.
+        # This gives DEFEND a real purpose before the 30% trailing close.
+        # ═══════════════════════════════════════════════════════════════════
+        if regime == "defend":
+            # Tighten trailing by 25% (e.g., 30% becomes 22.5%)
+            scale = 0.75
+            return ExitConfig(
+                hard_stop_loss_eur=self.config.hard_stop_loss_eur,  # Don't change hard stop
+                soft_stop_loss_eur=self.config.soft_stop_loss_eur,
+                soft_stop_min_signal=self.config.soft_stop_min_signal,
+                time_decay_hours=self.config.time_decay_hours,
+                time_decay_stop_eur=self.config.time_decay_stop_eur,
+                trailing_activation_eur=self.config.trailing_activation_eur * 0.8,  # Activate earlier
+                trailing_activation_atr=self.config.trailing_activation_atr * 0.8,
+                trailing_retrace_pct=self.config.trailing_retrace_pct * scale,  # Tighter retrace!
+                trailing_retrace_atr=self.config.trailing_retrace_atr * scale,
+                trailing_use_atr=self.config.trailing_use_atr,
+                trailing_min_peak_eur=self.config.trailing_min_peak_eur * 0.8,  # Lower min peak
+                momentum_exit_profit_eur=self.config.momentum_exit_profit_eur * 0.8,
+                momentum_reversal_signal=self.config.momentum_reversal_signal * 0.9,  # More sensitive
+                signal_exit_threshold=self.config.signal_exit_threshold,
+                signal_direction_weight=self.config.signal_direction_weight,
+                volatile_regime_tighten=self.config.volatile_regime_tighten,
+                ranging_regime_loosen=self.config.ranging_regime_loosen,
+                trending_regime_neutral=self.config.trending_regime_neutral,
+                emergency_drawdown_pct=self.config.emergency_drawdown_pct,
+                emergency_daily_loss_buffer_pct=self.config.emergency_daily_loss_buffer_pct,
+                emergency_max_open_risk_eur=self.config.emergency_max_open_risk_eur,
+            )
 
         if regime in ("auto", "normal", ""):
             # Simple volatility-based routing if regime not explicitly set
