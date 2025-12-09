@@ -1021,7 +1021,7 @@ class FinalArbiter(VotingModuleBase):
 
             # Adaptive thresholds per instrument
             threshold_context = {
-                "volatility": fragility,  # proxy
+                "fragility": fragility,  # decision stability (0=robust, 1=fragile)
                 "regime": market_regime,
                 "recent_signals": len(self.gate_decisions),
             }
@@ -1036,7 +1036,7 @@ class FinalArbiter(VotingModuleBase):
             self.logger.debug(
                 f"[ARBITER] Adaptive thresholds for {instrument}: "
                 f"conf={min_confidence:.3f}, consensus={min_consensus:.3f} "
-                f"(regime={market_regime}, vol={threshold_context['volatility']:.4f})"
+                f"(regime={market_regime}, fragility={threshold_context['fragility']:.4f})"
             )
 
             # LIVE mode: strict

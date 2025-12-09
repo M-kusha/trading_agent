@@ -2037,8 +2037,16 @@ class Executor(BaseModule):
                         reasons=decision.reasons[:2],
                     )
                 )
-                close_side = -decision.side
-                result = self.adapter.market_order(symbol, close_side, decision.lots)
+                close_side = -decision.side  # Needed for TradeFill record
+                # Get ticket for partial close (critical for MT5 hedging accounts)
+                ticket = getattr(position, "ticket", 0)
+                if ticket:
+                    # Use ticket-based partial close to avoid creating hedges
+                    result = self._partial_close_by_ticket(ticket, symbol, decision.lots)
+                else:
+                    # Fallback for sim mode or missing ticket
+                    self.logger.warning(f"[SCALE_DOWN] No ticket for {symbol}, falling back to market_order")
+                    result = self.adapter.market_order(symbol, close_side, decision.lots)
                 if result.get("ok"):
                     px = float(result.get("price", 0) or 0)
                     contract_size = self._get_contract_size(symbol)
@@ -2622,6 +2630,88 @@ class Executor(BaseModule):
 
         except Exception as e:
             self.logger.error(f"[CLOSE_TICKET] Exception: {e}")
+            return {"ok": False, "error": str(e)}
+
+    def _partial_close_by_ticket(self, ticket: int, symbol: str, lots_to_close: float) -> Dict[str, Any]:
+        """Partially close a position by ticket - CRITICAL for MT5 hedging accounts.
+        
+        On hedging accounts, market_order() creates NEW opposing positions (hedges).
+        To reduce a position, we MUST use TRADE_ACTION_DEAL with 'position' = ticket.
+        """
+        self.logger.debug(f"[PARTIAL_CLOSE] Attempting partial close: ticket={ticket}, symbol={symbol}, lots={lots_to_close}")
+
+        if not self.adapter or not self.adapter.is_connected():
+            self.logger.warning("[PARTIAL_CLOSE] Adapter not connected")
+            return {"ok": False, "error": "not_connected"}
+
+        try:
+            import MetaTrader5 as mt5  # type: ignore[import]
+
+            position = mt5.positions_get(ticket=ticket)  # type: ignore[attr-defined]
+            if not position:
+                self.logger.warning(f"[PARTIAL_CLOSE] Position {ticket} not found in MT5")
+                return {"ok": False, "error": "position_not_found"}
+
+            pos = position[0]
+            current_lots = getattr(pos, "volume", 0.0)
+            pos_type = getattr(pos, "type", 0)
+
+            # Safety check: don't close more than we have
+            actual_close_lots = min(lots_to_close, current_lots)
+            if actual_close_lots <= 0:
+                self.logger.warning(f"[PARTIAL_CLOSE] Invalid lots to close: {lots_to_close} (current: {current_lots})")
+                return {"ok": False, "error": "invalid_lots"}
+
+            self.logger.info(
+                f"[PARTIAL_CLOSE] Position: ticket={ticket}, current_lots={current_lots}, "
+                f"closing_lots={actual_close_lots}, type={'BUY' if pos_type == 0 else 'SELL'}"
+            )
+
+            # Determine opposite order type for closing
+            close_type = (
+                mt5.ORDER_TYPE_SELL
+                if pos_type == mt5.POSITION_TYPE_BUY
+                else mt5.ORDER_TYPE_BUY
+            )
+
+            request = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": symbol,
+                "volume": round(actual_close_lots, 2),  # Round to 2 decimals for MT5
+                "type": close_type,
+                "position": ticket,  # CRITICAL: This links to existing position instead of creating hedge
+                "magic": 123456,
+                "comment": "scale_down",
+                "type_filling": mt5.ORDER_FILLING_IOC,
+            }
+
+            tick = mt5.symbol_info_tick(symbol)  # type: ignore[attr-defined]
+            if tick:
+                request["price"] = (
+                    tick.bid if close_type == mt5.ORDER_TYPE_SELL else tick.ask
+                )
+            else:
+                self.logger.warning(f"[PARTIAL_CLOSE] No tick data for {symbol}")
+
+            self.logger.info(f"[PARTIAL_CLOSE] Sending request: {request}")
+            result = mt5.order_send(request)  # type: ignore[attr-defined]
+
+            if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+                self.logger.info(
+                    f"[PARTIAL_CLOSE] ✅ Successfully closed {actual_close_lots} lots on ticket {ticket}. "
+                    f"Remaining: {current_lots - actual_close_lots:.2f} lots"
+                )
+                return {"ok": True, "price": getattr(result, "price", 0), "closed_lots": actual_close_lots}
+            else:
+                retcode = getattr(result, "retcode", "unknown") if result else "no_result"
+                comment = getattr(result, "comment", "") if result else ""
+                self.logger.error(
+                    f"[PARTIAL_CLOSE] ❌ MT5 rejected: retcode={retcode}, comment={comment}"
+                )
+                return {"ok": False, "error": f"{retcode}: {comment}"}
+
+        except Exception as e:
+            self.logger.error(f"[PARTIAL_CLOSE] Exception: {e}")
             return {"ok": False, "error": str(e)}
 
     # ─────────────────────────────────────────────────────────

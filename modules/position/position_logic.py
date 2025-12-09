@@ -330,13 +330,26 @@ class PositionManager(PositionManagerBase):
 
         if isinstance(ppo_multi_decision, dict):
             instruments_map = ppo_multi_decision.get("instruments", {})
-            if isinstance(instruments_map, dict) and instrument in instruments_map:
-                inst_decision_for_logging = instruments_map[instrument]
+            if isinstance(instruments_map, dict):
+                # Normalize instrument name for lookup (handles EUR/USD vs EURUSD mismatch)
+                inst_norm = self._normalize_instrument(instrument)
+                
+                # Try direct match first
+                if instrument in instruments_map:
+                    inst_decision_for_logging = instruments_map[instrument]
+                else:
+                    # Try normalized match (EUR/USD -> EURUSD)
+                    for key, val in instruments_map.items():
+                        if self._normalize_instrument(key) == inst_norm:
+                            inst_decision_for_logging = val
+                            break
+                
                 if isinstance(inst_decision_for_logging, dict):
                     ppo_gate_passed = inst_decision_for_logging.get(
                         "gate_passed", True
                     )
-            else:
+            
+            if inst_decision_for_logging is None:
                 # Fallback to global key
                 ppo_gate_passed = self.smart_bus.get(
                     "ppo_gate_passed", "PositionManager", default=True
@@ -613,22 +626,38 @@ class PositionManager(PositionManagerBase):
 
         # ------------------------------------------------------
         # Extract PPO decision data (per-instrument if available)
+        # Uses normalized instrument names to handle EUR/USD vs EURUSD mismatch
         # ------------------------------------------------------
         ppo_direction: Optional[int] = None
         ppo_conf = 0.0
+        inst_norm = self._normalize_instrument(instrument)
 
         # Choose the most specific PPO decision object for this instrument
         per_instrument_decision: Optional[Dict[str, Any]] = None
+        
+        def _find_instrument_decision(instruments_map: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+            """Helper to find instrument decision with normalized name lookup."""
+            if not isinstance(instruments_map, dict):
+                return None
+            # Direct match
+            if instrument in instruments_map:
+                return instruments_map[instrument]
+            # Normalized match (EUR/USD -> EURUSD)
+            for key, val in instruments_map.items():
+                if self._normalize_instrument(key) == inst_norm:
+                    return val
+            return None
+        
         if isinstance(ppo_final_decision, dict):
             maybe_instruments = ppo_final_decision.get("instruments")
-            if isinstance(maybe_instruments, dict) and instrument in maybe_instruments:
-                per_instrument_decision = maybe_instruments[instrument]
-            else:
+            if isinstance(maybe_instruments, dict):
+                per_instrument_decision = _find_instrument_decision(maybe_instruments)
+            if per_instrument_decision is None:
                 per_instrument_decision = ppo_final_decision
         elif isinstance(ppo_multi_decision, dict):
             maybe_instruments = ppo_multi_decision.get("instruments")
-            if isinstance(maybe_instruments, dict) and instrument in maybe_instruments:
-                per_instrument_decision = maybe_instruments[instrument]
+            if isinstance(maybe_instruments, dict):
+                per_instrument_decision = _find_instrument_decision(maybe_instruments)
 
         if isinstance(per_instrument_decision, dict):
             raw_dir = (
@@ -2039,6 +2068,12 @@ class PositionManager(PositionManagerBase):
 
         # Build position context for exit engine.
         # peak_pnl uses tracked peak from _profit_tracker for proper trailing profit logic
+        # 
+        # signal_valid: Skip signal-based exits during startup grace period.
+        # This prevents closing positions when signals haven't stabilized yet.
+        # Uses _is_signal_valid_for_exits() from base class.
+        signal_valid = self._is_signal_valid_for_exits()
+        
         pos_ctx = PositionContext(
             symbol=instrument,
             side=position_side,
@@ -2054,7 +2089,7 @@ class PositionManager(PositionManagerBase):
             regime=str(regime),
             signal_direction=context.market_direction,
             signal_strength=abs(context.market_intensity),
-            signal_valid=True,  # Training env always has valid signals
+            signal_valid=signal_valid,  # Skip signal exits on startup
             consensus_confidence=consensus_confidence,
             account_drawdown_pct=account_drawdown_pct,
             daily_loss_eur=daily_loss_eur,

@@ -443,6 +443,9 @@ class PositionManagerBase(
             self._trade_cooldown_seconds = float(
                 self.config.get("trade_cooldown_seconds", 60.0)
             )
+            # Startup grace period: skip signal-based exits until signals stabilize
+            self._process_call_count: int = 0
+            self._startup_grace_calls: int = 3  # Same as SmartPositionManager
 
         self._decision_history = deque(maxlen=100)
         self._portfolio_health_history = deque(maxlen=50)
@@ -1136,6 +1139,17 @@ class PositionManagerBase(
         except Exception as e:
             self.logger.error(f"Failed to enqueue orders: {e}")
 
+    def _is_signal_valid_for_exits(self) -> bool:
+        """
+        Check if signals have been calculated enough times to trust signal-based exits.
+        
+        This prevents closing positions on startup when signals haven't stabilized yet.
+        Same logic as SmartPositionManager._startup_grace_calls.
+        """
+        count = getattr(self, "_process_call_count", 0)
+        grace = getattr(self, "_startup_grace_calls", 3)
+        return count > grace
+
     # ---------- process() — calls abstract decision pipeline provided by Part 2
     async def process(self, **inputs: Any) -> Dict[str, Any]:
         """
@@ -1150,6 +1164,10 @@ class PositionManagerBase(
         - Contract-shaped payload for the caller
         """
         t0 = time.time()
+        
+        # Track calls for startup grace period (signal-based exits skip first N calls)
+        if hasattr(self, "_process_call_count"):
+            self._process_call_count += 1
 
         # Robust metadata access: metadata is optional
         metadata = getattr(self, "metadata", None)

@@ -207,6 +207,8 @@ def extract_instrument_data(data: Dict[str, Any], instrument: str) -> Dict[str, 
     - Upper/lower case variations
     - Common separator variations (EUR_USD, EUR/USD, EURUSD)
     
+    Also handles SmartInfoBus wrapper format: {'value': {...}, 'timestamp': ..., 'version': ...}
+    
     Args:
         data: Dict containing instrument-keyed data
         instrument: Instrument symbol to look up
@@ -216,6 +218,10 @@ def extract_instrument_data(data: Dict[str, Any], instrument: str) -> Dict[str, 
     """
     if not isinstance(data, dict):
         return {}
+    
+    # Handle SmartInfoBus wrapper format: {'value': {...}, 'timestamp': ..., 'version': ...}
+    if 'value' in data and isinstance(data['value'], dict) and 'timestamp' in data:
+        data = data['value']
     
     inst_norm = normalize_instrument(instrument)
     
