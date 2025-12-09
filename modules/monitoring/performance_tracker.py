@@ -97,7 +97,7 @@ class PerformanceTracker:
         'throughput_per_min': {'excellent': 100, 'good': 50, 'acceptable': 20, 'poor': 10},
         'trend_window': 100,
         'anomaly_threshold': 3.0,
-        'min_ms_for_anomaly': 10.0,
+        'min_ms_for_anomaly': 100.0,   # Only check ops >= 100ms for anomalies (was 10ms - too noisy)
         'publish_interval_s': 15,      # bus publishing interval
         'alert_cooldown_s': 15,        # suppress repeated alerts
         'bus_namespace': 'perf',       # root namespace on SmartInfoBus
@@ -533,7 +533,11 @@ class PerformanceTracker:
             std = var ** 0.5
         if std == 0.0:
             return False
-        z = abs((duration_ms - mean) / std)
+        # Only flag SLOW anomalies (above baseline), not fast ones
+        # Fast is good, slow is bad - only warn about slow
+        if duration_ms <= mean:
+            return False  # Faster than average = good, don't flag
+        z = (duration_ms - mean) / std
         return bool(z > self.anomaly_threshold)
 
     def _update_aggregated_stats(self, metric: PerformanceMetric):
