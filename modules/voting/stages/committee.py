@@ -260,6 +260,20 @@ class CommitteeCoordinator(VotingModuleBase):
                 module=name,
                 thesis="Baseline per-instrument decisions",
             )
+            # FIX: Publish warmup_status on init to prevent BUS MISS
+            self.smart_bus.set(
+                "warmup_status",
+                {
+                    "complete": False,
+                    "tick_count": 0,
+                    "warmup_ticks": self.warmup_ticks,
+                    "directional_votes": 0,
+                    "min_directional_votes": self.min_directional_votes,
+                    "progress_pct": 0,
+                },
+                module=name,
+                thesis="Warmup status initialized (not complete)",
+            )
         except Exception:
             # Baseline is best-effort only
             pass

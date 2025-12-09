@@ -1244,11 +1244,11 @@ class Executor(BaseModule):
         # Load exit config from SmartPositionManager (already wired to risk_policy.yaml)
         try:
             spm_cfg = self.smart_position_manager.config
-            hard_stop_eur = float(spm_cfg.hard_stop_loss_eur)
-            trailing_activation = float(spm_cfg.profit_take_activation_eur)
-            trailing_pct = float(spm_cfg.profit_take_trail_pct)
-            time_decay_hours = float(spm_cfg.time_decay_hours)
-            time_decay_stop = float(spm_cfg.time_decay_stop_eur)
+            hard_stop_eur = float(spm_cfg.hard_stop_loss_eur)  # type: ignore[attr-defined]
+            trailing_activation = float(spm_cfg.profit_take_activation_eur)  # type: ignore[attr-defined]
+            trailing_pct = float(spm_cfg.profit_take_trail_pct)  # type: ignore[attr-defined]
+            time_decay_hours = float(spm_cfg.time_decay_hours)  # type: ignore[attr-defined]
+            time_decay_stop = float(spm_cfg.time_decay_stop_eur)  # type: ignore[attr-defined]
         except Exception:
             # Safe fallback
             hard_stop_eur = 150.0
@@ -1833,7 +1833,7 @@ class Executor(BaseModule):
             # Force close all positions immediately
             try:
                 import MetaTrader5 as mt5
-                positions = mt5.positions_get()
+                positions = mt5.positions_get()  # type: ignore[attr-defined]
                 if positions:
                     for pos in positions:
                         self._emergency_close_position(pos)
@@ -2628,7 +2628,7 @@ class Executor(BaseModule):
                 else mt5.ORDER_TYPE_BUY
             )
             
-            tick = mt5.symbol_info_tick(symbol)
+            tick = mt5.symbol_info_tick(symbol)  # type: ignore[attr-defined]
             if not tick:
                 self.logger.error(f"[EMERGENCY] No tick for {symbol}")
                 return False
@@ -2647,7 +2647,7 @@ class Executor(BaseModule):
                 "type_filling": mt5.ORDER_FILLING_IOC,
             }
             
-            result = mt5.order_send(request)
+            result = mt5.order_send(request)  # type: ignore[attr-defined]
             
             if result and result.retcode == mt5.TRADE_RETCODE_DONE:
                 self.logger.warning(f"[EMERGENCY] ✅ CLOSED ticket {ticket}")
@@ -2936,6 +2936,18 @@ class Executor(BaseModule):
             "step": int(self.step_idx),
         }
         self.bus.set("account_state", account_state, thesis="Account state (executor)")
+
+        # ═══════════════════════════════════════════════════════════════════
+        # FIX: Publish keys that consumers expect even when idle
+        # ═══════════════════════════════════════════════════════════════════
+        self.bus.set("current_pnl", float(step_pnl), thesis="Current P&L (executor)")
+        self.bus.set("balance", float(self.balance), thesis="Account balance (executor)")
+        self.bus.set("pending_orders", accepted, thesis="Pending orders (executor)")
+        # Note: order_queue is owned by PositionManager, but we set a fallback empty list
+        # to prevent BUS MISS when PositionManager hasn't run yet
+        existing_queue = self.bus.get("order_queue", "Executor", default=None)
+        if existing_queue is None:
+            self.bus.set("order_queue", [], thesis="Order queue fallback (executor)")
 
         trading_result = {"pnl": float(step_pnl), "step": int(self.step_idx)}
         self.bus.set("trading_result", trading_result, thesis="Per-step trading result (executor)")

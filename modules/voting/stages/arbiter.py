@@ -79,6 +79,12 @@ class FinalArbiter(VotingModuleBase):
         self._config_min_confidence = self.config.get("min_confidence")
         self._config_consensus_threshold = self.config.get("consensus_threshold")
 
+        # LIVE margin requirement: signal must exceed threshold by this amount
+        # Prevents marginal signals that barely pass from opening trades
+        # Set to 0.02 (2%) - just enough to filter noise without blocking good signals
+        self.live_confidence_margin = float(self.config.get("live_confidence_margin", 0.02))
+        self.live_consensus_margin = float(self.config.get("live_consensus_margin", 0.02))
+
         # Global safety limits
         self.max_fragility = float(self.config.get("max_fragility", 0.9))      # Warn-only
         self.max_collusion = float(self.config.get("max_collusion", 0.995))    # True global block
@@ -1039,12 +1045,17 @@ class FinalArbiter(VotingModuleBase):
                 f"(regime={market_regime}, fragility={threshold_context['fragility']:.4f})"
             )
 
-            # LIVE mode: strict
+            # LIVE mode: strict with margin requirement
+            # Signal must exceed threshold by margin to prevent marginal trades
             if is_live_mode():
-                if confidence < min_confidence:
+                effective_conf_threshold = min_confidence + self.live_confidence_margin
+                effective_cons_threshold = min_consensus + self.live_consensus_margin
+                
+                if confidence < effective_conf_threshold:
+                    margin_info = f" (need +{self.live_confidence_margin:.0%} margin)" if confidence >= min_confidence else ""
                     self.logger.warning(
                         f"[ARBITER] 🚫 Gate BLOCKED {instrument} {action} [LIVE]: "
-                        f"confidence {confidence:.2f} < {min_confidence:.2f} (adaptive)"
+                        f"confidence {confidence:.2f} < {effective_conf_threshold:.2f}{margin_info}"
                     )
                     if _threshold_manager:
                         _threshold_manager.record_signal(
@@ -1052,10 +1063,11 @@ class FinalArbiter(VotingModuleBase):
                         )
                     return (False, action, confidence)
 
-                if consensus_score < min_consensus:
+                if consensus_score < effective_cons_threshold:
+                    margin_info = f" (need +{self.live_consensus_margin:.0%} margin)" if consensus_score >= min_consensus else ""
                     self.logger.warning(
                         f"[ARBITER] 🚫 Gate BLOCKED {instrument} {action} [LIVE]: "
-                        f"consensus {consensus_score:.2f} < {min_consensus:.2f} (adaptive)"
+                        f"consensus {consensus_score:.2f} < {effective_cons_threshold:.2f}{margin_info}"
                     )
                     if _threshold_manager:
                         _threshold_manager.record_signal(
@@ -1096,10 +1108,16 @@ class FinalArbiter(VotingModuleBase):
                     instrument, confidence, consensus_score, passed=True
                 )
 
+            # Log with effective thresholds for clarity
+            if is_live_mode():
+                threshold_info = f"thresh={min_confidence:.2f}+{self.live_confidence_margin:.0%}"
+            else:
+                threshold_info = f"thresh={min_confidence:.2f}"
+            
             self.logger.info(
                 f"[ARBITER] ✅ Gate PASSED {instrument} {action} "
                 f"[MODE={get_voting_mode()}]: "
-                f"conf={confidence:.2f}, consensus={consensus_score:.2f}, "
+                f"conf={confidence:.2f} ({threshold_info}), consensus={consensus_score:.2f}, "
                 f"regime={market_regime}"
             )
             return (True, action, confidence)

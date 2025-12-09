@@ -298,6 +298,17 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
                     bus.set('session_type', session_ctx.get('session_type', 'unknown'),
                             module='SessionManager', thesis='Session type label (init)')
                 except Exception:
+                    # If _build_session_context fails, still publish safe defaults
+                    bus.set('session_canonical', 'unknown', module='SessionManager', thesis='Canonical session label (init fallback)')
+                    bus.set('trading_session', 'unknown', module='SessionManager', thesis='Trading session label (init fallback)')
+                    bus.set('session_type', 'unknown', module='SessionManager', thesis='Session type label (init fallback)')
+                
+                # Also publish per-instrument session for HorizonAligner
+                try:
+                    bus.set('session_canonical_by_instrument',
+                            {"EURUSD": "unknown", "XAUUSD": "unknown", "EUR_USD": "unknown", "XAU_USD": "unknown"},
+                            module='SessionManager', thesis='Per-instrument session labels (init)')
+                except Exception:
                     pass
 
                 try:

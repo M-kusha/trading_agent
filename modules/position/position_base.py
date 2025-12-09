@@ -360,6 +360,19 @@ class PositionManagerBase(
     # ---------- systems
     def _initialize_advanced_systems(self) -> None:
         self.smart_bus = InfoBusManager.get_instance()
+        
+        # FIX: Publish default order_queue immediately to prevent BUS MISS
+        try:
+            existing = self.smart_bus.get("order_queue", "PositionManager", default=None)
+            if existing is None:
+                self.smart_bus.set(
+                    "order_queue",
+                    [],
+                    module="PositionManager",
+                    thesis="Order queue initialized (empty)"
+                )
+        except Exception:
+            pass
 
         global _PM_SHARED_LOGGER
         if _PM_SHARED_LOGGER is None:

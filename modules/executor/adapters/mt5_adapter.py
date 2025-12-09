@@ -42,6 +42,66 @@ def _load_sl_tp_config() -> Dict[str, Any]:
     return {}
 
 
+def _load_risk_config() -> Dict[str, Any]:
+    """Load risk configuration from risk_policy.yaml."""
+    try:
+        config_path = Path("config/risk_policy.yaml")
+        if config_path.exists():
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = yaml.safe_load(f) or {}
+                return config
+    except Exception as e:
+        print(f"[MT5Adapter] Warning: Failed to load risk config: {e}")
+    return {}
+
+
+def _calculate_adaptive_sl_tp_prices(
+    symbol: str,
+    side: int,
+    entry_price: float,
+    atr_multiplier_sl: float = 2.5,
+    atr_multiplier_tp: float = 4.0,
+) -> Tuple[Optional[float], Optional[float]]:
+    """
+    Calculate adaptive SL/TP prices based on ATR.
+    
+    Args:
+        symbol: Trading symbol
+        side: +1 for BUY, -1 for SELL
+        entry_price: Entry price
+        atr_multiplier_sl: ATR multiplier for stop loss
+        atr_multiplier_tp: ATR multiplier for take profit
+        
+    Returns:
+        Tuple of (sl_price, tp_price), either can be None if calculation fails
+    """
+    atr = _get_current_atr(symbol)
+    if not atr or atr <= 0:
+        return None, None
+    
+    sl_distance = atr * atr_multiplier_sl
+    tp_distance = atr * atr_multiplier_tp
+    
+    # Sanity bounds: min 0.1% of price, max 3% of price for SL
+    min_sl = entry_price * 0.001
+    max_sl = entry_price * 0.03
+    sl_distance = max(min_sl, min(max_sl, sl_distance))
+    
+    # TP bounds: min 0.2% of price, max 5% of price
+    min_tp = entry_price * 0.002
+    max_tp = entry_price * 0.05
+    tp_distance = max(min_tp, min(max_tp, tp_distance))
+    
+    if side > 0:  # BUY
+        sl_price = entry_price - sl_distance
+        tp_price = entry_price + tp_distance
+    else:  # SELL
+        sl_price = entry_price + sl_distance
+        tp_price = entry_price - tp_distance
+    
+    return sl_price, tp_price
+
+
 def _get_current_atr(symbol: str) -> Optional[float]:
     """
     Get current ATR from InfoBus or calculate from recent bars.

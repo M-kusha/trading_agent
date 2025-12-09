@@ -150,13 +150,15 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
 
         # Seed optional dependencies with safe defaults to satisfy stage readiness
         try:
-            # Only seed if no provider has declared ownership
+            # Always seed these keys on init to prevent BUS MISS errors
             bus = InfoBusManager.get_instance()
-            providers = getattr(bus, "get_providers", lambda k: [])("shadow_predictions") or []
-            if not providers:
+            # shadow_predictions - used internally and by ThesisEvolutionEngine
+            existing = bus.get("shadow_predictions", "TradingModeManager", default=None)
+            if existing is None:
                 bus.set("shadow_predictions", {}, module="TradingModeManager", thesis="Baseline shadow predictions (empty)")
-            providers = getattr(bus, "get_providers", lambda k: [])("economic_calendar") or []
-            if not providers:
+            # economic_calendar - used by ThesisEvolutionEngine
+            existing = bus.get("economic_calendar", "TradingModeManager", default=None)
+            if existing is None:
                 bus.set("economic_calendar", {}, module="TradingModeManager", thesis="Baseline economic calendar (empty)")
         except Exception:
             pass

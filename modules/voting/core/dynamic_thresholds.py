@@ -181,8 +181,8 @@ class ThresholdConfig:
     # Regime adjustments
     regime_adjustment_enabled: bool = True
     trending_discount: float = 0.05
-    ranging_premium: float = 0.08
-    volatile_premium: float = 0.12
+    ranging_premium: float = 0.06
+    volatile_premium: float = 0.06  # Reduced from 0.12 - was blocking too many signals
 
     # Performance feedback
     performance_feedback_enabled: bool = True
@@ -243,13 +243,13 @@ class DynamicThresholdManager:
                 "max_consensus": 0.80,
             },
             "EURUSD": {
-                "base_confidence": 0.54,
-                "base_consensus": 0.52,
+                "base_confidence": 0.50,   # Lowered from 0.54 - EURUSD has lower signal strength
+                "base_consensus": 0.48,    # Lowered from 0.52 - experts often split on EUR
                 "typical_volatility": 0.008,
-                "min_confidence": 0.42,
-                "max_confidence": 0.75,
-                "min_consensus": 0.42,
-                "max_consensus": 0.80,
+                "min_confidence": 0.40,
+                "max_confidence": 0.72,
+                "min_consensus": 0.40,
+                "max_consensus": 0.75,
             },
         }
 

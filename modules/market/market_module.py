@@ -171,8 +171,43 @@ class UnifiedMarketModule(
 
         # Initialize orchestration
         self._init_orchestration()
+        
+        # FIX: Publish default values for keys that consumers expect
+        self._publish_default_keys()
 
         self.trace("UnifiedMarketModule initialized successfully", level=TraceLevel.INFO)
+    
+    def _publish_default_keys(self) -> None:
+        """Publish default values for keys consumers expect, preventing BUS MISS on startup."""
+        try:
+            from modules.utils.info_bus import InfoBusManager
+            bus = InfoBusManager.get_instance()
+            
+            # market_regime_by_instrument - used by HorizonAligner and DynamicThresholds
+            bus.set(
+                "market_regime_by_instrument",
+                {"EURUSD": "unknown", "XAUUSD": "unknown", "EUR_USD": "unknown", "XAU_USD": "unknown"},
+                module="UnifiedMarketModule",
+                thesis="Default per-instrument regime (startup)"
+            )
+            
+            # volatility_by_instrument - used by DynamicThresholds
+            bus.set(
+                "volatility_by_instrument",
+                {"EURUSD": 0.008, "XAUUSD": 0.025, "EUR_USD": 0.008, "XAU_USD": 0.025},
+                module="UnifiedMarketModule",
+                thesis="Default per-instrument volatility (startup)"
+            )
+            
+            # market_regime - global regime
+            bus.set(
+                "market_regime",
+                "unknown",
+                module="UnifiedMarketModule",
+                thesis="Default market regime (startup)"
+            )
+        except Exception:
+            pass
 
     # ─────────────────────────────────────────────────────────
     # Initialization blocks
