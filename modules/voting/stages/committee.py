@@ -1255,7 +1255,12 @@ class CommitteeCoordinator(VotingModuleBase):
         """
         per_inst_votes = self._convert_to_per_instrument_votes(expert_votes)
 
-        # Debug trace per-instrument votes
+        # Build expert confidence map for logging
+        expert_conf_by_inst: Dict[str, List[str]] = {
+            inst: [] for inst in DEFAULT_INSTRUMENTS
+        }
+        
+        # Debug trace per-instrument votes and collect for summary
         for piv in per_inst_votes:
             for inst, prop in piv.proposals.items():
                 self.logger.debug(
@@ -1263,6 +1268,12 @@ class CommitteeCoordinator(VotingModuleBase):
                     f"action={prop.action}, conf={prop.confidence:.2f}, "
                     f"mag={prop.magnitude:.2f}"
                 )
+                # Collect for summary (short name + conf)
+                short_name = piv.member[:4]  # Theme, Tren, Mome, Seas
+                action_char = prop.action[0].upper() if prop.action else "?"
+                inst_norm = normalize_instrument(inst)
+                if inst_norm in expert_conf_by_inst:
+                    expert_conf_by_inst[inst_norm].append(f"{short_name}={action_char}{prop.confidence:.2f}")
 
         aggregated = aggregate_all_instruments(
             votes=per_inst_votes,
@@ -1283,6 +1294,10 @@ class CommitteeCoordinator(VotingModuleBase):
                 "weighted_score": decision.weighted_score,
                 "instrument": inst,
             }
+            
+            # Get expert breakdown for this instrument
+            expert_summary = " | ".join(expert_conf_by_inst.get(inst, [])) or "no votes"
+            
             self.logger.info(
                 f"[COMMITTEE] {inst}: action={decision.action}, "
                 f"conf={decision.confidence:.2f}, "
@@ -1290,6 +1305,10 @@ class CommitteeCoordinator(VotingModuleBase):
                 f"votes={decision.long_votes}L/"
                 f"{decision.short_votes}S/"
                 f"{decision.flat_votes}F"
+            )
+            # Log expert breakdown separately for clarity
+            self.logger.info(
+                f"[COMMITTEE] {inst} experts: {expert_summary}"
             )
 
         return result

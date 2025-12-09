@@ -592,10 +592,16 @@ class FinalArbiter(VotingModuleBase):
             for debug_inst, debug_dec in per_inst_decisions.items():
                 raw_conf = self._safe_float(debug_dec.get("confidence"), 0.0)
                 raw_cons = self._safe_float(debug_dec.get("consensus_score"), 0.0)
+                raw_action = debug_dec.get("action", "unknown")
+                votes_str = (
+                    f"{debug_dec.get('long_votes', 0)}L/"
+                    f"{debug_dec.get('short_votes', 0)}S/"
+                    f"{debug_dec.get('flat_votes', 0)}F"
+                )
                 self.logger.info(
                     f"[ARBITER][RAW] {debug_inst}: "
-                    f"action={debug_dec.get('action')}, "
-                    f"conf={raw_conf:.4f}, consensus={raw_cons:.4f}"
+                    f"action={raw_action}, conf={raw_conf:.2f}, "
+                    f"consensus={raw_cons:.2f}, votes={votes_str}"
                 )
 
             collusion_score = float(data.get("collusion_score", 0.0))
@@ -984,6 +990,32 @@ class FinalArbiter(VotingModuleBase):
     # PER-INSTRUMENT GATE
     # ──────────────────────────────────────────────────────────────────────
 
+    def _get_expert_confidence_breakdown(self, instrument: str) -> str:
+        """Get a breakdown of expert confidences for an instrument."""
+        try:
+            name = self.__class__.__name__
+            inst_norm = normalize_instrument(instrument)
+            
+            expert_keys = [
+                ("ThemeExpert", "ThemeExpert_per_instrument_votes"),
+                ("TrendExpert", "TrendExpert_per_instrument_votes"),
+                ("MomentumExpert", "MomentumExpert_per_instrument_votes"),
+                ("SeasonalityRiskExpert", "SeasonalityRiskExpert_per_instrument_votes"),
+            ]
+            
+            parts = []
+            for expert_name, bus_key in expert_keys:
+                votes = self.smart_bus.get(bus_key, name) or {}
+                vote = votes.get(inst_norm) or votes.get(instrument) or {}
+                if vote:
+                    action = str(vote.get("action", "?"))[:1].upper()  # L/S/F/H
+                    conf = self._safe_float(vote.get("confidence"), 0.0)
+                    parts.append(f"{expert_name[:4]}={action}{conf:.2f}")
+            
+            return " | ".join(parts) if parts else "no expert data"
+        except Exception:
+            return "error"
+
     def _check_instrument_gate(
         self,
         instrument: str,
@@ -1052,10 +1084,15 @@ class FinalArbiter(VotingModuleBase):
                 effective_cons_threshold = min_consensus + self.live_consensus_margin
                 
                 if confidence < effective_conf_threshold:
-                    margin_info = f" (need +{self.live_confidence_margin:.0%} margin)" if confidence >= min_confidence else ""
+                    gap = effective_conf_threshold - confidence
+                    expert_breakdown = self._get_expert_confidence_breakdown(instrument)
                     self.logger.warning(
-                        f"[ARBITER] 🚫 Gate BLOCKED {instrument} {action} [LIVE]: "
-                        f"confidence {confidence:.2f} < {effective_conf_threshold:.2f}{margin_info}"
+                        f"[ARBITER] 🚫 BLOCKED {instrument} {action} [LIVE]: "
+                        f"conf={confidence:.2f} < {effective_conf_threshold:.2f} "
+                        f"(gap={gap:.2f}, base={min_confidence:.2f}+margin={self.live_confidence_margin:.2f})"
+                    )
+                    self.logger.warning(
+                        f"[ARBITER] 📊 Expert breakdown for {instrument}: {expert_breakdown}"
                     )
                     if _threshold_manager:
                         _threshold_manager.record_signal(
@@ -1064,10 +1101,11 @@ class FinalArbiter(VotingModuleBase):
                     return (False, action, confidence)
 
                 if consensus_score < effective_cons_threshold:
-                    margin_info = f" (need +{self.live_consensus_margin:.0%} margin)" if consensus_score >= min_consensus else ""
+                    gap = effective_cons_threshold - consensus_score
                     self.logger.warning(
-                        f"[ARBITER] 🚫 Gate BLOCKED {instrument} {action} [LIVE]: "
-                        f"consensus {consensus_score:.2f} < {effective_cons_threshold:.2f}{margin_info}"
+                        f"[ARBITER] 🚫 BLOCKED {instrument} {action} [LIVE]: "
+                        f"consensus={consensus_score:.2f} < {effective_cons_threshold:.2f} "
+                        f"(gap={gap:.2f}, base={min_consensus:.2f}+margin={self.live_consensus_margin:.2f})"
                     )
                     if _threshold_manager:
                         _threshold_manager.record_signal(
