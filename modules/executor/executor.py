@@ -748,16 +748,35 @@ class Executor(BaseModule):
             pass
 
         # Track trades today for curriculum enforcement
+        # ONLY count NEW position entries (opens), NOT scales/closes
         trades_today = 0
         try:
             if self.trades:
                 today_start = dt.datetime.now().replace(
                     hour=0, minute=0, second=0, microsecond=0
                 )
+                
+                def _is_new_entry(t: dict) -> bool:
+                    """Check if trade is a NEW position entry (not scale/close)."""
+                    action = str(t.get("action", "")).lower()
+                    comment = str(t.get("comment", "")).lower()
+                    # New entries have action like "open_long", "open_short", "long", "short"
+                    # or comment="open"
+                    # Exclude: scale_up, scale_down, close, exit, reverse
+                    if any(x in action for x in ["scale", "close", "exit", "reverse"]):
+                        return False
+                    if any(x in action for x in ["open", "long", "short"]):
+                        return True
+                    if comment == "open":
+                        return True
+                    return False
+                
                 trades_today = sum(
                     1
                     for t in self.trades[-200:]
-                    if isinstance(t, dict) and t.get("ts", 0) >= today_start.timestamp()
+                    if isinstance(t, dict) 
+                    and t.get("ts", 0) >= today_start.timestamp()
+                    and _is_new_entry(t)
                 )
         except Exception:
             pass

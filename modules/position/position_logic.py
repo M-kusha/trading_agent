@@ -349,11 +349,9 @@ class PositionManager(PositionManagerBase):
                         "gate_passed", True
                     )
             
-            if inst_decision_for_logging is None:
-                # Fallback to global key
-                ppo_gate_passed = self.smart_bus.get(
-                    "ppo_gate_passed", "PositionManager", default=True
-                )
+            # REMOVED: Do NOT fall back to global ppo_gate_passed for non-primary instruments!
+            # The global ppo_gate_passed is for the PRIMARY instrument (XAUUSD) only.
+            # If we didn't find this instrument in ppo_multi_decision, default to True (allow).
 
         # If PPOAgent explicitly blocked the trade, respect that decision
         if ppo_gate_passed is False and not has_position:
@@ -648,16 +646,34 @@ class PositionManager(PositionManagerBase):
                     return val
             return None
         
-        if isinstance(ppo_final_decision, dict):
-            maybe_instruments = ppo_final_decision.get("instruments")
-            if isinstance(maybe_instruments, dict):
-                per_instrument_decision = _find_instrument_decision(maybe_instruments)
-            if per_instrument_decision is None:
-                per_instrument_decision = ppo_final_decision
-        elif isinstance(ppo_multi_decision, dict):
+        # PRIORITY ORDER: Check ppo_multi_decision FIRST for per-instrument data,
+        # then fall back to ppo_final_decision only if no instrument-specific decision found.
+        # ppo_multi_decision.instruments has per-instrument decisions (XAUUSD, EURUSD)
+        # ppo_final_decision is the PRIMARY instrument's decision only (typically XAUUSD)
+        
+        # 1. Try ppo_multi_decision.instruments (per-instrument decisions)
+        if isinstance(ppo_multi_decision, dict):
             maybe_instruments = ppo_multi_decision.get("instruments")
             if isinstance(maybe_instruments, dict):
                 per_instrument_decision = _find_instrument_decision(maybe_instruments)
+                if per_instrument_decision:
+                    self.logger.debug(
+                        f"[PPO_LOOKUP] {instrument}: Found in ppo_multi_decision.instruments"
+                    )
+        
+        # 2. Fallback: if this IS the primary instrument, use ppo_final_decision
+        if per_instrument_decision is None and isinstance(ppo_final_decision, dict):
+            # ppo_final_decision.instrument tells us which instrument this decision is for
+            final_inst = ppo_final_decision.get("instrument", "")
+            if self._normalize_instrument(final_inst) == inst_norm:
+                per_instrument_decision = ppo_final_decision
+                self.logger.debug(
+                    f"[PPO_LOOKUP] {instrument}: Using ppo_final_decision (primary match)"
+                )
+            else:
+                self.logger.debug(
+                    f"[PPO_LOOKUP] {instrument}: ppo_final_decision is for {final_inst}, skipping"
+                )
 
         if isinstance(per_instrument_decision, dict):
             raw_dir = (
@@ -667,16 +683,12 @@ class PositionManager(PositionManagerBase):
             )
             ppo_direction_raw = str(raw_dir).lower()
             ppo_conf = float(per_instrument_decision.get("confidence", 0.0) or 0.0)
-        elif isinstance(ppo_final_decision, dict):
-            raw_dir = (
-                ppo_final_decision.get("direction")
-                or ppo_final_decision.get("action")
-                or ""
-            )
-            ppo_direction_raw = str(raw_dir).lower()
-            ppo_conf = float(ppo_final_decision.get("confidence", 0.0) or 0.0)
         else:
+            # No per-instrument decision found - PPO has no opinion for this instrument
             ppo_direction_raw = ""
+            self.logger.debug(
+                f"[PPO_LOOKUP] {instrument}: No PPO decision found (multi or final)"
+            )
 
         if ppo_direction_raw in ("long", "buy"):
             ppo_direction = 1
@@ -710,6 +722,12 @@ class PositionManager(PositionManagerBase):
         instrument_signals = self.smart_bus.get(
             "instrument_signals", "PositionManager"
         ) or {}
+        
+        # DEBUG: Log what we receive
+        self.logger.info(
+            f"[COMM_DEBUG] {instrument}: instrument_signals keys={list(instrument_signals.keys()) if isinstance(instrument_signals, dict) else 'not_dict'}"
+        )
+        
         inst_signal: Any = None
         if isinstance(instrument_signals, dict):
             inst_signal = instrument_signals.get(instrument)
@@ -719,6 +737,7 @@ class PositionManager(PositionManagerBase):
                     try:
                         if self._normalize_instrument(str(key)) == inst_norm:
                             inst_signal = val
+                            self.logger.info(f"[COMM_DEBUG] {instrument}: Found normalized match key={key}")
                             break
                     except Exception:
                         continue

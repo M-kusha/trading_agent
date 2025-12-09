@@ -203,6 +203,18 @@ class PositionManagerBase(
     generic process() flow that calls abstract decision hooks provided in Part 2.
     """
 
+    # Fields that should NOT be passed to TradingConfig.__init__()
+    # These are internal fields with init=False or env-specific fields
+    _CONFIG_NON_INIT_FIELDS = frozenset({
+        "_risk_policy_loaded",
+        "max_steps_per_episode",
+    })
+
+    @classmethod
+    def _sanitize_config_dict(cls, cfg: Dict[str, Any]) -> Dict[str, Any]:
+        """Remove fields that are not valid __init__ parameters for TradingConfig."""
+        return {k: v for k, v in cfg.items() if k not in cls._CONFIG_NON_INIT_FIELDS}
+
     # ---------- lifecycle
     def __init__(
         self,
@@ -235,7 +247,7 @@ class PositionManagerBase(
         if isinstance(config, TradingConfig):
             self.C: TradingConfig = config
         elif isinstance(config, dict):
-            self.C = TradingConfig(**config)
+            self.C = TradingConfig(**self._sanitize_config_dict(config))
         else:
             self.C = TradingConfig()
 
@@ -290,7 +302,7 @@ class PositionManagerBase(
         if isinstance(cfg_in, TradingConfig):
             self.C = cfg_in
         elif isinstance(cfg_in, dict):
-            self.C = TradingConfig(**cfg_in)
+            self.C = TradingConfig(**self._sanitize_config_dict(cfg_in))
         else:
             self.C = getattr(self, "C", TradingConfig())
 
@@ -2367,16 +2379,20 @@ class PositionManagerBase(
 
     def set_state(self, state: Dict[str, Any]) -> None:
         if "config" in state and isinstance(state["config"], dict):
-            cfg_in = dict(state["config"])
-            # This field may be env-specific and not part of TradingConfig
-            cfg_in.pop("max_steps_per_episode", None)
+            cfg_in = self._sanitize_config_dict(state["config"])
             try:
                 self.C = TradingConfig(**cfg_in)
             except TypeError:
-                # Sanitize unknown keys against a default instance
-                default_cfg = TradingConfig()
-                allowed = set(vars(default_cfg).keys())
-                sanitized = {k: v for k, v in cfg_in.items() if k in allowed}
+                # Sanitize unknown keys - get only fields that are valid init params
+                # Use dataclass fields() to check which have init=True
+                from dataclasses import fields as dc_fields
+                try:
+                    init_fields = {f.name for f in dc_fields(TradingConfig) if f.init}
+                except Exception:
+                    # Fallback: use vars but exclude private/internal fields
+                    default_cfg = TradingConfig()
+                    init_fields = {k for k in vars(default_cfg).keys() if not k.startswith('_')}
+                sanitized = {k: v for k, v in cfg_in.items() if k in init_fields}
                 self.C = TradingConfig(**sanitized)
             self.config.update(self.C.__dict__)
             self.default_max_pct = self.Cval("max_position_pct", 0.10)

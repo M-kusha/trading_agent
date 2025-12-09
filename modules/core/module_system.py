@@ -1089,6 +1089,10 @@ class ModuleOrchestrator:
             )
         )
 
+        # If memory-triggered, try to free memory immediately
+        if "memory" in reason.lower():
+            self._try_free_memory()
+
         disabled_count = 0
         for module_name, metadata in self.metadata.items():
             if not metadata.critical:
@@ -1137,15 +1141,52 @@ class ModuleOrchestrator:
             return True
         return False
 
+    def _try_free_memory(self) -> None:
+        """Attempt to free memory when in emergency mode due to high memory usage."""
+        import gc
+        try:
+            # Force garbage collection
+            gc.collect()
+            gc.collect()  # Second pass for cyclic references
+            
+            # Clear any caches we control
+            if hasattr(self, 'execution_history') and len(self.execution_history) > 50:
+                # Keep only last 50 entries
+                while len(self.execution_history) > 50:
+                    self.execution_history.popleft()
+            
+            # Clear SmartBus stale data if possible
+            if self.smart_bus and hasattr(self.smart_bus, 'clear_stale_data'):
+                try:
+                    self.smart_bus.clear_stale_data(max_age_s=300)
+                except Exception:
+                    pass
+            
+            self.logger.info("[MEMORY] Forced garbage collection to free memory")
+        except Exception as e:
+            self.logger.warning(f"[MEMORY] Failed to free memory: {e}")
+
     def exit_emergency_mode(self) -> bool:
         if not self.emergency_mode:
             return True
 
         time_in_emergency = time.time() - self.emergency_activation_time
-        if time_in_emergency < self.config.emergency_cooldown_s:
-            remaining = self.config.emergency_cooldown_s - time_in_emergency
-            self.logger.info(f"[WAIT] Emergency cooldown: {remaining:.0f}s remaining")
+        
+        # Use shorter cooldown for memory-triggered emergencies (30s instead of 5min)
+        # Memory can recover quickly after GC, no need to wait 5 minutes
+        is_memory_emergency = "memory" in self.emergency_mode_reason.lower()
+        effective_cooldown = 30.0 if is_memory_emergency else self.config.emergency_cooldown_s
+        
+        if time_in_emergency < effective_cooldown:
+            remaining = effective_cooldown - time_in_emergency
+            # Only log every 10 seconds to avoid spam
+            if int(remaining) % 10 == 0 or remaining < 5:
+                self.logger.info(f"[WAIT] Emergency cooldown: {remaining:.0f}s remaining")
             return False
+
+        # If memory emergency, try to free memory before checking
+        if is_memory_emergency:
+            self._try_free_memory()
 
         checks = {
             'circuit_breakers': self._validate_circuit_breakers(),
