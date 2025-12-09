@@ -17,13 +17,19 @@ Designed to be safe: bounded adjustments and conservative defaults.
 
 from __future__ import annotations
 
+import json
+import logging
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from enum import Enum
 
 import numpy as np
+
+# State persistence path
+STATE_FILE = Path("state/modules/dynamic_thresholds_state.json")
 
 # SmartInfoBus – optional; degrade gracefully if unavailable
 try:
@@ -248,6 +254,11 @@ class DynamicThresholdManager:
         }
 
         self._last_adaptation = 0.0
+        self._last_save = 0.0
+        self._save_interval = 60.0  # Save every 60 seconds
+        
+        # Load persisted state on init
+        self._load_state()
 
     # ─────────────────────────────────────────────────────────────
     # Singleton helpers
@@ -265,7 +276,144 @@ class DynamicThresholdManager:
     @classmethod
     def reset_instance(cls) -> None:
         """Reset singleton (for tests)."""
+        if cls._instance is not None:
+            cls._instance.save_state()  # Save before reset
         cls._instance = None
+
+    # ─────────────────────────────────────────────────────────────
+    # State Persistence
+    # ─────────────────────────────────────────────────────────────
+
+    def save_state(self) -> bool:
+        """
+        Save current state to disk for persistence across restarts.
+        
+        Saves:
+        - All instrument profiles (thresholds, trade stats, signal history)
+        - Last adaptation timestamp
+        """
+        try:
+            STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            
+            state = {
+                "_saved_at": time.time(),
+                "_version": "1.0",
+                "profiles": {}
+            }
+            
+            for inst, profile in self._profiles.items():
+                state["profiles"][inst] = {
+                    # Current thresholds
+                    "confidence_threshold": profile.confidence_threshold,
+                    "consensus_threshold": profile.consensus_threshold,
+                    "intensity_threshold": profile.intensity_threshold,
+                    "volatility_ema": profile.volatility_ema,
+                    # Trade statistics
+                    "total_signals": profile.total_signals,
+                    "passed_signals": profile.passed_signals,
+                    "trades_taken": profile.trades_taken,
+                    "winning_trades": profile.winning_trades,
+                    "losing_trades": profile.losing_trades,
+                    "total_pnl": profile.total_pnl,
+                    # Signal history (last 100 for percentiles)
+                    "confidence_history": list(profile.confidence_history)[-100:],
+                    "consensus_history": list(profile.consensus_history)[-100:],
+                }
+            
+            with open(STATE_FILE, 'w') as f:
+                json.dump(state, f, indent=2)
+            
+            self._last_save = time.time()
+            logging.getLogger("voting.thresholds").debug(
+                f"[DynamicThresholds] State saved: {len(self._profiles)} profiles"
+            )
+            return True
+            
+        except Exception as e:
+            logging.getLogger("voting.thresholds").warning(
+                f"[DynamicThresholds] Failed to save state: {e}"
+            )
+            return False
+
+    def _load_state(self) -> bool:
+        """
+        Load persisted state from disk.
+        
+        Called automatically on initialization.
+        """
+        if not STATE_FILE.exists():
+            logging.getLogger("voting.thresholds").info(
+                "[DynamicThresholds] No saved state found, starting fresh"
+            )
+            return False
+        
+        try:
+            with open(STATE_FILE, 'r') as f:
+                state = json.load(f)
+            
+            saved_at = state.get("_saved_at", 0)
+            age_hours = (time.time() - saved_at) / 3600
+            
+            # Don't load state older than 24 hours
+            if age_hours > 24:
+                logging.getLogger("voting.thresholds").info(
+                    f"[DynamicThresholds] Saved state too old ({age_hours:.1f}h), starting fresh"
+                )
+                return False
+            
+            profiles_data = state.get("profiles", {})
+            restored_count = 0
+            
+            for inst, data in profiles_data.items():
+                profile = self._get_or_create_profile(inst)
+                
+                # Restore thresholds
+                profile.confidence_threshold = data.get(
+                    "confidence_threshold", profile.confidence_threshold
+                )
+                profile.consensus_threshold = data.get(
+                    "consensus_threshold", profile.consensus_threshold
+                )
+                profile.intensity_threshold = data.get(
+                    "intensity_threshold", profile.intensity_threshold
+                )
+                profile.volatility_ema = data.get(
+                    "volatility_ema", profile.volatility_ema
+                )
+                
+                # Restore trade statistics
+                profile.total_signals = data.get("total_signals", 0)
+                profile.passed_signals = data.get("passed_signals", 0)
+                profile.trades_taken = data.get("trades_taken", 0)
+                profile.winning_trades = data.get("winning_trades", 0)
+                profile.losing_trades = data.get("losing_trades", 0)
+                profile.total_pnl = data.get("total_pnl", 0.0)
+                
+                # Restore signal history
+                conf_hist = data.get("confidence_history", [])
+                cons_hist = data.get("consensus_history", [])
+                profile.confidence_history = deque(conf_hist, maxlen=200)
+                profile.consensus_history = deque(cons_hist, maxlen=200)
+                
+                restored_count += 1
+            
+            logging.getLogger("voting.thresholds").info(
+                f"[DynamicThresholds] 📥 State restored: {restored_count} profiles, "
+                f"age={age_hours:.1f}h"
+            )
+            return True
+            
+        except Exception as e:
+            logging.getLogger("voting.thresholds").warning(
+                f"[DynamicThresholds] Failed to load state: {e}"
+            )
+            return False
+
+    def _maybe_save(self) -> None:
+        """Periodically save state (called from get_thresholds)."""
+        now = time.time()
+        if now - self._last_save >= self._save_interval:
+            self.save_state()
 
     # ─────────────────────────────────────────────────────────────
     # Instrument / regime helpers
@@ -566,6 +714,9 @@ class DynamicThresholdManager:
 
         # Possibly run adaptation + publish state
         self._maybe_adapt(instrument, profile)
+        
+        # Periodically save state to disk
+        self._maybe_save()
 
         # Start from percentile-based thresholds if enough data
         perc_conf, perc_cons = self._calculate_percentile_adjustment(profile)
@@ -687,8 +838,22 @@ class DynamicThresholdManager:
 
     def get_state_summary(self) -> Dict[str, Any]:
         """Get a summary of the threshold manager state."""
+        state_file_exists = STATE_FILE.exists()
+        state_age = None
+        if state_file_exists:
+            try:
+                state_age = (time.time() - STATE_FILE.stat().st_mtime) / 60  # minutes
+            except Exception:
+                pass
+        
         return {
             "instruments": list(self._profiles.keys()),
+            "persistence": {
+                "state_file": str(STATE_FILE),
+                "file_exists": state_file_exists,
+                "state_age_minutes": round(state_age, 1) if state_age else None,
+                "last_save_ago": round(time.time() - self._last_save, 1) if self._last_save else None,
+            },
             "config": {
                 "target_pass_rate": self.config.target_pass_rate,
                 "volatility_scaling": self.config.volatility_scaling_enabled,
