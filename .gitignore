@@ -59,3 +59,7 @@ settings.local.json
 copilot-instructions.md
 .claude/
 .github/
+
+# MT5 credentials (keep out of version control)
+live/mt5_credentials.py
+live/mt5_credentials.*
