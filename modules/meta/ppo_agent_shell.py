@@ -79,6 +79,11 @@ class PPOShellConfig:
 
     # Monitoring
     health_check_interval: float = 30.0
+    
+    # Position focus mode settings
+    # When True, having a position in one instrument blocks NEW entries in OTHER instruments
+    # When False, each instrument is evaluated independently (multi-position allowed)
+    position_focus_blocks_other_instruments: bool = False
 
     # Debug
     debug: bool = False
@@ -370,12 +375,18 @@ class PPOAgentShell(
             self._last_observations = observations
             self._last_decisions = multi_decision.instruments
 
+            # Log autonomy phase (important for debugging)
+            autonomy_meta = multi_decision.global_meta.get("ppo_autonomy", {})
+            autonomy_phase = autonomy_meta.get("phase", "UNKNOWN")
+            autonomy_level = autonomy_meta.get("autonomy_level", 0.0)
+            
             # Log per-instrument decisions
             for inst, decision in multi_decision.instruments.items():
                 self.logger.info(
                     f"[PPO] {inst}: dir={decision.direction}, conf={decision.confidence:.2f}, "
                     f"gate={'PASS' if decision.gate_passed else 'BLOCK'}, "
-                    f"trust={decision.trust_score:.2f}, regime={decision.regime}"
+                    f"trust={decision.trust_score:.2f}, regime={decision.regime}, "
+                    f"phase={autonomy_phase}"
                 )
 
             # 4) Build result dict
@@ -877,12 +888,12 @@ class PPOAgentShell(
         Apply position focus mode constraints to the multi-instrument decision.
 
         PRINCIPLES:
-        - Never open NEW positions while focus mode is active.
         - Existing position's instrument:
             * Direction is collapsed to HOLD/FLAT but we add metadata to signal
               whether PPO wants to EXIT or HOLD.
         - Other instruments:
-            * All new entries are blocked (direction -> 'flat', gate_passed=False).
+            * If position_focus_blocks_other_instruments=True: block new entries
+            * If position_focus_blocks_other_instruments=False: allow independent decisions
 
         We intentionally do NOT invent a new 'exit' direction here to keep
         compatibility with PositionManager / SmartPositionManager, which expects
@@ -891,6 +902,9 @@ class PPOAgentShell(
         position_side = int(position_focus.get("primary_side", 0))
         primary_inst = position_focus.get("primary_instrument")
         position_pnl = float(position_focus.get("primary_pnl", 0.0))
+        
+        # Check if we should block other instruments (configurable)
+        block_other_instruments = self._cfg.position_focus_blocks_other_instruments
 
         for inst, decision in multi_decision.instruments.items():
             # Defensive: ensure meta exists
@@ -945,18 +959,25 @@ class PPOAgentShell(
                 decision.meta["position_pnl"] = position_pnl
 
             else:
-                # Instruments without existing position: HARD BLOCK new entries
-                if decision.direction in ("long", "short") and decision.gate_passed:
-                    old_reasoning = decision.reasoning
-                    decision.reasoning = (
-                        f"POSITION_FOCUS(BLOCKED): Focus on {primary_inst}, "
-                        f"no new entries | {old_reasoning}"
-                    )
-                    decision.direction = "flat"
-                    decision.gate_passed = False
-                    decision.position_size = 0.0
-                    decision.meta["blocked_by_position_focus"] = True
+                # Instruments without existing position
+                if block_other_instruments:
+                    # HARD BLOCK new entries for other instruments
+                    if decision.direction in ("long", "short") and decision.gate_passed:
+                        old_reasoning = decision.reasoning
+                        decision.reasoning = (
+                            f"POSITION_FOCUS(BLOCKED): Focus on {primary_inst}, "
+                            f"no new entries | {old_reasoning}"
+                        )
+                        decision.direction = "flat"
+                        decision.gate_passed = False
+                        decision.position_size = 0.0
+                        decision.meta["blocked_by_position_focus"] = True
+                        decision.meta["position_focus_mode"] = True
+                else:
+                    # Allow independent decisions for other instruments
+                    # Just add metadata noting we're in position focus mode
                     decision.meta["position_focus_mode"] = True
+                    decision.meta["blocked_by_position_focus"] = False
 
         # Update global metadata
         multi_decision.global_meta["position_focus"] = {
@@ -964,6 +985,7 @@ class PPOAgentShell(
             "instrument": primary_inst,
             "side": position_side,
             "pnl": position_pnl,
+            "blocks_other_instruments": block_other_instruments,
         }
 
         return multi_decision

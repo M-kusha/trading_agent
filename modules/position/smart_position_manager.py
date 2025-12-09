@@ -446,6 +446,8 @@ class SmartPositionManager:
         self._last_trade_time: Dict[str, float] = {}       # Per-symbol cooldown
         self._last_scale_time: Dict[str, float] = {}       # Per-symbol scale cooldown
         self._last_sync_time: float = 0
+        self._decide_call_count: int = 0                   # Track calls to decide() for startup grace period
+        self._startup_grace_calls: int = 3                 # Number of calls before signal is considered valid
 
     def _load_peaks_from_bus(self) -> Dict[str, float]:
         """Load persisted profit peaks from InfoBus (survives restarts)."""
@@ -732,6 +734,10 @@ class SmartPositionManager:
             SmartDecision with action, lots, and reasoning
         """
         cfg = self.config
+        
+        # Track calls for startup grace period
+        self._decide_call_count += 1
+        signal_valid = self._decide_call_count > self._startup_grace_calls
 
         # Sanitise inputs
         if signal_direction > 0:
@@ -782,6 +788,7 @@ class SmartPositionManager:
             position_id=str(position.ticket) if hasattr(position, "ticket") else "",
             signal_direction=signal_direction,
             signal_strength=signal_strength,
+            signal_valid=signal_valid,  # Skip signal-based exits on startup
             consensus_confidence=consensus_confidence,
         )
 
@@ -1211,6 +1218,7 @@ class SmartPositionManager:
             signal_strength=float(
                 max(0.0, min(1.0, signal.consensus_confidence))
             ),
+            signal_valid=self._decide_call_count > self._startup_grace_calls,  # Skip signal exits on startup
             consensus_confidence=float(
                 max(0.0, min(1.0, signal.consensus_score))
             ),

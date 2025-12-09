@@ -2054,6 +2054,7 @@ class PositionManager(PositionManagerBase):
             regime=str(regime),
             signal_direction=context.market_direction,
             signal_strength=abs(context.market_intensity),
+            signal_valid=True,  # Training env always has valid signals
             consensus_confidence=consensus_confidence,
             account_drawdown_pct=account_drawdown_pct,
             daily_loss_eur=daily_loss_eur,

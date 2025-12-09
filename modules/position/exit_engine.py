@@ -185,6 +185,7 @@ class PositionContext:
     # Signal / committee context
     signal_direction: int = 0      # +1 = bullish, -1 = bearish, 0 = neutral
     signal_strength: float = 0.0   # 0.0 to 1.0
+    signal_valid: bool = False     # True if signal has been calculated (not default/startup)
     consensus_confidence: float = 0.5  # 0.0 (no trust) to 1.0 (strong consensus)
 
     # Account / portfolio context (optional, for EMERGENCY exits)
@@ -887,6 +888,16 @@ class ExitStrategyEngine:
 
     def _check_signal_exit(self, ctx: PositionContext, cfg: ExitConfig) -> ExitDecision:
         """Check if agent signal warrants exit (direction flip or weak signal)."""
+
+        # Skip signal-based exit if signal hasn't been calculated yet (startup)
+        if not ctx.signal_valid:
+            return ExitDecision(
+                should_exit=False,
+                reason=ExitReason.HOLD,
+                confidence=0.0,
+                urgency=0.0,
+                details={"message": "Signal not yet valid (startup grace period)"},
+            )
 
         # Direction flip - agent wants opposite position
         if ctx.signal_against and ctx.signal_strength >= cfg.signal_direction_weight:

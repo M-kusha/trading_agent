@@ -946,7 +946,18 @@ class ArbiterLogic:
         )
         
         # 4) Hysteresis on direction
-        direction = self._apply_hysteresis(instrument, direction, trust_score)
+        # In EXPERT_LED mode, use committee_confidence for hysteresis threshold
+        # so that PPO's random trust_score doesn't override expert decisions
+        autonomy_phase = self.autonomy_tracker.state.phase
+        if autonomy_phase == "EXPERT_LED":
+            # Use committee confidence scaled to [-1, 1] range for hysteresis
+            hysteresis_score = (committee_confidence - 0.5) * 2.0  # 0.34 -> -0.32, 0.7 -> 0.4
+            # If committee has a direction, use stronger signal
+            if committee_action in ("long", "short", "buy", "sell"):
+                hysteresis_score = max(0.2, committee_confidence)  # Ensure we pass entry threshold
+        else:
+            hysteresis_score = trust_score
+        direction = self._apply_hysteresis(instrument, direction, hysteresis_score)
         
         # 5) Gating pipeline
         gating_result = GatingResult.apply_gates(memory_info, risk_info, trust_score)
