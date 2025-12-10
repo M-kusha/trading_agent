@@ -1018,6 +1018,7 @@ modules:
     - environment_config
     - step_idx
     - execution_mode
+    - position_decisions
   UnifiedMemory:
     category: memory
     file_path: modules\memory\unified_memory.py
