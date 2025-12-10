@@ -539,7 +539,7 @@ class ModernEnhancedTrainingCallback(BaseCallback):
             # Update display every 2 seconds for beautiful display, 10 seconds for basic
             update_interval = 2 if self.use_beautiful_display else 10
             if (now - self.last_print_time).total_seconds() >= update_interval:
-                
+                self._print_terminal_progress()
                 self.last_print_time = now
             
             # Track PPO decisions every step for accuracy metrics
@@ -685,6 +685,104 @@ class ModernEnhancedTrainingCallback(BaseCallback):
             f"[LAT] P50:{p50:.1f}ms P95:{p95:.1f}ms | [WAIT] ETA: {eta_str}",
             end="",
             flush=True,
+        )
+
+    def _print_terminal_progress(self):
+        """Terminal-friendly progress output for cloud training.
+        
+        Prints detailed stats visible in terminal/SSH sessions.
+        Called every 2-10 seconds depending on display mode.
+        """
+        elapsed = (datetime.now() - self.start_time).total_seconds()
+        
+        # Global step accounting for checkpoint resume
+        global_step = self.initial_num_timesteps + self.n_calls
+        steps_this_session = self.n_calls
+        progress = (global_step / max(self.total_timesteps, 1)) * 100.0
+        
+        # Calculate speed (steps/sec)
+        speed = steps_this_session / max(elapsed, 1.0)
+        
+        # ETA calculation
+        remaining_steps = self.total_timesteps - global_step
+        eta_seconds = remaining_steps / max(speed, 0.01)
+        if eta_seconds > 3600:
+            eta_str = f"{eta_seconds/3600:.1f}h"
+        elif eta_seconds > 60:
+            eta_str = f"{eta_seconds/60:.1f}m"
+        else:
+            eta_str = f"{eta_seconds:.0f}s"
+        
+        # Performance metrics
+        last_reward = self.episode_rewards[-1] if self.episode_rewards else 0.0
+        avg_reward = float(np.mean(list(self.episode_rewards)[-100:])) if self.episode_rewards else 0.0
+        
+        # Latency stats
+        p50_ms = float(np.percentile(self.step_durations_ms, 50)) if self.step_durations_ms else 0.0
+        p95_ms = float(np.percentile(self.step_durations_ms, 95)) if self.step_durations_ms else 0.0
+        
+        # Use beautiful display if available, otherwise basic
+        if self.use_beautiful_display:
+            self._print_beautiful_terminal(
+                global_step, progress, speed, eta_str,
+                last_reward, avg_reward, p50_ms, p95_ms, elapsed
+            )
+        else:
+            self._print_basic_terminal(
+                global_step, progress, speed, eta_str,
+                last_reward, avg_reward, elapsed
+            )
+    
+    def _print_beautiful_terminal(self, global_step, progress, speed, eta_str,
+                                   last_reward, avg_reward, p50_ms, p95_ms, elapsed):
+        """Rich terminal output with progress bar and stats."""
+        # Progress bar
+        bar_width = 30
+        filled = int(bar_width * progress / 100)
+        bar = "█" * filled + "░" * (bar_width - filled)
+        
+        # Color codes for terminals that support it
+        GREEN = "\033[92m"
+        YELLOW = "\033[93m"
+        CYAN = "\033[96m"
+        RESET = "\033[0m"
+        BOLD = "\033[1m"
+        
+        # Clear line and print
+        print(f"\r{' ' * 120}", end="\r")  # Clear line
+        
+        # Main progress line
+        print(
+            f"{BOLD}[TRAIN]{RESET} "
+            f"{GREEN}{global_step:,}{RESET}/{self.total_timesteps:,} "
+            f"[{bar}] {progress:.1f}% | "
+            f"{CYAN}{speed:.1f} steps/s{RESET} | "
+            f"ETA: {YELLOW}{eta_str}{RESET}",
+            end=""
+        )
+        
+        # Second line with stats (every 10 seconds for less spam)
+        if int(elapsed) % 10 == 0:
+            print(f"\n      Reward: last={last_reward:.2f} avg100={avg_reward:.2f} "
+                  f"best={self.best_reward:.2f} | "
+                  f"Latency: P50={p50_ms:.1f}ms P95={p95_ms:.1f}ms | "
+                  f"Episodes: {self.episode_count}", end="")
+        
+        print("", flush=True)
+    
+    def _print_basic_terminal(self, global_step, progress, speed, eta_str,
+                               last_reward, avg_reward, elapsed):
+        """Simple single-line terminal output for basic terminals."""
+        print(
+            f"\r[TRAIN] {global_step:,}/{self.total_timesteps:,} ({progress:.1f}%) | "
+            f"Speed: {speed:.1f} sps | "
+            f"Reward: {last_reward:.2f} (avg: {avg_reward:.2f}) | "
+            f"Best: {self.best_reward:.2f} | "
+            f"Eps: {self.episode_count} | "
+            f"Time: {elapsed/60:.1f}m | "
+            f"ETA: {eta_str}",
+            end="",
+            flush=True
         )
 
     def _collect_enhanced_metrics(self) -> Dict[str, Any]:

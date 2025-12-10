@@ -1231,15 +1231,6 @@ class ArbiterLogic:
 
         autonomy_meta = self.autonomy_tracker.get_state_summary()
 
-        # DEBUG: Gate decision tracing
-        gate_will_pass = gating_result.gate_passed and position_size > 0.0
-        if not gate_will_pass:
-            self.logger.warning(
-                f"[ARBITER_DEBUG] {instrument}: gate_passed={gating_result.gate_passed}, "
-                f"position_size={position_size:.4f}, direction={direction}, "
-                f"reasons={gating_result.reasons + strategy_reasons + tm_reasons + wm_reasons}"
-            )
-
         decision = InstrumentDecision(
             instrument=instrument,
             direction=direction,
