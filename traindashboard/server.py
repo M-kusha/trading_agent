@@ -123,10 +123,11 @@ def get_dashboard_data() -> Dict[str, Any]:
         """Get value and thesis info for a key."""
         try:
             val = bus.get(key, "Dashboard", default=None)
-            # Try to get metadata
+            # Try to get metadata using getattr for safe access
             meta = {}
-            if hasattr(bus, '_data') and key in bus._data:
-                entry = bus._data[key]
+            bus_data = getattr(bus, '_data', None)
+            if bus_data is not None and key in bus_data:
+                entry = bus_data[key]
                 if isinstance(entry, dict):
                     meta = {
                         'module': entry.get('module', 'Unknown'),
@@ -206,6 +207,7 @@ def get_dashboard_data() -> Dict[str, Any]:
         "n_updates": int(safe_float(get("n_updates", 0))),
         "current_reward": safe_float(get("current_episode_reward", 0)),
         "mean_reward": safe_float(get("ep_rew_mean", get("episode_reward_mean", 0))),
+        "avg_episode_length": safe_float(get("avg_episode_length", get("ep_len_mean", 0))),
     }
     
     # ═══════════════════════════════════════════════════════════════
@@ -372,9 +374,15 @@ def get_dashboard_data() -> Dict[str, Any]:
     mistake_avoidance = safe_dict(get("mistake_avoidance", {}))
     memory_rationale = get("memory_rationale", "")
     
+    # memory_gate from UnifiedMemory has structure: {veto, risk_multiplier, confidence, reasons, ...}
+    memory_vote_raw = safe_dict(get("memory_vote", {}))
+    
     memory = {
-        "gate": safe_float(memory_gate_raw.get('gate', memory_gate_raw) if isinstance(memory_gate_raw, dict) else memory_gate_raw, 1.0),
-        "vote": safe_str(get("memory_vote", "NEUTRAL")),
+        "gate": safe_float(memory_gate_raw.get('risk_multiplier', 1.0) if isinstance(memory_gate_raw, dict) else memory_gate_raw, 1.0),
+        "veto": memory_gate_raw.get('veto', False) if isinstance(memory_gate_raw, dict) else False,
+        "gate_confidence": safe_float(memory_gate_raw.get('confidence', 0) if isinstance(memory_gate_raw, dict) else 0),
+        "gate_reasons": memory_gate_raw.get('reasons', []) if isinstance(memory_gate_raw, dict) else [],
+        "vote": safe_str(memory_vote_raw.get('vote_value', 0) if isinstance(memory_vote_raw, dict) else get("memory_vote", "NEUTRAL")),
         "rationale": memory_rationale if isinstance(memory_rationale, str) else str(memory_rationale),
         "danger_zones": {
             "active": len(danger_zones.get("zones", [])) if isinstance(danger_zones, dict) else 0,

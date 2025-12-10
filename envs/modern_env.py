@@ -653,9 +653,11 @@ class ModernTradingEnv(gym.Env):
         # Compute position size from size_score: [-1,1] → [0,1]
         raw_position_size = (ppo_size_score + 1.0) / 2.0
 
-        # publish action & legacy alias
+        # publish action & legacy alias (throttled for training speed)
+        # Only publish every 10 steps to reduce bus overhead
+        should_publish = (self.current_step % 10 == 0)
         try:
-            if self.smart_bus:
+            if self.smart_bus and should_publish:
                 self.smart_bus.set(
                     "agent_action",
                     action,
@@ -696,13 +698,13 @@ class ModernTradingEnv(gym.Env):
         except Exception:
             pass
 
-        # Update local market snapshots only if provider isn't active
-        if not self._bus_data_active:
+        # Update local market snapshots only if provider isn't active (throttled)
+        if not self._bus_data_active and should_publish:
             self._store_market_data_local()
 
-        # publish market_state anchors (guarded to avoid duplication)
+        # publish market_state anchors (guarded to avoid duplication, only on publish steps)
         try:
-            if self.smart_bus:
+            if self.smart_bus and should_publish:
                 if self.smart_bus.get("market_state", "Environment") is None:
                     self.smart_bus.set(
                         "market_state",
@@ -741,7 +743,8 @@ class ModernTradingEnv(gym.Env):
             pass
 
         # market_context only if provider isn't active (avoid double publish)
-        if not self._bus_data_active:
+        # Throttled: only compute expensive regime detection every 50 steps
+        if not self._bus_data_active and (self.current_step % 50 == 0):
             try:
                 if self.smart_bus and self.instruments:
                     inst = self.instruments[0]

@@ -380,6 +380,7 @@ class ModernEnhancedTrainingCallback(BaseCallback):
         self.last_print_time: datetime = self.start_time
         self.best_reward: float = -float("inf")
         self.current_episode_reward: float = 0.0
+        self.current_episode_length: int = 0  # Track steps in current episode
         self.episode_count: int = 0
         self.consecutive_failures: int = 0
         self.circuit_breaker_state = {"active": False, "failures": 0}
@@ -693,6 +694,16 @@ class ModernEnhancedTrainingCallback(BaseCallback):
         progress = global_step / max(self.total_timesteps, 1)
         # Keep SPS based on steps taken in this run
         sps = (self.n_calls / elapsed) if elapsed > 0 else 0.0
+        
+        # Extract n_updates from model (PPO policy update counter)
+        n_updates = 0
+        try:
+            if hasattr(self.model, '_n_updates'):
+                n_updates = int(getattr(self.model, '_n_updates', 0) or 0)
+            elif hasattr(self.model, 'n_updates'):
+                n_updates = int(getattr(self.model, 'n_updates', 0) or 0)
+        except Exception:
+            pass
 
         m: Dict[str, Any] = {
             "timestep": global_step,
@@ -701,6 +712,8 @@ class ModernEnhancedTrainingCallback(BaseCallback):
             "episodes": self.episode_count,
             "elapsed_time_s": elapsed,
             "steps_per_second": sps,
+            "n_updates": n_updates,  # PPO policy update count
+            "avg_episode_length": float(np.mean(self.episode_lengths)) if self.episode_lengths else 0.0,
             "step_ms_p50": float(np.percentile(self.step_durations_ms, 50)) if self.step_durations_ms else 0.0,
             "step_ms_p95": float(np.percentile(self.step_durations_ms, 95)) if self.step_durations_ms else 0.0,
             "episode_reward_mean": float(np.mean(self.episode_rewards)) if self.episode_rewards else 0.0,
@@ -832,13 +845,19 @@ class ModernEnhancedTrainingCallback(BaseCallback):
                 gae_lambda = getattr(self.model, "gae_lambda", 0.95)
                 gamma = getattr(self.model, "gamma", 0.99)
                 
-                self.smart_bus.set("ent_coef", float(ent_coef),
+                # Ensure all values are numeric before float conversion
+                ent_coef_val = float(ent_coef) if isinstance(ent_coef, (int, float)) else 0.01
+                clip_range_val = float(clip_range) if isinstance(clip_range, (int, float)) else 0.2
+                gae_lambda_val = float(gae_lambda) if isinstance(gae_lambda, (int, float)) else 0.95
+                gamma_val = float(gamma) if isinstance(gamma, (int, float)) else 0.99
+                
+                self.smart_bus.set("ent_coef", ent_coef_val,
                                  module="TrainingCallback", thesis="Entropy coefficient")
-                self.smart_bus.set("clip_range", float(clip_range),
+                self.smart_bus.set("clip_range", clip_range_val,
                                  module="TrainingCallback", thesis="PPO clip range")
-                self.smart_bus.set("gae_lambda", float(gae_lambda),
+                self.smart_bus.set("gae_lambda", gae_lambda_val,
                                  module="TrainingCallback", thesis="GAE lambda")
-                self.smart_bus.set("gamma", float(gamma),
+                self.smart_bus.set("gamma", gamma_val,
                                  module="TrainingCallback", thesis="Reward discount factor")
             except Exception:
                 pass  # Non-critical
@@ -1502,6 +1521,9 @@ class ModernEnhancedTrainingCallback(BaseCallback):
         elif isinstance(rew, (int, float, np.floating)):
             self.current_episode_reward += float(rew)
 
+        # Track episode step
+        self.current_episode_length += 1
+
         # Dones: handle scalar/array/list robustly
         done_any = False
         if isinstance(dones, (list, tuple, np.ndarray)):
@@ -1513,6 +1535,7 @@ class ModernEnhancedTrainingCallback(BaseCallback):
             self.episode_count += 1
             ep_rew = float(self.current_episode_reward)
             self.episode_rewards.append(ep_rew)
+            self.episode_lengths.append(self.current_episode_length)  # Record episode length
 
             if ep_rew > self.best_reward:
                 self.best_reward = ep_rew
@@ -1530,6 +1553,7 @@ class ModernEnhancedTrainingCallback(BaseCallback):
             # Episode stats disabled - using beautiful visualizer
 
             self.current_episode_reward = 0.0
+            self.current_episode_length = 0  # Reset for new episode
             self.consecutive_failures = 0
 
     def _check_circuit_breaker(self) -> bool:
