@@ -117,7 +117,8 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
         self.position_durations: Dict[str, int] = {}
         self.position_first_seen: Dict[str, str] = {}
         self.position_velocity: Dict[str, int] = {}  # integer steps/cycle
-        self.position_instruments: Dict[str, str] = {}  # NEW: pid -> symbol/instrument
+        self.position_instruments: Dict[str, str] = {}  # pid -> symbol/instrument
+        self.position_entry_info: Dict[str, Dict[str, Any]] = {}  # pid -> entry details (price, side, etc.)
         self.duration_history: deque = deque(maxlen=self._cfg.history_maxlen)
 
         self.risk_score: float = 0.0
@@ -347,9 +348,28 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
                     self.position_durations[pid] = duration_info['duration']
                     self.position_velocity[pid] = duration_info['velocity']
 
-                    # First-seen timestamp
+                    # First-seen timestamp and entry info (for enhanced closure logging)
                     if pid not in self.position_first_seen:
                         self.position_first_seen[pid] = datetime.datetime.now().isoformat()
+                        # Store entry info for closure logging
+                        self.position_entry_info[pid] = {
+                            'symbol': symbol,
+                            'side': position.get('side', position.get('direction', 'unknown')),
+                            'entry_price': position.get('entry_price', position.get('open_price', 0.0)),
+                            'volume': position.get('volume', position.get('lots', position.get('size', 0.0))),
+                            'entry_step': position.get('entry_step', self.step_count),
+                            'opened_at': datetime.datetime.now().isoformat(),
+                        }
+                        # Log position open
+                        self.logger.info(format_operator_message(
+                            icon="📈",
+                            message="Position opened - tracking started",
+                            position_id=pid,
+                            symbol=symbol,
+                            side=self.position_entry_info[pid]['side'],
+                            entry_price=f"{self.position_entry_info[pid]['entry_price']:.5f}" if self.position_entry_info[pid]['entry_price'] else "N/A",
+                            volume=self.position_entry_info[pid]['volume'],
+                        ))
 
                     # Assess severity with context
                     severity_info = self._assess_position_severity_enhanced(
@@ -494,48 +514,96 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
         return {lvl: int(val * final_mult) for lvl, val in base.items()}
 
     def _process_position_closures(self, current_ids: set[str], market_context: Dict[str, Any]) -> Dict[str, Any]:
-        """Process closures and update analytics"""
+        """Process closures and update analytics with enhanced logging"""
         closed_ids = set(self.position_durations.keys()) - current_ids
         closure_info = {'closed_count': len(closed_ids), 'closure_details': []}
 
         for pid in closed_ids:
             duration = int(self.position_durations.get(pid, 0))
+            entry_info = self.position_entry_info.get(pid, {})
+            instrument = self.position_instruments.get(pid, entry_info.get('symbol', 'UNKNOWN'))
+            first_seen = self.position_first_seen.get(pid, 'unknown')
 
+            # Determine closure type
             if duration >= self.max_duration:
                 ctype = 'timeout'
+                close_reason = f"Exceeded max duration ({self.max_duration} steps)"
             elif duration >= self.critical_duration:
                 ctype = 'emergency'
+                close_reason = f"Reached critical duration ({self.critical_duration} steps)"
             else:
                 ctype = 'normal'
+                close_reason = "Position closed by strategy/signal"
 
             self.closure_analytics[ctype] += 1
 
             regime = str(market_context.get('regime', 'unknown'))
+            volatility = str(market_context.get('volatility_level', 'unknown'))
             self.regime_performance[regime]['durations'].append(duration)
             self.regime_performance[regime]['closures'] += 1
 
-            closure_info['closure_details'].append({
-                'position_id': pid,
-                'duration': duration,
-                'type': ctype,
-                'first_seen': self.position_first_seen.get(pid),
-                'instrument': self.position_instruments.get(pid, 'UNKNOWN'),
-            })
+            # Calculate estimated real time (assuming ~10s per step in live mode)
+            est_minutes = (duration * 10) / 60  # rough estimate
 
-            # cleanup
+            closure_detail = {
+                'position_id': pid,
+                'instrument': instrument,
+                'duration_steps': duration,
+                'duration_est_minutes': round(est_minutes, 1),
+                'type': ctype,
+                'reason': close_reason,
+                'first_seen': first_seen,
+                'entry_info': entry_info,
+                'market_context': {'regime': regime, 'volatility': volatility},
+            }
+            closure_info['closure_details'].append(closure_detail)
+
+            # Enhanced logging based on closure type
+            if ctype == 'timeout':
+                self.logger.warning(format_operator_message(
+                    icon="⏰",
+                    message="TIMEOUT: Position force-closed due to max duration",
+                    position_id=pid,
+                    instrument=instrument,
+                    duration=f"{duration} steps (~{est_minutes:.1f} min)",
+                    max_allowed=f"{self.max_duration} steps",
+                    side=entry_info.get('side', 'N/A'),
+                    entry_price=entry_info.get('entry_price', 'N/A'),
+                    opened_at=entry_info.get('opened_at', first_seen),
+                    regime=regime,
+                    volatility=volatility,
+                ))
+            elif ctype == 'emergency':
+                self.logger.warning(format_operator_message(
+                    icon="🚨",
+                    message="EMERGENCY: Position closed at critical duration",
+                    position_id=pid,
+                    instrument=instrument,
+                    duration=f"{duration} steps (~{est_minutes:.1f} min)",
+                    critical_threshold=f"{self.critical_duration} steps",
+                    side=entry_info.get('side', 'N/A'),
+                    entry_price=entry_info.get('entry_price', 'N/A'),
+                    opened_at=entry_info.get('opened_at', first_seen),
+                    regime=regime,
+                ))
+            else:
+                # Normal closure - log at info level
+                self.logger.info(format_operator_message(
+                    icon="✅",
+                    message="Position closed normally",
+                    position_id=pid,
+                    instrument=instrument,
+                    duration=f"{duration} steps (~{est_minutes:.1f} min)",
+                    side=entry_info.get('side', 'N/A'),
+                    opened_at=entry_info.get('opened_at', first_seen),
+                ))
+
+            # Cleanup all tracking for this position
             self.position_durations.pop(pid, None)
             self.position_first_seen.pop(pid, None)
             self.position_velocity.pop(pid, None)
             self.position_instruments.pop(pid, None)
-
-            if ctype in ('timeout', 'emergency'):
-                self.logger.warning(format_operator_message(
-                    icon="⏰",
-                    message=f"Position closed - {ctype}",
-                    position_id=pid,
-                    duration=f"{duration} steps",
-                    regime=regime
-                ))
+            self.position_entry_info.pop(pid, None)
 
         return closure_info
 

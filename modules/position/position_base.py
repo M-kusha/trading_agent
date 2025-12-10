@@ -756,26 +756,25 @@ class PositionManagerBase(
 
     def _check_voting_consensus(self) -> bool:
         """
-        SIMPLIFIED RISK-ONLY CONSENSUS GATE (v3.2.0).
+        SIMPLIFIED RISK-ONLY CONSENSUS GATE (v3.3.0 - PPO MASTER).
 
-        PositionManager's job is NOT to second-guess expert/PPO decisions.
-        The voting system (CommitteeCoordinator, PPOAgent, experts) already
-        made the directional decision. PositionManager only checks:
+        ═══════════════════════════════════════════════════════════════════
+        PPO IS THE MASTER DECISION MAKER.
+        Experts and voting system are ADVISORY ONLY - they do NOT block PPO.
+        ═══════════════════════════════════════════════════════════════════
 
-        1. RISK VETOES: If DynamicRiskController/PortfolioRiskSystem says
-           HALT/EMERGENCY, we block. This is a hard safety gate.
+        This gate ONLY checks for hard safety blocks:
+        1. RISK VETOES: DynamicRiskController/PortfolioRiskSystem HALT/EMERGENCY
 
-        2. ABSTAIN CHECK: If trade_vote_v2 explicitly says ABSTAIN, respect it.
-
-        All other direction/confidence logic is handled by position_logic.py
-        which trusts the expert signals.
+        REMOVED: ABSTAIN check - experts cannot block PPO decisions.
+        PPO makes all trading decisions. Experts provide context/signals only.
         """
         if not bool(self.config.get("require_voting_consensus", True)):
             return True
 
         try:
             # ═══════════════════════════════════════════════════════════════════
-            # CHECK 1: RISK VETO - Hard safety gate
+            # CHECK 1: RISK VETO - Hard safety gate (ONLY blocking check)
             # If any risk module (DynamicRiskController, etc.) says HALT/EMERGENCY
             # ═══════════════════════════════════════════════════════════════════
             expert_votes = self.smart_bus.get("expert_votes", "PositionManager")
@@ -807,18 +806,13 @@ class PositionManagerBase(
                         return False
 
             # ═══════════════════════════════════════════════════════════════════
-            # CHECK 2: ABSTAIN - If committee explicitly abstains, respect it
+            # REMOVED: ABSTAIN check (v3.3.0)
+            # PPO is MASTER - experts/voting are ADVISORY ONLY.
+            # Experts cannot block PPO decisions via ABSTAIN votes.
             # ═══════════════════════════════════════════════════════════════════
-            trade_vote = self.smart_bus.get("trade_vote_v2", "PositionManager")
-            if isinstance(trade_vote, dict):
-                vote_action = str(trade_vote.get("action", "")).lower()
-                if vote_action == "abstain":
-                    if self.debug:
-                        self.logger.debug("[GATE] ABSTAIN vote - blocking trade")
-                    return False
 
             # ═══════════════════════════════════════════════════════════════════
-            # CHECK 3: EXTREME FRAGILITY WARNING (but don't block)
+            # CHECK 2: EXTREME FRAGILITY WARNING (advisory only - does NOT block)
             # ═══════════════════════════════════════════════════════════════════
             fragility = 0.0
             try:
@@ -838,8 +832,7 @@ class PositionManagerBase(
                 )
 
             # ═══════════════════════════════════════════════════════════════════
-            # DEFAULT: ALLOW - Trust the expert system's decision
-            # Direction/confidence thresholds are handled by position_logic.py
+            # DEFAULT: ALLOW - PPO is master, experts are advisory only
             # ═══════════════════════════════════════════════════════════════════
             return True
 

@@ -49,7 +49,7 @@ except Exception:
     pass
 
 from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import DummyVecEnv
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 from stable_baselines3.common.callbacks import CallbackList, CheckpointCallback, EvalCallback
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.utils import set_random_seed
@@ -380,12 +380,24 @@ def create_environments(data: Dict, config: TradingConfig, n_envs: int = 1, seed
     if not test_environment_creation(data, config):
         raise RuntimeError("Environment creation test failed")
 
-    # Respect requested env count when safe; Windows/live is forced to 1 for stability
+    # Respect requested env count
     requested_envs = max(1, int(getattr(config, "num_envs", n_envs)))
     n_envs = requested_envs
-    if getattr(config, "live_mode", False) or platform.system() == "Windows":
+    
+    # Determine vectorization strategy based on OS and mode
+    use_subproc = False
+    if getattr(config, "live_mode", False):
         n_envs = 1
-        print("[TOOL] Using single environment for stability")
+        print("[TOOL] Live mode: using single environment")
+    elif platform.system() == "Windows":
+        # Windows has issues with multiprocessing + PyTorch
+        # Allow up to 4 envs with DummyVecEnv (sequential)
+        n_envs = min(n_envs, 4)
+        print(f"[TOOL] Windows: using {n_envs} sequential env(s) (DummyVecEnv)")
+    elif n_envs > 1:
+        # Linux/Mac: use SubprocVecEnv for true parallelism
+        use_subproc = True
+        print(f"[TOOL] Linux/Mac: using {n_envs} parallel env(s) (SubprocVecEnv)")
 
     def make(rank: int):
         def _init():
@@ -395,7 +407,13 @@ def create_environments(data: Dict, config: TradingConfig, n_envs: int = 1, seed
         set_random_seed(seed + rank)
         return _init
 
-    env = DummyVecEnv([make(i) for i in range(n_envs)])
+    if use_subproc and n_envs > 1:
+        # SubprocVecEnv runs each env in a separate process (true parallelism)
+        env = SubprocVecEnv([make(i) for i in range(n_envs)], start_method='spawn')
+    else:
+        # DummyVecEnv runs all envs sequentially in the same process
+        env = DummyVecEnv([make(i) for i in range(n_envs)])
+    
     if hasattr(env, "seed"):
         env.seed(seed)
     return env
@@ -854,8 +872,8 @@ def main():
     p = argparse.ArgumentParser(description="Modern PPO Training")
     p.add_argument("--mode", choices=["offline", "online", "test", "eval"], default="offline",
                    help="Mode: offline=train, online=live train, test=quick test, eval=evaluate model")
-    p.add_argument("--preset", choices=["conservative", "aggressive", "research", "production", "exploration"],
-                   help="Config preset: 'exploration' disables modules for free exploration")
+    p.add_argument("--preset", choices=["conservative", "aggressive", "research", "production", "exploration", "training_fast"],
+                   help="Config preset: 'training_fast' for high-speed PPO training, 'exploration' disables modules")
     p.add_argument("--timesteps", type=int)
     p.add_argument("--lr", type=float)
     p.add_argument("--batch_size", type=int)
@@ -970,6 +988,9 @@ def main():
         config = ConfigPresets.research_mode()
     elif args.preset == "production":
         config = ConfigPresets.production_backtest()
+    elif args.preset == "training_fast":
+        config = ConfigPresets.training_fast()
+        print("[INFO] Using TRAINING_FAST preset - optimized for high-speed PPO training")
     else:
         config = TradingConfig(test_mode=(args.mode == "test"), live_mode=False)
 

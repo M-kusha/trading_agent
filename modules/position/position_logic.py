@@ -1496,23 +1496,23 @@ class PositionManager(PositionManagerBase):
                     )
                 )
 
-        # PPO Arbiter size multiplier (per instrument)
-        try:
-            ppo_mult = self._get_ppo_size_multiplier(instrument)
-        except Exception:
-            ppo_mult = None
-
-        if ppo_mult is not None:
-            adjusted_size *= ppo_mult
-            if self.debug:
-                self.logger.info(
-                    format_operator_message(
-                        icon="🤖",
-                        message="PPO_ARBITER_SIZE_ADJUSTMENT",
-                        multiplier=f"{ppo_mult:.2f}x",
-                        source="intelligent arbiter confidence scaling",
-                    )
-                )
+        # NOTE (v3.4.0): REMOVED ppo_position_size multiplier here!
+        # 
+        # REASON: Double-penalty bug. The ppo_position_size is already:
+        #   1. Factored into intensity (which IS PPO confidence = sig_strength)
+        #   2. Passed to Executor for final lot calculation
+        #
+        # Applying it AGAIN here was causing tiny positions:
+        #   base_size = intensity(0.88) × budget → €44k
+        #   then × ppo_mult(0.19) → €8k (WRONG - double penalty!)
+        #
+        # The Executor uses ppo_position_size for lot calculation, which is correct.
+        # PositionManager should NOT apply it again.
+        #
+        # OLD CODE (removed):
+        #   ppo_mult = self._get_ppo_size_multiplier(instrument)
+        #   if ppo_mult is not None:
+        #       adjusted_size *= ppo_mult  # THIS WAS THE BUG!
 
         abs_size = abs(adjusted_size)
         min_viable_size = balance * float(self.Cval("min_size_pct", 0.01))

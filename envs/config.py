@@ -245,7 +245,7 @@ class TradingConfig:
     # ===================================================================
     # Training Environment (env-level toggles; agent owns PPO hparams)
     # ===================================================================
-    num_envs: int = 1
+    num_envs: int = 16
     test_mode: bool = False
     live_mode: bool = False
     training_mode: bool = False
@@ -906,6 +906,121 @@ class ConfigPresets:
             checkpoint_freq=10_000,
             eval_freq=5_000,
 
+            instruments=["EUR_USD", "XAU_USD"],
+            timeframes=["M15", "H1", "H4", "D1"],
+        )
+
+    @staticmethod
+    def training_fast() -> TradingConfig:
+        """
+        High-speed PPO training preset - optimized for maximum steps/second.
+        
+        Key optimizations:
+        - training_mode=True: Modules know we're in RL learning mode
+        - Minimal logging (ERROR level only)
+        - No validation overhead on InfoBus
+        - No sync waits between steps
+        - Shadow sim and visualization disabled
+        
+        Expected: 40-80 steps/sec (vs ~13 with production preset)
+        """
+        return TradingConfig(
+            # ═══════════════════════════════════════════════════════════
+            # CRITICAL: Runtime mode flags
+            # ═══════════════════════════════════════════════════════════
+            training_mode=True,       # <- CRITICAL: modules know we're in RL mode
+            live_mode=False,
+            test_mode=False,
+            debug=False,
+
+            # ═══════════════════════════════════════════════════════════
+            # Trading parameters
+            # ═══════════════════════════════════════════════════════════
+            initial_balance=100_000.0,
+            max_position_pct=0.15,
+            max_total_exposure=0.40,
+            max_drawdown=0.25,
+            consensus_min=0.30,
+
+            # ═══════════════════════════════════════════════════════════
+            # InfoBus: enabled but CHEAP
+            # ═══════════════════════════════════════════════════════════
+            info_bus_enabled=True,
+            info_bus_audit_level="ERROR",    # Only errors, no DEBUG spam
+            info_bus_validation=False,       # Skip schema checks every step
+            info_bus_init_timeout=2.0,
+
+            # ═══════════════════════════════════════════════════════════
+            # Orchestrator: NO WAITING
+            # ═══════════════════════════════════════════════════════════
+            orchestrator_async_init=False,   # Simple deterministic init
+            orchestrator_sync_wait_ms=0.0,   # NO waiting between steps
+            orchestrator_step_interval=1,
+            step_sleep_ms=0.0,               # No artificial delays
+
+            # ═══════════════════════════════════════════════════════════
+            # Bus-first policy (keep logic, minimize overhead)
+            # ═══════════════════════════════════════════════════════════
+            bus_first=True,
+            prefer_bus_data=True,
+            prefer_bus_features=True,
+            prefer_bus_rewards=True,
+            prefer_bus_metrics=True,
+            prefer_bus_limits=True,
+            allow_module_overrides=True,
+            halt_on_emergency=True,
+
+            # ═══════════════════════════════════════════════════════════
+            # Features: keep logic, disable eye-candy
+            # ═══════════════════════════════════════════════════════════
+            enable_shadow_sim=False,         # Use separate script for shadow testing
+            enable_visualization=False,      # No plots/HTML during PPO
+            enable_risk_monitoring=True,     # Keep risk logic (it's light)
+            enable_news_sentiment=False,
+            enable_meta_rl=True,             # In-memory logic, fine
+            enable_memory_systems=True,
+            enable_strategy_evolution=True,
+
+            # ═══════════════════════════════════════════════════════════
+            # Risk settings
+            # ═══════════════════════════════════════════════════════════
+            risk_check_frequency=1,
+            risk_alert_cooldown=5,
+            max_concurrent_alerts=10,
+
+            # ═══════════════════════════════════════════════════════════
+            # PPO hyperparameters
+            # ═══════════════════════════════════════════════════════════
+            learning_rate=1e-4,
+            n_steps=2048,
+            batch_size=64,
+            n_epochs=10,
+            gamma=0.95,
+            gae_lambda=0.95,
+            clip_range=0.12,
+            ent_coef=0.01,
+            vf_coef=0.5,
+            max_grad_norm=0.5,
+            target_kl=0.015,
+
+            # ═══════════════════════════════════════════════════════════
+            # Episode & training limits
+            # ═══════════════════════════════════════════════════════════
+            max_steps=200,
+            final_training_steps=1_000_000,
+
+            # ═══════════════════════════════════════════════════════════
+            # Logging: MINIMAL for speed
+            # ═══════════════════════════════════════════════════════════
+            log_level="Error",               # Only errors
+            log_rotation_lines=20000,        # Rotate less often
+            log_interval=10,
+            checkpoint_freq=10_000,
+            eval_freq=5_000,
+
+            # ═══════════════════════════════════════════════════════════
+            # Instruments & timeframes
+            # ═══════════════════════════════════════════════════════════
             instruments=["EUR_USD", "XAU_USD"],
             timeframes=["M15", "H1", "H4", "D1"],
         )

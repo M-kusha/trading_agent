@@ -2011,9 +2011,19 @@ class Executor(BaseModule):
                             signal_direction = 1
                         elif action in ("open_short",):
                             signal_direction = -1
-                        signal_strength = float(
+                        intent_strength = float(
                             intent.get("intensity", intent.get("confidence", 0.5)) or 0.5
                         )
+                        # Prefer PPO position_size if available
+                        ppo_pos = self.bus.get("ppo_position_size", "Executor", default=None)
+                        if ppo_pos is not None:
+                            try:
+                                ppo_str = float(ppo_pos)
+                                signal_strength = max(intent_strength, ppo_str) if ppo_str > 0 else intent_strength
+                            except (TypeError, ValueError):
+                                signal_strength = intent_strength
+                        else:
+                            signal_strength = intent_strength
                         break
 
                 decision = self.smart_position_manager.decide(
@@ -2247,9 +2257,27 @@ class Executor(BaseModule):
                 "open_short": -1,
                 "scale_down": -1,
             }.get(action, 0)
-            signal_strength = float(
+            
+            # Get signal strength from intent, but prefer PPO position_size if available
+            # PPO position_size is already risk-normalized 0-1 and reflects confidence
+            intent_strength = float(
                 intent.get("intensity", intent.get("confidence", 0.5)) or 0.5
             )
+            
+            # Try to get PPO position_size for better signal strength
+            ppo_position_size = self.bus.get("ppo_position_size", "Executor", default=None)
+            if ppo_position_size is not None:
+                try:
+                    ppo_strength = float(ppo_position_size)
+                    if ppo_strength > 0.0:
+                        # Use PPO position_size as it reflects actual PPO confidence
+                        signal_strength = max(intent_strength, ppo_strength)
+                    else:
+                        signal_strength = intent_strength
+                except (TypeError, ValueError):
+                    signal_strength = intent_strength
+            else:
+                signal_strength = intent_strength
 
             decision = self.smart_position_manager.decide(
                 symbol=exec_symbol,

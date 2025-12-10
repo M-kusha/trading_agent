@@ -71,10 +71,13 @@ def _load_anomaly_detector_config_from_yaml() -> Dict[str, Any]:
             escalation = policy.get("escalation", {})
             modules_cfg = policy.get("modules", {}).get("AnomalyDetector", {})
 
-            # Map from escalation thresholds
-            defaults["emergency_threshold"] = float(escalation.get("emergency_threshold", 0.042))
-            defaults["critical_threshold"] = float(escalation.get("critical_threshold", 0.035))
-            defaults["warning_threshold"] = float(escalation.get("warning_threshold", 0.025))
+            # NOTE: Do NOT use escalation thresholds here - those are drawdown %.
+            # Anomaly scores are 0-1 detection confidence, not loss percentages.
+            # Use module-specific anomaly thresholds from AnomalyDetector config:
+            anomaly_cfg = modules_cfg  # AnomalyDetector-specific settings
+            defaults["emergency_threshold"] = float(anomaly_cfg.get("emergency_threshold", 0.7))
+            defaults["critical_threshold"] = float(anomaly_cfg.get("critical_threshold", 0.5))
+            defaults["warning_threshold"] = float(anomaly_cfg.get("warning_threshold", 0.3))
 
             # Module-specific overrides
             for key in [
@@ -125,10 +128,11 @@ class AnomalyDetectorConfig:
     max_processing_time_ms: float = 50.0
     circuit_breaker_threshold: int = 5
     min_detection_quality: float = 0.7
-    # Risk bands - from escalation thresholds in risk_policy.yaml
-    critical_threshold: float = 0.035  # From escalation.critical_threshold
-    warning_threshold: float = 0.025   # From escalation.warning_threshold
-    emergency_threshold: float = 0.042 # From escalation.emergency_threshold
+    # Anomaly score thresholds (0-1 scale, NOT drawdown percentages)
+    # These are detection confidence thresholds, not loss percentages!
+    warning_threshold: float = 0.3     # 30% anomaly score = warning
+    critical_threshold: float = 0.5    # 50% anomaly score = enhanced mode
+    emergency_threshold: float = 0.7   # 70% anomaly score = emergency mode
     # Monitoring
     health_check_interval: int = 30
     performance_window: int = 100

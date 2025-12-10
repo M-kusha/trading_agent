@@ -1,0 +1,50 @@
+# Cloud Training Requirements - Optimized for GPU instances
+# Use: pip install -r requirements_cloud.txt
+
+# ═══════════════════════════════════════════════════════════════════
+# Core Framework Dependencies
+# ═══════════════════════════════════════════════════════════════════
+numpy>=1.24.0,<2.0.0
+pandas>=2.0.0,<3.0.0
+scipy>=1.10.0
+scikit-learn>=1.3.0
+
+# ═══════════════════════════════════════════════════════════════════
+# Machine Learning - PPO with GPU Support
+# ═══════════════════════════════════════════════════════════════════
+# For CUDA 11.8 (most common on cloud):
+--extra-index-url https://download.pytorch.org/whl/cu118
+torch>=2.0.0,<3.0.0
+torchvision>=0.15.0
+
+stable-baselines3>=2.0.0,<3.0.0
+gymnasium>=0.28.0,<1.0.0
+tensorboard>=2.12.0
+optuna>=3.5.0
+
+# ═══════════════════════════════════════════════════════════════════
+# Data & Config
+# ═══════════════════════════════════════════════════════════════════
+pyyaml>=6.0.0
+python-dotenv>=1.0.0
+h5py>=3.8.0
+aiofiles>=23.0.0
+
+# ═══════════════════════════════════════════════════════════════════
+# Performance Optimization
+# ═══════════════════════════════════════════════════════════════════
+numba>=0.57.0
+joblib>=1.3.0
+
+# ═══════════════════════════════════════════════════════════════════
+# Monitoring (minimal for cloud)
+# ═══════════════════════════════════════════════════════════════════
+psutil>=5.9.0
+rich>=13.0.0
+
+# ═══════════════════════════════════════════════════════════════════
+# Cloud-specific utilities
+# ═══════════════════════════════════════════════════════════════════
+boto3>=1.28.0           # AWS S3 for checkpoints
+google-cloud-storage>=2.10.0  # GCP Storage (optional)
+wandb>=0.15.0           # Weights & Biases logging (optional)
