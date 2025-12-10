@@ -165,24 +165,56 @@ class SeasonalityRiskExpert(VotingExpertBase):
         )
 
         # Local trading-window configuration (user's timezone)
-        # Default: Europe/Berlin, trade 07:00–22:00 local, avoid last 30 minutes before 23:00.
+        # For you: Europe/Berlin, trade 09:00–18:00 local, avoid late new entries.
         self.trading_timezone: str = self.config.get(
             "trading_timezone", "Europe/Berlin"
         )
+
+        # Primary trading window (local hours)
         self.local_trade_start_hour: int = int(
-            self.config.get("local_trade_start_hour", 7)
+            self.config.get("local_trade_start_hour", 9)   # was 7
         )
         self.local_trade_end_hour: int = int(
-            self.config.get("local_trade_end_hour", 22)
+            self.config.get("local_trade_end_hour", 18)    # was 22
         )
+
+        # Hard close hour: by default we consider the day "closed" at 22:00 or 23:00
+        # This is when we want to be flat intraday. You can tune via config.
         self.local_hard_close_hour: int = int(
-            self.config.get("local_hard_close_hour", 23)
+            self.config.get("local_hard_close_hour", 22)
         )
+
         # In the last N minutes before local_hard_close, we push for exits.
+        # For intraday behaviour, make this a bit wider (e.g. 60 min).
         self.no_trade_last_minutes: int = int(
-            self.config.get("no_trade_last_minutes", 30)
+            self.config.get("no_trade_last_minutes", 60)   # was 30
         )
-        
+
+        # PRIME window (max aggression) – London/NY overlap mapped to local time
+        # Default: 14:00–17:00 Europe/Berlin
+        self.local_prime_start_hour: int = int(
+            self.config.get("local_prime_start_hour", 14)
+        )
+        self.local_prime_end_hour: int = int(
+            self.config.get("local_prime_end_hour", 17)
+        )
+
+        # Prime hours boost parameters
+        self.prime_hours_confidence_boost: float = float(
+            self.config.get("prime_hours_confidence_boost", 0.15)  # +15% confidence in prime hours
+        )
+        self.prime_hours_lot_multiplier: float = float(
+            self.config.get("prime_hours_lot_multiplier", 1.25)  # +25% lot size in prime hours
+        )
+
+        # Final exit window parameters for overnight avoidance
+        self.final_exit_max_loss_pct: float = float(
+            self.config.get("final_exit_max_loss_pct", 0.02)  # Don't exit if loss > 2% of equity
+        )
+        self.final_exit_obligatory: bool = bool(
+            self.config.get("final_exit_obligatory", True)  # Make final exit obligatory
+        )
+
         # TEST MODE: Allow trades during off-hours (for testing purposes)
         # Set to True to bypass trading window restrictions
         self.allow_off_hours_trading: bool = bool(
@@ -925,9 +957,10 @@ class SeasonalityRiskExpert(VotingExpertBase):
         Analyze local trading window in the configured timezone.
 
         Goals:
-        - Encourage trading only inside primary local hours (e.g. 07:00–22:00).
+        - Encourage trading only inside primary local hours (e.g. 09:00–18:00).
         - Avoid opening new trades after cutoff.
         - In last N minutes before local_hard_close, push strongly for exits.
+        - Flag PRIME window (e.g. 14:00–17:00) for higher aggression upstream.
         """
         try:
             from zoneinfo import ZoneInfo  # Python 3.9+
@@ -947,21 +980,33 @@ class SeasonalityRiskExpert(VotingExpertBase):
         end_minutes = self.local_trade_end_hour * 60
         hard_close_minutes = self.local_hard_close_hour * 60
 
+        # Primary trading window (e.g. 09:00–18:00)
         in_primary_window = start_minutes <= local_minutes < end_minutes
         after_cutoff = local_minutes >= end_minutes
 
+        # PRIME window (e.g. 14:00–17:00) – best quality flow
+        prime_start_minutes = self.local_prime_start_hour * 60
+        prime_end_minutes = self.local_prime_end_hour * 60
+        in_prime_window = prime_start_minutes <= local_minutes < prime_end_minutes
+
+        # Minutes to hard close
         minutes_to_close = hard_close_minutes - local_minutes
         if minutes_to_close < 0:
             # Past hard close; treat as "already closed" for this day
             minutes_to_close = 0
 
         final_exit_window = 0 <= minutes_to_close <= self.no_trade_last_minutes
-        
+
         # TEST MODE: Override no_new_trades if allow_off_hours_trading is enabled
         if self.allow_off_hours_trading:
             no_new_trades = False
         else:
-            no_new_trades = after_cutoff or final_exit_window
+            # No new trades after cutoff OR inside final exit window
+            no_new_trades = after_cutoff or final_exit_window or not in_primary_window
+
+        # Prime hours boost for better signal quality
+        confidence_boost = self.prime_hours_confidence_boost if in_prime_window else 0.0
+        lot_multiplier = self.prime_hours_lot_multiplier if in_prime_window else 1.0
 
         return {
             "timezone": tz_name,
@@ -969,12 +1014,19 @@ class SeasonalityRiskExpert(VotingExpertBase):
             "local_hour": lh,
             "local_minute": lm,
             "in_primary_window": in_primary_window,
+            "in_prime_window": in_prime_window,
             "after_cutoff": after_cutoff,
             "minutes_to_close": minutes_to_close,
             "no_new_trades": no_new_trades,
             "final_exit_window": final_exit_window,
+            "final_exit_obligatory": self.final_exit_obligatory,
+            "final_exit_max_loss_pct": self.final_exit_max_loss_pct,
             "allow_off_hours_override": self.allow_off_hours_trading,
+            # Prime hours boost signals
+            "prime_hours_confidence_boost": confidence_boost,
+            "prime_hours_lot_multiplier": lot_multiplier,
         }
+
 
     def _calculate_historical_pattern_score(
         self,

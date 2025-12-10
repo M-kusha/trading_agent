@@ -404,6 +404,39 @@ modules:
 
 
 # ═══════════════════════════════════════════════════════════════
+# SEASONALITY & TRADING WINDOW CONFIGURATION
+# Used by SeasonalityRiskExpert, ArbiterLogic, SmartPositionManager, LotCalculator
+# ═══════════════════════════════════════════════════════════════
+seasonality:
+  # ═════════════════════════════════════════════════════════════
+  # PRIME HOURS - Best trading windows (local time)
+  # During prime hours: boost signal confidence & lot size
+  # ═════════════════════════════════════════════════════════════
+  prime_hours_start: 14              # 14:00 local (EU/US overlap start)
+  prime_hours_end: 17                # 17:00 local (peak liquidity)
+  prime_hours_confidence_boost: 0.15 # +15% confidence boost in prime hours
+  prime_hours_lot_multiplier: 1.25   # +25% lot size in prime hours
+
+  # ═════════════════════════════════════════════════════════════
+  # FINAL EXIT WINDOW - Obligatory overnight avoidance
+  # Last N minutes before hard_close_hour forces position review
+  # ═════════════════════════════════════════════════════════════
+  hard_close_hour: 22                # 22:00 local = hard close deadline
+  final_exit_window_minutes: 60      # Last 60 min before hard close
+  final_exit_obligatory: true        # Make final exit window obligatory
+  final_exit_max_loss_pct: 0.02      # Max 2% loss to force exit (protect from big gap)
+
+  # ═════════════════════════════════════════════════════════════
+  # NO NEW TRADES WINDOW
+  # Block new trades in certain hours (overnight, low liquidity)
+  # ═════════════════════════════════════════════════════════════
+  no_new_trades_start: 21            # 21:00 local = stop new trades
+  no_new_trades_end: 8               # 08:00 local = resume new trades
+  allow_close_during_block: true     # Always allow CLOSE/TIGHTEN when blocked
+  allow_defend_during_block: true    # Allow defensive actions when blocked
+
+
+# ═══════════════════════════════════════════════════════════════
 # Risk Assessment Parameters (offline analytics / dashboards)
 # ═══════════════════════════════════════════════════════════════
 assessment:

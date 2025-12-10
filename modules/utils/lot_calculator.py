@@ -401,6 +401,32 @@ class UnifiedLotCalculator:
             pass
         return 1.0, "normal"
 
+    def get_prime_hours_multiplier(self) -> Tuple[float, bool]:
+        """
+        Get lot size multiplier based on prime trading hours.
+
+        During prime hours (configurable, default 14:00-17:00 local time),
+        we boost lot sizes as market quality is highest.
+
+        Returns (multiplier, in_prime_window) tuple.
+        """
+        try:
+            if self.bus:
+                # Get seasonality voting proposal which contains trading_window
+                seasonality = self.bus.get(
+                    "SeasonalityRiskExpert_voting_proposal", "LotCalculator", default=None
+                )
+                if isinstance(seasonality, dict):
+                    trading_window = seasonality.get("trading_window", {})
+                    if isinstance(trading_window, dict):
+                        in_prime = trading_window.get("in_prime_window", False)
+                        lot_mult = trading_window.get("prime_hours_lot_multiplier", 1.0)
+                        if in_prime and isinstance(lot_mult, (int, float)) and lot_mult > 1.0:
+                            return float(lot_mult), True
+        except Exception:
+            pass
+        return 1.0, False
+
     def get_daily_pnl(self) -> float:
         """Get today's P&L from InfoBus (in account currency)."""
         try:
@@ -839,6 +865,14 @@ class UnifiedLotCalculator:
             details["adjustments"].append(f"trading_mode={mode_name}→{mode_multiplier:.2f}x")
         details["trading_mode"] = mode_name
         details["trading_mode_multiplier"] = mode_multiplier
+
+        # 11b. Prime hours lot boost (best market quality window)
+        prime_multiplier, in_prime = self.get_prime_hours_multiplier()
+        if in_prime and prime_multiplier > 1.0:
+            base_lots *= prime_multiplier
+            details["adjustments"].append(f"prime_hours_boost→{prime_multiplier:.2f}x")
+        details["in_prime_window"] = in_prime
+        details["prime_hours_multiplier"] = prime_multiplier
 
         # 12. Prop firm headroom reduction
         # CRITICAL: If prop firm limits are breached, return 0 lots to block trading

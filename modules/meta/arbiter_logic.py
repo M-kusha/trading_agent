@@ -1034,10 +1034,79 @@ class ArbiterLogic:
     def _get_seasonality_gate_info(self) -> Dict[str, Any]:
         """Get seasonality gate info for metadata."""
         allowed, reason = self._check_seasonality_time_gate()
-        return {
+        info = {
             "trades_allowed": allowed,
             "reason": reason,
         }
+        
+        # Also include prime hours and final exit window info
+        try:
+            if self._smart_bus is not None:
+                seasonality = self._smart_bus.get(
+                    "SeasonalityRiskExpert_voting_proposal", "ArbiterLogic"
+                )
+                if isinstance(seasonality, dict):
+                    trading_window = seasonality.get("trading_window", {})
+                    if isinstance(trading_window, dict):
+                        info["in_prime_window"] = trading_window.get("in_prime_window", False)
+                        info["prime_hours_confidence_boost"] = trading_window.get(
+                            "prime_hours_confidence_boost", 0.0
+                        )
+                        info["final_exit_window"] = trading_window.get("final_exit_window", False)
+                        info["final_exit_obligatory"] = trading_window.get(
+                            "final_exit_obligatory", True
+                        )
+                        info["minutes_to_close"] = trading_window.get("minutes_to_close", 0)
+        except Exception:
+            pass
+        
+        return info
+
+    def _get_prime_hours_confidence_boost(self) -> float:
+        """
+        Get confidence boost from prime trading hours.
+        
+        During prime hours (e.g. 14:00-17:00 local time), 
+        we boost confidence as market quality is highest.
+        """
+        try:
+            if self._smart_bus is not None:
+                seasonality = self._smart_bus.get(
+                    "SeasonalityRiskExpert_voting_proposal", "ArbiterLogic"
+                )
+                if isinstance(seasonality, dict):
+                    trading_window = seasonality.get("trading_window", {})
+                    if isinstance(trading_window, dict):
+                        in_prime = trading_window.get("in_prime_window", False)
+                        boost = trading_window.get("prime_hours_confidence_boost", 0.0)
+                        if in_prime and isinstance(boost, (int, float)) and boost > 0:
+                            return float(boost)
+        except Exception:
+            pass
+        return 0.0
+
+    def _check_final_exit_window(self) -> Tuple[bool, bool, float]:
+        """
+        Check if we're in the final exit window before market close.
+        
+        Returns:
+            Tuple of (in_final_exit_window, is_obligatory, max_loss_pct)
+        """
+        try:
+            if self._smart_bus is not None:
+                seasonality = self._smart_bus.get(
+                    "SeasonalityRiskExpert_voting_proposal", "ArbiterLogic"
+                )
+                if isinstance(seasonality, dict):
+                    trading_window = seasonality.get("trading_window", {})
+                    if isinstance(trading_window, dict):
+                        final_exit = trading_window.get("final_exit_window", False)
+                        obligatory = trading_window.get("final_exit_obligatory", True)
+                        max_loss_pct = trading_window.get("final_exit_max_loss_pct", 0.02)
+                        return bool(final_exit), bool(obligatory), float(max_loss_pct)
+        except Exception:
+            pass
+        return False, True, 0.02
 
     def _is_live_mode(self) -> bool:
         """
@@ -1263,6 +1332,19 @@ class ArbiterLogic:
 
         confidence *= gating_result.confidence_multiplier
         confidence = float(np.clip(confidence, 0.0, 1.0))
+
+        # ═══════════════════════════════════════════════════════════════════
+        # PRIME HOURS CONFIDENCE BOOST (v5.3)
+        # During prime trading hours (e.g. 14:00-17:00), boost confidence
+        # as market quality and liquidity are highest.
+        # ═══════════════════════════════════════════════════════════════════
+        prime_boost = self._get_prime_hours_confidence_boost()
+        if prime_boost > 0.0 and direction != "flat":
+            confidence = min(1.0, confidence + prime_boost)
+            reasoning += f" | PRIME_HOURS_BOOST: +{prime_boost:.0%} confidence"
+            self.logger.debug(
+                f"[PRIME_HOURS] {instrument}: Applied +{prime_boost:.0%} confidence boost"
+            )
 
         if not gating_result.gate_passed:
             if gating_result.reasons:

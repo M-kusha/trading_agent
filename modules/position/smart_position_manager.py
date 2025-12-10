@@ -630,6 +630,77 @@ class SmartPositionManager:
             self.logger.warning(f"Failed to load per-instrument config: {e}")
             return {}
 
+    # =========================================================
+    # SEASONALITY / TRADING WINDOW CHECKS
+    # =========================================================
+
+    def _check_no_new_trades(self) -> Tuple[bool, str]:
+        """
+        Check if SeasonalityRiskExpert says no_new_trades.
+        
+        Returns:
+            Tuple of (no_new_trades, reason)
+        """
+        try:
+            if self._smart_bus:
+                seasonality = self._smart_bus.get(
+                    "SeasonalityRiskExpert_voting_proposal", "SmartPositionManager"
+                )
+                if isinstance(seasonality, dict):
+                    trading_window = seasonality.get("trading_window", {})
+                    if isinstance(trading_window, dict):
+                        no_new = trading_window.get("no_new_trades", False)
+                        if no_new:
+                            local_time = trading_window.get("local_time", "unknown")
+                            minutes_to_close = trading_window.get("minutes_to_close", 0)
+                            return True, f"Outside trading window (local={local_time}, close_in={minutes_to_close}min)"
+        except Exception:
+            pass
+        return False, ""
+
+    def _check_final_exit_window(self) -> Tuple[bool, bool, float]:
+        """
+        Check if we're in the final exit window before market close.
+        
+        In the final exit window (last 60 min before hard_close_hour):
+        - No new trades allowed
+        - Positions should be exited unless loss is too large
+        
+        Returns:
+            Tuple of (in_final_exit, is_obligatory, max_loss_pct)
+        """
+        try:
+            if self._smart_bus:
+                seasonality = self._smart_bus.get(
+                    "SeasonalityRiskExpert_voting_proposal", "SmartPositionManager"
+                )
+                if isinstance(seasonality, dict):
+                    trading_window = seasonality.get("trading_window", {})
+                    if isinstance(trading_window, dict):
+                        final_exit = trading_window.get("final_exit_window", False)
+                        obligatory = trading_window.get("final_exit_obligatory", True)
+                        max_loss_pct = trading_window.get("final_exit_max_loss_pct", 0.02)
+                        return bool(final_exit), bool(obligatory), float(max_loss_pct)
+        except Exception:
+            pass
+        return False, True, 0.02
+
+    def _get_current_balance(self) -> float:
+        """Get current account balance from InfoBus for loss % calculation."""
+        try:
+            if self._smart_bus:
+                live_status = self._smart_bus.get(
+                    "live_adapter_status", "SmartPositionManager", default=None
+                )
+                if isinstance(live_status, dict):
+                    for key in ("equity", "balance"):
+                        val = live_status.get(key)
+                        if isinstance(val, (int, float)) and val > 0:
+                            return float(val)
+        except Exception:
+            pass
+        return 100_000.0  # Default fallback
+
     def _get_symbol_cfg(self, symbol: str) -> Dict[str, Any]:
         """
         Get configuration for a specific symbol.
@@ -832,6 +903,110 @@ class SmartPositionManager:
             "startup_grace_calls", self.config.default_startup_grace_calls
         )
         return self._get_symbol_call_count(symbol) >= grace_calls
+
+    # =========================================================
+    # PPO DECISION AWARENESS (v5.3)
+    # PPO is the MASTER for reversal decisions - experts are advisory only
+    # =========================================================
+
+    def _get_ppo_decision(self, symbol: str) -> tuple[int, float, bool]:
+        """
+        Get PPO's decision for a symbol from SmartInfoBus.
+        
+        Returns:
+            tuple of (direction, confidence, is_ppo_reversal)
+            - direction: 1=long, -1=short, 0=flat
+            - confidence: 0.0-1.0
+            - is_ppo_reversal: True if PPO is signaling direction opposite to current position
+        """
+        if self._smart_bus is None:
+            return (0, 0.0, False)
+        
+        try:
+            # Try multi-decision first (per-instrument)
+            multi_decision = self._smart_bus.get(
+                "ppo_multi_decision", "SmartPositionManager", default=None
+            )
+            
+            ppo_direction = 0
+            ppo_confidence = 0.0
+            
+            if isinstance(multi_decision, dict):
+                # Check for instrument-specific decision
+                instruments = multi_decision.get("instruments", {})
+                if isinstance(instruments, dict) and symbol in instruments:
+                    inst_dec = instruments[symbol]
+                    if isinstance(inst_dec, dict):
+                        direction = str(inst_dec.get("direction", "flat")).lower()
+                        if direction in ("long", "buy"):
+                            ppo_direction = 1
+                        elif direction in ("short", "sell"):
+                            ppo_direction = -1
+                        ppo_confidence = float(inst_dec.get("confidence", 0.0) or 0.0)
+            
+            # Fallback to global decision if no per-instrument
+            if ppo_direction == 0 and ppo_confidence == 0.0:
+                final_decision = self._smart_bus.get(
+                    "ppo_final_decision", "SmartPositionManager", default=None
+                )
+                if isinstance(final_decision, dict):
+                    direction = str(final_decision.get("direction", "flat")).lower()
+                    if direction in ("long", "buy"):
+                        ppo_direction = 1
+                    elif direction in ("short", "sell"):
+                        ppo_direction = -1
+                    ppo_confidence = float(final_decision.get("confidence", 0.0) or 0.0)
+            
+            # Check if this is a reversal relative to current position
+            position = self._positions.get(symbol)
+            is_reversal = False
+            if position is not None and ppo_direction != 0:
+                is_reversal = (
+                    (position.side > 0 and ppo_direction < 0) or  # Long pos, PPO says short
+                    (position.side < 0 and ppo_direction > 0)     # Short pos, PPO says long
+                )
+            
+            return (ppo_direction, ppo_confidence, is_reversal)
+            
+        except Exception as e:
+            self.logger.warning(f"[PPO_DECISION] Error getting PPO decision: {e}")
+            return (0, 0.0, False)
+
+    def _should_respect_ppo_reversal(
+        self,
+        symbol: str,
+        ppo_confidence: float,
+        position_pnl: float,
+    ) -> tuple[bool, str]:
+        """
+        Determine if we should respect PPO's reversal signal over expert opinions.
+        
+        PPO is the MASTER - when PPO signals reversal with high confidence, 
+        we should respect it regardless of what experts say.
+        
+        Args:
+            symbol: Trading symbol
+            ppo_confidence: PPO's confidence in the reversal (0.0-1.0)
+            position_pnl: Current position P&L
+            
+        Returns:
+            tuple of (should_respect, reason)
+        """
+        # PPO reversal threshold - need strong conviction to override
+        # Lower threshold for losing positions (get out faster)
+        if position_pnl < 0:
+            reversal_threshold = 0.60  # 60% confidence for losers
+        else:
+            reversal_threshold = 0.70  # 70% confidence for winners
+        
+        if ppo_confidence >= reversal_threshold:
+            reason = (
+                f"PPO MASTER REVERSAL: confidence {ppo_confidence:.0%} >= "
+                f"{reversal_threshold:.0%} threshold (P&L €{position_pnl:.2f})"
+            )
+            return (True, reason)
+        
+        return (False, f"PPO confidence {ppo_confidence:.0%} < {reversal_threshold:.0%}")
 
     @property
     def lot_calculator(self):
@@ -1144,6 +1319,65 @@ class SmartPositionManager:
         if position.unrealized_pnl > current_peak:
             self._profit_peaks[symbol] = position.unrealized_pnl
 
+        # ═══════════════════════════════════════════════════════════════════
+        # FINAL EXIT WINDOW CHECK (Last 60 min before hard_close_hour)
+        # In the final exit window, we push to exit positions to avoid 
+        # overnight exposure. However, we only exit if the loss is not
+        # too large (configurable max_loss_pct, default 2% of equity).
+        # This prevents locking in large losses just before market close.
+        # ═══════════════════════════════════════════════════════════════════
+        in_final_exit, is_obligatory, max_loss_pct = self._check_final_exit_window()
+        if in_final_exit and is_obligatory:
+            balance = self._get_current_balance()
+            max_loss_amount = balance * max_loss_pct
+            
+            if position.unrealized_pnl >= 0:
+                # Position is profitable or breakeven - exit to avoid overnight
+                reasons.append(
+                    f"🌙 FINAL EXIT WINDOW: Closing profitable/breakeven position "
+                    f"(P&L €{position.unrealized_pnl:.2f}) to avoid overnight exposure"
+                )
+                self.logger.info(
+                    f"[FINAL_EXIT] {symbol}: Closing position in final exit window "
+                    f"(P&L €{position.unrealized_pnl:.2f})"
+                )
+                return self._make_decision(
+                    action=PositionAction.CLOSE,
+                    symbol=symbol,
+                    side=position.side,
+                    confidence=0.80,
+                    reasons=reasons,
+                )
+            elif abs(position.unrealized_pnl) <= max_loss_amount:
+                # Position has acceptable loss - exit to avoid overnight
+                reasons.append(
+                    f"🌙 FINAL EXIT WINDOW: Closing position with acceptable loss "
+                    f"(P&L €{position.unrealized_pnl:.2f} within €{max_loss_amount:.2f} limit) "
+                    f"to avoid overnight exposure"
+                )
+                self.logger.info(
+                    f"[FINAL_EXIT] {symbol}: Closing losing position in final exit window "
+                    f"(P&L €{position.unrealized_pnl:.2f} within €{max_loss_amount:.2f} limit)"
+                )
+                return self._make_decision(
+                    action=PositionAction.CLOSE,
+                    symbol=symbol,
+                    side=position.side,
+                    confidence=0.75,
+                    reasons=reasons,
+                )
+            else:
+                # Loss is too large - hold and let ExitEngine manage
+                reasons.append(
+                    f"⚠️ FINAL EXIT WINDOW: Holding position with large loss "
+                    f"(P&L €{position.unrealized_pnl:.2f} exceeds €{max_loss_amount:.2f} limit) - "
+                    f"letting ExitEngine manage"
+                )
+                self.logger.warning(
+                    f"[FINAL_EXIT] {symbol}: Position loss €{position.unrealized_pnl:.2f} "
+                    f"exceeds max €{max_loss_amount:.2f} - not forcing close"
+                )
+
         # Case 2: Existing position – unified ExitEngine first
         lifecycle = self._get_lifecycle_state(position)
         
@@ -1198,6 +1432,28 @@ class SmartPositionManager:
             )
 
         # Case 4: Signal opposes but ExitEngine said HOLD
+        # ═══════════════════════════════════════════════════════════════════
+        # PPO MASTER REVERSAL (v5.3)
+        # Check if PPO is signaling reversal - PPO is the master decision maker
+        # If PPO says reverse with high confidence, respect it over committee signal
+        # ═══════════════════════════════════════════════════════════════════
+        ppo_dir, ppo_conf, ppo_is_reversal = self._get_ppo_decision(symbol)
+        
+        # Use PPO's reversal signal if strong enough, otherwise fall back to committee signal
+        use_ppo_reversal = False
+        if ppo_is_reversal:
+            should_respect, ppo_reason = self._should_respect_ppo_reversal(
+                symbol, ppo_conf, position.unrealized_pnl
+            )
+            if should_respect:
+                use_ppo_reversal = True
+                signal_against = True  # Force reversal path
+                signal_strength = max(signal_strength, ppo_conf)  # Use higher confidence
+                reasons.append(f"🎯 {ppo_reason}")
+                self.logger.info(
+                    f"[PPO_REVERSAL] {symbol}: Using PPO reversal signal (conf={ppo_conf:.0%})"
+                )
+
         if signal_against and signal_strength >= cfg.strong_signal_threshold:
             reasons.append(
                 f"REVERSAL: Strong opposing signal ({signal_strength:.2f}) "
@@ -1230,7 +1486,23 @@ class SmartPositionManager:
                     reasons=reasons,
                 )
 
-            # No cooldown issue: allow REVERSE (Executor must close+open)
+            # No cooldown issue: check trading window before REVERSE
+            # REVERSE creates a new position, so it's blocked when no_new_trades=True
+            no_new_trades, no_new_reason = self._check_no_new_trades()
+            if no_new_trades:
+                reasons.append(
+                    f"🚫 REVERSE BLOCKED: {no_new_reason} - closing instead"
+                )
+                # Just close the position, don't reverse
+                return self._make_decision(
+                    action=PositionAction.CLOSE,
+                    symbol=symbol,
+                    side=position.side,
+                    confidence=0.70,
+                    reasons=reasons,
+                )
+            
+            # Allow REVERSE (Executor must close+open)
             return self._make_decision(
                 action=PositionAction.REVERSE,
                 symbol=symbol,
@@ -1268,6 +1540,25 @@ class SmartPositionManager:
         """Decide on opening a new position."""
         cfg = self.config
         sym_cfg = self._get_symbol_cfg(symbol)
+
+        # ═══════════════════════════════════════════════════════════════════
+        # TRADING WINDOW CHECK - Block new trades when no_new_trades=True
+        # This ensures we don't open positions outside trading hours or
+        # in the final exit window before market close.
+        # CLOSE/TIGHTEN operations are still allowed for existing positions.
+        # ═══════════════════════════════════════════════════════════════════
+        no_new_trades, no_new_reason = self._check_no_new_trades()
+        if no_new_trades:
+            reasons.append(f"🚫 BLOCKED: {no_new_reason}")
+            self.logger.info(
+                f"[TRADING_WINDOW] {symbol}: Blocked new position - {no_new_reason}"
+            )
+            return self._make_decision(
+                action=PositionAction.HOLD,
+                symbol=symbol,
+                confidence=0.5,
+                reasons=reasons,
+            )
 
         # Race-condition guard: if sync is slightly behind, don't double-open
         existing = self._positions.get(symbol)
@@ -1781,6 +2072,53 @@ class SmartPositionManager:
         }
 
         # ═══════════════════════════════════════════════════════════════════
+        # FINAL EXIT WINDOW CHECK (manage_position path)
+        # Same logic as in decide() - exit positions before market close
+        # unless loss is too large.
+        # ═══════════════════════════════════════════════════════════════════
+        in_final_exit, is_obligatory, max_loss_pct = self._check_final_exit_window()
+        if in_final_exit and is_obligatory:
+            balance = self._get_current_balance()
+            max_loss_amount = balance * max_loss_pct
+            
+            if position.unrealized_pnl >= 0:
+                # Position is profitable or breakeven - exit to avoid overnight
+                reasons.append(
+                    f"🌙 FINAL EXIT WINDOW: Closing profitable/breakeven position "
+                    f"(P&L €{position.unrealized_pnl:.2f}) to avoid overnight exposure"
+                )
+                return self._make_decision(
+                    action=PositionAction.CLOSE,
+                    symbol=symbol,
+                    side=position.side,
+                    confidence=0.80,
+                    reasons=reasons,
+                    management_context=management_ctx,
+                    expert_support_ratio=support_ratio,
+                )
+            elif abs(position.unrealized_pnl) <= max_loss_amount:
+                # Position has acceptable loss - exit to avoid overnight
+                reasons.append(
+                    f"🌙 FINAL EXIT WINDOW: Closing position with acceptable loss "
+                    f"(P&L €{position.unrealized_pnl:.2f} within €{max_loss_amount:.2f} limit)"
+                )
+                return self._make_decision(
+                    action=PositionAction.CLOSE,
+                    symbol=symbol,
+                    side=position.side,
+                    confidence=0.75,
+                    reasons=reasons,
+                    management_context=management_ctx,
+                    expert_support_ratio=support_ratio,
+                )
+            else:
+                # Loss is too large - add warning but continue with normal evaluation
+                reasons.append(
+                    f"⚠️ FINAL EXIT WINDOW: Large loss €{position.unrealized_pnl:.2f} "
+                    f"exceeds limit - continuing normal evaluation"
+                )
+
+        # ═══════════════════════════════════════════════════════════════════
         # PRIORITY -1: BREAKEVEN SL CHECK (runs BEFORE ExitEngine)
         # This ensures SL is moved to breakeven BEFORE trailing exit triggers.
         # Without this, profit could retrace and ExitEngine would close before
@@ -1857,6 +2195,35 @@ class SmartPositionManager:
                     expert_support_ratio=support_ratio,
                 )
 
+            # ═══════════════════════════════════════════════════════════════════
+            # PPO MASTER REVERSAL CHECK (v5.3)
+            # If PPO is signaling reversal with high confidence, respect it
+            # REGARDLESS of what experts say. PPO is the MASTER decision maker.
+            # ═══════════════════════════════════════════════════════════════════
+            ppo_dir, ppo_conf, ppo_is_reversal = self._get_ppo_decision(symbol)
+            if ppo_is_reversal:
+                should_respect, ppo_reason = self._should_respect_ppo_reversal(
+                    symbol, ppo_conf, position.unrealized_pnl
+                )
+                if should_respect:
+                    reasons.append(f"🎯 {ppo_reason}")
+                    self.logger.info(
+                        f"[PPO_REVERSAL] {symbol}: {ppo_reason} - closing position "
+                        f"(overriding expert support {support_ratio:.0%})"
+                    )
+                    return self._make_decision(
+                        action=PositionAction.CLOSE,
+                        symbol=symbol,
+                        side=position.side,
+                        confidence=max(exit_decision.confidence, ppo_conf),
+                        reasons=reasons,
+                        management_context=management_ctx,
+                        expert_support_ratio=support_ratio,
+                    )
+                else:
+                    # PPO wants reversal but confidence is too low
+                    reasons.append(f"⏸️ PPO reversal signal too weak: {ppo_reason}")
+
             # Non-critical: experts may influence whether we tighten or close
             if support_ratio <= 0.3 or position.unrealized_pnl <= 0:
                 reasons.append(
@@ -1905,6 +2272,41 @@ class SmartPositionManager:
             )
 
         # ExitEngine wants HOLD – cooperative management mode
+
+        # ═══════════════════════════════════════════════════════════════════
+        # PPO MASTER REVERSAL CHECK (v5.3) - Even when ExitEngine says HOLD
+        # If PPO is signaling strong reversal, respect it over experts.
+        # This ensures PPO remains the MASTER decision maker for reversals.
+        # ═══════════════════════════════════════════════════════════════════
+        ppo_dir, ppo_conf, ppo_is_reversal = self._get_ppo_decision(symbol)
+        if ppo_is_reversal:
+            should_respect, ppo_reason = self._should_respect_ppo_reversal(
+                symbol, ppo_conf, position.unrealized_pnl
+            )
+            if should_respect:
+                reasons.append(f"🎯 {ppo_reason}")
+                reasons.append(
+                    f"PPO MASTER: Overriding ExitEngine HOLD and expert support "
+                    f"({support_ratio:.0%}) for reversal"
+                )
+                self.logger.info(
+                    f"[PPO_REVERSAL] {symbol}: {ppo_reason} - closing on PPO reversal signal "
+                    f"(ExitEngine said HOLD, experts={support_ratio:.0%})"
+                )
+                return self._make_decision(
+                    action=PositionAction.CLOSE,
+                    symbol=symbol,
+                    side=position.side,
+                    confidence=ppo_conf,
+                    reasons=reasons,
+                    management_context=management_ctx,
+                    expert_support_ratio=support_ratio,
+                )
+            else:
+                # Log weak PPO reversal signal for debugging
+                self.logger.debug(
+                    f"[PPO_REVERSAL] {symbol}: Weak reversal signal - {ppo_reason}"
+                )
 
         # Get per-instrument thresholds (respects XAUUSD/EURUSD overrides from risk_policy.yaml)
         sym_cfg = self._get_symbol_cfg(symbol)
