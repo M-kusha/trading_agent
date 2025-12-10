@@ -385,19 +385,22 @@ def create_environments(data: Dict, config: TradingConfig, n_envs: int = 1, seed
     n_envs = requested_envs
     
     # Determine vectorization strategy based on OS and mode
+    # ModernTradingEnv now supports lazy initialization for SubprocVecEnv compatibility
     use_subproc = False
+    
     if getattr(config, "live_mode", False):
         n_envs = 1
         print("[TOOL] Live mode: using single environment")
     elif platform.system() == "Windows":
         # Windows has issues with multiprocessing + PyTorch
-        # Allow up to 4 envs with DummyVecEnv (sequential)
         n_envs = min(n_envs, 4)
         print(f"[TOOL] Windows: using {n_envs} sequential env(s) (DummyVecEnv)")
     elif n_envs > 1:
         # Linux/Mac: use SubprocVecEnv for true parallelism
         use_subproc = True
         print(f"[TOOL] Linux/Mac: using {n_envs} parallel env(s) (SubprocVecEnv)")
+    else:
+        print(f"[TOOL] Using {n_envs} sequential env(s) (DummyVecEnv)")
 
     def make(rank: int):
         def _init():
@@ -409,11 +412,9 @@ def create_environments(data: Dict, config: TradingConfig, n_envs: int = 1, seed
 
     if use_subproc and n_envs > 1:
         # SubprocVecEnv runs each env in a separate process (true parallelism)
-        # Use 'fork' on Linux (faster, avoids pickle issues) or 'forkserver' as fallback
-        # 'spawn' requires all objects to be picklable which ModernTradingEnv is not
+        # Use 'fork' on Linux for best performance
         try:
-            import multiprocessing
-            start_method = 'fork' if platform.system() != 'Darwin' else 'forkserver'
+            start_method = 'fork' if platform.system() == 'Linux' else 'forkserver'
             env = SubprocVecEnv([make(i) for i in range(n_envs)], start_method=start_method)
         except Exception as e:
             print(f"[WARN] SubprocVecEnv failed ({e}), falling back to DummyVecEnv")

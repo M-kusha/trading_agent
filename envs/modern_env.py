@@ -133,23 +133,27 @@ class ModernTradingEnv(gym.Env):
         self.min_intensity = float(getattr(self.config, "min_intensity", 0.0) or 0.0)
         self.ignore_hold = bool(getattr(self.config, "ignore_hold", True))
 
-        # Logger
-        self.logger = self._create_logger()
+        # Logger (lazy init for pickle compatibility)
+        self._logger = None  # Will be created on first access
 
-        # SmartInfoBus / Orchestrator
+        # SmartInfoBus / Orchestrator (lazy init for SubprocVecEnv pickle compatibility)
         self.smart_bus = None  # type: ignore[assignment]
         self.smart_bus_enabled = False
         self.orchestrator = None  # type: ignore[assignment]
         self.orchestrator_enabled = False
+        
+        # Flag to track if runtime systems are initialized
+        # This enables pickle compatibility for SubprocVecEnv
+        self._runtime_initialized = False
 
-        # Async loop for orchestrator
+        # Async loop for orchestrator (created lazily in _ensure_runtime_initialized)
         self._aio_loop: Optional[asyncio.AbstractEventLoop] = None
         self._aio_thread: Optional[threading.Thread] = None
-        self._aio_ready = threading.Event()
-        self._pending_futures: Set[Future] = set()
-        self._pend_lock = threading.Lock()
-        self._bus_ready = threading.Event()
-        self._orch_ready = threading.Event()
+        self._aio_ready: Optional[threading.Event] = None
+        self._pending_futures: Optional[Set[Future]] = None
+        self._pend_lock: Optional[threading.Lock] = None
+        self._bus_ready: Optional[threading.Event] = None
+        self._orch_ready: Optional[threading.Event] = None
         # Backpressure controls (defaults guarded via config where available)
         try:
             self._orch_inflight_limit = int(getattr(self.config, "orchestrator_max_inflight", 1) or 1)
@@ -160,9 +164,9 @@ class ModernTradingEnv(gym.Env):
         except Exception:
             self._orch_step_interval = 1
 
-        # Bring systems up
-        self._initialize_systems()
-        self._start_event_loop_thread()
+        # NOTE: Runtime systems (threads, locks, bus, orchestrator) are initialized lazily
+        # in _ensure_runtime_initialized() to enable pickle compatibility for SubprocVecEnv.
+        # They will be created on the first reset() call, which happens AFTER the subprocess starts.
 
         # Data (fallback local data)
         self.orig_data = data_dict
@@ -263,6 +267,16 @@ class ModernTradingEnv(gym.Env):
     # ──────────────────────────────────────────────────────────────
     # Logging
     # ──────────────────────────────────────────────────────────────
+    # ──────────────────────────────────────────────────────────────
+    # Logger property (lazy init for pickle compatibility)
+    # ──────────────────────────────────────────────────────────────
+    @property
+    def logger(self):
+        """Lazy logger initialization for pickle compatibility with SubprocVecEnv."""
+        if self._logger is None:
+            self._logger = self._create_logger()
+        return self._logger
+
     def _create_logger(self):
         try:
             if SMARTINFOBUS_AVAILABLE and RotatingLogger:
@@ -297,6 +311,33 @@ class ModernTradingEnv(gym.Env):
             return Fallback()
 
     # ──────────────────────────────────────────────────────────────
+    # Runtime initialization (lazy for SubprocVecEnv pickle compatibility)
+    # ──────────────────────────────────────────────────────────────
+    def _ensure_runtime_initialized(self):
+        """
+        Initialize runtime systems (threads, locks, bus, orchestrator).
+        
+        Called lazily on first reset() to enable pickle compatibility.
+        SubprocVecEnv pickles the env before forking, so we can't have
+        unpicklable objects (locks, threads, events) created in __init__.
+        """
+        if self._runtime_initialized:
+            return
+        
+        # Create threading primitives
+        self._aio_ready = threading.Event()
+        self._pending_futures = set()
+        self._pend_lock = threading.Lock()
+        self._bus_ready = threading.Event()
+        self._orch_ready = threading.Event()
+        
+        # Now bring up the systems
+        self._initialize_systems()
+        self._start_event_loop_thread()
+        
+        self._runtime_initialized = True
+
+    # ──────────────────────────────────────────────────────────────
     # SmartInfoBus / Orchestrator bring-up
     # ──────────────────────────────────────────────────────────────
     def _initialize_systems(self):
@@ -314,7 +355,8 @@ class ModernTradingEnv(gym.Env):
                         self.smart_bus = None
                         self.smart_bus_enabled = False
                     finally:
-                        self._bus_ready.set()
+                        if self._bus_ready is not None:
+                            self._bus_ready.set()
 
                 t = threading.Thread(target=init_bus, daemon=True)
                 t.start()
@@ -326,7 +368,8 @@ class ModernTradingEnv(gym.Env):
             # Minimal in-process fallback bus
             self.smart_bus = self._create_fallback_smart_bus()
             self.smart_bus_enabled = True
-            self._bus_ready.set()
+            if self._bus_ready is not None:
+                self._bus_ready.set()
 
         # Orchestrator
         if MODULE_SYSTEM_AVAILABLE and ModuleOrchestrator:
@@ -346,7 +389,8 @@ class ModernTradingEnv(gym.Env):
                         self.orchestrator = None
                         self.orchestrator_enabled = False
                     finally:
-                        self._orch_ready.set()
+                        if self._orch_ready is not None:
+                            self._orch_ready.set()
 
                 t = threading.Thread(target=init_orch, daemon=True)
                 t.start()
@@ -374,7 +418,8 @@ class ModernTradingEnv(gym.Env):
                 
                 loop.set_exception_handler(exception_handler)
                 self._aio_loop = loop
-                self._aio_ready.set()
+                if self._aio_ready is not None:
+                    self._aio_ready.set()
                 loop.run_forever()
             except Exception as e:
                 self.logger.warning(f"Async loop thread error: {e}")
@@ -383,7 +428,8 @@ class ModernTradingEnv(gym.Env):
             return
         self._aio_thread = threading.Thread(target=runner, daemon=True)
         self._aio_thread.start()
-        self._aio_ready.wait(timeout=1.5)
+        if self._aio_ready is not None:
+            self._aio_ready.wait(timeout=1.5)
 
     # ──────────────────────────────────────────────────────────────
     # Bus data detection
@@ -511,6 +557,10 @@ class ModernTradingEnv(gym.Env):
         if seed is not None:
             np.random.seed(seed)
 
+        # Lazy initialize runtime systems (threads, locks, bus, orchestrator)
+        # This enables pickle compatibility for SubprocVecEnv
+        self._ensure_runtime_initialized()
+
         self.logger.info(f"🔄 ENVIRONMENT_RESET: Episode {self.episode_count + 1}")
         self.episode_count += 1
         self.episode_metrics = EpisodeMetrics()
@@ -598,6 +648,8 @@ class ModernTradingEnv(gym.Env):
 
     def _cleanup_pending_futures(self):
         """Remove completed futures from tracking to prevent memory accumulation"""
+        if self._pend_lock is None or self._pending_futures is None:
+            return
         try:
             with self._pend_lock:
                 completed = {f for f in self._pending_futures if f.done()}
@@ -815,8 +867,11 @@ class ModernTradingEnv(gym.Env):
             can_schedule = False
             if should_fire_this_step:
                 try:
-                    with self._pend_lock:
-                        inflight = len(self._pending_futures)
+                    if self._pend_lock is not None and self._pending_futures is not None:
+                        with self._pend_lock:
+                            inflight = len(self._pending_futures)
+                    else:
+                        inflight = 0
                     limit = max(
                         1,
                         int(
@@ -965,8 +1020,9 @@ class ModernTradingEnv(gym.Env):
         if loop and loop.is_running():
             try:
                 fut = asyncio.run_coroutine_threadsafe(coro, loop)
-                with self._pend_lock:
-                    self._pending_futures.add(fut)
+                if self._pend_lock is not None and self._pending_futures is not None:
+                    with self._pend_lock:
+                        self._pending_futures.add(fut)
 
                 def _on_done(t: Future):
                     try:
@@ -976,8 +1032,9 @@ class ModernTradingEnv(gym.Env):
                     except Exception:
                         pass
                     finally:
-                        with self._pend_lock:
-                            self._pending_futures.discard(t)
+                        if self._pend_lock is not None and self._pending_futures is not None:
+                            with self._pend_lock:
+                                self._pending_futures.discard(t)
 
                 fut.add_done_callback(_on_done)
             except Exception as e:
@@ -1496,6 +1553,10 @@ class ModernTradingEnv(gym.Env):
     def _start_post_init_monitor(self):
         def monitor():
             try:
+                # Guard against None events (lazy init for pickle compatibility)
+                if self._bus_ready is None or self._orch_ready is None:
+                    return
+                    
                 if not self._bus_ready.is_set():
                     self._bus_ready.wait(
                         timeout=max(
@@ -1578,7 +1639,7 @@ class ModernTradingEnv(gym.Env):
 
         loop = self._aio_loop
         try:
-            if loop and loop.is_running():
+            if loop and loop.is_running() and self._pend_lock is not None and self._pending_futures is not None:
                 with self._pend_lock:
                     to_cancel = list(self._pending_futures)
                 for fut in to_cancel:
@@ -1607,8 +1668,9 @@ class ModernTradingEnv(gym.Env):
             pass
 
         try:
-            with self._pend_lock:
-                self._pending_futures.clear()
+            if self._pend_lock is not None and self._pending_futures is not None:
+                with self._pend_lock:
+                    self._pending_futures.clear()
         except Exception:
             pass
         self._aio_loop = None
