@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 # ─────────────────────────────────────────────────────────────
 # File: modules/meta/ppo_observation_builder.py
-# Unified PPO Observation Builder (v4.0)
+# Unified PPO Observation Builder (v5.0 - Master/Advisor Architecture)
 #
 # Single source of truth for PPO observation construction.
 # Used identically in TRAINING (ModernTradingEnv) and LIVE (PPOAgent).
 #
-# Design:
+# Architecture (v5.0):
+# - PPO is the MASTER - makes all trading decisions
+# - Experts are ADVISORS - provide features/signals as ADVICE
+# - Expert signals are SIGNED (+bullish/-bearish) - PPO learns correlations
 # - M15 is the PRIMARY trading/decision timeframe
 # - H1/H4/D1 are CONTEXT timeframes (filters/regime)
-# - Voting/committee signals are included for informed decisions
-# - World Model & Trading Mode features are integrated (v4.0)
 # ─────────────────────────────────────────────────────────────
 
 from __future__ import annotations
@@ -34,23 +35,26 @@ except ImportError:
 
 
 # ═══════════════════════════════════════════════════════════════════
-# OBSERVATION SCHEMA (v4.0) - World Model & Trading Mode Integration
+# OBSERVATION SCHEMA (v5.0) - Master/Advisor Architecture
 # ═══════════════════════════════════════════════════════════════════
 #
-# Total: 64 dimensions (expanded for world model and trading mode)
+# Total: 64 dimensions
 #
 # [0-9]   M15 Price Features (PRIMARY) - 10 dims
 # [10-15] Higher TF Context (H1/H4/D1 aggregated) - 6 dims
-# [16-23] Voting Expert Signals - 8 dims
-# [24-31] Committee/Consensus Metrics - 8 dims
+# [16-23] Expert ADVISOR Signals (SIGNED: +bull/-bear) - 8 dims
+# [24-31] Committee Consensus (SIGNED + metrics) - 8 dims  
 # [32-39] Risk/Memory Signals - 8 dims
 # [40-47] Account/Position State - 8 dims
-# [48-55] World Model Predictions - 8 dims (NEW v4.0)
-# [56-63] Trading Mode State - 8 dims (NEW v4.0)
+# [48-55] World Model Predictions - 8 dims
+# [56-63] Trading Mode State - 8 dims
+#
+# KEY: Expert signals are FEATURES, not directives. PPO learns which
+# expert signals correlate with profitable trades and how to weight them.
 # ═══════════════════════════════════════════════════════════════════
 
 # Observation dimension constants
-PPO_OBS_VERSION = "4.0"
+PPO_OBS_VERSION = "5.0"  # Master/Advisor Architecture
 PPO_OBS_SIZE = 64
 
 # Feature group indices for debugging/analysis
@@ -537,14 +541,14 @@ class PPOObservationBuilder:
 
     def _build_voting_features(self, expert_signals: Optional[Dict[str, Any]]) -> np.ndarray:
         """
-        Build voting expert features WITHOUT direction leakage.
+        Build voting expert features as RAW SIGNALS for PPO to learn from.
         
-        For autonomous PPO training, we intentionally DO NOT encode expert directions.
-        Instead, we encode:
-        - Expert numeric strength/score (if available)
-        - Expert confidence levels
+        PPO is the MASTER - experts provide ADVICE as features:
+        - feats[i*2]: Expert SIGNED strength (+ve=bullish, -ve=bearish, 0=neutral)
+          This is NOT a directive - PPO learns to correlate with profitable trades.
+        - feats[i*2+1]: Expert confidence level (how sure is the expert?)
         
-        This forces PPO to learn its own directional decisions from market data.
+        PPO must learn which expert signals correlate with success.
         """
         feats = np.zeros(8, dtype=np.float32)
 
@@ -561,17 +565,26 @@ class PPOObservationBuilder:
             if not isinstance(sig, dict):
                 sig = {}
 
-            # Expert numeric strength/score (NOT direction)
-            # This could be magnitude of signal, z-score, etc.
-            # If score not available, we use 0.0 (neutral)
-            score_raw = sig.get("score", sig.get("strength", sig.get("magnitude", 0.0)))
+            # Get raw strength/score
+            strength_raw = sig.get("score", sig.get("strength", sig.get("magnitude", 0.0)))
             try:
-                score_val = float(score_raw)
+                strength_val = abs(float(strength_raw))
             except (TypeError, ValueError):
-                score_val = 0.0
-            feats[i * 2] = float(np.clip(score_val, -1.0, 1.0))
+                strength_val = 0.0
+            
+            # Get direction to create SIGNED strength
+            direction = str(sig.get("direction", sig.get("action", "neutral"))).lower()
+            if direction in ("bullish", "long", "buy"):
+                signed_strength = strength_val
+            elif direction in ("bearish", "short", "sell"):
+                signed_strength = -strength_val
+            else:
+                signed_strength = 0.0  # Neutral
+            
+            # feats[i*2]: Signed strength (-1 to +1)
+            feats[i * 2] = float(np.clip(signed_strength, -1.0, 1.0))
 
-            # Confidence (unchanged)
+            # feats[i*2+1]: Confidence (0 to 1)
             conf_raw = sig.get("confidence", 0.0)
             try:
                 conf_val = float(conf_raw)
@@ -585,12 +598,16 @@ class PPOObservationBuilder:
     # Committee/Consensus Metrics - 8 dims
     # ─────────────────────────────────────────────────────────────
     #
-    # IMPORTANT (v4.1 - Autonomous PPO):
-    # We NO LONGER encode committee direction as a categorical signal.
-    # Instead, we encode:
-    # - [0] consensus_strength: How strongly aligned are experts (0-1)?
-    # - [1] committee_conf: Committee's confidence level
-    # - Other features remain focused on agreement/regime/strength metrics
+    # PPO MASTER / EXPERT ADVISOR Architecture (v5.0):
+    # Committee signals are RAW ADVICE - PPO decides what to do with them.
+    # - [0] signed_consensus: +ve=bullish consensus, -ve=bearish (-1 to +1)
+    # - [1] committee_conf: How confident is the committee? (0-1)
+    # - [2] vote_alignment: Do experts agree with each other? (0-1)
+    # - [3] avg_expert_confidence: Mean confidence across experts (0-1)
+    # - [4] fragility: How fragile is the consensus? (0-1)
+    # - [5] regime_type: Market character (trending/ranging/volatile) (0-1)
+    # - [6] regime_strength: Strength of current regime (0-1)
+    # - [7] expert_conviction: % of experts with strong signals (0-1)
     # ─────────────────────────────────────────────────────────────
 
     def _build_committee_features(
@@ -599,49 +616,67 @@ class PPOObservationBuilder:
         expert_signals: Optional[Dict[str, Any]],
     ) -> np.ndarray:
         """
-        Build committee/consensus features WITHOUT direction leakage.
+        Build committee/consensus features as RAW SIGNALS for PPO.
         
-        For autonomous PPO training, we intentionally DO NOT encode committee direction.
-        Instead, we encode consensus strength, confidence, and agreement metrics.
+        PPO is the MASTER - committee provides ADVICE:
+        - Signed consensus (+bullish/-bearish) as a feature, not directive
+        - Agreement/confidence metrics
+        - Regime information
+        
+        PPO learns to correlate these with profitable trades.
         """
         feats = np.zeros(8, dtype=np.float32)
 
         committee_state = committee_state or {}
         expert_signals = expert_signals or {}
 
-        # [0] consensus_strength: How strong is the committee consensus? (NOT direction)
-        # This measures agreement magnitude without revealing the direction
+        # [0] signed_consensus: SIGNED committee direction (-1 to +1)
+        # PPO can learn to follow, inverse, or ignore this signal
         consensus_score = committee_state.get("consensus_score", 0.5)
-        feats[0] = float(np.clip(consensus_score, 0.0, 1.0))
+        consensus_action = str(committee_state.get("action", committee_state.get("direction", "flat"))).lower()
+        
+        if consensus_action in ("long", "bullish", "buy"):
+            signed_consensus = abs(float(consensus_score))
+        elif consensus_action in ("short", "bearish", "sell"):
+            signed_consensus = -abs(float(consensus_score))
+        else:
+            signed_consensus = 0.0
+        feats[0] = float(np.clip(signed_consensus, -1.0, 1.0))
 
         # [1] committee_conf
         feats[1] = float(np.clip(committee_state.get("confidence", 0.5), 0.0, 1.0))
 
-        # [2] vote_alignment: Do experts agree with EACH OTHER? (not direction)
-        # Calculate inter-expert agreement without exposing the direction
+        # [2] vote_alignment: Do experts agree with EACH OTHER?
+        # Calculate signed scores from expert signals
         experts = expert_signals.get("experts", {}) if isinstance(expert_signals, dict) else {}
-        expert_scores: list[float] = []
+        signed_expert_scores: list[float] = []
         if isinstance(experts, dict):
             for name in ["trend", "momentum", "theme", "seasonality"]:
                 sig = experts.get(name, {})
                 if not isinstance(sig, dict):
                     continue
-                # Get score/strength if available, otherwise use 0
-                score = sig.get("score", sig.get("strength", 0.0))
+                # Get strength and direction
+                strength = sig.get("score", sig.get("strength", 0.0))
+                direction = str(sig.get("direction", sig.get("action", "neutral"))).lower()
                 try:
-                    score_val = float(score)
-                    expert_scores.append(score_val)
+                    strength_val = abs(float(strength))
+                    if direction in ("bullish", "long", "buy"):
+                        signed_expert_scores.append(strength_val)
+                    elif direction in ("bearish", "short", "sell"):
+                        signed_expert_scores.append(-strength_val)
+                    else:
+                        signed_expert_scores.append(0.0)
                 except (TypeError, ValueError):
                     pass
 
-        if len(expert_scores) >= 2:
-            # Agreement = low variance among scores
-            variance = float(np.var(expert_scores))
+        if len(signed_expert_scores) >= 2:
+            # Agreement = low variance (experts pointing same direction)
+            variance = float(np.var(signed_expert_scores))
             feats[2] = float(np.clip(1.0 / (1.0 + variance * 10), 0.0, 1.0))
         else:
             feats[2] = 0.5  # Neutral when insufficient data
 
-        # [3] average_expert_confidence: How confident are experts overall?
+        # [3] average_expert_confidence
         expert_confidences: list[float] = []
         if isinstance(experts, dict):
             for name in ["trend", "momentum", "theme", "seasonality"]:
@@ -660,18 +695,16 @@ class PPOObservationBuilder:
         # [4] fragility
         feats[4] = float(np.clip(committee_state.get("fragility", 0.5), 0.0, 1.0))
 
-        # [5] regime_encoded (regime type, NOT direction)
-        # Maps regime to a characteristic, not directional bias
+        # [5] regime_type: Market character (0.8=trending, 0.2=ranging, 0.5=volatile)
         market = expert_signals.get("market", {}) if isinstance(expert_signals, dict) else {}
         regime = (market.get("regime", "unknown") if isinstance(market, dict) else "unknown")
         regime_map = {
-            # Regime encodes market character, not directional bias
-            "trending": 0.8,      # High trend strength
-            "uptrend": 0.8,       # Directional trending (strength, not direction)
-            "downtrend": 0.8,     # Same as uptrend (strength indicator only)
+            "trending": 0.8,
+            "uptrend": 0.8,
+            "downtrend": 0.8,
             "mean_reverting": 0.3,
             "ranging": 0.2,
-            "volatile": 0.5,      # Neutral (high volatility)
+            "volatile": 0.5,
             "unknown": 0.5,
         }
         feats[5] = float(regime_map.get(str(regime).lower(), 0.5))
@@ -682,9 +715,9 @@ class PPOObservationBuilder:
             regime_strength = float(market.get("regime_strength", 0.5))
         feats[6] = float(np.clip(regime_strength, 0.0, 1.0))
 
-        # [7] expert_conviction: How many experts have strong conviction?
-        strong_conviction_count = sum(1 for s in expert_scores if abs(s) > 0.5)
-        feats[7] = float(strong_conviction_count / max(len(expert_scores), 1))
+        # [7] expert_conviction: % of experts with strong signals (|score| > 0.5)
+        strong_conviction_count = sum(1 for s in signed_expert_scores if abs(s) > 0.5)
+        feats[7] = float(strong_conviction_count / max(len(signed_expert_scores), 1))
 
         return feats
 

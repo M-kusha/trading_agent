@@ -255,8 +255,10 @@ exit_strategies:
   soft_stop_min_signal: 0.35        # Need some real conviction against us
 
   # TIME DECAY – position too old + losing / stale profit
-  time_decay_hours: 1.5             # After ~1.5h it's considered "old"
-  time_decay_stop_eur: 150.0        # Old AND losing more than 150 => cut
+  # NOTE: In training/simulation, time passes fast (1 step = 15min candle)
+  # 4 hours = 16 M15 bars → gives positions time to develop
+  time_decay_hours: 4.0             # After ~4h it's considered "old" (was 1.5)
+  time_decay_stop_eur: 200.0        # Old AND losing more than 200 => cut (was 150)
 
   # TRAILING PROFIT – dynamic trailing around peak (ATR-aware)
   trailing_activation_eur: 150.0    # Start trailing after +150 EUR
@@ -271,8 +273,11 @@ exit_strategies:
   momentum_reversal_signal: 0.65    # Strong reversal threshold
 
   # SIGNAL EXIT – agent loses conviction / flips direction
-  signal_exit_threshold: 0.10       # Below 0.10 = "no conviction", exit
-  signal_direction_weight: 0.80     # Opposite direction with ≥0.8 strength => exit
+  # NOTE: This exit is DISABLED during training (training mode bypasses signal exits)
+  # so the agent learns consequences of direction flips through reward signals.
+  # Only active in live/production where capital protection matters.
+  signal_exit_threshold: 0.05       # Below 0.05 = "no conviction", exit
+  signal_direction_weight: 0.80     # Opposite direction with ≥0.80 strength => exit
 
   # Regime scaling – volatility-aware tightening/loosening
   volatile_regime_tighten: 0.7      # Tighter in volatile regime (<1.0)

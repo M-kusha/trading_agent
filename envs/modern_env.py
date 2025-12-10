@@ -669,6 +669,14 @@ class ModernTradingEnv(gym.Env):
                     thesis="Environment echo of action",
                 )
                 
+                # Publish step_idx for cooldown tracking across modules
+                self.smart_bus.set(
+                    "step_idx",
+                    int(self.current_step),
+                    module="Environment",
+                    thesis=f"Current simulation step: {self.current_step}",
+                )
+                
                 # Publish interpreted PPO decision for autonomous training
                 # This is the PPO's direct intent, before any expert blending
                 self.smart_bus.set(

@@ -30,6 +30,14 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 from enum import Enum, auto
 
+# Training mode check - signal exits are bypassed during training
+# so the agent learns from consequences of direction flips
+try:
+    from modules.voting.core.constants import is_training_mode
+except ImportError:
+    def is_training_mode() -> bool:
+        return False
+
 
 class ExitReason(Enum):
     """Exit strategy that triggered the close decision."""
@@ -920,7 +928,12 @@ class ExitStrategyEngine:
         )
 
     def _check_signal_exit(self, ctx: PositionContext, cfg: ExitConfig) -> ExitDecision:
-        """Check if agent signal warrants exit (direction flip or weak signal)."""
+        """Check if agent signal warrants exit (direction flip or weak signal).
+        
+        TRAINING MODE: Signal exits are BYPASSED during training so the agent
+        learns from the consequences of direction flips through reward signals.
+        This teaches better behavior rather than just preventing mistakes.
+        """
 
         # Skip signal-based exit if signal hasn't been calculated yet (startup)
         if not ctx.signal_valid:
@@ -930,6 +943,18 @@ class ExitStrategyEngine:
                 confidence=0.0,
                 urgency=0.0,
                 details={"message": "Signal not yet valid (startup grace period)"},
+            )
+
+        # TRAINING MODE BYPASS: Let agent learn from direction flips
+        # Instead of preventing exits, let the agent experience consequences
+        # and learn through reward signals (negative reward for bad flips)
+        if is_training_mode():
+            return ExitDecision(
+                should_exit=False,
+                reason=ExitReason.HOLD,
+                confidence=0.0,
+                urgency=0.0,
+                details={"message": "Signal exit bypassed (training mode - learning from consequences)"},
             )
 
         # Direction flip - agent wants opposite position

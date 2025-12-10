@@ -472,6 +472,21 @@ class LiveTradingLauncher:
         # Stop emergency watchdog first
         self._stop_emergency_watchdog()
 
+        # Save PPO autonomy state before shutdown
+        try:
+            self.logger.info("Saving PPO autonomy state...")
+            from modules.utils.info_bus import InfoBusManager
+            bus = InfoBusManager.get_instance()
+            # Try to save via PPOAgent's arbiter
+            ppo_agent = bus.get("ppo_agent_instance", "LiveTrading")
+            if ppo_agent and hasattr(ppo_agent, 'arbiter') and hasattr(ppo_agent.arbiter, 'save_autonomy_state'):
+                if ppo_agent.arbiter.save_autonomy_state():
+                    self.logger.info("[OK] PPO autonomy state saved")
+                else:
+                    self.logger.warning("Failed to save PPO autonomy state")
+        except Exception as e:
+            self.logger.warning(f"Could not save autonomy state: {e}")
+
         # Stop trading via API
         try:
             self.logger.info("Stopping trading system...")

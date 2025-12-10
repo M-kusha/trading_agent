@@ -769,15 +769,17 @@ class GatingResult:
             result.reasons.append(f"INSTR_RISK_ELEVATED={risk.instrument_risk:.2f}")
 
         # ─────────────────────────────────────────────────────────
-        # Stage 3: PPO override check
+        # Stage 3: PPO uncertainty check
         # ─────────────────────────────────────────────────────────
-        # If trust_score is very negative, PPO is explicitly overriding
-        # the committee/expert consensus; we can treat this as a "block"
-        # for safety when trust is deeply negative.
-        if trust_score < -0.5:
+        # If PPO's direction signal is very weak (near zero), it's uncertain.
+        # We block trades when PPO is indecisive, not when it wants to SHORT.
+        # Note: direction_score is signed (-1 to 1) where negative = SHORT.
+        # A strong SHORT signal (e.g., -0.8) should PASS, not be blocked.
+        direction_magnitude = abs(trust_score)
+        if direction_magnitude < 0.3:
             result.ppo_override = True
             result.gate_passed = False
-            result.reasons.append(f"PPO_OVERRIDE={trust_score:.2f}")
+            result.reasons.append(f"PPO_UNCERTAIN={trust_score:.2f}")
 
         # Final sanity clamps
         result.position_size_cap = max(0.0, min(2.0, result.position_size_cap))

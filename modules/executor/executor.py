@@ -1021,23 +1021,38 @@ class Executor(BaseModule):
                 or {}
             )
             instruments = env_cfg.get("instruments") or []
+            
+            # Fallback: if no instruments from config, use known trading instruments
+            if not instruments:
+                instruments = ["EUR_USD", "XAU_USD", "EURUSD", "XAUUSD"]
+            
+            # Debug: Log what instruments we're checking
+            self.logger.debug(f"[EXEC] Checking position_decisions for instruments: {instruments}")
+            
             for inst in instruments:
                 core = inst.replace("/", "").replace("_", "")
 
                 # try both module spaces and canonical variants
                 node = self.bus.get(f"position_decision_{inst}", "Executor", default=None)
+                self.logger.debug(f"[EXEC] position_decision_{inst} (Executor): {type(node).__name__} = {node}")
+                
                 if not (isinstance(node, dict) and node.get("decision")):
                     node = self.bus.get(
                         f"position_decision_{inst}", "PositionManager", default=None
                     )
+                    self.logger.debug(f"[EXEC] position_decision_{inst} (PositionManager): {type(node).__name__} = {node}")
+                    
                 if not (isinstance(node, dict) and node.get("decision")):
                     node = self.bus.get(
                         f"position_decision_{core}", "PositionManager", default=None
                     )
+                    self.logger.debug(f"[EXEC] position_decision_{core} (PositionManager): {type(node).__name__} = {node}")
+                    
                 if not (isinstance(node, dict) and node.get("decision")):
                     node = self.bus.get(
                         f"position_decision_{core}", "Executor", default=None
                     )
+                    self.logger.debug(f"[EXEC] position_decision_{core} (Executor): {type(node).__name__} = {node}")
 
                 if isinstance(node, dict) and node.get("decision"):
                     dec_count += 1
@@ -1433,8 +1448,9 @@ class Executor(BaseModule):
                 "ppo_autonomy_state", "Executor", default={}
             ) or {}
             if isinstance(autonomy_state, dict):
-                phase = autonomy_state.get("phase", "EXPERT_LED")
-                context["was_ppo_led"] = phase in ("PPO_LED", "FULL_AUTONOMY")
+                # PPO is ALWAYS the master now - was_ppo_led is always True
+                # Phase names are: LEARNING, IMPROVING, COMPETENT, EXPERT (analytics only)
+                context["was_ppo_led"] = True
 
             # Expert consensus from committee_decision
             committee = self.bus.get("committee_decision", "Executor", default={}) or {}

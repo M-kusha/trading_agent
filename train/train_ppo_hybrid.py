@@ -505,6 +505,14 @@ def train_modern_ppo(config: TradingConfig, data_source: str, pretrained_model_p
     mode_str = "LIVE" if getattr(config, "live_mode", False) else "OFFLINE"
     print(f"PPO Training - {mode_str} Mode")
 
+    # Set voting mode to TRAINING - arbiter observes but doesn't block PPO actions
+    try:
+        from modules.voting.core.constants import set_voting_mode
+        set_voting_mode("TRAINING")
+        print("[VOTING] Mode set to TRAINING - arbiter is observer only")
+    except ImportError:
+        pass
+
     # Logger (tolerant to RotatingLogger arg names)
     training_log = _create_rotating_logger_safe("ModernPPOTraining")
 

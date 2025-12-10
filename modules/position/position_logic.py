@@ -7,17 +7,15 @@
 # with SmartPositionManager (live trading). Both systems use the
 # same exit strategies configured in risk_policy.yaml.
 #
-# DECISION MODE: Configurable via system_config.yaml
-# - Mode 0 (SHADOW):    Committee trades, PPO logs only
-# - Mode 1 (COMMITTEE): Committee primary, PPO veto/advise
-# - Mode 2 (BLENDED):   Weighted blend of PPO and Committee
-# - Mode 3 (PPO):       PPO primary, Committee as fallback
+# PPO-MASTER ARCHITECTURE (June 2025):
+# - PPO is ALWAYS the primary decision maker (ppo_weight=1.0)
+# - Committee outputs are features/observations for PPO only
+# - Legacy decision modes (SHADOW, COMMITTEE, BLENDED) removed
 # -------------------------------------------------------------
 
 from __future__ import annotations
 
 import time
-from enum import Enum
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -44,47 +42,13 @@ from .exit_engine import (
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# DECISION MODE ENUM
+# PPO-MASTER ARCHITECTURE NOTE
 # ═══════════════════════════════════════════════════════════════════════════════
 
-
-class DecisionMode(Enum):
-    """
-    Controls who makes the primary trading decision.
-
-    SHADOW (0):    Committee trades, PPO runs in parallel but cannot affect trades.
-                   Used for validating PPO offline before trusting it.
-
-    COMMITTEE (1): Committee is primary decision maker, PPO can veto/advise.
-                   Use when PPO is untrusted or in early training.
-
-    BLENDED (2):   Decision is weighted blend of PPO and Committee.
-                   Good for transition phase.
-
-    PPO (3):       PPO is the primary decision maker.
-                   Committee outputs are features + safety hints.
-                   Use when PPO model is well-tested and trusted.
-    """
-
-    SHADOW = 0
-    COMMITTEE = 1
-    BLENDED = 2
-    PPO = 3
-
-    @classmethod
-    def from_string(cls, value: str) -> "DecisionMode":
-        """Convert string to DecisionMode enum."""
-        mapping = {
-            "shadow": cls.SHADOW,
-            "committee": cls.COMMITTEE,
-            "blended": cls.BLENDED,
-            "ppo": cls.PPO,
-            "0": cls.SHADOW,
-            "1": cls.COMMITTEE,
-            "2": cls.BLENDED,
-            "3": cls.PPO,
-        }
-        return mapping.get(str(value).lower().strip(), cls.COMMITTEE)
+# NOTE: DecisionMode enum removed in PPO-Master refactor (June 2025).
+# PPO is now ALWAYS the primary decision maker (ppo_weight=1.0, expert_weight=0.0).
+# Committee outputs are used as features/observations for PPO, never for direct decisions.
+# Legacy modes (SHADOW, COMMITTEE, BLENDED) are no longer supported.
 
 
 @module(
@@ -101,116 +65,55 @@ class DecisionMode(Enum):
 )
 class PositionManager(PositionManagerBase):
     """
-    Decision layer:
-      - Opens only on adequate signal.
-      - Scales and sizes via volatility / portfolio health / memory.
+    Decision layer for position entries and exits.
+    
+    PPO-MASTER ARCHITECTURE:
+      - PPO is ALWAYS the primary decision maker (ppo_weight=1.0)
+      - Committee outputs are features/observations for PPO, not direct decisions
+      - Memory and Risk gates can block trades (hard constraints)
+      - Seasonality gate blocks trades outside configured hours (live only)
+    
+    Responsibilities:
+      - Opens positions only on adequate PPO signals
+      - Scales and sizes via volatility / portfolio health / memory
       - Can close positions on:
           * Trailing take-profit (PnL retrace from peak + favorability degradation)
           * Emergency conditions (drawdown / loss streak / exposure / liquidity)
-          * Agent intent (direction flip or very weak signal).
-
-    DECISION MODE (configurable via system_config.yaml):
-      - Mode 0 (SHADOW):    Committee trades, PPO logs only
-      - Mode 1 (COMMITTEE): Committee primary, PPO veto/advise
-      - Mode 2 (BLENDED):   Weighted blend of PPO and Committee
-      - Mode 3 (PPO):       PPO primary, Committee as fallback
+          * PPO intent (direction flip or very weak signal)
     """
 
-    # Decision mode configuration (loaded from system_config.yaml)
-    _decision_mode_config: Optional[Dict[str, Any]] = None
-    _decision_mode: DecisionMode = DecisionMode.PPO  # Default to PPO primary
+    # Type stubs for methods inherited from PositionManagerBase
+    # (Pylance can't always resolve dynamic inheritance)
+    _check_cooldown: Any  # Cooldown check method from base class
+    _record_trade_time: Any  # Trade time recording from base class
 
     # ==========================================================
-    # Decision Mode Configuration
+    # PPO Configuration (simplified - PPO always primary)
     # ==========================================================
 
-    def _load_decision_mode_config(self) -> Dict[str, Any]:
-        """Load decision mode configuration from system_config.yaml."""
-        if self._decision_mode_config is not None:
-            return self._decision_mode_config
-
+    def _get_ppo_config(self) -> Dict[str, Any]:
+        """Get PPO trading configuration from system_config.yaml."""
         try:
             import yaml
             from pathlib import Path
 
-            config_paths = [
-                Path("config/system_config.yaml"),
-                Path("../config/system_config.yaml"),
-            ]
-
-            for path in config_paths:
-                if path.exists():
-                    with open(path, "r", encoding="utf-8") as f:
-                        config = yaml.safe_load(f)
-
-                    dm_config = (config or {}).get("decision_mode", {}) or {}
-                    self._decision_mode_config = dm_config
-
-                    # Parse the mode
-                    mode_str = dm_config.get("mode", "ppo")
-                    self._decision_mode = DecisionMode.from_string(mode_str)
-
-                    if self.debug:
-                        self.logger.info(
-                            f"[DecisionMode] Loaded mode={self._decision_mode.name} from {path}"
-                        )
-
-                    return dm_config
-
-            # Fallback defaults
-            self._decision_mode_config = {"mode": "ppo"}
-            return self._decision_mode_config
-
-        except Exception as e:
-            if self.debug:
-                self.logger.warning(
-                    f"[DecisionMode] Failed to load config: {e}, using default (PPO)"
-                )
-            self._decision_mode_config = {"mode": "ppo"}
-            return self._decision_mode_config
-
-    def _get_decision_mode(self, instrument: str) -> DecisionMode:
-        """Get decision mode for a specific instrument (supports per-instrument overrides)."""
-        config = self._load_decision_mode_config()
-
-        # Check for per-instrument override
-        per_inst = config.get("per_instrument", {}) or {}
-        if instrument in per_inst:
-            return DecisionMode.from_string(per_inst[instrument])
-
-        # Normalize instrument name and try again
-        inst_norm = self._normalize_instrument(instrument)
-        for key, mode in per_inst.items():
-            if self._normalize_instrument(key) == inst_norm:
-                return DecisionMode.from_string(mode)
-
-        return self._decision_mode
-
-    def _get_blended_config(self) -> Dict[str, Any]:
-        """Get blended mode configuration."""
-        config = self._load_decision_mode_config()
-        return config.get(
-            "blended",
-            {
-                "strategy": "confidence_weighted",
-                "ppo_weight": 0.6,
-                "committee_weight": 0.4,
-                "ppo_min_confidence": 0.30,  # Low - trust expert decisions
-                "committee_min_confidence": 0.30,  # Low - trust expert decisions
-                "conflict_resolution": "higher_confidence",
-            },
-        )
+            config_path = Path("config/system_config.yaml")
+            if config_path.exists():
+                with open(config_path, "r", encoding="utf-8") as f:
+                    config = yaml.safe_load(f)
+                return (config or {}).get("ppo", {}) or {}
+        except Exception:
+            pass
+        return {}
 
     def _get_safety_config(self) -> Dict[str, Any]:
         """Get safety override configuration."""
-        config = self._load_decision_mode_config()
-        return config.get(
+        ppo_cfg = self._get_ppo_config()
+        return ppo_cfg.get(
             "safety",
             {
-                "committee_unanimous_veto": True,
-                "committee_unanimous_threshold": 0.8,
-                "ppo_low_confidence_threshold": 0.4,
-                "log_ppo_shadow_decisions": True,
+                "min_confidence": 0.3,  # Minimum PPO confidence to trade
+                "fallback_to_committee": True,  # Use committee if PPO has no opinion
             },
         )
 
@@ -426,6 +329,9 @@ class PositionManager(PositionManagerBase):
                 except Exception:
                     pass
 
+                # Record trade time for cooldown (prevents rapid re-entry after emergency)
+                self._record_trade_time(instrument)
+
                 return self._finalize_decision(
                     instrument,
                     decision,
@@ -567,6 +473,9 @@ class PositionManager(PositionManagerBase):
                 except Exception:
                     pass
 
+                # Record trade time for cooldown (prevents rapid re-entry after exit)
+                self._record_trade_time(instrument)
+
                 return self._finalize_decision(
                     instrument,
                     decision,
@@ -578,7 +487,10 @@ class PositionManager(PositionManagerBase):
                     context,
                 )
 
-            # Otherwise HOLD – no exit triggered
+            # Otherwise HOLD – no exit or scale triggered
+            # NOTE: Position scaling is handled by SmartPositionManager in live trading.
+            # PPO learns scaling behavior through observations (position_size, unrealized_pnl)
+            # and the environment's reward signal. No need for explicit scaling logic here.
             rationale["stage"] = "hold_existing"
             rationale["factors"].append(
                 f"Holding position; exit_check={exit_decision.reason.name}, "
@@ -597,32 +509,17 @@ class PositionManager(PositionManagerBase):
 
         # ======================================================
         # NO POSITION: evaluate entry signals
+        # NOTE: Signal threshold check is moved AFTER PPO direction extraction.
+        # When PPO is master, we use PPO confidence as signal strength, not
+        # the voting-derived market_intensity. This prevents blocking trades
+        # when PPO has a clear decision but voting system has low intensity.
         # ======================================================
-        if sig_strength < min_sig:
-            rationale["stage"] = "signal_filter"
-            rationale["factors"].append(
-                f"Signal {sig_strength:.3f} below minimum threshold {min_sig:.2f} "
-                "for new entry"
-            )
-            return self._finalize_decision(
-                instrument,
-                decision,
-                0.0,
-                0.0,
-                0.5,
-                rationale,
-                risk_factors,
-                context,
-            )
 
         # ======================================================
-        # DIRECTION RESOLUTION - MODE-AWARE
-        # Mode controlled by system_config.yaml decision_mode.mode
+        # DIRECTION RESOLUTION - PPO MASTER
+        # PPO is ALWAYS the primary decision maker.
+        # Committee is used as fallback only when PPO has no opinion.
         # ======================================================
-        decision_mode = self._get_decision_mode(instrument)
-        voting_direction: Optional[int] = None
-        voting_confidence = 0.0
-        decision_source = "none"
 
         # ------------------------------------------------------
         # Extract PPO decision data (per-instrument if available)
@@ -777,259 +674,77 @@ class PositionManager(PositionManagerBase):
                     elif vote_action in ("SELL", "SHORT"):
                         committee_direction = -1
 
-        # Get config thresholds
-        blended_cfg = self._get_blended_config()
+        # ======================================================
+        # PPO-PRIMARY DIRECTION RESOLUTION
+        # PPO is ALWAYS the master. Committee is fallback only.
+        # ======================================================
         safety_cfg = self._get_safety_config()
-        ppo_min_conf = blended_cfg.get("ppo_min_confidence", 0.3)
-        committee_min_conf = blended_cfg.get("committee_min_confidence", 0.3)
+        ppo_min_conf = safety_cfg.get("min_confidence", 0.3)
+        
+        voting_direction: Optional[int] = None
+        voting_confidence = 0.0
+        decision_source = "none"
 
-        # Log shadow PPO decision (for all modes except PPO-primary)
-        if (
-            safety_cfg.get("log_ppo_shadow_decisions", True)
-            and decision_mode != DecisionMode.PPO
-        ):
-            if ppo_direction is not None:
-                ppo_action_str = {
-                    1: "LONG",
-                    -1: "SHORT",
-                    0: "HOLD",
-                }.get(ppo_direction, "UNKNOWN")
-                rationale["ppo_shadow"] = {
-                    "direction": ppo_action_str,
-                    "confidence": ppo_conf,
-                    "would_trade": ppo_direction != 0 and ppo_conf >= ppo_min_conf,
-                }
-
-        # ──────────────────────────────────────────────────────
-        # MODE 0: SHADOW - Committee trades, PPO logs only
-        # ──────────────────────────────────────────────────────
-        if decision_mode == DecisionMode.SHADOW:
-            if (
-                committee_direction is not None
-                and committee_direction != 0
-                and committee_conf >= committee_min_conf
-            ):
-                voting_direction = committee_direction
-                voting_confidence = committee_conf
-                decision_source = "committee (shadow mode)"
-            rationale["decision_mode"] = "SHADOW"
+        # PPO is primary - use its decision if available
+        if ppo_direction is not None and ppo_direction != 0 and ppo_conf >= ppo_min_conf:
+            voting_direction = ppo_direction
+            voting_confidence = ppo_conf
+            decision_source = "ppo (primary)"
+            dir_label = {1: "LONG", -1: "SHORT", 0: "HOLD"}.get(ppo_direction, "UNKNOWN")
             rationale["factors"].append(
-                "Mode=SHADOW: Committee decides, PPO shadow logged"
+                f"PPO primary decision: {dir_label} (conf={ppo_conf:.2f})"
             )
 
-        # ──────────────────────────────────────────────────────
-        # MODE 1: COMMITTEE - Committee primary, PPO can veto
-        # ──────────────────────────────────────────────────────
-        elif decision_mode == DecisionMode.COMMITTEE:
-            if (
-                committee_direction is not None
-                and committee_direction != 0
-                and committee_conf >= committee_min_conf
-            ):
-                # Committee has a signal - check if PPO vetoes
-                if ppo_gate_passed is False:
-                    rationale["factors"].append(
-                        "Mode=COMMITTEE: PPO vetoed committee signal"
-                    )
-                    voting_direction = None  # Blocked
-                else:
-                    voting_direction = committee_direction
-                    voting_confidence = committee_conf
-                    decision_source = "committee (ppo approved)"
-                    idx = committee_direction + 1
-                    dir_label = ["SHORT", "HOLD", "LONG"][idx]
-                    rationale["factors"].append(
-                        f"Mode=COMMITTEE: Committee {dir_label} "
-                        f"(conf={committee_conf:.2f}), PPO approved"
-                    )
-            rationale["decision_mode"] = "COMMITTEE"
+            # Attach size multiplier info for explainability
+            try:
+                ppo_mult = self._get_ppo_size_multiplier(context.instrument)
+                if ppo_mult is not None:
+                    rationale["ppo_position_size"] = ppo_mult
+            except Exception:
+                pass
 
-        # ──────────────────────────────────────────────────────
-        # MODE 2: BLENDED - Weighted combination
-        # ──────────────────────────────────────────────────────
-        elif decision_mode == DecisionMode.BLENDED:
-            strategy = blended_cfg.get("strategy", "confidence_weighted")
-            conflict_resolution = blended_cfg.get(
-                "conflict_resolution", "higher_confidence"
+        # Fallback to committee if PPO has no opinion and fallback is enabled
+        elif (
+            safety_cfg.get("fallback_to_committee", True)
+            and committee_direction is not None
+            and committee_direction != 0
+        ):
+            voting_direction = committee_direction
+            voting_confidence = committee_conf
+            decision_source = "committee (ppo fallback)"
+            dir_label = {1: "LONG", -1: "SHORT", 0: "HOLD"}.get(committee_direction, "UNKNOWN")
+            rationale["factors"].append(
+                f"PPO had no signal, using committee fallback: {dir_label} (conf={committee_conf:.2f})"
             )
 
-            ppo_valid = (
-                ppo_direction is not None
-                and ppo_direction != 0
-                and ppo_conf >= ppo_min_conf
-            )
-            committee_valid = (
-                committee_direction is not None
-                and committee_direction != 0
-                and committee_conf >= committee_min_conf
-            )
-
-            if ppo_valid and committee_valid:
-                # Both have valid signals
-                if ppo_direction == committee_direction:
-                    # Agreement - use higher confidence
-                    voting_direction = ppo_direction
-                    voting_confidence = max(ppo_conf, committee_conf)
-                    decision_source = "blended (agreement)"
-                    ppo_dir = ppo_direction if ppo_direction is not None else 0
-                    idx = ppo_dir + 1
-                    dir_label = ["SHORT", "HOLD", "LONG"][idx]
-                    rationale["factors"].append(
-                        f"Mode=BLENDED: PPO and Committee agree "
-                        f"({dir_label}), conf={voting_confidence:.2f}"
-                    )
-                else:
-                    # Conflict - apply resolution strategy
-                    if conflict_resolution == "abstain":
-                        voting_direction = None
-                        rationale["factors"].append(
-                            "Mode=BLENDED: PPO/Committee conflict → ABSTAIN"
-                        )
-                    elif conflict_resolution == "higher_confidence":
-                        if ppo_conf > committee_conf:
-                            voting_direction = ppo_direction
-                            voting_confidence = ppo_conf
-                            decision_source = "blended (ppo higher conf)"
-                        else:
-                            voting_direction = committee_direction
-                            voting_confidence = committee_conf
-                            decision_source = "blended (committee higher conf)"
-                        rationale["factors"].append(
-                            "Mode=BLENDED: Conflict resolved by higher confidence "
-                            f"→ {decision_source}"
-                        )
-                    elif conflict_resolution == "ppo_priority":
-                        voting_direction = ppo_direction
-                        voting_confidence = ppo_conf
-                        decision_source = "blended (ppo priority)"
-                    else:  # committee_priority
-                        voting_direction = committee_direction
-                        voting_confidence = committee_conf
-                        decision_source = "blended (committee priority)"
-            elif ppo_valid:
-                voting_direction = ppo_direction
-                voting_confidence = ppo_conf
-                decision_source = "blended (ppo only)"
-                rationale["factors"].append(
-                    "Mode=BLENDED: Only PPO has valid signal"
-                )
-            elif committee_valid:
-                voting_direction = committee_direction
-                voting_confidence = committee_conf
-                decision_source = "blended (committee only)"
-                rationale["factors"].append(
-                    "Mode=BLENDED: Only Committee has valid signal"
-                )
-
-            rationale["decision_mode"] = "BLENDED"
-
-        # ──────────────────────────────────────────────────────
-        # MODE 3: PPO - PPO primary, committee as fallback
-        # ──────────────────────────────────────────────────────
-        elif decision_mode == DecisionMode.PPO:
-            if (
-                ppo_direction is not None
-                and ppo_direction != 0
-                and ppo_conf >= ppo_min_conf
-            ):
-                voting_direction = ppo_direction
-                voting_confidence = ppo_conf
-                decision_source = "ppo (primary)"
-                idx = ppo_direction + 1
-                dir_label = ["SHORT", "HOLD", "LONG"][idx]
-                rationale["factors"].append(
-                    f"Mode=PPO: Primary decision {dir_label} "
-                    f"(conf={ppo_conf:.2f})"
-                )
-
-                # Attach size multiplier info for explainability (actual sizing is in calculate_size)
-                try:
-                    ppo_mult = self._get_ppo_size_multiplier(context.instrument)
-                    if ppo_mult is not None:
-                        rationale["ppo_position_size"] = ppo_mult
-                except Exception:
-                    pass
-
-            elif (
-                committee_direction is not None
-                and committee_direction != 0
-                and committee_conf >= committee_min_conf
-            ):
-                # Fallback to committee
-                voting_direction = committee_direction
-                voting_confidence = committee_conf
-                decision_source = "committee (ppo fallback)"
-                idx = committee_direction + 1
-                dir_label = ["SHORT", "HOLD", "LONG"][idx]
-                rationale["factors"].append(
-                    f"Mode=PPO: Fallback to Committee {dir_label} "
-                    f"(conf={committee_conf:.2f})"
-                )
-            elif ppo_direction == 0:
-                rationale["factors"].append("Mode=PPO: PPO decided to HOLD")
-
-            rationale["decision_mode"] = "PPO"
-
-        # ──────────────────────────────────────────────────────
-        # Safety check: Committee unanimous veto (all modes except SHADOW)
-        # ──────────────────────────────────────────────────────
-        if decision_mode != DecisionMode.SHADOW and voting_direction is not None:
-            if safety_cfg.get("committee_unanimous_veto", True):
-                unanimous_thresh = safety_cfg.get("committee_unanimous_threshold", 0.8)
-                ppo_low_thresh = safety_cfg.get(
-                    "ppo_low_confidence_threshold", 0.4
-                )
-
-                # Check if committee is unanimous in opposite direction while PPO is low confidence
-                if (
-                    committee_direction is not None
-                    and committee_direction != 0
-                    and committee_conf >= unanimous_thresh
-                    and committee_direction != voting_direction
-                    and ppo_conf < ppo_low_thresh
-                ):
-                    rationale["factors"].append(
-                        "SAFETY: Committee unanimous "
-                        f"({committee_conf:.0%}) in opposite direction, "
-                        f"PPO low confidence ({ppo_conf:.0%}) → BLOCKED"
-                    )
-                    voting_direction = None
+        elif ppo_direction == 0:
+            rationale["factors"].append("PPO decided to HOLD")
 
         rationale["decision_source"] = decision_source
+        rationale["decision_mode"] = "PPO_MASTER"
 
         # ──────────────────────────────────────────────────────
-        # DIRECTION FALLBACK LOGIC (v3.2.0)
-        # PositionManager should NOT override expert decisions.
-        # If voting_direction is None (thresholds not met), use best available
-        # signal rather than raw agent_action which may be stale/wrong.
+        # EFFECTIVE DIRECTION (simplified for PPO-Master)
+        # PPO always decides. If voting_direction is None (below threshold),
+        # we still trust PPO's raw direction.
         # ──────────────────────────────────────────────────────
         if voting_direction is not None:
             effective_direction = voting_direction
         elif ppo_direction is not None and ppo_direction != 0:
-            # PPO has a direction but below threshold - still use it
+            # PPO has a direction but below confidence threshold - still trust it
             effective_direction = ppo_direction
-            decision_source = "ppo (below threshold, trusted)"
             rationale["factors"].append(
-                f"Using PPO direction {ppo_direction} despite low confidence "
-                f"({ppo_conf:.2f}) - trusting expert system"
+                f"Using PPO direction {ppo_direction} (below threshold but trusted)"
             )
         elif committee_direction is not None and committee_direction != 0:
-            # Committee has a direction but below threshold - still use it
+            # Fallback to committee
             effective_direction = committee_direction
-            decision_source = "committee (below threshold, trusted)"
             rationale["factors"].append(
-                f"Using committee direction {committee_direction} despite low confidence "
-                f"({committee_conf:.2f}) - trusting expert system"
+                f"No PPO signal, using committee direction {committee_direction}"
             )
         else:
-            # No expert signal at all - only then use raw market direction
-            effective_direction = context.market_direction
-            if context.market_direction != 0:
-                rationale["factors"].append(
-                    "WARNING: No expert direction available, using raw market_direction"
-                )
-        
-        rationale["decision_source"] = decision_source
+            # No direction available - hold
+            effective_direction = 0
 
         if effective_direction == 0 or effective_direction is None:
             rationale["stage"] = "no_direction"
@@ -1046,6 +761,40 @@ class PositionManager(PositionManagerBase):
                 risk_factors,
                 context,
             )
+
+        # ======================================================
+        # SIGNAL STRENGTH CHECK (PPO-AWARE)
+        # When PPO is master, use PPO confidence as signal strength.
+        # This ensures PPO decisions aren't blocked by low voting intensity.
+        # ======================================================
+        effective_sig_strength = sig_strength  # Default: market_intensity from voting
+        
+        if decision_source == "ppo (primary)" and ppo_conf > 0:
+            # PPO is decision maker - use its confidence as signal strength
+            effective_sig_strength = ppo_conf
+            rationale["factors"].append(
+                f"Using PPO confidence {ppo_conf:.3f} as signal strength (override market_intensity {sig_strength:.3f})"
+            )
+        
+        if effective_sig_strength < min_sig:
+            rationale["stage"] = "signal_filter"
+            rationale["factors"].append(
+                f"Signal {effective_sig_strength:.3f} below minimum threshold {min_sig:.2f} "
+                "for new entry"
+            )
+            return self._finalize_decision(
+                instrument,
+                decision,
+                0.0,
+                0.0,
+                0.5,
+                rationale,
+                risk_factors,
+                context,
+            )
+
+        # Update sig_strength for downstream sizing calculations
+        sig_strength = effective_sig_strength
 
         # ======================================================
         # HEDGE PREVENTION: avoid long/short conflicts across instruments
@@ -1117,6 +866,10 @@ class PositionManager(PositionManagerBase):
             f"{direction_label} signal {sig_strength:.3f} for new position "
             f"(size≈{size:.2f} EUR)"
         )
+        
+        # Record trade time for cooldown tracking (prevents rapid cycling)
+        self._record_trade_time(instrument)
+        
         return self._finalize_decision(
             instrument,
             decision,

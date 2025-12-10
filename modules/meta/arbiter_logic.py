@@ -1,18 +1,31 @@
 #!/usr/bin/env python3
 """
 Arbiter Logic - Per-Instrument Decision Making
-===============================================
+==============================================
 
 This module contains the domain-specific arbiter logic that:
 - Knows what instruments are and how to trade them
 - Builds per-instrument observations
-- Applies gating logic (risk/memory)
+- Applies gating logic (risk/memory/seasonality)
 - Produces structured InstrumentDecision objects
-- **Adaptive PPO Autonomy**: Dynamically transitions leadership from experts to PPO
+- Tracks PPO performance AUTONOMY as analytics only
 
-It sits between PPOCore (pure RL) and PPOAgentShell (SmartInfoBus gateway).
+ARCHITECTURE (v5.0 - PPO Master / Experts as Advisors)
+------------------------------------------------------
+- PPO is ALWAYS the master decision maker.
+- action[0] = direction_score  ∈ [-1, 1]  → primary directional intent
+- action[1] = size_score       ∈ [-1, 1]  → base position sizing signal
 
-Version: 3.2.0 (Adaptive Autonomy + Hardened Parsing)
+Experts / committee:
+- NEVER override PPO direction.
+- Only adjust confidence and size slightly (advisory influence).
+- Are fully exposed in metadata for dashboards / explanations.
+
+This sits between:
+- PPOCore (pure RL policy/value model)
+- PPOAgentShell / SmartInfoBus integration
+
+Version: 5.0.0 (PPO Master, Experts-as-Advisors, Cleaned Autonomy Analytics)
 """
 
 from __future__ import annotations
@@ -38,100 +51,119 @@ from modules.meta.ppo_types import (
 from modules.meta.ppo_core import PPOCore
 from modules.meta.numeric_utils import _safe_float, _clip
 
+# Training mode check - bypasses time-based gates during training
+try:
+    from modules.voting.core.constants import is_training_mode
+except ImportError:
+    def is_training_mode() -> bool:
+        return False
+
 # Alias for typing.Optional so we can use OptType[...] as in your original code
 OptType = Optional
 
 
 # ═══════════════════════════════════════════════════════════════════
-# ADAPTIVE PPO AUTONOMY SYSTEM
+# PPO PERFORMANCE TRACKER (Analytics Only - PPO Always Decides)
 # ═══════════════════════════════════════════════════════════════════
 
 @dataclass
 class PPOAutonomyState:
     """
-    Tracks PPO's learning progress and determines appropriate autonomy level.
-    
-    Phases (automatic transitions based on performance):
-    1. EXPERT_LED: Experts make decisions, PPO observes and learns
-    2. BLENDED: PPO and experts share decision making (weighted average)
-    3. PPO_LED: PPO takes lead, experts provide safety checks
-    4. FULL_AUTONOMY: PPO has full control with minimal expert intervention
+    Tracks PPO's learning progress for ANALYTICS/LOGGING only.
+
+    DESIGN:
+    - PPO is ALWAYS the master decision maker.
+    - Autonomy metrics are for dashboards / logs, not for weighting decisions.
+
+    Phases (analytics only):
+    - LEARNING:   autonomy_level ~ 0.0–0.25
+    - IMPROVING:  autonomy_level ~ 0.25–0.5
+    - COMPETENT:  autonomy_level ~ 0.5–0.75
+    - EXPERT:     autonomy_level ~ 0.75–1.0
     """
-    # Current autonomy level (0.0 = experts lead, 1.0 = PPO leads)
-    autonomy_level: float = 0.0
-    
-    # Phase name for readability
-    phase: str = "EXPERT_LED"
-    
+    # Current performance level (0.0 = poor, 1.0 = excellent)
+    autonomy_level: float = 0.5  # Start neutral
+
+    # Phase name for readability (ANALYTICS ONLY - does not control decisions)
+    phase: str = "LEARNING"
+
     # PPO performance metrics (rolling window)
     ppo_win_rate: float = 0.0
     ppo_profit_factor: float = 0.0
-    ppo_consistency: float = 0.0  # Low variance = high consistency
+    ppo_consistency: float = 0.0          # Low variance = high consistency
     ppo_confidence_accuracy: float = 0.0  # How accurate are PPO's confidence estimates
-    
-    # Expert agreement tracking
-    ppo_expert_agreement_rate: float = 0.0  # How often PPO agrees with experts
-    ppo_override_success_rate: float = 0.0  # Success rate when PPO overrides experts
-    
+
+    # Expert agreement tracking (for analysis, not control)
+    ppo_expert_agreement_rate: float = 0.0
+    ppo_override_success_rate: float = 0.0
+
     # Learning velocity
-    learning_velocity: float = 0.0  # Rate of improvement
+    learning_velocity: float = 0.0
     steps_at_current_phase: int = 0
-    
-    # Phase thresholds (configurable)
-    expert_to_blended_threshold: float = 0.45  # Win rate needed to move to blended
-    blended_to_ppo_threshold: float = 0.55     # Win rate + consistency for PPO lead
-    ppo_to_autonomy_threshold: float = 0.65    # High performance for full autonomy
-    
+
+    # Thresholds for interpreting performance into phases (analytics)
+    learning_threshold: float = 0.45
+    improving_threshold: float = 0.55
+    competent_threshold: float = 0.65
+
     # Safety bounds
     min_trades_for_evaluation: int = 20
-    
+
     def get_ppo_weight(self) -> float:
-        """Get PPO's decision weight based on current autonomy level."""
-        return _clip(self.autonomy_level, 0.0, 1.0)
-    
+        """PPO weight is ALWAYS 1.0 - PPO makes all decisions."""
+        return 1.0
+
     def get_expert_weight(self) -> float:
-        """Get experts' decision weight (complement of PPO weight)."""
-        return 1.0 - self.get_ppo_weight()
+        """Expert weight is 0.0 for decisions (experts provide advice/features only)."""
+        return 0.0
 
 
 class PPOAutonomyTracker:
     """
-    Automatically tracks PPO's performance and adjusts its autonomy level.
-    
-    The system starts with experts leading (Phase 1) and gradually gives
-    more control to PPO as it proves its competence through:
-    - Consistent win rate improvement
-    - Profitable trade execution
-    - Alignment with (or successful override of) expert signals
-    - Stable confidence calibration
+    PPO PERFORMANCE TRACKER (Analytics Only)
+    ========================================
+
+    CRITICAL: PPO ALWAYS makes trading decisions.
+
+    This tracker:
+    - Computes rolling win rate / profit factor / consistency
+    - Tracks expert agreement vs disagreement
+    - Estimates autonomy_level ∈ [0, 1] for dashboards
+    - Assigns phases (LEARNING/IMPROVING/COMPETENT/EXPERT) for logging
     """
-    
+
+    _DEFAULT_STATE_PATH = "state/ppo_autonomy_state.json"
+
     def __init__(
         self,
         window_size: int = 50,
         adaptation_rate: float = 0.02,
         min_trades: int = 20,
-    ):
+    ) -> None:
         self.window_size = window_size
         self.adaptation_rate = adaptation_rate
         self.min_trades = min_trades
-        
+
         # State
         self.state = PPOAutonomyState()
-        
+
         # Rolling performance tracking
-        self._trade_outcomes: deque = deque(maxlen=window_size)  # (ppo_direction, expert_direction, outcome, ppo_conf, ...)
-        self._override_outcomes: deque = deque(maxlen=window_size)  # When PPO disagreed with experts
-        
+        self._trade_outcomes: deque = deque(maxlen=window_size)
+        self._override_outcomes: deque = deque(maxlen=window_size)
+
         # Cumulative stats
         self._total_trades = 0
         self._ppo_led_wins = 0
         self._ppo_led_losses = 0
         self._expert_led_wins = 0
         self._expert_led_losses = 0
-        
-        self._prev_autonomy: float = 0.0
-    
+
+        self._prev_autonomy: float = self.state.autonomy_level
+
+    # ─────────────────────────────────────────────────────────────
+    # Recording and updating
+    # ─────────────────────────────────────────────────────────────
+
     def record_trade_outcome(
         self,
         ppo_direction: str,
@@ -142,9 +174,8 @@ class PPOAutonomyTracker:
     ) -> None:
         """Record the outcome of a trade for autonomy evaluation."""
         self._total_trades += 1
-        
         win = actual_outcome > 0
-        
+
         self._trade_outcomes.append({
             "ppo_dir": ppo_direction,
             "expert_dir": expert_direction,
@@ -154,8 +185,7 @@ class PPOAutonomyTracker:
             "win": win,
             "agreed": ppo_direction == expert_direction,
         })
-        
-        # Track override outcomes
+
         if ppo_direction != expert_direction:
             self._override_outcomes.append({
                 "ppo_dir": ppo_direction,
@@ -163,8 +193,7 @@ class PPOAutonomyTracker:
                 "outcome": actual_outcome,
                 "win": win,
             })
-        
-        # Update cumulative stats
+
         if was_ppo_led:
             if win:
                 self._ppo_led_wins += 1
@@ -175,26 +204,24 @@ class PPOAutonomyTracker:
                 self._expert_led_wins += 1
             else:
                 self._expert_led_losses += 1
-        
-        # Recalculate autonomy
+
         self._update_autonomy_level()
-    
+
     def _update_autonomy_level(self) -> None:
         """Recalculate autonomy level based on recent performance."""
         if len(self._trade_outcomes) < self.min_trades:
-            # Not enough data - stay at current level
             self.state.steps_at_current_phase += 1
             return
-        
+
         outcomes = list(self._trade_outcomes)
-        
+
         # PPO-led trades
         ppo_led_trades = [t for t in outcomes if t["ppo_led"]]
         if ppo_led_trades:
             self.state.ppo_win_rate = sum(1 for t in ppo_led_trades if t["win"]) / len(ppo_led_trades)
         else:
             self.state.ppo_win_rate = 0.0
-        
+
         # Profit factor (PPO-led only)
         wins = [t["outcome"] for t in ppo_led_trades if t["win"]]
         losses = [abs(t["outcome"]) for t in ppo_led_trades if not t["win"]]
@@ -202,115 +229,98 @@ class PPOAutonomyTracker:
             self.state.ppo_profit_factor = sum(wins) / sum(losses) if wins else 0.0
         else:
             self.state.ppo_profit_factor = sum(wins) if wins else 0.0
-        
-        # Consistency (inverse of variance) using all outcomes for stability
+
+        # Consistency (inverse of variance) using all outcomes
         if len(outcomes) > 5:
             outcome_values = [t["outcome"] for t in outcomes]
             variance = float(np.var(outcome_values))
-            self.state.ppo_consistency = 1.0 / (1.0 + variance)  # 0..1, higher = more consistent
-        
+            self.state.ppo_consistency = 1.0 / (1.0 + variance)
+
         # Agreement rate
         self.state.ppo_expert_agreement_rate = sum(1 for t in outcomes if t["agreed"]) / len(outcomes)
-        
+
         # Override success rate
         overrides = list(self._override_outcomes)
         if overrides:
             self.state.ppo_override_success_rate = sum(1 for o in overrides if o["win"]) / len(overrides)
-        
+
         # Confidence calibration (high-confidence trades only)
         high_conf_trades = [t for t in ppo_led_trades if t["ppo_conf"] > 0.6]
         if high_conf_trades:
             high_conf_accuracy = sum(1 for t in high_conf_trades if t["win"]) / len(high_conf_trades)
             self.state.ppo_confidence_accuracy = high_conf_accuracy
-        
-        # Determine target autonomy level
+
+        # Target autonomy based on composite metrics
         target_autonomy = self._calculate_target_autonomy()
-        
+
         # Smooth transition (low-pass filter)
         delta = target_autonomy - self.state.autonomy_level
         self.state.autonomy_level += delta * self.adaptation_rate
         self.state.autonomy_level = float(_clip(self.state.autonomy_level, 0.0, 1.0))
-        
-        # Track learning velocity and phase
+
+        # Learning velocity and phase
         self.state.learning_velocity = self.state.autonomy_level - self._prev_autonomy
         self._prev_autonomy = self.state.autonomy_level
-        
+
         self._update_phase_name()
-    
+
     def _calculate_target_autonomy(self) -> float:
-        """Calculate target autonomy based on composite performance metrics."""
-        # Base score from win rate
-        win_rate_score = self.state.ppo_win_rate
-        
-        # Consistency bonus
-        consistency_bonus = self.state.ppo_consistency * 0.2
-        
-        # Successful override bonus
-        override_bonus = 0.0
-        if self.state.ppo_override_success_rate > 0.5:
-            override_bonus = (self.state.ppo_override_success_rate - 0.5) * 0.3
-        
-        # Confidence calibration bonus
-        confidence_bonus = 0.0
-        if self.state.ppo_confidence_accuracy > 0.6:
-            confidence_bonus = (self.state.ppo_confidence_accuracy - 0.6) * 0.2
-        
-        # Profit factor bonus
-        pf_bonus = 0.0
-        if self.state.ppo_profit_factor > 1.0:
-            pf_bonus = min(0.2, (self.state.ppo_profit_factor - 1.0) * 0.1)
-        
-        composite = win_rate_score + consistency_bonus + override_bonus + confidence_bonus + pf_bonus
-        
-        # Map composite score to autonomy level via thresholds
-        if composite < self.state.expert_to_blended_threshold:
-            # Expert-led
-            return composite / self.state.expert_to_blended_threshold * 0.25
-        elif composite < self.state.blended_to_ppo_threshold:
-            # Blended
-            progress = (composite - self.state.expert_to_blended_threshold) / (
-                self.state.blended_to_ppo_threshold - self.state.expert_to_blended_threshold
-            )
-            return 0.25 + progress * 0.35  # 0.25 → 0.60
-        elif composite < self.state.ppo_to_autonomy_threshold:
-            # PPO-led
-            progress = (composite - self.state.blended_to_ppo_threshold) / (
-                self.state.ppo_to_autonomy_threshold - self.state.blended_to_ppo_threshold
-            )
-            return 0.60 + progress * 0.25  # 0.60 → 0.85
-        else:
-            # Full autonomy
-            excess = composite - self.state.ppo_to_autonomy_threshold
-            return min(1.0, 0.85 + excess * 0.5)
-    
+        """
+        Calculate target autonomy based on a composite of PPO metrics.
+
+        NOTE: This is purely for analytics. It does NOT influence decisions.
+        """
+        wr = _clip(self.state.ppo_win_rate, 0.0, 1.0)
+        pf_raw = max(0.0, self.state.ppo_profit_factor - 1.0)  # >1 is good
+        pf = float(np.tanh(pf_raw))  # squashed to ~0..1
+        cons = _clip(self.state.ppo_consistency, 0.0, 1.0)
+        ov = _clip(self.state.ppo_override_success_rate, 0.0, 1.0)
+        conf_acc = _clip(self.state.ppo_confidence_accuracy, 0.0, 1.0)
+
+        composite = (
+            0.55 * wr +
+            0.15 * pf +
+            0.10 * cons +
+            0.10 * ov +
+            0.10 * conf_acc
+        )
+        return float(_clip(composite, 0.0, 1.0))
+
     def _update_phase_name(self) -> None:
-        """Update human-readable phase name."""
+        """
+        Update human-readable phase name based on autonomy_level.
+
+        Phases are for analytics only – PPO decisions are unaffected.
+        """
         level = self.state.autonomy_level
         if level < 0.25:
-            new_phase = "EXPERT_LED"
-        elif level < 0.60:
-            new_phase = "BLENDED"
-        elif level < 0.85:
-            new_phase = "PPO_LED"
+            new_phase = "LEARNING"
+        elif level < 0.50:
+            new_phase = "IMPROVING"
+        elif level < 0.75:
+            new_phase = "COMPETENT"
         else:
-            new_phase = "FULL_AUTONOMY"
-        
+            new_phase = "EXPERT"
+
         if new_phase != self.state.phase:
             self.state.steps_at_current_phase = 0
         else:
             self.state.steps_at_current_phase += 1
-        
+
         self.state.phase = new_phase
-    
+
+    # ─────────────────────────────────────────────────────────────
+    # Public accessors
+    # ─────────────────────────────────────────────────────────────
+
     def get_decision_weights(self) -> Tuple[float, float]:
         """
         Get (ppo_weight, expert_weight) for blending decisions.
-        
-        Returns:
-            Tuple of (ppo_weight, expert_weight) that sum to 1.0
+
+        In this architecture PPO is ALWAYS master: (1.0, 0.0).
         """
         return self.state.get_ppo_weight(), self.state.get_expert_weight()
-    
+
     def get_state_summary(self) -> Dict[str, Any]:
         """Get summary of current autonomy state for logging/bus."""
         return {
@@ -329,6 +339,102 @@ class PPOAutonomyTracker:
             "steps_at_phase": self.state.steps_at_current_phase,
         }
 
+    # ─────────────────────────────────────────────────────────────
+    # Persistence
+    # ─────────────────────────────────────────────────────────────
+
+    def save_state(self, path: Optional[str] = None) -> bool:
+        """
+        Save autonomy state to disk for persistence across restarts.
+
+        Returns:
+            True if saved successfully, False otherwise
+        """
+        import json
+        from pathlib import Path
+
+        save_path = Path(path or self._DEFAULT_STATE_PATH)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            state_dict = {
+                "autonomy_level": self.state.autonomy_level,
+                "phase": self.state.phase,
+                "ppo_win_rate": self.state.ppo_win_rate,
+                "ppo_profit_factor": self.state.ppo_profit_factor,
+                "ppo_consistency": self.state.ppo_consistency,
+                "ppo_confidence_accuracy": self.state.ppo_confidence_accuracy,
+                "ppo_expert_agreement_rate": self.state.ppo_expert_agreement_rate,
+                "ppo_override_success_rate": self.state.ppo_override_success_rate,
+                "learning_velocity": self.state.learning_velocity,
+                "steps_at_current_phase": self.state.steps_at_current_phase,
+                "total_trades": self._total_trades,
+                "ppo_led_wins": self._ppo_led_wins,
+                "ppo_led_losses": self._ppo_led_losses,
+                "expert_led_wins": self._expert_led_wins,
+                "expert_led_losses": self._expert_led_losses,
+                "saved_at": datetime.utcnow().isoformat() + "Z",
+                "version": "1.0",
+            }
+
+            with open(save_path, "w", encoding="utf-8") as f:
+                json.dump(state_dict, f, indent=2)
+
+            return True
+        except Exception as e:
+            logging.warning(f"[PPOAutonomy] Failed to save state: {e}")
+            return False
+
+    def load_state(self, path: Optional[str] = None) -> bool:
+        """
+        Load autonomy state from disk.
+
+        Returns:
+            True if loaded successfully, False otherwise (starts fresh)
+        """
+        import json
+        from pathlib import Path
+
+        load_path = Path(path or self._DEFAULT_STATE_PATH)
+
+        if not load_path.exists():
+            logging.info(f"[PPOAutonomy] No saved state at {load_path}, starting fresh")
+            return False
+
+        try:
+            with open(load_path, "r", encoding="utf-8") as f:
+                state_dict = json.load(f)
+
+            self.state.autonomy_level = float(state_dict.get("autonomy_level", 0.5))
+            self.state.phase = state_dict.get("phase", "LEARNING")
+            self.state.ppo_win_rate = float(state_dict.get("ppo_win_rate", 0.0))
+            self.state.ppo_profit_factor = float(state_dict.get("ppo_profit_factor", 0.0))
+            self.state.ppo_consistency = float(state_dict.get("ppo_consistency", 0.0))
+            self.state.ppo_confidence_accuracy = float(state_dict.get("ppo_confidence_accuracy", 0.0))
+            self.state.ppo_expert_agreement_rate = float(state_dict.get("ppo_expert_agreement_rate", 0.0))
+            self.state.ppo_override_success_rate = float(state_dict.get("ppo_override_success_rate", 0.0))
+            self.state.learning_velocity = float(state_dict.get("learning_velocity", 0.0))
+            self.state.steps_at_current_phase = int(state_dict.get("steps_at_current_phase", 0))
+
+            self._total_trades = int(state_dict.get("total_trades", 0))
+            self._ppo_led_wins = int(state_dict.get("ppo_led_wins", 0))
+            self._ppo_led_losses = int(state_dict.get("ppo_led_losses", 0))
+            self._expert_led_wins = int(state_dict.get("expert_led_wins", 0))
+            self._expert_led_losses = int(state_dict.get("expert_led_losses", 0))
+
+            saved_at = state_dict.get("saved_at", "unknown")
+            logging.info(
+                f"[PPOAutonomy] Loaded state: phase={self.state.phase}, "
+                f"autonomy={self.state.autonomy_level:.2f}, "
+                f"win_rate={self.state.ppo_win_rate:.1%}, "
+                f"trades={self._total_trades} (saved {saved_at})"
+            )
+            return True
+
+        except Exception as e:
+            logging.warning(f"[PPOAutonomy] Failed to load state: {e}, starting fresh")
+            return False
+
 
 # ═══════════════════════════════════════════════════════════════════
 # STRATEGY INTEGRATION TYPES
@@ -338,34 +444,36 @@ class PPOAutonomyTracker:
 class StrategyInfo:
     """
     Normalized strategy module information for arbiter decisions.
-    
+
     Integrates outputs from:
     - BiasAuditor: Psychological bias adjustments
     - CurriculumPlannerPlus: Learning stage constraints
     - ThesisEvolutionEngine: Best thesis recommendations
+
+    IMPORTANT: Strategy adjusts confidence/size; it does NOT overwrite PPO direction.
     """
     # BiasAuditor outputs
-    bias_position_multiplier: float = 1.0  # from bias_adjustments.position_size_multiplier
-    bias_risk_reduction: float = 0.0       # from bias_adjustments.risk_reduction_factor
-    active_biases: List[str] = field(default_factory=list)  # from bias_analysis.individual_biases
-    psychological_state: str = "neutral"   # from psychological_state.state
-    
+    bias_position_multiplier: float = 1.0
+    bias_risk_reduction: float = 0.0
+    active_biases: List[str] = field(default_factory=list)
+    psychological_state: str = "neutral"
+
     # CurriculumPlannerPlus outputs
-    curriculum_stage: str = "Foundation"   # from curriculum_stage.name
-    stage_difficulty: float = 1.0          # from curriculum_stage.difficulty
-    max_position_size: float = 1.0         # from learning_constraints.max_position_size
-    max_trades_per_day: int = 20           # from learning_constraints.max_trades_per_day
-    mastery_level: float = 0.5             # from mastery_assessment.mastery_level
-    
+    curriculum_stage: str = "Foundation"
+    stage_difficulty: float = 1.0
+    max_position_size: float = 1.0
+    max_trades_per_day: int = 20
+    mastery_level: float = 0.5
+
     # ThesisEvolutionEngine outputs
-    best_thesis: str = ""                  # from best_thesis.thesis
-    thesis_confidence: float = 0.5         # from best_thesis.confidence
-    thesis_regime_alignment: bool = True   # from best_thesis.regime_aligned
-    
+    best_thesis: str = ""
+    thesis_confidence: float = 0.5
+    thesis_regime_alignment: bool = True
+
     def __post_init__(self) -> None:
         if self.active_biases is None:
             self.active_biases = []
-    
+
     @classmethod
     def from_bus_data(
         cls,
@@ -382,7 +490,7 @@ class StrategyInfo:
         bias_adj = bias_adjustments or {}
         pos_mult = _safe_float(bias_adj.get("position_size_multiplier"), 1.0)
         risk_red = _safe_float(bias_adj.get("risk_reduction_factor"), 0.0)
-        
+
         # Bias analysis
         bias_anal = bias_analysis or {}
         active: List[str] = []
@@ -391,16 +499,16 @@ class StrategyInfo:
             for k, v in ind_biases.items():
                 if isinstance(v, dict) and v.get("detected", False):
                     active.append(str(k))
-        
+
         # Psychological state
         psych = psychological_state or {}
         psych_state = str(psych.get("state", "neutral") or "neutral")
-        
+
         # Curriculum stage
         curr_stage = curriculum_stage or {}
         stage_name = str(curr_stage.get("name", "Foundation") or "Foundation")
         stage_diff = _safe_float(curr_stage.get("difficulty"), 1.0)
-        
+
         # Learning constraints
         constraints = learning_constraints or {}
         max_pos = _safe_float(constraints.get("max_position_size"), 1.0)
@@ -409,17 +517,17 @@ class StrategyInfo:
             max_trades = int(max_trades_raw)
         except (TypeError, ValueError):
             max_trades = 20
-        
+
         # Mastery assessment
         mastery = mastery_assessment or {}
         mastery_lvl = _safe_float(mastery.get("mastery_level"), 0.5)
-        
+
         # Best thesis
         thesis = best_thesis or {}
         thesis_text = str(thesis.get("thesis", "") or "")
         thesis_conf = _safe_float(thesis.get("confidence"), 0.5)
         thesis_aligned = bool(thesis.get("regime_aligned", True))
-        
+
         return cls(
             bias_position_multiplier=_clip(pos_mult, 0.1, 1.0),
             bias_risk_reduction=_clip(risk_red, 0.0, 0.5),
@@ -440,29 +548,30 @@ class StrategyInfo:
 class TradingModeInfo:
     """
     Normalized trading mode information for arbiter decisions.
-    
-    Integrates outputs from TradingModeManager for intelligent position sizing
-    and risk adjustment based on current market conditions.
+
+    Integrates outputs from TradingModeManager.
+
+    IMPORTANT: Only scales risk/size/confidence; does not change PPO direction.
     """
     # Mode identification
-    mode_name: str = "normal"               # safe, normal, aggressive, extreme
-    mode_confidence: float = 0.5            # how confident the system is in this mode
-    
+    mode_name: str = "normal"      # safe, normal, aggressive, extreme
+    mode_confidence: float = 0.5
+
     # Risk parameters from mode_config
-    risk_multiplier: float = 1.0            # from mode_config.risk_multiplier
-    max_exposure: float = 0.5               # from mode_config.max_exposure
-    position_scale: float = 1.0             # from mode_config.position_scale
-    stop_loss_multiplier: float = 1.0       # from mode_config.stop_loss_multiplier
-    
+    risk_multiplier: float = 1.0
+    max_exposure: float = 0.5
+    position_scale: float = 1.0
+    stop_loss_multiplier: float = 1.0
+
     # Mode effectiveness metrics
-    effectiveness: float = 0.5              # from mode_effectiveness
-    win_rate_in_mode: float = 0.5           # historical performance in this mode
-    
-    # Decision factors that led to this mode
-    volatility_factor: float = 0.5          # from decision_factors.volatility
-    trend_factor: float = 0.5               # from decision_factors.trend
-    regime_factor: float = 0.5              # from decision_factors.regime
-    
+    effectiveness: float = 0.5
+    win_rate_in_mode: float = 0.5
+
+    # Decision factors
+    volatility_factor: float = 0.5
+    trend_factor: float = 0.5
+    regime_factor: float = 0.5
+
     @classmethod
     def from_bus_data(
         cls,
@@ -476,31 +585,30 @@ class TradingModeInfo:
         mode = str(trading_mode or "normal").lower()
         if mode not in ("safe", "normal", "aggressive", "extreme"):
             mode = "normal"
-        
+
         # Mode config
         config = mode_config or {}
         risk_mult = _safe_float(config.get("risk_multiplier"), 1.0)
         max_exp = _safe_float(config.get("max_exposure"), 0.5)
         pos_scale = _safe_float(config.get("position_scale"), 1.0)
         sl_mult = _safe_float(config.get("stop_loss_multiplier"), 1.0)
-        
-        # Effectiveness (supports either scalar or dict with score/effectiveness)
-        eff_val: Any
+
+        # Effectiveness
         if isinstance(mode_effectiveness, dict):
             eff_val = mode_effectiveness.get("effectiveness", mode_effectiveness.get("score", 0.5))
         else:
             eff_val = mode_effectiveness if mode_effectiveness is not None else 0.5
         eff = _safe_float(eff_val, 0.5)
-        
+
         # Decision factors
         factors = decision_factors or {}
         vol_factor = _safe_float(factors.get("volatility"), 0.5)
         trend_factor = _safe_float(factors.get("trend"), 0.5)
         regime_factor = _safe_float(factors.get("regime"), 0.5)
-        
+
         # Mode confidence based on effectiveness
         mode_conf = eff if eff > 0 else 0.5
-        
+
         return cls(
             mode_name=mode,
             mode_confidence=_clip(mode_conf, 0.0, 1.0),
@@ -509,16 +617,16 @@ class TradingModeInfo:
             position_scale=_clip(pos_scale, 0.25, 2.0),
             stop_loss_multiplier=_clip(sl_mult, 0.5, 2.0),
             effectiveness=_clip(eff, 0.0, 1.0),
-            win_rate_in_mode=0.5,  # could be wired to analytics later
+            win_rate_in_mode=0.5,
             volatility_factor=_clip(vol_factor, 0.0, 1.0),
             trend_factor=_clip(trend_factor, 0.0, 1.0),
             regime_factor=_clip(regime_factor, 0.0, 1.0),
         )
-    
+
     def should_reduce_position(self) -> bool:
         """Check if current mode suggests position reduction."""
         return self.mode_name == "safe" or self.effectiveness < 0.3
-    
+
     def should_increase_position(self) -> bool:
         """Check if current mode allows position increase."""
         return self.mode_name == "aggressive" and self.effectiveness > 0.6
@@ -528,64 +636,52 @@ class TradingModeInfo:
 class WorldModelInfo:
     """
     Normalized world model information for arbiter decisions.
-    
-    Integrates outputs from EnhancedWorldModel for predictive trading decisions
-    based on LSTM price/volatility/regime forecasts.
-    
-    Price changes are in array format [M15, H1, H4, D1] where M15 is the primary
-    decision-making timeframe.
+
+    Integrates outputs from EnhancedWorldModel.
+
+    IMPORTANT: Only modulates confidence/size; does NOT decide direction.
     """
     # Model status
-    is_trained: bool = False                # whether the model has been trained
-    prediction_confidence: float = 0.0      # overall confidence in predictions
-    
-    # Price predictions (M15 is primary, others are observers)
-    price_change_m15: float = 0.0           # predicted M15 price change % (PRIMARY)
-    price_change_1h: float = 0.0            # predicted 1h price change %
-    price_change_4h: float = 0.0            # predicted 4h price change %
-    price_change_1d: float = 0.0            # predicted 1d price change %
-    price_direction: str = "neutral"        # bullish, bearish, neutral
-    
+    is_trained: bool = False
+    prediction_confidence: float = 0.0
+
+    # Price predictions (M15 primary)
+    price_change_m15: float = 0.0
+    price_change_1h: float = 0.0
+    price_change_4h: float = 0.0
+    price_change_1d: float = 0.0
+    price_direction: str = "neutral"
+
     # Volatility predictions
-    volatility_prediction: float = 0.5      # expected volatility (0=low, 1=high)
-    volatility_change: float = 0.0          # predicted change in volatility
-    
+    volatility_prediction: float = 0.5
+    volatility_change: float = 0.0
+
     # Regime predictions
-    regime_prediction: str = "ranging"      # trending_up, trending_down, ranging, volatile
-    regime_confidence: float = 0.5          # confidence in regime prediction
-    
+    regime_prediction: str = "ranging"
+    regime_confidence: float = 0.5
+
     # Scenario analysis
-    best_scenario_probability: float = 0.0  # probability of best-case scenario
-    worst_scenario_probability: float = 0.0 # probability of worst-case scenario
-    expected_move: float = 0.0              # expected price move magnitude
-    
+    best_scenario_probability: float = 0.0
+    worst_scenario_probability: float = 0.0
+    expected_move: float = 0.0
+
     @classmethod
     def from_bus_data(
         cls,
         market_predictions: OptType[Dict[str, Any]] = None,
         prediction_confidence: OptType[Any] = None,
         scenario_generation: OptType[Dict[str, Any]] = None,
-        world_model_analytics: OptType[Dict[str, Any]] = None,  # reserved for future use
+        world_model_analytics: OptType[Dict[str, Any]] = None,  # reserved
     ) -> "WorldModelInfo":
-        """
-        Create WorldModelInfo from SmartInfoBus data.
-
-        The world model provides (typical schema):
-        - market_predictions.latest_predictions.price_changes: [4 values]
-        - market_predictions.latest_predictions.volatility_predictions: [4 values]
-        - market_predictions.latest_predictions.regime_probabilities: [4 values]
-        - market_predictions.latest_predictions.confidence: float
-        - market_predictions.is_trained: bool
-        - market_predictions.model_confidence: float
-        """
+        """Create WorldModelInfo from SmartInfoBus data."""
         predictions = market_predictions or {}
-        
+
         # Model status
         is_trained = bool(predictions.get("is_trained", False))
         model_confidence = _safe_float(predictions.get("model_confidence"), 0.0)
-        
+
         latest = predictions.get("latest_predictions") or {}
-        
+
         # Price changes: [M15, H1, H4, D1]
         price_changes = latest.get("price_changes") or []
         if isinstance(price_changes, (list, tuple)) and len(price_changes) >= 4:
@@ -600,7 +696,7 @@ class WorldModelInfo:
             price_1d = _safe_float(price_changes[3], 0.0) if len(price_changes) > 3 else 0.0
         else:
             price_m15 = price_1h = price_4h = price_1d = 0.0
-        
+
         # Weighted directional signal
         weighted_change = (
             price_m15 * 0.5
@@ -614,8 +710,8 @@ class WorldModelInfo:
             direction = "bearish"
         else:
             direction = "neutral"
-        
-        # Volatility predictions
+
+        # Volatility
         vol_preds = latest.get("volatility_predictions") or []
         if isinstance(vol_preds, (list, tuple)) and len(vol_preds) >= 1:
             v0 = _safe_float(vol_preds[0], 0.5)
@@ -628,15 +724,15 @@ class WorldModelInfo:
                 vol_change = 0.0
         else:
             vol_value, vol_change = 0.5, 0.0
-        
-        # Regime predictions
+
+        # Regime
         regime_probs = latest.get("regime_probabilities") or []
         raw_idx = latest.get("predicted_regime", -1)
         try:
             predicted_regime_idx = int(raw_idx)
         except (TypeError, ValueError):
             predicted_regime_idx = -1
-        
+
         regime_names = ["trending_up", "trending_down", "ranging", "volatile"]
         if 0 <= predicted_regime_idx < len(regime_names):
             regime = regime_names[predicted_regime_idx]
@@ -647,11 +743,9 @@ class WorldModelInfo:
         else:
             regime = "ranging"
             regime_conf = 0.5
-        
-        # Confidence from model/last prediction
+
+        # Confidence
         pred_conf = _safe_float(latest.get("confidence"), model_confidence)
-        
-        # Override with explicit prediction_confidence if provided
         if prediction_confidence is not None:
             if isinstance(prediction_confidence, dict):
                 pred_conf = _safe_float(
@@ -660,14 +754,14 @@ class WorldModelInfo:
                 )
             else:
                 pred_conf = _safe_float(prediction_confidence, pred_conf)
-        
+
         # Scenarios
         scenarios = scenario_generation or {}
         scenarios_list = scenarios.get("scenarios") or []
         best_prob = 0.0
         worst_prob = 0.0
         expected = 0.0
-        
+
         if isinstance(scenarios_list, list) and scenarios_list:
             for s in scenarios_list:
                 if not isinstance(s, dict):
@@ -679,7 +773,7 @@ class WorldModelInfo:
                     best_prob = max(best_prob, prob)
                 elif outcome < 0:
                     worst_prob = max(worst_prob, prob)
-        
+
         return cls(
             is_trained=is_trained,
             prediction_confidence=_clip(pred_conf, 0.0, 1.0),
@@ -696,11 +790,11 @@ class WorldModelInfo:
             worst_scenario_probability=_clip(worst_prob, 0.0, 1.0),
             expected_move=_clip(expected, -0.5, 0.5),
         )
-    
+
     def should_trust_predictions(self) -> bool:
-        """Check if predictions are reliable enough to use."""
+        """Check if predictions are reliable enough to use for scaling."""
         return self.is_trained and self.prediction_confidence > 0.4
-    
+
     def get_directional_bias(self) -> float:
         """Get directional bias from predictions (-1 to 1)."""
         if not self.should_trust_predictions():
@@ -713,35 +807,32 @@ class WorldModelInfo:
 
 
 # ═══════════════════════════════════════════════════════════════════
-# ARBITER LOGIC
+# ARBITER LOGIC (PPO Master)
 # ═══════════════════════════════════════════════════════════════════
 
 class ArbiterLogic:
     """
     Domain-specific arbiter logic for multi-instrument trading.
-    
+
     Responsibilities:
     - Build per-instrument features from market data
-    - Ask PPOCore for actions
-    - Apply gating pipeline (risk/memory)
+    - Ask PPOCore for actions (PPO is MASTER)
+    - Apply gating pipeline (risk/memory/seasonality)
+    - Apply advisory adjustments (strategy, mode, world model)
     - Produce structured InstrumentDecision objects
-    - Track per-instrument statistics
-    
+    - Track per-instrument statistics & PPO autonomy analytics
+
     This class knows about:
-    - Instruments (XAUUSD, EURUSD)
-    - Committee/expert signals
+    - Instruments (XAUUSD, EURUSD, …)
+    - Committee/expert signals (ADVISORY only)
     - Risk/memory gates
-    
-    But does NOT know about:
-    - SmartInfoBus (that's PPOAgentShell's job)
-    - Module lifecycle
-    - Health monitoring
-    
-    New in v3.2.0:
-    - Hardened bus parsers (no float explosions)
-    - PPOAutonomyTracker state included in decision meta
+    - Seasonality/time windows
+
+    It does NOT:
+    - Let experts/committee override PPO direction
+    - Control module lifecycle or bus management (PPOAgentShell does that)
     """
-    
+
     def __init__(
         self,
         ppo_core: PPOCore,
@@ -752,95 +843,104 @@ class ArbiterLogic:
         self.instruments = instruments or DEFAULT_INSTRUMENTS
         self.primary_instrument = PRIMARY_INSTRUMENT
         self.debug = debug
-        
+
         self.logger = logging.getLogger("ArbiterLogic")
-        
+
         # Per-instrument statistics
         self.stats_tracker = InstrumentStatsTracker()
-        
+
         # Hysteresis state per instrument
         self._last_directions: Dict[str, str] = {inst: "flat" for inst in self.instruments}
         self._direction_hold_counts: Dict[str, int] = {inst: 0 for inst in self.instruments}
-        
+
         # Decision history
         self._decision_history: Dict[str, List[InstrumentDecision]] = {
             inst: [] for inst in self.instruments
         }
-        
-        # Adaptive autonomy
+
+        # Adaptive autonomy (analytics only) with persistence
         self.autonomy_tracker = PPOAutonomyTracker(
             window_size=50,
             adaptation_rate=0.02,
             min_trades=20,
         )
-        
-        # Bus reference for arbiter gate checks
+        self.autonomy_tracker.load_state()
+        self._autonomy_save_counter = 0
+        self._autonomy_save_interval = 10  # Save every 10 trade outcomes
+
+        # SmartInfoBus reference (for seasonality gates etc.)
         self._smart_bus: Optional[Any] = None
         try:
             from modules.utils.info_bus import InfoBusManager
             self._smart_bus = InfoBusManager.get_instance()
         except Exception:
             pass
-    
-    def _check_arbiter_instrument_gate(self, instrument: str) -> bool:
+
+    # ─────────────────────────────────────────────────────────────
+    # Seasonality time gate
+    # ─────────────────────────────────────────────────────────────
+
+    def _check_seasonality_time_gate(self) -> Tuple[bool, str]:
         """
-        Check if FinalArbiter has approved this instrument for trading.
-        
-        The FinalArbiter applies voting consensus/confidence thresholds.
-        PPO must respect these decisions to avoid opening trades on
-        weak/blocked signals.
-        
-        Returns:
-            True if arbiter approved (or no data), False if blocked
+        Check if SeasonalityRiskExpert allows NEW trades at this time.
+
+        HARD gate in LIVE mode:
+        - Blocks new entries outside trading hours / near close.
+        - Ignored in TRAINING mode so PPO can learn full distribution.
         """
+        if is_training_mode():
+            return (True, "Training mode - all times allowed")
+
         if self._smart_bus is None:
-            return True  # No bus access, default to allow
-        
+            return (True, "No bus access")
+
         try:
-            # Read instrument_signals from FinalArbiter
-            inst_signals = self._smart_bus.get("instrument_signals", "ArbiterLogic") or {}
-            
-            if not isinstance(inst_signals, dict):
-                return True
-            
-            # Normalize instrument name for lookup
-            inst_norm = instrument.upper().replace("/", "").replace("_", "")
-            
-            # Try direct match
-            signal = inst_signals.get(instrument)
-            if signal is None:
-                # Try normalized match
-                for key, val in inst_signals.items():
-                    key_norm = key.upper().replace("/", "").replace("_", "")
-                    if key_norm == inst_norm:
-                        signal = val
-                        break
-            
-            if isinstance(signal, dict):
-                # Check gate_passed flag from arbiter
-                arbiter_gate = signal.get("gate_passed")
-                if arbiter_gate is False:
-                    # Also check action - HOLD means blocked
-                    action = str(signal.get("action", "")).upper()
-                    if action in ("HOLD", "FLAT", "ABSTAIN"):
-                        return False
-                    return False  # Explicit gate_passed=False
-                
-                # Also block if action is HOLD regardless of gate_passed
-                action = str(signal.get("action", "")).upper()
-                if action in ("HOLD", "FLAT", "ABSTAIN"):
-                    return False
-            
-            return True
-            
+            seasonality = self._smart_bus.get(
+                "SeasonalityRiskExpert_voting_proposal",
+                "ArbiterLogic"
+            )
+
+            if not isinstance(seasonality, dict):
+                return (True, "No seasonality data")
+
+            trading_window = seasonality.get("trading_window", {})
+            if not isinstance(trading_window, dict):
+                return (True, "No trading_window data")
+
+            no_new_trades = trading_window.get("no_new_trades", False)
+            if no_new_trades:
+                local_time = trading_window.get("local_time", "unknown")
+                minutes_to_close = trading_window.get("minutes_to_close", 0)
+                reason = (
+                    f"Seasonality: No new trades "
+                    f"(local={local_time}, close_in={minutes_to_close}min)"
+                )
+                return (False, reason)
+
+            in_primary = trading_window.get("in_primary_window", True)
+            if not in_primary:
+                local_hour = trading_window.get("local_hour", 0)
+                reason = f"Seasonality: Outside trading hours (hour={local_hour})"
+                return (False, reason)
+
+            return (True, "Within trading window")
+
         except Exception as e:
-            self.logger.warning(f"[ARBITER_GATE] Error checking gate for {instrument}: {e}")
-            return True  # Default to allow on error
-    
+            self.logger.warning(f"[SEASONALITY_GATE] Error checking time gate: {e}")
+            return (True, "Error checking - default allow")
+
+    def _get_seasonality_gate_info(self) -> Dict[str, Any]:
+        """Get seasonality gate info for metadata."""
+        allowed, reason = self._check_seasonality_time_gate()
+        return {
+            "trades_allowed": allowed,
+            "reason": reason,
+        }
+
     # ─────────────────────────────────────────────────────────────
-    # Main Decision Method
+    # Main Decision Method (Multi-instrument)
     # ─────────────────────────────────────────────────────────────
-    
+
     def make_multi_instrument_decision(
         self,
         observations: Dict[str, np.ndarray],
@@ -855,45 +955,28 @@ class ArbiterLogic:
     ) -> ArbiterMultiDecision:
         """
         Make trading decisions for multiple instruments.
-        
-        Args:
-            observations: Per-instrument observation vectors {instrument: obs_vec}
-            committee_data: Committee consensus data (global and/or per-instrument)
-            expert_signals: Expert voting signals (global and/or per-instrument)
-            memory_info: Normalized global memory gate info
-            risk_info: Normalized global risk info
-            instruments: Optional override instrument list
-            strategy_info: Optional strategy module integration info
-            trading_mode_info: Optional trading mode constraints
-            world_model_info: Optional world model predictions
-        
-        Returns:
-            ArbiterMultiDecision with decisions for all instruments
         """
         instruments = instruments or self.instruments
         committee_data = committee_data or {}
         expert_signals = expert_signals or {}
-        
+
         decisions: Dict[str, InstrumentDecision] = {}
-        
+
         strat = strategy_info or StrategyInfo()
         tm_info = trading_mode_info or TradingModeInfo()
         wm_info = world_model_info or WorldModelInfo()
-        
+
         for instrument in instruments:
-            # Get observation for this instrument
+            # Observation for this instrument
             obs = observations.get(instrument)
             if obs is None:
-                # Use primary instrument's observation as fallback
                 obs = observations.get(self.primary_instrument)
             if obs is None:
                 obs = np.zeros(self.ppo_core.config.obs_size, dtype=np.float32)
-            
-            # Instrument-specific data
+
             inst_committee = self._extract_instrument_committee(committee_data, instrument)
             inst_experts = self._extract_instrument_experts(expert_signals, instrument)
-            
-            # Single-instrument decision
+
             decision = self._make_single_instrument_decision(
                 instrument=instrument,
                 observation=obs,
@@ -905,14 +988,12 @@ class ArbiterLogic:
                 trading_mode_info=tm_info,
                 world_model_info=wm_info,
             )
-            
+
             decisions[instrument] = decision
             self.stats_tracker.record_decision(decision)
-        
-        # Current autonomy state
+
         autonomy_state = self.autonomy_tracker.get_state_summary()
-        
-        # Global metadata
+
         global_meta = {
             "timestamp": datetime.now().isoformat(),
             "instruments_processed": len(instruments),
@@ -945,13 +1026,18 @@ class ArbiterLogic:
                 "directional_bias": wm_info.get_directional_bias(),
             },
             "ppo_autonomy": autonomy_state,
+            "seasonality_gate": self._get_seasonality_gate_info(),
         }
-        
+
         return ArbiterMultiDecision(
             instruments=decisions,
             global_meta=global_meta,
         )
-    
+
+    # ─────────────────────────────────────────────────────────────
+    # Single-instrument decision
+    # ─────────────────────────────────────────────────────────────
+
     def _make_single_instrument_decision(
         self,
         instrument: str,
@@ -966,28 +1052,25 @@ class ArbiterLogic:
     ) -> InstrumentDecision:
         """
         Make a trading decision for a single instrument.
-        
+
         Steps:
-        1. Run PPO policy to get trust_score and size_score
-        2. Interpret trust_score to decide follow/override/uncertain
-        3. Apply hysteresis to directional intention
-        4. Apply gating pipeline (risk/memory)
-        5. Apply strategy/mode/world-model adjustments
-        6. Compute final position size and build InstrumentDecision
+        1. Run PPO policy to get direction_score and size_score.
+        2. Interpret direction_score → PPO direction & base confidence.
+        3. Apply hysteresis to smooth direction.
+        4. Apply gating pipeline (risk/memory + seasonality).
+        5. Apply strategy/mode/world-model adjustments (advisory).
+        6. Compute final position size and build InstrumentDecision.
         """
         # 1) Run PPO policy
         action, log_prob, value = self.ppo_core.select_action(observation)
-        
-        # ACTION SEMANTICS (v4.1 - Autonomous PPO):
-        # action[0] = direction_score ∈ [-1, 1]: PPO's directional intent
-        # action[1] = size_score ∈ [-1, 1]: Position sizing signal
+
         direction_score = float(action[0]) if len(action) > 0 else 0.0
         size_score = float(action[1]) if len(action) > 1 else 0.0
-        
+
         # Legacy alias for backwards compatibility in decision metadata
         trust_score = direction_score
-        
-        # 2) Extract committee/expert info
+
+        # 2) Extract committee/expert info (advisory only)
         committee_action = str(committee.get("action", "hold")).lower()
         committee_confidence = float(committee.get("confidence", 0.5))
         expert_consensus, expert_confidence = self._compute_expert_consensus(experts)
@@ -995,17 +1078,15 @@ class ArbiterLogic:
         regime_strength = float(
             committee.get("regime_strength", experts.get("regime_strength", 0.5))
         )
-        
-        # Optional debug logging of direction logic
+
         if self.debug:
             self.logger.info(
                 f"[PPO_DIRECTION] {instrument}: committee_action={committee_action}, "
                 f"expert_consensus={expert_consensus}, expert_conf={expert_confidence:.2f}, "
                 f"direction_score={direction_score:.2f}"
             )
-        
-        # 3) Interpret direction_score into PPO direction & confidence
-        #    Uses phase-based blending with experts
+
+        # 3) Interpret direction_score – PPO is MASTER
         direction, confidence, reasoning = self._interpret_direction(
             direction_score=direction_score,
             committee_action=committee_action,
@@ -1014,115 +1095,102 @@ class ArbiterLogic:
             expert_confidence=expert_confidence,
             instrument=instrument,
         )
-        
-        # 4) Hysteresis on direction
-        # Use direction_score magnitude for hysteresis, adjusted by autonomy phase
-        autonomy_phase = self.autonomy_tracker.state.phase
-        if autonomy_phase == "EXPERT_LED":
-            # In expert-led mode, use committee confidence for hysteresis
-            # to prevent PPO's random scores from overriding expert decisions
-            hysteresis_score = (committee_confidence - 0.5) * 2.0  # Scale to [-1, 1]
-            if committee_action in ("long", "short", "buy", "sell"):
-                hysteresis_score = max(0.2, committee_confidence)
-        else:
-            # In higher autonomy phases, use PPO's direction_score directly
-            hysteresis_score = direction_score
+
+        # 4) Hysteresis on direction (stability)
+        hysteresis_score = direction_score
         direction = self._apply_hysteresis(instrument, direction, hysteresis_score)
-        
-        # 5) Gating pipeline (use direction_score for gating decisions)
+
+        # 5) Gating pipeline (memory + risk)
         gating_result = GatingResult.apply_gates(memory_info, risk_info, direction_score)
-        
-        # 5b) CRITICAL: Also check FinalArbiter's per-instrument gate decision
-        # The FinalArbiter applies voting confidence/consensus thresholds that PPO must respect
-        arbiter_gate_passed = self._check_arbiter_instrument_gate(instrument)
-        if not arbiter_gate_passed:
+
+        # 5b) Seasonality time gate (HARD in live, bypass in training)
+        seasonality_allowed, seasonality_reason = self._check_seasonality_time_gate()
+        if not seasonality_allowed and direction != "flat":
             gating_result.gate_passed = False
-            gating_result.reasons.append("ARBITER_BLOCKED")
-            self.logger.warning(
-                f"[ARBITER_GATE] {instrument}: FinalArbiter blocked this signal - PPO respecting"
+            gating_result.reasons.append("SEASONALITY_BLOCKED")
+            self.logger.info(
+                f"[SEASONALITY_GATE] {instrument}: {seasonality_reason}"
             )
-        
-        # Apply gate confidence multiplier
+
         confidence *= gating_result.confidence_multiplier
         confidence = float(np.clip(confidence, 0.0, 1.0))
-        
+
         if not gating_result.gate_passed:
             if gating_result.reasons:
                 reasoning += f" | GATED: {', '.join(gating_result.reasons)}"
         elif gating_result.soft_scaling_applied and gating_result.reasons:
             reasoning += f" | SCALED: {', '.join(gating_result.reasons)}"
-        
+
         # Base position size from size_score
         raw_size = (size_score + 1.0) / 2.0  # [-1,1] -> [0,1]
         position_size = float(
             np.clip(raw_size * confidence * gating_result.position_size_cap, 0.0, 1.0)
         )
-        
-        # DEBUG: Position size calculation trace
+
         self.logger.debug(
             f"[SIZE_DEBUG] {instrument}: size_score={size_score:.4f}, raw_size={raw_size:.4f}, "
             f"confidence={confidence:.4f}, cap={gating_result.position_size_cap:.4f}, "
             f"position_size={position_size:.4f}, gating_passed={gating_result.gate_passed}, "
             f"direction={direction}"
         )
-        
+
         if not gating_result.gate_passed or direction == "flat":
             position_size = 0.0
-        
-        # Strategy / mode / world-model integrations
+
+        # Advisory modules
         strat = strategy_info or StrategyInfo()
         tm = trading_mode_info or TradingModeInfo()
         wm = world_model_info or WorldModelInfo()
-        
+
         strategy_reasons: List[str] = []
         tm_reasons: List[str] = []
         wm_reasons: List[str] = []
-        
-        # ───── Strategy (BiasAuditor + Curriculum + Thesis) ─────
+
+        # Strategy (Bias / Curriculum / Thesis)
         if strat.bias_position_multiplier < 0.99 and position_size > 0:
             position_size *= strat.bias_position_multiplier
             bias_strs = [str(b) for b in strat.active_biases[:2]]
             strategy_reasons.append(
                 f"BIAS({strat.bias_position_multiplier:.2f}): {','.join(bias_strs) or 'psychological'}"
             )
-        
+
         if position_size > strat.max_position_size:
             position_size = strat.max_position_size
             strategy_reasons.append(
                 f"CURRICULUM({strat.curriculum_stage}): max_pos={strat.max_position_size:.2f}"
             )
-        
+
         if strat.mastery_level < 0.4 and confidence > 0.5:
-            confidence *= (0.6 + 0.4 * strat.mastery_level / 0.4)  # soften confidence for beginners
+            confidence *= (0.6 + 0.4 * strat.mastery_level / 0.4)
             strategy_reasons.append(f"MASTERY({strat.mastery_level:.2f}): confidence reduced")
-        
+
         if strat.thesis_regime_alignment and strat.thesis_confidence > 0.7:
             confidence = min(1.0, confidence * 1.05)
         elif not strat.thesis_regime_alignment and strat.thesis_confidence > 0.5:
             confidence *= 0.95
             strategy_reasons.append("THESIS: regime misaligned")
-        
-        # ───── Trading Mode (risk/scale) ─────
+
+        # Trading Mode (risk/scale)
         if position_size > 0 and abs(tm.position_scale - 1.0) > 0.01:
             position_size *= tm.position_scale
             tm_reasons.append(f"MODE_SCALE({tm.mode_name}): x{tm.position_scale:.2f}")
-        
+
         if position_size > tm.max_exposure:
             position_size = tm.max_exposure
             tm_reasons.append(f"MAX_EXPOSURE({tm.mode_name}): cap={tm.max_exposure:.2f}")
-        
+
         if tm.should_reduce_position() and position_size > 0:
             position_size *= 0.7
             tm_reasons.append("SAFE_MODE: reduced 30%")
-        
+
         if tm.should_increase_position() and confidence > 0.5:
             confidence = min(1.0, confidence * 1.1)
             tm_reasons.append(f"AGGRESSIVE_BOOST: eff={tm.effectiveness:.2f}")
-        
-        # ───── World Model (predictive adjustments) ─────
+
+        # World Model (predictive adjustments)
         if wm.should_trust_predictions():
             directional_bias = wm.get_directional_bias()
-            
+
             if direction == "long" and directional_bias < -0.3:
                 confidence *= 0.85
                 wm_reasons.append(f"WM_CONTRA({wm.price_direction}): conf reduced")
@@ -1133,11 +1201,11 @@ class ArbiterLogic:
                  (direction == "short" and directional_bias < -0.3):
                 confidence = min(1.0, confidence * 1.08)
                 wm_reasons.append(f"WM_ALIGNED({wm.price_direction}): conf boosted")
-            
+
             if wm.volatility_prediction > 0.7 and position_size > 0:
                 position_size *= 0.85
                 wm_reasons.append(f"WM_HIGH_VOL({wm.volatility_prediction:.2f}): size reduced")
-            
+
             regime_map = {
                 "trending_up": "long",
                 "trending_down": "short",
@@ -1149,22 +1217,20 @@ class ArbiterLogic:
                 if wm.regime_confidence > 0.6:
                     confidence *= 0.9
                     wm_reasons.append(f"WM_REGIME({wm.regime_prediction}): misaligned")
-        
+
         # Final clipping
         position_size = float(np.clip(position_size, 0.0, 1.0))
         confidence = float(np.clip(confidence, 0.0, 1.0))
-        
-        # Append reasons
+
         if strategy_reasons:
             reasoning += f" | STRATEGY: {'; '.join(strategy_reasons)}"
         if tm_reasons:
             reasoning += f" | TRADING_MODE: {'; '.join(tm_reasons)}"
         if wm_reasons:
             reasoning += f" | WORLD_MODEL: {'; '.join(wm_reasons)}"
-        
-        # Autonomy meta for this decision
+
         autonomy_meta = self.autonomy_tracker.get_state_summary()
-        
+
         # DEBUG: Gate decision tracing
         gate_will_pass = gating_result.gate_passed and position_size > 0.0
         if not gate_will_pass:
@@ -1173,15 +1239,14 @@ class ArbiterLogic:
                 f"position_size={position_size:.4f}, direction={direction}, "
                 f"reasons={gating_result.reasons + strategy_reasons + tm_reasons + wm_reasons}"
             )
-        
-        # Decision object (v4.1: direction_score is the primary autonomous signal)
+
         decision = InstrumentDecision(
             instrument=instrument,
             direction=direction,
             confidence=confidence,
             position_size=position_size,
-            direction_score=direction_score,  # v4.1: Raw PPO autonomous signal
-            trust_score=trust_score,          # Legacy alias (equals direction_score)
+            direction_score=direction_score,
+            trust_score=trust_score,
             committee_action=committee_action,
             committee_confidence=committee_confidence,
             expert_consensus=expert_consensus,
@@ -1207,20 +1272,18 @@ class ArbiterLogic:
                 autonomy_state=autonomy_meta,
             ),
         )
-        
-        # History
+
         history = self._decision_history.setdefault(instrument, [])
         history.append(decision)
         if len(history) > 100:
             self._decision_history[instrument] = history[-100:]
-        
+
         return decision
 
-    
     # ─────────────────────────────────────────────────────────────
-    # Direction Interpretation (v4.1 - Autonomous PPO)
+    # Direction Interpretation (PPO Master)
     # ─────────────────────────────────────────────────────────────
-    
+
     def _score_to_direction(
         self,
         score: float,
@@ -1229,21 +1292,18 @@ class ArbiterLogic:
     ) -> str:
         """
         Convert a direction_score to a discrete direction.
-        
-        Args:
-            score: Direction score from PPO in [-1, 1]
-            long_threshold: Score above this → LONG
-            short_threshold: Score below this → SHORT
-            
-        Returns:
-            "long", "short", or "flat"
+
+        PPO's raw intent:
+        - score >  long_threshold  → LONG
+        - score <  short_threshold → SHORT
+        - otherwise                → FLAT
         """
         if score > long_threshold:
             return "long"
         if score < short_threshold:
             return "short"
         return "flat"
-    
+
     def _interpret_direction(
         self,
         direction_score: float,
@@ -1254,128 +1314,63 @@ class ArbiterLogic:
         instrument: str,
     ) -> Tuple[str, float, str]:
         """
-        Interpret PPO's direction_score with phase-based blending.
-        
-        AUTONOMOUS PPO LOGIC (v4.1):
-        =============================
-        PPO's direction_score directly encodes its directional intent:
-        - > +0.3 ⇒ PPO wants LONG
-        - < -0.3 ⇒ PPO wants SHORT
-        - |score| ≤ 0.3 ⇒ PPO is uncertain (FLAT)
-        
-        The autonomy phase determines how PPO direction blends with experts:
-        - EXPERT_LED: Experts lead, but strong PPO signals can influence
-        - BLENDED: 50/50 weighting, agreement boosts confidence
-        - PPO_LED: PPO leads, experts provide secondary input
-        - FULL_AUTONOMY: PPO direction is primary, experts only affect sizing
-        
-        Returns:
-            (direction, confidence, reasoning)
+        Interpret PPO's direction_score – PPO ALWAYS decides.
+
+        Experts only modulate confidence; they never override direction.
         """
-        ppo_weight, expert_weight = self.autonomy_tracker.get_decision_weights()
         autonomy_summary = self.autonomy_tracker.get_state_summary()
         phase = autonomy_summary["phase"]
-        autonomy_level = autonomy_summary["autonomy_level"]
         ppo_win_rate = autonomy_summary["ppo_win_rate"]
-        
-        # PPO's autonomous direction from direction_score
+
         ppo_dir = self._score_to_direction(direction_score)
         ppo_conf = float(np.clip(abs(direction_score), 0.0, 1.0))
-        
-        # Parse committee direction
+
+        # Advisory directions for confidence shaping
         if committee_action in ("long", "buy", "bullish"):
             committee_dir = "long"
         elif committee_action in ("short", "sell", "bearish"):
             committee_dir = "short"
         else:
             committee_dir = "flat"
-        
-        # Parse expert consensus direction
+
         if expert_consensus in ("long", "buy", "bullish"):
             expert_dir = "long"
         elif expert_consensus in ("short", "sell", "bearish"):
             expert_dir = "short"
         else:
             expert_dir = "flat"
-        
-        # Combined expert direction (prefer committee if confident)
+
         combined_expert_dir = committee_dir if committee_confidence >= expert_confidence else expert_dir
         combined_expert_conf = max(committee_confidence, expert_confidence)
-        
-        # ═══════════════════════════════════════════════════════════════
-        # PHASE-BASED BLENDING
-        # ═══════════════════════════════════════════════════════════════
-        
-        if phase == "EXPERT_LED":
-            # Experts lead, but PPO can nudge if strongly confident
-            if ppo_dir != "flat" and abs(direction_score) > 0.7:
-                # Strong PPO hint - allow it to influence
-                direction = ppo_dir
-                confidence = 0.5 * ppo_conf + 0.5 * combined_expert_conf
-                reasoning = f"[{phase}] Strong PPO hint ({direction_score:.2f}): {direction}"
+
+        direction = ppo_dir
+        confidence = ppo_conf
+
+        if ppo_dir != "flat":
+            if ppo_dir == combined_expert_dir:
+                # Agreement: boost confidence up to +15%
+                agreement_boost = 0.15 * combined_expert_conf
+                confidence = min(1.0, ppo_conf + agreement_boost)
+                reasoning = (
+                    f"[{phase}] PPO decides {direction.upper()} "
+                    f"(experts aligned, +{agreement_boost:.0%} conf)"
+                )
             else:
-                # Default: follow experts
-                direction = combined_expert_dir
-                confidence = combined_expert_conf
-                reasoning = f"[{phase}] Experts lead: {direction} (comm={committee_dir}, exp={expert_dir})"
-                
-        elif phase == "BLENDED":
-            # Balanced blending - agreement boosts confidence
-            if ppo_dir == combined_expert_dir and ppo_dir != "flat":
-                # Agreement: boost confidence
-                direction = ppo_dir
-                confidence = (ppo_conf * ppo_weight + combined_expert_conf * expert_weight) * 1.1
-                reasoning = f"[{phase}] Agreement: {direction} (PPO+experts aligned)"
-            elif ppo_dir == "flat":
-                # PPO uncertain: lean to experts with reduced confidence
-                direction = combined_expert_dir
-                confidence = combined_expert_conf * 0.8
-                reasoning = f"[{phase}] PPO flat, experts suggest: {direction}"
-            else:
-                # Disagreement: pick by weights
-                if ppo_weight > expert_weight:
-                    direction = ppo_dir
-                    confidence = ppo_conf * ppo_weight * 0.9  # Slight penalty for conflict
-                else:
-                    direction = combined_expert_dir
-                    confidence = combined_expert_conf * expert_weight * 0.9
-                reasoning = f"[{phase}] Conflict (PPO={ppo_dir}, EXP={combined_expert_dir}): {direction}"
-                
-        elif phase == "PPO_LED":
-            # PPO leads unless it's uncertain
-            if ppo_dir != "flat":
-                direction = ppo_dir
-                confidence = (ppo_conf * ppo_weight + combined_expert_conf * expert_weight) * 1.1
-                reasoning = f"[{phase}] PPO-led: {direction} (score={direction_score:.2f})"
-            else:
-                # PPO flat: allow experts to suggest, but with reduced confidence
-                direction = combined_expert_dir
-                confidence = combined_expert_conf * 0.7
-                reasoning = f"[{phase}] PPO flat, leaning on experts: {direction}"
-                
-        else:  # FULL_AUTONOMY
-            # PPO has full control; experts only influence sizing (not direction)
-            if ppo_dir != "flat":
-                direction = ppo_dir
-                confidence = ppo_conf
-                reasoning = f"[{phase}] PPO autonomous: {direction} (score={direction_score:.2f})"
-            else:
-                # PPO sees nothing - optionally follow strong expert signals
-                if combined_expert_conf > 0.6:
-                    direction = combined_expert_dir
-                    confidence = combined_expert_conf * 0.5  # Heavy discount
-                    reasoning = f"[{phase}] PPO flat, high-conf experts: {direction}"
-                else:
-                    direction = "flat"
-                    confidence = 0.3
-                    reasoning = f"[{phase}] PPO flat, no strong signal: FLAT"
-        
-        # Append autonomy metrics to reasoning
-        reasoning += f" | Autonomy={autonomy_level:.2f}, WR={ppo_win_rate:.0%}"
-        
+                # Disagreement: penalty up to -20%, PPO still decides
+                disagreement_penalty = 0.20 * combined_expert_conf
+                confidence = max(0.1, ppo_conf - disagreement_penalty)
+                reasoning = (
+                    f"[{phase}] PPO decides {direction.upper()} "
+                    f"(experts prefer {combined_expert_dir}, -{disagreement_penalty:.0%} conf)"
+                )
+        else:
+            reasoning = f"[{phase}] PPO FLAT (score={direction_score:.2f}, uncertain)"
+            confidence = 0.3
+
+        reasoning += f" | Phase={phase}, WR={ppo_win_rate:.0%}"
+
         return direction, float(np.clip(confidence, 0.0, 1.0)), reasoning
-    
-    # Legacy alias for backwards compatibility
+
     def _interpret_trust_score(
         self,
         trust_score: float,
@@ -1386,9 +1381,9 @@ class ArbiterLogic:
         instrument: str,
     ) -> Tuple[str, float, str]:
         """
-        Legacy method - redirects to _interpret_direction.
-        
-        In v4.1+, trust_score is now direction_score with new semantics.
+        Legacy alias – redirects to _interpret_direction.
+
+        In v5.0, trust_score == direction_score with autonomous semantics.
         """
         return self._interpret_direction(
             direction_score=trust_score,
@@ -1398,40 +1393,40 @@ class ArbiterLogic:
             expert_confidence=expert_confidence,
             instrument=instrument,
         )
-    
+
     # ─────────────────────────────────────────────────────────────
     # Expert Signal Processing
     # ─────────────────────────────────────────────────────────────
-    
+
     def _compute_expert_consensus(self, experts: Dict[str, Any]) -> Tuple[str, float]:
         """Compute consensus direction and confidence from expert signals."""
         long_score = 0.0
         short_score = 0.0
         total_weight = 0.0
-        
+
         for expert_name, sig in experts.items():
             if not isinstance(sig, dict):
                 continue
-            
+
             raw_prop = sig.get("proposal", sig.get("direction", "flat"))
             conf = _safe_float(sig.get("confidence"), 0.0)
-            
+
             if isinstance(raw_prop, dict):
                 direction = raw_prop.get("direction", raw_prop.get("action", "flat"))
             else:
                 direction = str(raw_prop)
-            
+
             d = direction.lower()
             if d in ("long", "buy", "bullish"):
                 long_score += conf
             elif d in ("short", "sell", "bearish"):
                 short_score += conf
-            
+
             total_weight += max(conf, 0.0)
-        
+
         if total_weight < 1e-6:
             return "flat", 0.0
-        
+
         if long_score > short_score + 0.2:
             direction = "long"
             consensus_conf = long_score / total_weight
@@ -1441,9 +1436,9 @@ class ArbiterLogic:
         else:
             direction = "flat"
             consensus_conf = 0.3
-        
+
         return direction, float(np.clip(consensus_conf, 0.0, 1.0))
-    
+
     def _extract_instrument_committee(
         self,
         committee_data: Dict[str, Any],
@@ -1457,7 +1452,8 @@ class ArbiterLogic:
                 if self.debug:
                     self.logger.debug(
                         f"[DIRECTION] {instrument}: per-instrument committee data: "
-                        f"action={inst_data.get('action', 'N/A')}, conf={inst_data.get('confidence', 'N/A')}"
+                        f"action={inst_data.get('action', 'N/A')}, "
+                        f"conf={inst_data.get('confidence', 'N/A')}"
                     )
                 return {
                     "action": inst_data.get("action", "hold"),
@@ -1467,8 +1463,7 @@ class ArbiterLogic:
                     "regime": committee_data.get("regime", "unknown"),
                     "regime_strength": committee_data.get("regime_strength", 0.5),
                 }
-        
-        # Fallback: global committee
+
         if self.debug:
             self.logger.warning(
                 f"[DIRECTION] {instrument}: no per-instrument committee data; "
@@ -1482,7 +1477,7 @@ class ArbiterLogic:
             "regime": committee_data.get("regime", "unknown"),
             "regime_strength": committee_data.get("regime_strength", 0.5),
         }
-    
+
     def _extract_instrument_experts(
         self,
         expert_signals: Dict[str, Any],
@@ -1490,35 +1485,34 @@ class ArbiterLogic:
     ) -> Dict[str, Any]:
         """Extract expert signals for a specific instrument."""
         result: Dict[str, Any] = {}
-        
+
         experts = expert_signals.get("experts", expert_signals)
         if not isinstance(experts, dict):
             return {
                 "regime": expert_signals.get("market", {}).get("regime", "unknown"),
                 "regime_strength": expert_signals.get("market", {}).get("regime_strength", 0.5),
             }
-        
+
         for expert_name, sig in experts.items():
             if not isinstance(sig, dict):
                 continue
-            
+
             if "instruments" in sig and isinstance(sig["instruments"], dict):
                 inst_data = sig["instruments"].get(instrument, sig)
                 result[expert_name] = inst_data
             else:
                 result[expert_name] = sig
-        
-        # Add market context
+
         market_info = expert_signals.get("market", {}) or {}
         result["regime"] = market_info.get("regime", "unknown")
         result["regime_strength"] = market_info.get("regime_strength", 0.5)
-        
+
         return result
-    
+
     # ─────────────────────────────────────────────────────────────
     # Hysteresis
     # ─────────────────────────────────────────────────────────────
-    
+
     def _apply_hysteresis(
         self,
         instrument: str,
@@ -1527,48 +1521,49 @@ class ArbiterLogic:
     ) -> str:
         """
         Apply hysteresis to prevent flip-flopping.
-        
+
         Uses different thresholds for entry, exit, and reversal.
+        Direction is still PPO's decision; this just smooths the transitions.
         """
         last_dir = self._last_directions.get(instrument, "flat")
-        
+
         entry_threshold = 0.10
         reversal_threshold = 0.15
         exit_threshold = 0.03
-        
+
         if last_dir == "flat":
             if proposed_direction != "flat" and abs(trust_score) > entry_threshold:
                 direction = proposed_direction
             else:
                 direction = "flat"
-        
+
         elif last_dir == proposed_direction:
             direction = proposed_direction
             self._direction_hold_counts[instrument] = self._direction_hold_counts.get(instrument, 0) + 1
-        
+
         elif proposed_direction == "flat":
             if abs(trust_score) < exit_threshold:
                 direction = "flat"
             else:
                 direction = last_dir
-        
+
         else:
             if abs(trust_score) > reversal_threshold:
                 direction = proposed_direction
                 self._direction_hold_counts[instrument] = 0
             else:
                 direction = "flat"
-        
+
         if direction != last_dir:
             self._direction_hold_counts[instrument] = 0
         self._last_directions[instrument] = direction
-        
+
         return direction
-    
+
     # ─────────────────────────────────────────────────────────────
     # Metadata Building
     # ─────────────────────────────────────────────────────────────
-    
+
     def _build_decision_meta(
         self,
         trust_score: float,
@@ -1585,14 +1580,12 @@ class ArbiterLogic:
     ) -> Dict[str, Any]:
         """
         Build rich metadata for debugging and dashboard display.
-        
-        This is the standardized explanation payload.
         """
         strat = strategy_info or StrategyInfo()
         tm = trading_mode_info or TradingModeInfo()
         wm = world_model_info or WorldModelInfo()
         autonomy_state = autonomy_state or self.autonomy_tracker.get_state_summary()
-        
+
         return {
             "contributors": {
                 "committee": {
@@ -1674,69 +1667,102 @@ class ArbiterLogic:
             },
             "gating": gating_result.to_dict(),
         }
-    
+
     # ─────────────────────────────────────────────────────────────
     # Explanation Generation
     # ─────────────────────────────────────────────────────────────
-    
+
     def generate_explanation(self, decision: InstrumentDecision) -> str:
         """
         Generate a concise English explanation of the decision.
-        
-        Format: "PPO [trusts/overrides/uncertain] committee (X.XX) to [action]; 
-                 [modifiers]; position [size]%"
+
+        Focus is on PPO's conviction; experts/memory/risk show up as modifiers.
         """
         parts: List[str] = []
-        
-        if decision.trust_score > 0.3:
-            parts.append(f"PPO trusts committee ({decision.trust_score:.2f})")
-        elif decision.trust_score < -0.3:
-            parts.append(f"PPO overrides committee ({decision.trust_score:.2f})")
+
+        score = decision.trust_score
+        abs_score = abs(score)
+
+        if abs_score > 0.7:
+            strength = "strongly"
+        elif abs_score > 0.3:
+            strength = "weakly"
         else:
-            parts.append(f"PPO uncertain ({decision.trust_score:.2f})")
-        
-        parts.append(f"to {decision.direction.upper()} {decision.instrument}")
-        
-        modifiers: List[str] = []
+            strength = "uncertainly"
+
+        if decision.direction in ("long", "short"):
+            parts.append(
+                f"PPO {strength} prefers {decision.direction.upper()} {decision.instrument}"
+                f" (score={score:.2f}, conf={decision.confidence:.2f})"
+            )
+        else:
+            parts.append(
+                f"PPO remains FLAT on {decision.instrument}"
+                f" (score={score:.2f}, conf={decision.confidence:.2f})"
+            )
+
         meta = decision.meta.get("contributors", {})
+        committee = meta.get("committee", {})
+        experts = meta.get("experts", {})
+
+        committee_action = str(committee.get("action", "hold")).lower()
+        expert_dirs = [
+            str(v.get("proposal", "flat")).lower()
+            for k, v in experts.items()
+            if isinstance(v, dict)
+        ]
+
+        # High-level expert alignment hint
+        if decision.direction in ("long", "short"):
+            dir_tag = decision.direction
+            aligned = (
+                (dir_tag in committee_action)
+                or any(dir_tag in d for d in expert_dirs)
+            )
+            if aligned:
+                parts.append("; experts broadly aligned")
+            else:
+                parts.append("; experts not clearly aligned")
+
+        modifiers: List[str] = []
         memory = meta.get("memory", {})
         risk = meta.get("risk", {})
-        
+
         rm = memory.get("risk_multiplier", 1.0)
         if rm < 0.9:
             modifiers.append(f"memory caution ({rm:.2f})")
-        
+
         ds = memory.get("danger_similarity", 0.0)
         if ds > 0.3:
-            modifiers.append(f"danger zone ({ds:.2f})")
-        
+            modifiers.append(f"danger pattern similarity {ds:.2f}")
+
         pr = risk.get("portfolio_risk", 0.0)
         if pr > 0.5:
             modifiers.append(f"portfolio risk {pr:.0%}")
-        
+
         if modifiers:
             parts.append("; " + ", ".join(modifiers))
-        
+
         if decision.gate_passed and decision.position_size > 0.0:
             parts.append(f"; position {decision.position_size:.1%}")
         else:
             parts.append("; NO TRADE")
-        
+
         return "".join(parts)
-    
+
     # ─────────────────────────────────────────────────────────────
     # Statistics / History / Autonomy Access
     # ─────────────────────────────────────────────────────────────
-    
+
     def get_instrument_stats(self) -> Dict[str, Any]:
         """Get per-instrument statistics."""
         return self.stats_tracker.to_dict()
-    
+
     def get_decision_history(self, instrument: str, n: int = 10) -> List[Dict[str, Any]]:
         """Get recent decision history for an instrument."""
         history = self._decision_history.get(instrument, [])
         return [d.to_dict() for d in history[-n:]]
-    
+
     def record_trade_outcome(
         self,
         instrument: str,
@@ -1748,8 +1774,8 @@ class ArbiterLogic:
     ) -> None:
         """
         Record a trade outcome for autonomy tracking.
-        
-        Call this when a trade closes to update the adaptive autonomy system.
+
+        In the new architecture, trades should typically be PPO-led.
         """
         self.autonomy_tracker.record_trade_outcome(
             ppo_direction=ppo_direction,
@@ -1759,11 +1785,34 @@ class ArbiterLogic:
             was_ppo_led=was_ppo_led,
         )
         self.stats_tracker.record_trade_result(instrument, pnl)
-    
+
+        self._autonomy_save_counter += 1
+        if self._autonomy_save_counter >= self._autonomy_save_interval:
+            self.autonomy_tracker.save_state()
+            self._autonomy_save_counter = 0
+
     def get_autonomy_state(self) -> Dict[str, Any]:
         """Get the current PPO autonomy state for dashboard/logging."""
         return self.autonomy_tracker.get_state_summary()
-    
+
     def get_ppo_decision_weights(self) -> Tuple[float, float]:
-        """Get current PPO/expert decision weights."""
+        """Get current PPO/expert decision weights (always 1.0, 0.0 in this design)."""
         return self.autonomy_tracker.get_decision_weights()
+
+    def save_autonomy_state(self) -> bool:
+        """Manually save autonomy state to disk."""
+        return self.autonomy_tracker.save_state()
+
+    def reset_autonomy_state(self) -> None:
+        """
+        Reset autonomy to a fresh learning state.
+
+        Use this if you want to "forget" autonomy analytics (e.g. retraining).
+        """
+        self.autonomy_tracker = PPOAutonomyTracker(
+            window_size=50,
+            adaptation_rate=0.02,
+            min_trades=20,
+        )
+        self._autonomy_save_counter = 0
+        logging.info("[ArbiterLogic] Autonomy state reset to fresh learning state")

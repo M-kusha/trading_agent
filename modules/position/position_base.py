@@ -1050,6 +1050,23 @@ class PositionManagerBase(
         grace = getattr(self, "_startup_grace_calls", 3)
         return count > grace
 
+    def _check_cooldown(self, instrument: str) -> bool:
+        """
+        Check if the instrument is past its trade cooldown period.
+        
+        Returns True if trading is allowed (cooldown expired or never traded).
+        Returns False if still in cooldown (should wait before new entry).
+        """
+        last_trade_times = getattr(self, "_last_new_position_time", {})
+        cooldown_seconds = getattr(self, "_trade_cooldown_seconds", 60.0)
+        
+        last_trade = last_trade_times.get(instrument)
+        if last_trade is None:
+            return True  # Never traded this instrument, allow
+        
+        elapsed = time.time() - last_trade
+        return elapsed >= cooldown_seconds
+
     # ---------- process() — calls abstract decision pipeline provided by Part 2
     async def process(self, **inputs: Any) -> Dict[str, Any]:
         """

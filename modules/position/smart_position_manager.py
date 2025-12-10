@@ -280,7 +280,20 @@ class PositionFocusContext:
             open_time = pos.get("open_time", 0)
             if open_time:
                 import time as _time
-                ctx.primary_age_hours = (_time.time() - float(open_time)) / 3600.0
+                from datetime import datetime
+                # Handle both Unix timestamp and ISO datetime string formats
+                if isinstance(open_time, str):
+                    try:
+                        # Parse ISO format: '2025-12-09T23:18:53Z'
+                        dt = datetime.fromisoformat(open_time.replace('Z', '+00:00'))
+                        open_timestamp = dt.timestamp()
+                    except (ValueError, AttributeError):
+                        open_timestamp = 0.0
+                else:
+                    open_timestamp = float(open_time)
+                
+                if open_timestamp > 0:
+                    ctx.primary_age_hours = (_time.time() - open_timestamp) / 3600.0
 
         # Calculate total exposure
         ctx.total_exposure = sum(
