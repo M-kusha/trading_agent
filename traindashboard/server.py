@@ -142,16 +142,54 @@ def get_dashboard_data() -> Dict[str, Any]:
     # ═══════════════════════════════════════════════════════════════
     reward_components = safe_dict(get("reward_components", {}))
     latest_reward = safe_dict(get("latest_reward_breakdown", {}))
+    
+    # Map actual reward calculator keys to dashboard display keys
+    # PnL: base profit/loss
+    pnl_value = safe_float(
+        reward_components.get("pnl", 
+        reward_components.get("base_component",
+        latest_reward.get("pnl", 0)))
+    )
+    
+    # Risk: risk_penalty + tail_penalty
+    risk_value = safe_float(
+        reward_components.get("risk_penalty", 0) +
+        reward_components.get("tail_penalty", 0) +
+        latest_reward.get("risk", 0)
+    )
+    
+    # Drawdown: drawdown_penalty + prop_firm_penalty
+    drawdown_value = safe_float(
+        reward_components.get("drawdown_penalty", 0) +
+        reward_components.get("prop_firm_penalty", 0) +
+        latest_reward.get("drawdown", 0)
+    )
+    
+    # Behavior: bonuses - other penalties (win_bonus, consistency, etc.)
+    behavior_value = safe_float(
+        reward_components.get("win_bonus", 0) +
+        reward_components.get("consistency_bonus", 0) +
+        reward_components.get("sharpe_bonus", 0) -
+        reward_components.get("mistake_penalty", 0) -
+        reward_components.get("trade_open_cost", 0) +
+        latest_reward.get("behavior", 0)
+    )
+    
     reward = {
         "step_reward": safe_float(get("step_reward", latest_reward.get("total", 0))),
         "episode_reward": safe_float(get("current_episode_reward", 0)),
         "components": {
-            "pnl": safe_float(reward_components.get("pnl", latest_reward.get("pnl", 0))),
-            "risk": safe_float(reward_components.get("risk", latest_reward.get("risk", 0))),
-            "drawdown": safe_float(reward_components.get("drawdown", latest_reward.get("drawdown", 0))),
-            "behavior": safe_float(reward_components.get("behavior", latest_reward.get("behavior", 0))),
+            "pnl": pnl_value,
+            "risk": risk_value,
+            "drawdown": drawdown_value,
+            "behavior": behavior_value,
         },
         "thesis": latest_reward.get("thesis", ""),
+        # Also expose raw components for debugging
+        "raw_components": {
+            k: safe_float(v) for k, v in reward_components.items() 
+            if isinstance(v, (int, float))
+        },
     }
 
     # ═══════════════════════════════════════════════════════════════

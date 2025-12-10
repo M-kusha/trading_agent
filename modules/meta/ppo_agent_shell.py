@@ -336,10 +336,19 @@ class PPOAgentShell(
                     committee_data,
                     position_focus,
                 )
-                self.logger.info(
-                    f"[PPO] POSITION FOCUS MODE: {position_focus.get('primary_instrument')} "
-                    f"side={position_focus.get('primary_side')}, pnl={float(position_focus.get('primary_pnl', 0.0)):.2f}"
-                )
+                # Log ALL positions, not just primary
+                all_positions = position_focus.get('positions', {})
+                if all_positions:
+                    pos_summary = ", ".join([
+                        f"{inst}(side={pos.get('side', 0)}, pnl={float(pos.get('unrealized_pnl', 0)):.2f})"
+                        for inst, pos in all_positions.items()
+                    ])
+                    self.logger.info(f"[PPO] POSITION FOCUS MODE: {pos_summary}")
+                else:
+                    self.logger.info(
+                        f"[PPO] POSITION FOCUS MODE: {position_focus.get('primary_instrument')} "
+                        f"side={position_focus.get('primary_side')}, pnl={float(position_focus.get('primary_pnl', 0.0)):.2f}"
+                    )
 
             # 2) Build observations for each instrument
             observations = self._build_observations_for_instruments()

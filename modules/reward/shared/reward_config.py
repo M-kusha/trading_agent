@@ -53,7 +53,7 @@ def _load_reward_config_from_yaml() -> Dict[str, Any]:
 _REWARD_MODE: str = "TRAINING"  # "LIVE" or "TRAINING"
 
 # ───────────────────────────────────────────────────────────────────
-# LIVE MODE PARAMETERS (Conservative - protect capital)
+# LIVE MODE PARAMETERS (Conservative - QUALITY TRADES ONLY)
 # ───────────────────────────────────────────────────────────────────
 _LIVE_REWARD_PARAMS = {
     # Penalty weights (strong penalties for risky behavior)
@@ -61,20 +61,28 @@ _LIVE_REWARD_PARAMS = {
     "risk_pen_weight": 0.25,        # Strong risk penalty
     "tail_pen_weight": 0.8,         # Strong tail risk penalty
     "mistake_pen_weight": 0.5,      # Strong mistake penalty
-    "no_trade_penalty_weight": 0.02,  # Very low - don't force trading
+    "no_trade_penalty_weight": 0.0,   # NO penalty for patience
+    
+    # TRADE COST: Higher in live (real spread/commission)
+    "trade_open_cost": 0.20,        # Cost per new trade
     
     # Prop firm penalties (critical for funded accounts)
     "prop_firm_dd_penalty_weight": 5.0,    # Heavy penalty near DD limits
     "prop_firm_violation_penalty": 10.0,   # Severe penalty for rule breach
     "profit_target_bonus_weight": 2.0,     # Bonus for reaching targets
     
-    # Bonus weights (conservative)
-    "win_bonus_weight": 0.8,        # Lower win bonus
-    "trade_frequency_bonus": 0.1,   # Low frequency bonus
+    # Bonus weights (conservative - reward quality)
+    "win_bonus_weight": 1.2,        # Reward winners
+    "trade_frequency_bonus": 0.0,   # NO frequency bonus
+    
+    # Quality bonuses
+    "win_rate_bonus_weight": 0.8,   # Higher win rate bonus in live
+    "patience_bonus_weight": 0.05,  # Small patience bonus
 }
 
 # ───────────────────────────────────────────────────────────────────
-# TRAINING MODE PARAMETERS (Exploratory - allow learning)
+# TRAINING MODE PARAMETERS (QUALITY OVER QUANTITY)
+# Teach the agent to be SELECTIVE - only trade on strong signals
 # ───────────────────────────────────────────────────────────────────
 _TRAINING_REWARD_PARAMS = {
     # Penalty weights (moderate for exploration)
@@ -82,16 +90,24 @@ _TRAINING_REWARD_PARAMS = {
     "risk_pen_weight": 0.1,         # Moderate risk penalty
     "tail_pen_weight": 0.5,         # Moderate tail risk penalty
     "mistake_pen_weight": 0.3,      # Moderate mistake penalty
-    "no_trade_penalty_weight": 0.05,  # Encourage trading to learn
+    "no_trade_penalty_weight": 0.0,   # NO penalty for not trading (patience is OK)
+    
+    # TRADE COST: Penalize opening new positions (teaches selectivity)
+    # Agent must overcome this cost with profits to net positive reward
+    "trade_open_cost": 0.15,        # Cost per new trade opened (like spread/commission)
     
     # Prop firm penalties (learn to respect limits)
     "prop_firm_dd_penalty_weight": 3.0,    # Progressive penalty near DD limits
     "prop_firm_violation_penalty": 5.0,    # Learn to avoid rule breaches
     "profit_target_bonus_weight": 1.5,     # Incentive for profit targets
     
-    # Bonus weights (encourage exploration)
-    "win_bonus_weight": 1.0,        # Full win bonus
-    "trade_frequency_bonus": 0.2,   # Encourage frequent trades
+    # Bonus weights (reward quality not quantity)
+    "win_bonus_weight": 1.5,        # HIGHER win bonus (reward winners more)
+    "trade_frequency_bonus": 0.0,   # NO frequency bonus (don't reward churning)
+    
+    # NEW: Quality bonuses
+    "win_rate_bonus_weight": 0.5,   # Bonus for maintaining high win rate
+    "patience_bonus_weight": 0.1,   # Small bonus for holding during low-signal periods
 }
 
 
@@ -146,13 +162,20 @@ class RewardConfig:
     risk_pen_weight: float = 0.1
     tail_pen_weight: float = 0.5
     mistake_pen_weight: float = 0.3
-    no_trade_penalty_weight: float = 0.05
+    no_trade_penalty_weight: float = 0.0  # No penalty for patience
+
+    # Trade cost (penalizes opening new positions - teaches selectivity)
+    trade_open_cost: float = 0.15
 
     # Bonus weights
-    win_bonus_weight: float = 1.0
+    win_bonus_weight: float = 1.5
     consistency_bonus_weight: float = 0.5
     sharpe_bonus_weight: float = 0.3
-    trade_frequency_bonus: float = 0.2
+    trade_frequency_bonus: float = 0.0  # No bonus for frequent trading
+    
+    # Quality bonuses (reward selective trading)
+    win_rate_bonus_weight: float = 0.5
+    patience_bonus_weight: float = 0.1
 
     # Advanced parameters
     volatility_adjustment: float = 1.0
@@ -212,6 +235,12 @@ class RewardConfig:
         self.no_trade_penalty_weight = params.get("no_trade_penalty_weight", self.no_trade_penalty_weight)
         self.win_bonus_weight = params.get("win_bonus_weight", self.win_bonus_weight)
         self.trade_frequency_bonus = params.get("trade_frequency_bonus", self.trade_frequency_bonus)
+        
+        # Trade selectivity parameters (quality over quantity)
+        self.trade_open_cost = params.get("trade_open_cost", self.trade_open_cost)
+        self.win_rate_bonus_weight = params.get("win_rate_bonus_weight", getattr(self, 'win_rate_bonus_weight', 0.5))
+        self.patience_bonus_weight = params.get("patience_bonus_weight", getattr(self, 'patience_bonus_weight', 0.1))
+        
         # Prop firm parameters
         self.prop_firm_dd_penalty_weight = params.get("prop_firm_dd_penalty_weight", self.prop_firm_dd_penalty_weight)
         self.prop_firm_violation_penalty = params.get("prop_firm_violation_penalty", self.prop_firm_violation_penalty)

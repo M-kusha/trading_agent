@@ -250,6 +250,15 @@ class RewardCalculator:
 
         penalties: Dict[str, float] = {}
 
+        # ═══════════════════════════════════════════════════════════════
+        # TRADE COST PENALTY: Penalize opening new positions
+        # This teaches the agent to be SELECTIVE - only trade when confident
+        # Agent must overcome this cost with profits to net positive reward
+        # ═══════════════════════════════════════════════════════════════
+        trade_cost = self._calculate_trade_open_cost(reward_data.get('trades', []))
+        if trade_cost > 0:
+            penalties['trade_open_cost'] = trade_cost
+
         # Drawdown penalty
         drawdown_penalty = self._calculate_drawdown_penalty(
             components['drawdown'],
@@ -426,6 +435,46 @@ class RewardCalculator:
                     self.logger.debug(f"Mistake penalty error: {e}")
 
         return 0.0
+
+    def _calculate_trade_open_cost(self, trades: List[Dict[str, Any]]) -> float:
+        """
+        Calculate cost penalty for opening new positions.
+        
+        This teaches the agent to be SELECTIVE:
+        - Every new trade has a "cost" (like spread/commission)
+        - Agent must overcome this cost with profits to net positive
+        - Discourages churning / over-trading
+        - Encourages waiting for high-probability setups
+        
+        Args:
+            trades: List of trades from this step
+            
+        Returns:
+            Cost penalty (positive value = penalty to subtract from reward)
+        """
+        if not trades:
+            return 0.0
+            
+        # Count NEW position entries (not scales or closes)
+        new_entries = 0
+        for trade in trades:
+            if not isinstance(trade, dict):
+                continue
+            action = str(trade.get('action', '')).lower()
+            # Only count actual new position opens
+            if action in ('open_long', 'open_short', 'open', 'entry'):
+                new_entries += 1
+        
+        if new_entries == 0:
+            return 0.0
+        
+        # Get trade cost weight from config (default 0.15)
+        trade_cost_per_entry = float(getattr(self.cfg, 'trade_open_cost', 0.15))
+        
+        # Apply cost per new entry
+        total_cost = new_entries * trade_cost_per_entry
+        
+        return float(total_cost)
 
     def _calculate_no_trade_penalty(
         self,

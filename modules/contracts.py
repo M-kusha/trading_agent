@@ -844,8 +844,7 @@ CONTRACTS: Dict[str, ModuleContract] = {
         #   - risk_assessment, risk_level (from DynamicRiskController)
         #   - trading_mode, mode_config, mode_effectiveness (from TradingModeManager)
         # These are enhancement signals consumed via bus.get() with defaults in Executor.
-        # FIX v5.2.0: Added position_decisions to ensure Executor runs AFTER PositionManager
-        requires=['prices', 'price_data', 'environment_config', 'step_idx', 'execution_mode', 'position_decisions'],
+        requires=['prices', 'price_data', 'environment_config', 'step_idx', 'execution_mode'],
         meta={'is_voting_member': False, 'thesis_required': False, 'explainable': True,
               'health_monitoring': True, 'performance_tracking': True,
               'category': 'executor', 'version': '1.0.0'}
