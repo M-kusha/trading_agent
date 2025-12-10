@@ -91,7 +91,7 @@ class PPOShellConfig:
     # PPO needs time to observe market conditions before making decisions.
     # During warmup, the agent observes but does NOT generate entry signals.
     # This prevents hasty trades based on incomplete market context.
-    warmup_cycles: int = 100  # ~60 seconds at 3s/cycle - observe first before trading
+    warmup_cycles: int = 30  # ~60 seconds at 3s/cycle - observe first before trading
     warmup_enabled: bool = True  # Set to False to disable warmup (not recommended)
 
     # Debug
@@ -159,6 +159,7 @@ class PPOAgentShell(
         self.circuit_breaker: Dict[str, Any] = {}
         self._performance_metrics: Dict[str, Any] = {}
         self._monitoring_active: bool = False
+        self._last_cooldown_state: Dict[str, bool] = {}
         
         # ═══════════════════════════════════════════════════════════════════
         # WARMUP STATE (v3.2.0)
@@ -359,6 +360,9 @@ class PPOAgentShell(
             # 0) Check for trade outcomes and update autonomy tracker
             self._check_trade_outcomes_for_autonomy()
 
+            # 0.25) Log instrument cooldown state (from SmartPositionManager)
+            self._log_instrument_cooldowns()
+
             # 0.5) CHECK POSITION FOCUS MODE
             # If we have active positions, switch to position management mode
             position_focus: Optional[Dict[str, Any]] = (
@@ -383,7 +387,13 @@ class PPOAgentShell(
             world_model_info = self._gather_world_model_info()
 
             # 1d) If in position focus mode, adjust committee data to reflect position management
-            if in_position_focus_mode and position_focus is not None:
+            # ONLY adjust committee globally if we're blocking other instruments
+            # Otherwise, keep committee data independent and let per-instrument logic handle it
+            if (
+                in_position_focus_mode 
+                and position_focus is not None
+                and self._cfg.position_focus_blocks_other_instruments
+            ):
                 committee_data = self._adjust_committee_for_position_focus(
                     committee_data,
                     position_focus,
@@ -400,6 +410,15 @@ class PPOAgentShell(
                     f"committee={bool(committee_data)}, risk={risk_info.portfolio_risk:.2f}"
                 )
 
+            # v5.2: Build positions_by_instrument map for per-instrument independence
+            positions_by_instrument: Dict[str, bool] = {}
+            if position_focus:
+                all_positions = position_focus.get("positions", {})
+                for inst in self._cfg.instruments:
+                    # Normalize instrument name for lookup
+                    inst_norm = inst.upper().replace('/', '').replace('_', '').replace('-', '')
+                    positions_by_instrument[inst] = inst_norm in all_positions or inst in all_positions
+
             # 3) Make multi-instrument decision (with full integration)
             multi_decision = self.arbiter.make_multi_instrument_decision(
                 observations=observations,
@@ -410,6 +429,7 @@ class PPOAgentShell(
                 strategy_info=strategy_info,
                 trading_mode_info=trading_mode_info,
                 world_model_info=world_model_info,
+                positions_by_instrument=positions_by_instrument,  # v5.2
             )
 
             # 3.5) Apply position focus mode adjustments to decision
@@ -526,12 +546,23 @@ class PPOAgentShell(
                         trust = decision.trust_score
                         conf = decision.confidence
                         
-                        # Determine block reason(s)
+                        # Check for position focus blocking
+                        blocked_by_focus = decision.meta.get("blocked_by_position_focus", False)
+                        in_focus_mode = decision.meta.get("position_focus_mode", False)
+                        
+                        # Determine block reason(s) - ULTRA PICKY MODE thresholds
                         block_reasons = []
-                        if conf < 0.55:
-                            block_reasons.append(f"Conf {conf:.0%} < 55%")
-                        if abs(trust) < 0.55:
-                            block_reasons.append(f"Trust {trust:+.2f} < ±0.55")
+                        gate_reasons = decision.gate_reasons or []
+
+                        # Check for seasonality blocking (high priority reason)
+                        if "SEASONALITY_BLOCKED" in gate_reasons:
+                            block_reasons.append("SEASONALITY: Outside trading hours")
+                        elif blocked_by_focus:
+                            block_reasons.append("POSITION_FOCUS blocking other instruments")
+                        elif conf < 0.70:
+                            block_reasons.append(f"Conf {conf:.0%} < 70%")
+                        if abs(trust) < 0.70:
+                            block_reasons.append(f"Trust {trust:+.2f} < ±0.70")
                         if not block_reasons:
                             block_reasons.append("Gate check failed")
                         
@@ -545,8 +576,12 @@ class PPOAgentShell(
                             f"[PPO] │  Reason: {' + '.join(block_reasons)}"
                         )
                         self.logger.info(
-                            f"[PPO] │  Thresholds → Dir: ±0.50 │ Entry: 0.55 │ MinConf: 55%"
+                            f"[PPO] │  Thresholds → Dir: ±0.70 │ Entry: 0.70 │ MinConf: 70%"
                         )
+                        if in_focus_mode:
+                            self.logger.info(
+                                f"[PPO] │  ⚠️ Position focus mode active for this instrument"
+                            )
                         self.logger.info(
                             f"[PPO] └───────────────────────────────────────────────┘"
                         )
@@ -995,6 +1030,88 @@ class PPOAgentShell(
 
         return ctx
 
+    def _log_instrument_cooldowns(self) -> None:
+        """
+        Log per-instrument cooldown state for transparency.
+
+        Reads the SmartPositionManager's 'instrument_cooldown_state' from the
+        SmartInfoBus and logs when an instrument enters or exits cooldown,
+        including the remaining cooldown time in seconds.
+        """
+        try:
+            cooldown_state = self.smart_bus.get(
+                "instrument_cooldown_state",
+                "PPOAgentShell",
+                default={},
+            ) or {}
+            if not isinstance(cooldown_state, dict):
+                return
+        except Exception:
+            return
+
+        for inst in self._cfg.instruments:
+            inst_cd = cooldown_state.get(inst)
+            if not isinstance(inst_cd, dict):
+                norm = inst.replace("/", "").replace("_", "").upper()
+                for key, val in cooldown_state.items():
+                    if not isinstance(key, str) or not isinstance(val, dict):
+                        continue
+                    key_norm = key.replace("/", "").replace("_", "").upper()
+                    if key_norm == norm:
+                        inst_cd = val
+                        break
+
+            on_cd = bool(inst_cd.get("on_cooldown", False)) if isinstance(inst_cd, dict) else False
+            remaining = float(inst_cd.get("cooldown_remaining", 0.0) or 0.0) if isinstance(inst_cd, dict) else 0.0
+            prev = self._last_cooldown_state.get(inst, False)
+
+            if on_cd and remaining > 0.0 and not prev:
+                self.logger.info(f"[PPO] ═══ {inst} ═══ COOLDOWN ACTIVE")
+                self.logger.info(
+                    f"[PPO]   ⏸️ Trade cooldown: {remaining:.0f}s remaining"
+                )
+            elif not on_cd and prev:
+                self.logger.info(f"[PPO] ═══ {inst} ═══ COOLDOWN CLEARED")
+                self.logger.info(
+                    f"[PPO]   ✅ Trade cooldown finished"
+                )
+
+            self._last_cooldown_state[inst] = on_cd
+
+    def _log_position_active_box(
+        self,
+        instrument: str,
+        side_emoji: str,
+        side_str: str,
+        lots: float,
+        pnl_emoji: str,
+        pnl: float,
+        age_hours: float,
+        action_str: str,
+        confidence: float,
+        trust: float,
+        regime: str,
+    ) -> None:
+        """Log a boxed summary for an active position."""
+        try:
+            header = f"{instrument} – POSITION ACTIVE"
+            box_width = 78
+            top = f"[PPO] ┌─ {header} " + "─" * max(0, box_width - len(header) - 3)
+            mid1 = (
+                f"[PPO] │  {side_emoji} {side_str} {lots:.2f} lots │ "
+                f"{pnl_emoji} P&L: €{pnl:+.2f} │ Age: {age_hours:.1f}h"
+            )
+            mid2 = (
+                f"[PPO] │  Signal: {action_str} │ "
+                f"Conf: {confidence:.0%} │ Trust: {trust:.2f} │ Regime: {regime}"
+            )
+            bot = "[PPO] └" + "─" * (box_width - 1)
+            for line in (top, mid1, mid2, bot, ""):
+                self.logger.info(line)
+        except Exception:
+            # Box logging is best-effort only; never affect trading.
+            pass
+
     def _adjust_committee_for_position_focus(
         self,
         committee_data: Dict[str, Any],
@@ -1050,21 +1167,20 @@ class PPOAgentShell(
         """
         Apply position focus mode constraints to the multi-instrument decision.
 
-        PRINCIPLES:
-        - Existing position's instrument:
-            * Direction is collapsed to HOLD/FLAT but we add metadata to signal
-              whether PPO wants to EXIT or HOLD.
-        - Other instruments:
+        PRINCIPLES (v3.2.1 - Per-Instrument Independence):
+        - Each instrument with a position:
+            * Gets position management treatment (HOLD/EXIT evaluation)
+        - Each instrument WITHOUT a position:
             * If position_focus_blocks_other_instruments=True: block new entries
-            * If position_focus_blocks_other_instruments=False: allow independent decisions
+            * If position_focus_blocks_other_instruments=False: trade independently!
 
         We intentionally do NOT invent a new 'exit' direction here to keep
         compatibility with PositionManager / SmartPositionManager, which expects
         directions in {long, short, hold/flat}.
         """
-        position_side = int(position_focus.get("primary_side", 0))
+        # Get ALL positions, not just the primary
+        all_positions = position_focus.get("positions", {})
         primary_inst = position_focus.get("primary_instrument")
-        position_pnl = float(position_focus.get("primary_pnl", 0.0))
         
         # Check if we should block other instruments (configurable)
         block_other_instruments = self._cfg.position_focus_blocks_other_instruments
@@ -1074,8 +1190,13 @@ class PPOAgentShell(
             if decision.meta is None:
                 decision.meta = {}
 
-            if inst == primary_inst and position_side != 0:
-                # Instrument with existing position: position management only
+            # Check if THIS instrument has a position (not just the primary!)
+            inst_position = all_positions.get(inst, {})
+            position_side = int(inst_position.get("side", 0))
+            position_pnl = float(inst_position.get("unrealized_pnl", 0.0))
+            
+            if position_side != 0:
+                # This instrument HAS a position: position management mode
                 ppo_direction = (decision.direction or "hold").lower()
 
                 if position_side > 0:  # LONG position
@@ -1139,16 +1260,19 @@ class PPOAgentShell(
                 else:
                     # Allow independent decisions for other instruments
                     # Just add metadata noting we're in position focus mode
-                    decision.meta["position_focus_mode"] = True
+                    decision.meta["position_focus_mode"] = False  # Not in focus mode for this instrument
                     decision.meta["blocked_by_position_focus"] = False
 
         # Update global metadata
+        primary_pnl = float(position_focus.get("primary_pnl", 0.0))
+        primary_side = int(position_focus.get("primary_side", 0))
         multi_decision.global_meta["position_focus"] = {
-            "active": True,
+            "active": len(all_positions) > 0,
             "instrument": primary_inst,
-            "side": position_side,
-            "pnl": position_pnl,
+            "side": primary_side,
+            "pnl": primary_pnl,
             "blocks_other_instruments": block_other_instruments,
+            "positions_count": len(all_positions),
         }
 
         return multi_decision

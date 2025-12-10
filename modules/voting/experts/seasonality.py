@@ -203,13 +203,17 @@ class SeasonalityRiskExpert(VotingExpertBase):
 
     def _publish_seasonality_baseline(self) -> None:
         """Publish baseline seasonality keys to avoid stale consumers."""
+        from datetime import timezone as dt_timezone
         thesis = "Seasonality baseline"
         confidence = 0.1
+        # Generate trading window - default to blocking new trades in baseline state
+        trading_window = self._analyze_trading_window(datetime.now(dt_timezone.utc))
         proposal = {
             "action": "flat",
             "signal_strength": confidence,
             "reason": thesis,
             "proposals": {},
+            "trading_window": trading_window,  # Include for arbiter seasonality gate
         }
         try:
             self.smart_bus.set(
@@ -522,6 +526,7 @@ class SeasonalityRiskExpert(VotingExpertBase):
                 "signal_strength": global_confidence,
                 "reason": global_thesis,
                 "proposals": proposals_dict,
+                "trading_window": trading_window,  # Include for arbiter seasonality gate
             }
 
             # Derive global composite score (first instrument as representative)
@@ -1346,17 +1351,22 @@ class SeasonalityRiskExpert(VotingExpertBase):
 
     def _neutral_output(self, reason: str) -> Dict[str, Any]:
         """Generate neutral output with explanation and publish neutral keys."""
+        from datetime import timezone as dt_timezone
         name = self.__class__.__name__
         thesis = f"Seasonal flat: {reason}"
 
         conf_floor = CONFIDENCE_THRESHOLD_F()
         confidence = max(0.1, conf_floor * 0.5)
 
+        # Generate trading window for the gate check
+        trading_window = self._analyze_trading_window(datetime.now(dt_timezone.utc))
+
         proposal = {
             "action": "flat",
             "signal_strength": confidence,
             "reason": thesis,
             "proposals": {},
+            "trading_window": trading_window,  # Include for arbiter seasonality gate
         }
 
         try:

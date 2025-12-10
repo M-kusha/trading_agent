@@ -328,6 +328,32 @@ class PPOObservationBuilder:
                 account["position_size"] = inst_pos.get("size", 0.0)
                 account["unrealized_pnl"] = inst_pos.get("unrealized_pnl", 0.0)
 
+        # Enrich with cooldown information if available from SmartPositionManager.
+        try:
+            cooldown_state = bus.get(
+                "instrument_cooldown_state",
+                module,
+                default=None,
+            )
+            if isinstance(cooldown_state, dict):
+                inst_cd = cooldown_state.get(instrument)
+                if not isinstance(inst_cd, dict):
+                    norm = instrument.replace("/", "").replace("_", "").upper()
+                    for key, val in cooldown_state.items():
+                        if isinstance(key, str) and isinstance(val, dict):
+                            key_norm = key.replace("/", "").replace("_", "").upper()
+                            if key_norm == norm:
+                                inst_cd = val
+                                break
+                if isinstance(inst_cd, dict):
+                    on_cd = bool(inst_cd.get("on_cooldown", False))
+                    remaining = float(inst_cd.get("cooldown_remaining", 0.0) or 0.0)
+                    account["on_cooldown"] = 1.0 if on_cd and remaining > 0.0 else 0.0
+                    account["cooldown_remaining"] = remaining
+        except Exception:
+            # Cooldown enrichment is advisory only; ignore failures.
+            pass
+
         return account
 
     def _build_m15_features_for_instrument(
@@ -868,13 +894,21 @@ class PPOObservationBuilder:
             np.clip(trades_val / max(self.config.max_trades_per_day, 1), 0.0, 1.0)
         )
 
-        # [7] last_action
-        last_action = account_state.get("last_action", 0.0)
-        try:
-            la_val = float(last_action)
-        except (TypeError, ValueError):
-            la_val = 0.0
-        feats[7] = float(np.clip(la_val, -1.0, 1.0))
+        # [7] cooldown-aware flag (repurposed from legacy last_action)
+        # Prefer explicit cooldown flag if provided; otherwise fall back to last_action.
+        if "on_cooldown" in account_state:
+            try:
+                cd_val = float(account_state.get("on_cooldown") or 0.0)
+            except (TypeError, ValueError):
+                cd_val = 0.0
+            feats[7] = float(np.clip(cd_val, 0.0, 1.0))
+        else:
+            last_action = account_state.get("last_action", 0.0)
+            try:
+                la_val = float(last_action)
+            except (TypeError, ValueError):
+                la_val = 0.0
+            feats[7] = float(np.clip(la_val, -1.0, 1.0))
 
         return feats
 

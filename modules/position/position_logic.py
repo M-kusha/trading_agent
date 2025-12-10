@@ -515,6 +515,40 @@ class PositionManager(PositionManagerBase):
         # when PPO has a clear decision but voting system has low intensity.
         # ======================================================
 
+        # ══════════════════════════════════════════════════════════════════
+        # COOLDOWN GATE: Prevent rapid re-entry after closing a position
+        # This is critical to avoid trading noise and give the market time
+        # to develop a new opportunity.
+        # ══════════════════════════════════════════════════════════════════
+        if not self._check_cooldown(instrument):
+            # Get cooldown details for logging
+            last_trade_times = getattr(self, "_last_new_position_time", {})
+            cooldown_seconds = getattr(self, "_trade_cooldown_seconds", 300.0)
+            last_trade = last_trade_times.get(instrument, 0.0)
+            elapsed = time.time() - last_trade if last_trade else 0
+            remaining = max(0, cooldown_seconds - elapsed)
+
+            rationale["stage"] = "cooldown_gate"
+            rationale["factors"].append(
+                f"Cooldown active: {remaining:.0f}s remaining (requires {cooldown_seconds:.0f}s between trades)"
+            )
+
+            self.logger.info(
+                f"[COOLDOWN_GATE] {instrument}: Blocking new entry - "
+                f"{remaining:.0f}s cooldown remaining"
+            )
+
+            return self._finalize_decision(
+                instrument,
+                PositionDecision.HOLD,
+                0.0,  # intensity
+                0.0,  # size
+                0.3,  # low confidence hold
+                rationale,
+                risk_factors,
+                context,
+            )
+
         # ======================================================
         # DIRECTION RESOLUTION - PPO MASTER
         # PPO is ALWAYS the primary decision maker.
@@ -1069,6 +1103,28 @@ class PositionManager(PositionManagerBase):
                 )
 
                 self.unified_logger.log_decision_summary(log_entry)
+
+                # Optional: compact per-instrument statistics block
+                try:
+                    pos_snapshot = self._get_position_for_instrument(instrument)
+                except Exception:
+                    pos_snapshot = None
+
+                inst_stats: Dict[str, Any] = {}
+                if isinstance(pos_snapshot, dict):
+                    inst_stats.update(
+                        {
+                            "side": pos_snapshot.get("side", 0),
+                            "lots": pos_snapshot.get("lots", 0.0),
+                            "size_eur": pos_snapshot.get("size", 0.0),
+                            "unrealized_pnl": pos_snapshot.get("unrealized_pnl", 0.0),
+                            "age_hours": pos_snapshot.get("age_hours", 0.0),
+                        }
+                    )
+                inst_stats["exposure"] = context.current_exposure
+                inst_stats["drawdown"] = context.drawdown
+
+                self.unified_logger.log_instrument_stats(instrument, inst_stats)
 
             except Exception as e:
                 # Fallback to simple log if unified logger fails

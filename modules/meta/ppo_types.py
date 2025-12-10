@@ -660,6 +660,7 @@ class GatingResult:
         memory: MemoryGateInfo,
         risk: RiskInfo,
         trust_score: float,
+        has_existing_position: bool = True,  # v5.2: Per-instrument independence
     ) -> "GatingResult":
         """
         Apply the 3-stage gating pipeline.
@@ -671,6 +672,9 @@ class GatingResult:
 
         v4.2.0+: Uses DynamicRiskController's risk_scale and risk_level,
         plus UnifiedMemory's loss_prob and risk_score.
+        
+        v5.2: When has_existing_position=False, skip portfolio-level penalties
+        to allow independent trading on instruments without positions.
         """
         result = cls()
 
@@ -743,14 +747,18 @@ class GatingResult:
             result.reasons.append(f"DRC_BOOST={boost:.2f}")
 
         # Risk level based scaling
+        # v5.2: Only apply confidence penalty to instruments WITH positions
+        # This prevents positions in one instrument from blocking new entries in another
         if risk.risk_level == "HIGH":
             result.position_size_cap = min(result.position_size_cap, 0.3)
-            result.confidence_multiplier *= 0.6
+            if has_existing_position:
+                result.confidence_multiplier *= 0.6
             result.soft_scaling_applied = True
             result.reasons.append("RISK_LEVEL_HIGH")
         elif risk.risk_level == "ELEVATED":
             result.position_size_cap = min(result.position_size_cap, 0.6)
-            result.confidence_multiplier *= 0.8
+            if has_existing_position:
+                result.confidence_multiplier *= 0.8
             result.soft_scaling_applied = True
             result.reasons.append("RISK_LEVEL_ELEVATED")
 
@@ -785,7 +793,10 @@ class GatingResult:
             result.reasons.append(f"LOSS_PROB={memory.loss_prob:.2f}")
 
         # High portfolio risk penalty
-        if risk.portfolio_risk > PORTFOLIO_RISK_PENALTY_START:
+        # v5.2: ONLY apply to instruments WITH existing positions
+        # Instruments without positions are independent - don't penalize them
+        # for risk from OTHER instruments' positions
+        if risk.portfolio_risk > PORTFOLIO_RISK_PENALTY_START and has_existing_position:
             # Map [0.7,1.0] → [1.0,0.4]
             penalty = 1.0 - (risk.portfolio_risk - PORTFOLIO_RISK_PENALTY_START) * 2.0
             penalty = max(0.3, min(1.0, penalty))

@@ -897,12 +897,12 @@ class ArbiterLogic:
         - Direct constructor argument `hysteresis_config`
         """
         cfg: Dict[str, Any] = {
-            # PICKY MODE - High thresholds for quality over quantity
-            # v5.1: Significantly raised to reduce overtrading
-            "entry_threshold": 0.55,       # Was 0.35 - need strong conviction to enter
-            "reversal_threshold": 0.70,    # Was 0.50 - very hard to flip direction
-            "exit_threshold": 0.25,        # Was 0.15 - stay in position longer
-            "min_hold_before_reversal": 10,  # Was 5 - must hold 10 ticks before reversing
+            # ULTRA PICKY MODE - Very high thresholds for quality over quantity
+            # v5.2: Aggressively raised to drastically reduce overtrading
+            "entry_threshold": 0.70,       # Was 0.55 - need very strong conviction to enter
+            "reversal_threshold": 0.85,    # Was 0.70 - almost impossible to flip direction
+            "exit_threshold": 0.35,        # Was 0.25 - stay in position even longer
+            "min_hold_before_reversal": 20,  # Was 10 - must hold 20 ticks (~60s) before reversing
         }
 
         # Optional SmartInfoBus overrides
@@ -978,10 +978,20 @@ class ArbiterLogic:
 
         HARD gate in LIVE mode:
         - Blocks new entries outside trading hours / near close.
-        - Ignored in TRAINING mode so PPO can learn full distribution.
+        - In TRAINING mode, we still allow trades to keep the full distribution,
+          but LIVE mode always respects the Seasonality trading window.
         """
-        if is_training_mode():
-            return (True, "Training mode - all times allowed")
+        # In pure TRAINING runs (no live execution), skip the gate entirely.
+        # In LIVE runs (execution_mode='live' on the bus), always enforce it,
+        # even if voting mode was left in TRAINING by mistake.
+        try:
+            if self._smart_bus is not None:
+                exec_mode = self._smart_bus.get("execution_mode", "ArbiterLogic", default=None)
+                if str(exec_mode).lower() != "live" and is_training_mode():
+                    return (True, "Training mode - all times allowed")
+        except Exception:
+            if is_training_mode():
+                return (True, "Training mode - all times allowed")
 
         if self._smart_bus is None:
             return (True, "No bus access")
@@ -1067,13 +1077,18 @@ class ArbiterLogic:
         strategy_info: Optional[StrategyInfo] = None,
         trading_mode_info: Optional[TradingModeInfo] = None,
         world_model_info: Optional[WorldModelInfo] = None,
+        positions_by_instrument: Optional[Dict[str, bool]] = None,  # v5.2: Per-instrument positions
     ) -> ArbiterMultiDecision:
         """
         Make trading decisions for multiple instruments.
+        
+        v5.2: positions_by_instrument is a dict mapping instrument -> has_position (bool).
+        Instruments without positions get relaxed portfolio-level confidence penalties.
         """
         instruments = instruments or self.instruments
         committee_data = committee_data or {}
         expert_signals = expert_signals or {}
+        positions_by_instrument = positions_by_instrument or {}
 
         decisions: Dict[str, InstrumentDecision] = {}
 
@@ -1091,6 +1106,9 @@ class ArbiterLogic:
 
             inst_committee = self._extract_instrument_committee(committee_data, instrument)
             inst_experts = self._extract_instrument_experts(expert_signals, instrument)
+            
+            # v5.2: Check if this specific instrument has a position
+            has_position = positions_by_instrument.get(instrument, False)
 
             decision = self._make_single_instrument_decision(
                 instrument=instrument,
@@ -1102,6 +1120,7 @@ class ArbiterLogic:
                 strategy_info=strat,
                 trading_mode_info=tm_info,
                 world_model_info=wm_info,
+                has_existing_position=has_position,  # v5.2
             )
 
             decisions[instrument] = decision
@@ -1164,6 +1183,7 @@ class ArbiterLogic:
         strategy_info: Optional[StrategyInfo] = None,
         trading_mode_info: Optional[TradingModeInfo] = None,
         world_model_info: Optional[WorldModelInfo] = None,
+        has_existing_position: bool = False,  # v5.2: Per-instrument independence
     ) -> InstrumentDecision:
         """
         Make a trading decision for a single instrument.
@@ -1175,6 +1195,9 @@ class ArbiterLogic:
         4. Apply gating pipeline (risk/memory + seasonality).
         5. Apply strategy/mode/world-model adjustments (advisory).
         6. Compute final position size and build InstrumentDecision.
+        
+        v5.2: has_existing_position controls per-instrument independence.
+        When False, portfolio-level confidence penalties are skipped.
         """
         # 1) Run PPO policy
         # Use DETERMINISTIC mode for live trading to avoid noisy sampling
@@ -1223,7 +1246,11 @@ class ArbiterLogic:
         direction = self._apply_hysteresis(instrument, direction, hysteresis_score)
 
         # 5) Gating pipeline (memory + risk)
-        gating_result = GatingResult.apply_gates(memory_info, risk_info, direction_score)
+        # v5.2: Pass has_existing_position for per-instrument independence
+        gating_result = GatingResult.apply_gates(
+            memory_info, risk_info, direction_score,
+            has_existing_position=has_existing_position,
+        )
 
         # 5b) Seasonality time gate (HARD in live, bypass in training)
         seasonality_allowed, seasonality_reason = self._check_seasonality_time_gate()
@@ -1244,17 +1271,17 @@ class ArbiterLogic:
             reasoning += f" | SCALED: {', '.join(gating_result.reasons)}"
 
         # ═══════════════════════════════════════════════════════════════════
-        # MINIMUM CONFIDENCE GATE (PICKY MODE v5.1)
-        # Require minimum confidence of 0.55 for any directional trade.
-        # This prevents low-conviction noise trades.
+        # MINIMUM CONFIDENCE GATE (ULTRA PICKY MODE v5.2)
+        # Require minimum confidence of 0.70 for any directional trade.
+        # This prevents low-conviction noise trades - only trade when SURE.
         # ═══════════════════════════════════════════════════════════════════
-        MIN_TRADE_CONFIDENCE = 0.55
+        MIN_TRADE_CONFIDENCE = 0.70
         if direction != "flat" and confidence < MIN_TRADE_CONFIDENCE:
             gating_result.gate_passed = False
             gating_result.reasons.append(f"LOW_CONFIDENCE({confidence:.2f}<{MIN_TRADE_CONFIDENCE})")
             reasoning += f" | BLOCKED: confidence {confidence:.2f} < {MIN_TRADE_CONFIDENCE} minimum"
             self.logger.debug(
-                f"[PICKY_GATE] {instrument}: Blocked due to low confidence "
+                f"[ULTRA_PICKY_GATE] {instrument}: Blocked due to low confidence "
                 f"({confidence:.2f} < {MIN_TRADE_CONFIDENCE})"
             )
 
@@ -1415,18 +1442,19 @@ class ArbiterLogic:
     def _score_to_direction(
         self,
         score: float,
-        long_threshold: float = 0.50,
-        short_threshold: float = -0.50,
+        long_threshold: float = 0.70,
+        short_threshold: float = -0.70,
     ) -> str:
         """
         Convert a direction_score to a discrete direction.
 
-        PPO's raw intent (PICKY MODE - high thresholds):
+        PPO's raw intent (ULTRA PICKY MODE - very high thresholds):
         - score >  long_threshold  → LONG
         - score <  short_threshold → SHORT
         - otherwise                → FLAT
-        
-        v5.1: Raised from ±0.30 to ±0.50 for pickier trading.
+
+        v5.2: Raised from ±0.50 to ±0.70 for ultra picky trading.
+        Only trade when PPO is highly confident in the direction.
         """
         if score > long_threshold:
             return "long"
@@ -1665,12 +1693,12 @@ class ArbiterLogic:
 
         cfg = getattr(self, "_hysteresis_cfg", None)
         if not cfg:
-            # Hard fallback (should not normally happen) - PICKY MODE defaults
+            # Hard fallback (should not normally happen) - ULTRA PICKY MODE defaults
             cfg = {
-                "entry_threshold": 0.55,
-                "reversal_threshold": 0.70,
-                "exit_threshold": 0.25,
-                "min_hold_before_reversal": 10,
+                "entry_threshold": 0.70,
+                "reversal_threshold": 0.85,
+                "exit_threshold": 0.35,
+                "min_hold_before_reversal": 20,
             }
 
         entry_threshold = float(cfg["entry_threshold"])

@@ -358,6 +358,65 @@ class UnifiedPositionLogger:
 
         self.logger.info("\n".join(lines))
 
+    def log_instrument_stats(self, instrument: str, stats: Dict[str, Any]) -> None:
+        """
+        Log a compact per-instrument statistics block, similar to the
+        portfolio statistics view but focused on a single instrument.
+
+        Expected (optional) keys in `stats`:
+          - side: int (1=LONG, -1=SHORT, 0=FLAT)
+          - lots: float
+          - size_eur or size: float (position notional)
+          - unrealized_pnl: float (EUR)
+          - age_hours: float
+          - exposure: float (ratio 0-?)
+          - drawdown: float (0-1)
+        """
+
+        def f(key: str, default: float = 0.0) -> float:
+            try:
+                return float(stats.get(key, default) or 0.0)
+            except Exception:
+                return default
+
+        side_val = int(stats.get("side", 0) or 0)
+        if side_val > 0:
+            side_label = "LONG"
+        elif side_val < 0:
+            side_label = "SHORT"
+        else:
+            side_label = "FLAT"
+
+        lots = f("lots", 0.0)
+        size_eur = f("size_eur", stats.get("size", 0.0))
+        pnl = f("unrealized_pnl", 0.0)
+        age_h = f("age_hours", 0.0)
+        exposure = f("exposure", 0.0)
+        drawdown = f("drawdown", 0.0)
+
+        if pnl > 0.0:
+            pnl_icon = "🟢"
+        elif pnl < 0.0:
+            pnl_icon = "🔴"
+        else:
+            pnl_icon = "⚪"
+
+        lines = [
+            "",
+            f"┌─ {instrument} ─ INSTRUMENT STATISTICS " + "─" * 40,
+            f"│ Side:             {side_label}",
+            f"│ Lots:             {lots:.2f}",
+            f"│ Size:             €{size_eur:,.2f}",
+            f"│ Unrealized P&L:   {pnl_icon} €{pnl:,.2f}",
+            f"│ Age:              {age_h:.1f}h",
+            f"│ Exposure:         {exposure:.1%}",
+            f"│ Drawdown:         {drawdown:.1%}",
+            "└" + "─" * 78,
+            "",
+        ]
+
+        self.logger.info("\n".join(lines))
+
     def log_signal_mapping(
         self,
         instrument: str,

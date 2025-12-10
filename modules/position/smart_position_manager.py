@@ -1029,38 +1029,67 @@ class SmartPositionManager:
             except Exception:
                 pass
 
-        self._log_decision(dec)
+        self._log_decision_box(dec)
         return dec
 
-    def _log_decision(self, decision: SmartDecision) -> None:
-        """Log non-HOLD decisions in a compact, operator-friendly format."""
+    
+
+    def _log_decision_box(self, decision: SmartDecision) -> None:
+        """Log a structured box-style summary for smart decisions."""
         if decision.action == PositionAction.HOLD:
             return
         try:
-            extra_info: Dict[str, Any] = {}
-            if decision.new_sl is not None:
-                extra_info["new_sl"] = f"{decision.new_sl:.5f}"
-            if decision.new_tp is not None:
-                extra_info["new_tp"] = f"{decision.new_tp:.5f}"
-            if decision.expert_support_ratio != 0.5:
-                extra_info["expert_support"] = f"{decision.expert_support_ratio:.0%}"
+            header = f"SMART POSITION DECISION – {decision.symbol}"
+            box_width = 78
 
-            self.logger.info(
-                format_operator_message(
-                    "🎯",
-                    "SMART_POSITION_DECISION",
-                    symbol=decision.symbol,
-                    action=decision.action.value,
-                    side=decision.side,
-                    lots=f"{decision.lots:.2f}",
-                    confidence=f"{decision.confidence:.2f}",
-                    reasons=" | ".join(decision.reasons[:3]) if decision.reasons else "",
-                    close_first=decision.close_first,
-                    **extra_info,
-                )
+            lines_box: List[str] = []
+            lines_box.append("")
+            lines_box.append(
+                "┌─ " + header + " " + "─" * max(0, box_width - len(header) - 3)
             )
+            lines_box.append(
+                f"│ Action:        {decision.action.value:<18} Side: {decision.side:+d}"
+            )
+            lines_box.append(
+                f"│ Lots:          {decision.lots:.2f}                "
+                f"Confidence: {decision.confidence:.2f}"
+            )
+
+            if decision.new_sl is not None or decision.new_tp is not None:
+                sl_str = (
+                    f"{decision.new_sl:.5f}"
+                    if decision.new_sl is not None
+                    else "unchanged"
+                )
+                tp_str = (
+                    f"{decision.new_tp:.5f}"
+                    if decision.new_tp is not None
+                    else "unchanged"
+                )
+                lines_box.append(
+                    f"│ New SL:        {sl_str:<18} New TP: {tp_str}"
+                )
+
+            if decision.expert_support_ratio != 0.5:
+                lines_box.append(
+                    f"│ Expert Support: {decision.expert_support_ratio:.0%}"
+                )
+
+            if decision.close_first:
+                lines_box.append(
+                    "│ Note:          Close existing position before applying action"
+                )
+
+            if decision.reasons:
+                lines_box.append("│ Reasons:")
+                for r in decision.reasons[:3]:
+                    lines_box.append(f"│   • {r}")
+
+            lines_box.append("└" + "─" * (box_width - 1))
+
+            self.logger.info("\n".join(lines_box))
         except Exception:
-            # Logging must never break trading logic
+            # Box logging should never affect trading
             pass
 
     # =========================================================
@@ -1292,6 +1321,38 @@ class SmartPositionManager:
         )
         if cooldown_remaining > 0:
             reasons.append(f"Cooldown active ({cooldown_remaining:.0f}s remaining)")
+            # Publish per-symbol cooldown to SmartInfoBus so PPO/experts can observe it.
+            try:
+                if self._smart_bus is not None:
+                    cooldown_state = self._smart_bus.get(
+                        "instrument_cooldown_state",
+                        "SmartPositionManager",
+                        default={},
+                    ) or {}
+                    if isinstance(cooldown_state, dict):
+                        sym_state = cooldown_state.get(symbol, {})
+                        if not isinstance(sym_state, dict):
+                            sym_state = {}
+                        sym_state.update(
+                            {
+                                "on_cooldown": True,
+                                "cooldown_remaining": float(max(cooldown_remaining, 0.0)),
+                                "last_trade_ts": float(last_trade),
+                                "same_direction_cooldown_seconds": float(
+                                    cfg.same_direction_cooldown_seconds
+                                ),
+                            }
+                        )
+                        cooldown_state[symbol] = sym_state
+                        self._smart_bus.set(
+                            "instrument_cooldown_state",
+                            cooldown_state,
+                            module="SmartPositionManager",
+                            thesis="Per-instrument trade cooldown state",
+                        )
+            except Exception:
+                # Cooldown publishing is advisory only; never block decisions on failure.
+                pass
             return self._make_decision(
                 action=PositionAction.HOLD,
                 symbol=symbol,

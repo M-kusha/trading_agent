@@ -1,6 +1,7 @@
 # -------------------------------------------------------------
 # Risk Policy Configuration
-# Used by risk modules (DynamicRiskController, PortfolioRiskSystem, SmartPositionManager, etc.)
+# Used by risk modules (DynamicRiskController, PortfolioRiskSystem,
+# SmartPositionManager, etc.)
 # -------------------------------------------------------------
 
 # ═══════════════════════════════════════════════════════════════
@@ -31,7 +32,7 @@ prop_firm:
   # CRITICAL: Account closes at EXACTLY 10% - we must NEVER reach it!
   daily_dd_safety_buffer: 0.008      # Stop trading at 4.2% daily (5% - 0.8%)
   max_dd_safety_buffer: 0.015        # Stop NEW trades at 8.5% (10% - 1.5%)
-  
+
   # ADDITIONAL SAFETY: Close ALL positions at 9% to protect the €1,000 buffer
   emergency_close_all_threshold: 0.09  # Close ALL at 9% (€1,000 safety margin)
 
@@ -51,12 +52,12 @@ lot_sizing:
   account_currency: "EUR"
 
   # Risk parameters - CONSERVATIVE for prop firms
-  risk_per_trade_pct: 0.005          # 0.5% risk per trade (€500 at €100k)
-  max_risk_per_trade_pct: 0.01       # Hard cap: 1% max (€1,000)
+  risk_per_trade_pct: 0.003          # 0.3% risk per trade (~€300 at €100k)
+  max_risk_per_trade_pct: 0.007      # Hard cap: 0.7% max (~€700)
 
-  # With 0.5% risk and 5% daily limit, you can have:
-  # - 10 consecutive full losers before daily limit
-  # - 20 consecutive full losers before max drawdown
+  # With 0.3% risk and 5% daily limit, you can have:
+  # - ~14 consecutive full losers before daily limit (~4.2%)
+  # - ~33 consecutive full losers before 10% max drawdown
 
   # Lot constraints
   min_lot: 0.01                      # Broker minimum
@@ -132,9 +133,6 @@ smart_position:
   # ═══════════════════════════════════════════════════════════════
   enable_scale_up: true              # Allow scaling up winning positions
 
-  # NOTE: Exit thresholds (hard_stop, soft_stop, trailing, etc.) are in ExitConfig
-  # See modules/position/exit_engine.py for all exit strategy settings
-
   # Scaling rules (EUR-based fallback when R-based disabled) - ONLY USED IF enable_scale_up: true
   scale_up_min_profit_eur: 50.0
   scale_up_cooldown_seconds: 600.0
@@ -158,8 +156,8 @@ smart_position:
   # R = current_pnl / initial_risk_eur
   # ═════════════════════════════════════════════════════════════
   use_r_based_scaling: true          # Enable R-based scaling (recommended)
-  scale_up_min_r: 1.0                # Scale up after 1R profit
-  scale_down_trigger_r: -0.5         # Start scale down at 0.5R loss
+  scale_up_min_r: 1.0                # Scale up after 1R profit (~€300)
+  scale_down_trigger_r: -0.5         # Start scale down at 0.5R loss (~€150)
   scale_down_aggressive_r: -1.0      # Aggressive scale down at 1R loss
   scale_down_emergency_r: -1.5       # Emergency scale down at 1.5R (before hard stop)
 
@@ -240,14 +238,14 @@ watchdog:
   check_interval_s: 2.0              # Check every 2 seconds
   verbose: false                     # Set true for debug logging
 
-  # Per-position thresholds (should match or slightly exceed ExitEngine)
-  hard_stop_eur: 400.0               # Same as exit_strategies.hard_stop_loss_eur
-  emergency_stop_eur: 600.0          # 1.5x hard stop (true failsafe)
+  # Per-position thresholds (should loosely align with ExitEngine)
+  hard_stop_eur: 220.0               # Mirror exit_strategies.hard_stop_loss_eur
+  emergency_stop_eur: 350.0          # ~1.5x hard stop (true failsafe)
   emergency_multiplier: 1.5          # Used if emergency_stop_eur not set
 
   # Daily account protection (5% daily limit)
   daily_loss_limit_eur: 4200.0       # €4,200 = 4.2% of €100k
-  
+
   # MAX DRAWDOWN PROTECTION (10% = account closed!)
   # Close ALL positions at 9% to protect €1,000 buffer
   max_loss_limit_eur: 9000.0         # €9,000 = 9% of €100k = CLOSE ALL
@@ -259,26 +257,26 @@ watchdog:
 # ═══════════════════════════════════════════════════════════════
 exit_strategies:
   # HARD STOP – absolute per-position loss (EUR)
-  # With 0.5% risk (~€500), this kills at ~80% of that.
-  hard_stop_loss_eur: 400.0
+  # With 0.3% risk (~€300), this kills at ~70–75% of that.
+  hard_stop_loss_eur: 220.0
 
   # SOFT STOP – loss + strong opposing signal
-  soft_stop_loss_eur: 250.0
+  soft_stop_loss_eur: 140.0
   soft_stop_min_signal: 0.35        # Need some real conviction against us
 
   # TIME DECAY – position too old + losing / stale profit
   # NOTE: In training/simulation, time passes fast (1 step = 15min candle)
   # 4 hours = 16 M15 bars → gives positions time to develop
-  time_decay_hours: 4.0             # After ~4h it's considered "old" (was 1.5)
-  time_decay_stop_eur: 200.0        # Old AND losing more than 200 => cut (was 150)
+  time_decay_hours: 4.0             # After ~4h it's considered "old"
+  time_decay_stop_eur: 60.0         # Old AND losing more than 60 => cut
 
   # TRAILING PROFIT – dynamic trailing around peak (ATR-aware)
-  trailing_activation_eur: 150.0    # Start trailing after +150 EUR
+  trailing_activation_eur: 100.0    # Start trailing after +100 EUR
   trailing_activation_atr: 2.0      # Or ~2x ATR in EUR
   trailing_retrace_pct: 0.30        # Allow ~30% giveback from peak
   trailing_retrace_atr: 1.5         # Or ~1.5x ATR retrace
   trailing_use_atr: true
-  trailing_min_peak_eur: 100.0      # Ignore tiny peaks
+  trailing_min_peak_eur: 50.0       # Ignore tiny peaks
 
   # MOMENTUM EXIT – strong reversal while profitable
   momentum_exit_profit_eur: 120.0
@@ -318,19 +316,18 @@ sl_tp_settings:
   use_adaptive_sl_tp: true           # Enable ATR-based adaptive SL/TP
   adaptive_sl_atr_multiplier: 2.5    # SL = 2.5x ATR (emergency backup)
   adaptive_tp_atr_multiplier: 4.0    # TP = 4x ATR (if auto_tp_enabled)
-  
+
   # ═════════════════════════════════════════════════════════════
   # FIXED PIP FALLBACK VALUES (Used when ATR unavailable)
   # Default values per instrument (in pips)
   # ═════════════════════════════════════════════════════════════
   EURUSD:
-    stop_loss_pips: 200      # 200 pips SL (~€200 at 0.1 lots) - WIDER than ExitEngine
+    stop_loss_pips: 200      # 200 pips SL - WIDER than ExitEngine (emergency only)
     take_profit_pips: 0      # Let ExitEngine handle TP
 
   XAUUSD:
-    # ExitEngine hard_stop is €400. At 0.2 lots, that's ~$20 move.
-    # Native SL should be WIDER (e.g., $25-30) as emergency backup.
-    stop_loss_pips: 2500     # Gold SL: $25 (2500 "pips" at 0.01) - EMERGENCY ONLY
+    # Native SL should be WIDER than ExitEngine hard stop as emergency backup.
+    stop_loss_pips: 2500     # Gold SL: ~$25 move (emergency ONLY)
     take_profit_pips: 0      # Let ExitEngine handle exits via trailing
 
   # Default fallback for any other symbol
@@ -361,12 +358,8 @@ escalation:
 # ═══════════════════════════════════════════════════════════════
 limits:
   max_daily_loss: 0.042       # Stop at 4.2% (buffer below 5% firm limit)
-  max_drawdown: 0.085         # Stop NEW trades at 8.5% (€1,500 buffer)
-  
-  # EMERGENCY: Close ALL positions at 9% - this is our HARD CEILING
-  # This leaves €1,000 buffer to account for slippage/gaps
-  emergency_max_drawdown: 0.09
-  max_drawdown: 0.085         # Stop at 8.5% (buffer below 10% firm limit)
+  max_drawdown: 0.085         # Stop NEW trades at 8.5% (~€1,500 buffer)
+  emergency_max_drawdown: 0.09  # Close ALL at 9% (protect €1,000 buffer)
 
   # Position size limits (fraction of balance as notional)
   max_position_size: 0.15     # Max 15% of balance per position

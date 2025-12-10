@@ -160,6 +160,23 @@ def load_exit_config() -> ExitConfig:
                     ),
                 }
 
+            # Enforce maximums on key thresholds so they can't drift too loose.
+            # 1) Hard stop: cap at 300 EUR loss per position
+            try:
+                if "hard_stop_loss_eur" in exit_cfg:
+                    val = float(exit_cfg.get("hard_stop_loss_eur") or 0.0)
+                    exit_cfg["hard_stop_loss_eur"] = min(val, 300.0)
+            except Exception:
+                exit_cfg["hard_stop_loss_eur"] = 300.0
+
+            # 2) Trailing activation: start trailing no later than +100 EUR
+            try:
+                if "trailing_activation_eur" in exit_cfg:
+                    val = float(exit_cfg.get("trailing_activation_eur") or 0.0)
+                    exit_cfg["trailing_activation_eur"] = min(val, 100.0)
+            except Exception:
+                exit_cfg["trailing_activation_eur"] = 100.0
+
             # Only pass keys that exist on ExitConfig
             return ExitConfig(**{
                 k: v for k, v in exit_cfg.items()
@@ -788,27 +805,39 @@ class ExitStrategyEngine:
         retrace_pct = retrace_eur / peak_pnl if peak_pnl > 0 else 0.0
 
         # ─────────────────────────────────────────────────────
-        # R-based tightening:
-        #   R = 1   → slightly looser than base (let it breathe)
-        #   R = 2   → base retrace_pct
-        #   R = 3   → tighter
-        #   R >= 4 → even tighter (protect big winners)
-        # smaller pct => less giveback
+        # PROFIT-TIER ADAPTIVE TRAILING (v2.0)
+        # As profit grows, tighten retrace to protect gains:
+        #   €150-€250: 30% retrace (let it breathe)
+        #   €250-€400: 25% retrace (moderate protection)
+        #   €400-€600: 20% retrace (tight protection)
+        #   €600+:     15% retrace (lock in big winners)
         # ─────────────────────────────────────────────────────
-        base_pct = cfg.trailing_retrace_pct
         base_atr_mult = cfg.trailing_retrace_atr
-
         hard_stop = max(cfg.hard_stop_loss_eur, 1e-6)
         R = peak_pnl / hard_stop
 
-        if R <= 1.0:
-            r_factor = 1.1     # small winner near activation → allow a bit more room
-        elif R <= 2.0:
-            r_factor = 1.0     # normal base behaviour around 2R
-        elif R <= 3.0:
-            r_factor = 0.8     # tighter for solid winners (2–3R)
+        # Profit-tier based retrace percentage (overrides config base)
+        if peak_pnl < 250.0:
+            profit_tier_pct = 0.30  # €150-€250: 30% retrace
+            tier_name = "BREATHING"
+        elif peak_pnl < 400.0:
+            profit_tier_pct = 0.25  # €250-€400: 25% retrace
+            tier_name = "MODERATE"
+        elif peak_pnl < 600.0:
+            profit_tier_pct = 0.20  # €400-€600: 20% retrace
+            tier_name = "TIGHT"
         else:
-            r_factor = 0.6     # very tight for big runners (3R+)
+            profit_tier_pct = 0.15  # €600+: 15% retrace (lock it in!)
+            tier_name = "LOCK-IN"
+
+        # R-factor gives additional adjustment within tier
+        # (smaller adjustment since profit tiers already handle main scaling)
+        if R <= 1.5:
+            r_factor = 1.05    # small R: tiny buffer
+        elif R <= 3.0:
+            r_factor = 1.0     # normal R: use tier as-is
+        else:
+            r_factor = 0.90    # big R: extra tight within tier
 
         # ─────────────────────────────────────────────────────
         # Day-aware tightening:
@@ -831,9 +860,9 @@ class ExitStrategyEngine:
         # Keep daily_factor in a sane band
         daily_factor = max(0.7, min(daily_factor, 1.0))
 
-        # Final dynamic thresholds
-        dynamic_retrace_pct = base_pct * r_factor * daily_factor
-        dynamic_retrace_pct = max(0.05, min(dynamic_retrace_pct, 0.80))  # sanity clamp
+        # Final dynamic thresholds (using profit-tier as base)
+        dynamic_retrace_pct = profit_tier_pct * r_factor * daily_factor
+        dynamic_retrace_pct = max(0.10, min(dynamic_retrace_pct, 0.35))  # clamp 10%-35%
 
         dynamic_atr_mult = base_atr_mult * r_factor * daily_factor
         dynamic_atr_mult = max(0.5, min(dynamic_atr_mult, 3.0))
@@ -871,6 +900,8 @@ class ExitStrategyEngine:
                     "retrace_eur": retrace_eur,
                     "retrace_pct": retrace_pct,
                     "dynamic_retrace_pct": dynamic_retrace_pct,
+                    "profit_tier": tier_name,
+                    "profit_tier_base_pct": profit_tier_pct,
                     "activation_method": activation_method,
                     "retrace_method": retrace_method,
                     "atr_eur": atr_eur,
@@ -878,7 +909,7 @@ class ExitStrategyEngine:
                     "effective_atr_threshold_eur": effective_atr_threshold_eur,
                     "R_multiple": R,
                     "message": (
-                        f"TRAILING TP: Peak €{peak_pnl:.2f} -> "
+                        f"TRAILING TP [{tier_name}]: Peak €{peak_pnl:.2f} -> "
                         f"€{ctx.unrealized_pnl:.2f} ({retrace_pct:.1%} retrace, "
                         f"limit {dynamic_retrace_pct:.1%}, R={R:.2f})"
                     ),
