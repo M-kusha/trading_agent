@@ -433,10 +433,35 @@ class PPOAgentShell(
                             f"Trust: {decision.trust_score:.2f} │ Gate: PASS"
                         )
                     elif decision.direction != "flat":
-                        # Blocked signal - log briefly
-                        self.logger.debug(
-                            f"[PPO] {inst}: {decision.direction.upper()} blocked │ "
-                            f"Conf: {decision.confidence:.0%} │ Gate: BLOCK"
+                        # ─── BLOCKED SIGNAL: Show why it was blocked ───
+                        # Gate thresholds (PICKY MODE v5.1):
+                        #   Direction: ±0.50, Entry: 0.55, Reversal: 0.70, Min Conf: 55%
+                        trust = decision.trust_score
+                        conf = decision.confidence
+                        
+                        # Determine block reason(s)
+                        block_reasons = []
+                        if conf < 0.55:
+                            block_reasons.append(f"Conf {conf:.0%} < 55%")
+                        if abs(trust) < 0.55:
+                            block_reasons.append(f"Trust {trust:+.2f} < ±0.55")
+                        if not block_reasons:
+                            block_reasons.append("Gate check failed")
+                        
+                        self.logger.info(
+                            f"[PPO] ┌─ {inst} ─ SIGNAL BLOCKED ─────────────────────┐"
+                        )
+                        self.logger.info(
+                            f"[PPO] │  Signal: {decision.direction.upper():5} │ Trust: {trust:+.2f} │ Conf: {conf:.0%}"
+                        )
+                        self.logger.info(
+                            f"[PPO] │  Reason: {' + '.join(block_reasons)}"
+                        )
+                        self.logger.info(
+                            f"[PPO] │  Thresholds → Dir: ±0.50 │ Entry: 0.55 │ MinConf: 55%"
+                        )
+                        self.logger.info(
+                            f"[PPO] └───────────────────────────────────────────────┘"
                         )
                     # else: flat with no position = nothing interesting, skip logging
 
