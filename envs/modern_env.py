@@ -361,6 +361,18 @@ class ModernTradingEnv(gym.Env):
             try:
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
+                
+                # Suppress CancelledError warnings during shutdown
+                def exception_handler(loop, context):
+                    exc = context.get("exception")
+                    if isinstance(exc, asyncio.CancelledError):
+                        return  # Silently ignore CancelledError
+                    msg = context.get("message", "Unhandled exception in event loop")
+                    # Only log non-cancellation errors
+                    if "cancel" not in str(msg).lower():
+                        print(f"[ASYNC] {msg}")
+                
+                loop.set_exception_handler(exception_handler)
                 self._aio_loop = loop
                 self._aio_ready.set()
                 loop.run_forever()
@@ -1572,12 +1584,17 @@ class ModernTradingEnv(gym.Env):
                 for fut in to_cancel:
                     try:
                         fut.cancel()
+                        # Wait for cancellation to complete and suppress CancelledError
+                        try:
+                            fut.result(timeout=0.1)
+                        except (asyncio.CancelledError, Exception):
+                            pass
                     except Exception:
                         pass
                 try:
                     tick = asyncio.run_coroutine_threadsafe(asyncio.sleep(0), loop)
                     tick.result(timeout=0.5)
-                except Exception:
+                except (asyncio.CancelledError, Exception):
                     pass
                 loop.call_soon_threadsafe(loop.stop)
         except Exception:
