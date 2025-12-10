@@ -1,0 +1,32 @@
+presets:
+  conservative:
+    rl:
+      learning_rate: 0.0001
+      clip_range: 0.12
+    risk_overrides:
+      max_total_exposure: 0.25
+      max_position_pct: 0.10
+      max_drawdown: 0.10
+  aggressive:
+    rl:
+      learning_rate: 0.0003
+      ent_coef: 0.015
+    risk_overrides:
+      max_total_exposure: 0.50
+      max_position_pct: 0.20
+      max_drawdown: 0.25
+  training_fast:
+    rl:
+      log_interval: 5
+      checkpoint_freq: 5000
+      eval_freq: 2500
+      batch_size: 128
+      n_steps: 1024
+    logging:
+      debug: false
+      level: INFO
+  research:
+    logging:
+      debug: true
+    environment:
+      num_envs: 8

@@ -41,6 +41,43 @@ logging.basicConfig(
 )
 logger = logging.getLogger("TradingDashboard")
 
+try:
+    from config import get_config as _get_app_config
+except Exception:
+    _get_app_config = None
+
+
+def _load_live_app_config():
+    if _get_app_config is None:
+        return None
+    try:
+        return _get_app_config(mode="live")
+    except Exception:
+        return None
+
+
+_LIVE_APP_CONFIG = _load_live_app_config()
+
+
+def _live_env_attr(attr: str, default: Any) -> Any:
+    if _LIVE_APP_CONFIG and hasattr(_LIVE_APP_CONFIG.environment, attr):
+        return getattr(_LIVE_APP_CONFIG.environment, attr)
+    return default
+
+
+def _live_risk_override(attr: str, default: Any) -> Any:
+    if _LIVE_APP_CONFIG:
+        val = (_LIVE_APP_CONFIG.risk.overrides or {}).get(attr)
+        if val is not None:
+            return val
+    return default
+
+
+def _live_logging_debug(default: bool = False) -> bool:
+    if _LIVE_APP_CONFIG:
+        return bool(_LIVE_APP_CONFIG.logging.debug)
+    return default
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Utilities
@@ -169,16 +206,20 @@ class LiveTradingConfig(BaseModel):
     - limits.max_exposure_pct
     """
 
-    instruments: List[str] = Field(default=["EURUSD", "XAUUSD"])
-    timeframes: List[str] = Field(default=["M15", "H1", "H4", "D1"])
-    update_interval: int = Field(default=1, ge=1, le=60)  # Changed to 1 for real-time tick updates
-    max_position_size: float = Field(default=0.05, gt=0, le=1)  # Conservative default
-    max_total_exposure: float = Field(default=0.15, gt=0, le=1)  # Conservative default
-    min_trade_interval: int = Field(default=60, ge=10, le=3600)
-    use_trailing_stop: bool = True
+    instruments: List[str] = Field(default_factory=lambda: list(_live_env_attr("instruments", ["EURUSD", "XAUUSD"])))
+    timeframes: List[str] = Field(default_factory=lambda: list(_live_env_attr("timeframes", ["M15", "H1", "H4", "D1"])))
+    update_interval: int = Field(default_factory=lambda: int(_live_env_attr("update_interval", 1)), ge=1, le=60)
+    max_position_size: float = Field(default_factory=lambda: float(_live_risk_override("max_position_pct", 0.05)), gt=0, le=1)
+    max_total_exposure: float = Field(default_factory=lambda: float(_live_risk_override("max_total_exposure", 0.15)), gt=0, le=1)
+    min_trade_interval: int = Field(default_factory=lambda: int(_live_env_attr("min_trade_interval", 60)), ge=10, le=3600)
+    use_trailing_stop: bool = Field(default_factory=lambda: bool(_live_env_attr("use_trailing_stop", True)))
     # CRITICAL: Default to conservative 4.2% (below 5% daily limit)
-    emergency_drawdown_limit: float = Field(default=0.042, gt=0, le=0.5)
-    debug: bool = False
+    emergency_drawdown_limit: float = Field(
+        default_factory=lambda: float(_live_risk_override("emergency_drawdown_trigger", 0.042)),
+        gt=0,
+        le=0.5,
+    )
+    debug: bool = Field(default_factory=lambda: _live_logging_debug(False))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -901,9 +942,12 @@ async def _auto_fix_sl_tp() -> None:
     """Auto-fix positions missing SL/TP."""
     try:
         try:
-            with open("config/risk_policy.yaml", "r", encoding="utf-8") as f:
-                risk_config = yaml.safe_load(f) or {}
-                sl_tp_config = risk_config.get("sl_tp_settings", {})
+            if _LIVE_APP_CONFIG:
+                sl_tp_config = (_LIVE_APP_CONFIG.risk.policy or {}).get("sl_tp_settings", {}) or {}
+            else:
+                with open("config/risk_policy.yaml", "r", encoding="utf-8") as f:
+                    risk_config = yaml.safe_load(f) or {}
+                    sl_tp_config = risk_config.get("sl_tp_settings", {})
         except Exception:
             sl_tp_config = {"auto_sl_enabled": True, "auto_tp_enabled": True}
 

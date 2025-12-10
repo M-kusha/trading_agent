@@ -1,0 +1,64 @@
+mode:
+  name: "training"
+  live: false
+  training: true
+  test_mode: false
+  enable_shadow_sim: true
+
+logging:
+  debug: false
+  level: INFO
+  log_dir: logs
+  filename: trading_agent.log
+  max_bytes: 10485760
+  backup_count: 5
+
+paths:
+  logs: logs
+  checkpoints: checkpoints
+  models: models
+  tensorboard: logs/tensorboard
+  data: data/processed
+
+environment:
+  instruments: ["EUR_USD", "XAU_USD"]
+  timeframes: ["M15", "H1", "H4", "D1"]
+  data_source: "auto"
+  initial_balance: 100000.0
+  max_steps: 200
+  num_envs: 8
+  bus_first: true
+  primary_timeframe: "M15"
+  update_interval: 5
+  min_trade_interval: 60
+  use_trailing_stop: true
+  enable_shadow_sim: true
+
+rl:
+  learning_rate: 0.0001
+  n_steps: 2048
+  batch_size: 64
+  n_epochs: 10
+  gamma: 0.95
+  gae_lambda: 0.95
+  clip_range: 0.15
+  ent_coef: 0.02
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+  target_kl: 0.015
+  final_training_steps: 100000
+  checkpoint_freq: 10000
+  eval_freq: 5000
+  log_interval: 10
+  n_eval_episodes: 50
+
+mt5:
+  account: null
+  password: null
+  server: "MetaQuotes-Demo"
+
+risk_overrides:
+  max_total_exposure: 0.35
+  max_position_pct: 0.15
+  max_drawdown: 0.15
+  emergency_drawdown_trigger: 0.15

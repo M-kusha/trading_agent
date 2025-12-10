@@ -1,0 +1,35 @@
+logging:
+  debug: false
+  level: INFO
+  log_dir: logs/live_trading
+
+paths:
+  logs: logs/live_trading
+
+environment:
+  instruments: ["EURUSD", "XAUUSD"]
+  timeframes: ["M15", "H1", "H4", "D1"]
+  num_envs: 1
+  data_source: "live"
+  max_steps: 50
+  enable_shadow_sim: false
+
+mode:
+  name: "live"
+  training: false
+  live: true
+  enable_shadow_sim: false
+
+rl:
+  final_training_steps: 0
+  log_interval: 1
+  checkpoint_freq: 0
+  eval_freq: 0
+
+mt5:
+  account: 5043450868
+  password: "@7TqLtGb"
+  server: "MetaQuotes-Demo"
+
+risk_overrides:
+  emergency_drawdown_trigger: 0.09

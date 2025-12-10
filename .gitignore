@@ -13,8 +13,7 @@ optuna_sac.db
 .ipynb_checkpoints/
 # Ignore Python virtual environments
 venv/
-# Ignore data files
-data/
+
 # Ignore configuration files
 config.yaml
 # Ignore temporary files
@@ -52,7 +51,6 @@ optuna_results/
 
 # Ignore scripts
 scripts/
-data/
 
 # Local settings
 settings.local.json

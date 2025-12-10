@@ -1720,8 +1720,41 @@ class PositionManager(PositionManagerBase):
 
         This ensures consistency with SmartPositionManager (live trading).
         Both systems now use the same exit logic from risk_policy.yaml.
+        
+        NOTE: When PPO has a decision for this instrument, we use PPO confidence
+        as signal_strength rather than market_intensity (voting). This prevents
+        premature exits when voting intensity is low but PPO has clear conviction.
         """
         exit_engine = get_exit_engine()
+        
+        # ========================================================
+        # PPO-AWARE SIGNAL STRENGTH for exits
+        # Same logic as entry: use PPO confidence when available
+        # ========================================================
+        ppo_signal_strength = 0.0
+        ppo_direction = 0
+        inst_norm = self._normalize_instrument(instrument)
+        
+        # Try to get PPO decision for this instrument
+        ppo_multi = self.smart_bus.get("ppo_multi_decision", "PositionManager", default={})
+        if isinstance(ppo_multi, dict):
+            instruments_map = ppo_multi.get("instruments", {})
+            if isinstance(instruments_map, dict):
+                # Try direct match then normalized match
+                inst_decision = instruments_map.get(instrument)
+                if inst_decision is None:
+                    for key, val in instruments_map.items():
+                        if self._normalize_instrument(key) == inst_norm:
+                            inst_decision = val
+                            break
+                
+                if isinstance(inst_decision, dict):
+                    ppo_signal_strength = float(inst_decision.get("confidence", 0.0) or 0.0)
+                    raw_dir = str(inst_decision.get("direction", "")).lower()
+                    if raw_dir in ("long", "buy"):
+                        ppo_direction = 1
+                    elif raw_dir in ("short", "sell"):
+                        ppo_direction = -1
 
         # Extract position data
         unrealized_pnl = 0.0
@@ -1878,6 +1911,24 @@ class PositionManager(PositionManagerBase):
         # Uses _is_signal_valid_for_exits() from base class.
         signal_valid = self._is_signal_valid_for_exits()
         
+        # ========================================================
+        # PPO-AWARE SIGNAL STRENGTH - use PPO confidence when available
+        # This prevents premature "weak signal" exits when voting intensity
+        # is low but PPO has clear conviction for this position direction.
+        # ========================================================
+        effective_signal_strength = abs(context.market_intensity)
+        effective_signal_direction = context.market_direction
+        
+        if ppo_signal_strength > 0:
+            # PPO has a decision - use its confidence
+            effective_signal_strength = ppo_signal_strength
+            effective_signal_direction = ppo_direction if ppo_direction != 0 else context.market_direction
+            if self.debug:
+                self.logger.debug(
+                    f"[EXIT_PPO] {instrument}: Using PPO confidence {ppo_signal_strength:.3f} "
+                    f"(dir={ppo_direction}) instead of market_intensity {abs(context.market_intensity):.3f}"
+                )
+        
         pos_ctx = PositionContext(
             symbol=instrument,
             side=position_side,
@@ -1891,8 +1942,8 @@ class PositionManager(PositionManagerBase):
             atr=float(atr) if atr is not None else None,
             volatility=context.volatility,
             regime=str(regime),
-            signal_direction=context.market_direction,
-            signal_strength=abs(context.market_intensity),
+            signal_direction=effective_signal_direction,
+            signal_strength=effective_signal_strength,
             signal_valid=signal_valid,  # Skip signal exits on startup
             consensus_confidence=consensus_confidence,
             account_drawdown_pct=account_drawdown_pct,

@@ -1,12 +1,31 @@
-"""Config package - YAML configuration files.
+"""Config package - central configuration and logging helpers."""
 
-Available configs:
-- system_config.yaml: Module timeouts, execution settings
-- module_registry.yaml: Auto-generated module metadata
-- risk_policy.yaml: Prop firm rules, lot sizing, risk limits
-- explainability_standards.yaml: Thesis and explanation requirements
+from .loader import build_trading_config, get_config, load_app_config, load_risk_policy
+from .logging_config import get_logger, setup_logging
+from .models import (
+    EnvironmentConfig,
+    LoggingConfig,
+    ModeConfig,
+    MT5Config,
+    PathsConfig,
+    RLConfig,
+    RiskConfig,
+    TradingAgentConfig,
+)
 
-Note: For TradingConfig and ConfigFactory, import from envs.config
-"""
-# Config package exposes nothing - all config is in YAML files
-# Use envs.config for TradingConfig/ConfigFactory
+__all__ = [
+    "build_trading_config",
+    "get_config",
+    "load_app_config",
+    "load_risk_policy",
+    "get_logger",
+    "setup_logging",
+    "EnvironmentConfig",
+    "LoggingConfig",
+    "ModeConfig",
+    "MT5Config",
+    "PathsConfig",
+    "RLConfig",
+    "RiskConfig",
+    "TradingAgentConfig",
+]

@@ -15,67 +15,45 @@ import os
 import sys
 import time
 import signal
-import logging
 import argparse
 import subprocess
 import requests
 import json
-import yaml
+import logging
 from typing import Optional, Any, Dict
 from datetime import datetime
 from pathlib import Path
+
+from config import TradingAgentConfig, get_logger, load_app_config, setup_logging
 
 # Add project root to path
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
 
-def setup_logging(log_level: str = "INFO") -> logging.Logger:
-    """Setup logging with both file and console output"""
-    log_dir = project_root / "logs" / "live_trading"
-    log_dir.mkdir(parents=True, exist_ok=True)
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_file = log_dir / f"live_trading_{timestamp}.log"
-
-    # Create logger
-    logger = logging.getLogger("LiveTrading")
-    logger.setLevel(getattr(logging, log_level.upper()))
-
-    # Console handler
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    console_formatter = logging.Formatter(
-        '%(asctime)s [%(levelname)s] %(message)s',
-        datefmt='%H:%M:%S'
-    )
-    console_handler.setFormatter(console_formatter)
-
-    # File handler
-    file_handler = logging.FileHandler(log_file)
-    file_handler.setLevel(logging.DEBUG)
-    file_formatter = logging.Formatter(
-        '%(asctime)s [%(levelname)s] %(name)s: %(message)s'
-    )
-    file_handler.setFormatter(file_formatter)
-
-    logger.addHandler(console_handler)
-    logger.addHandler(file_handler)
-
-    return logger
-
-
 class LiveTradingLauncher:
     """Main launcher for live trading system"""
 
-    def __init__(self, logger: logging.Logger, instruments: Optional[list] = None, backend_port: int = 8000):
+    def __init__(
+        self,
+        logger: logging.Logger,
+        app_config: TradingAgentConfig,
+        instruments: Optional[list] = None,
+        backend_port: int = 8000,
+    ):
         self.logger = logger
+        self.app_config = app_config
         self.running = False
         self.backend_process: Optional[Any] = None
         self.backend_url = f"http://localhost:{backend_port}"
         self.backend_port = backend_port
         self.emergency_watchdog = None  # Emergency position watchdog
-        self.instruments = instruments or ["EURUSD", "XAUUSD"]
+        self.instruments = instruments or app_config.environment.instruments
+        self.timeframes = app_config.environment.timeframes
+        self.update_interval = app_config.environment.update_interval
+        self.min_trade_interval = app_config.environment.min_trade_interval
+        self.use_trailing_stop = app_config.environment.use_trailing_stop
+        self.risk_policy = dict(app_config.risk.policy or {})
 
         # Setup signal handlers for graceful shutdown
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -103,6 +81,9 @@ class LiveTradingLauncher:
         # Check credentials
         try:
             from live.mt5_credentials import MT5Credentials
+            if MT5Credentials.ACCOUNT is None or MT5Credentials.PASSWORD is None:
+                self.logger.error("[FAIL] MT5 credentials missing - set MT5_ACCOUNT/MT5_PASSWORD or config.mt5")
+                return False
             self.logger.info(f"[OK] Credentials loaded (Account: {MT5Credentials.ACCOUNT})")
         except Exception as e:
             self.logger.error(f"[FAIL] Failed to load credentials: {e}")
@@ -132,6 +113,7 @@ class LiveTradingLauncher:
         # Set execution mode to live
         os.environ["EXECUTION_MODE"] = "live"
         os.environ["TRADING_MODE"] = "live"
+        os.environ["TRADING_AGENT_MODE"] = self.app_config.mode.name
 
         self.logger.info("[OK] Environment configured for live trading")
         return True
@@ -142,12 +124,13 @@ class LiveTradingLauncher:
 
         try:
             # Start backend using uvicorn
+            log_level = str(self.app_config.logging.effective_level).lower()
             cmd = [
                 sys.executable, "-m", "uvicorn",
                 "backend.main:app",
                 "--host", "0.0.0.0",
                 "--port", str(self.backend_port),
-                "--log-level", "info"
+                "--log-level", log_level
             ]
 
             # Set environment variables
@@ -155,6 +138,8 @@ class LiveTradingLauncher:
             env["PYTHONPATH"] = str(project_root)
             env["PYTHONUNBUFFERED"] = "1"
             env["EXECUTION_MODE"] = "live"
+            env["TRADING_AGENT_MODE"] = self.app_config.mode.name
+            env["TRADING_AGENT_LOG_LEVEL"] = str(self.app_config.logging.effective_level)
 
             # Start backend as subprocess
             # Inherit stdio so we don't block on pipe buffers
@@ -247,40 +232,29 @@ class LiveTradingLauncher:
             self.logger.debug(traceback.format_exc())
             return False
 
-    def _load_risk_policy(self) -> Dict[str, Any]:
-        """Load risk policy from YAML config."""
-        try:
-            config_path = Path("config/risk_policy.yaml")
-            if config_path.exists():
-                with open(config_path, "r", encoding="utf-8") as f:
-                    return yaml.safe_load(f) or {}
-        except Exception as e:
-            self.logger.warning(f"Failed to load risk_policy.yaml: {e}")
-        return {}
-
     def start_trading(self) -> bool:
         """Start live trading (initializes orchestrator)"""
         self.logger.info("Starting live trading system...")
 
         try:
-            # Load settings from risk_policy.yaml (single source of truth)
-            risk_policy = self._load_risk_policy()
+            risk_policy = self.risk_policy or {}
+            risk_overrides = self.app_config.risk.overrides or {}
             prop_firm = risk_policy.get("prop_firm", {})
             limits = risk_policy.get("limits", {})
-            lot_sizing = risk_policy.get("lot_sizing", {})
 
             # Get proper prop firm limits
-            daily_dd_limit = float(prop_firm.get("daily_drawdown_limit", 0.05))
-            max_dd_limit = float(prop_firm.get("max_drawdown_limit", 0.10))
+            daily_dd_limit = float(prop_firm.get("daily_drawdown_limit", risk_overrides.get("max_drawdown", 0.10)))
+            max_dd_limit = float(prop_firm.get("max_drawdown_limit", risk_overrides.get("max_drawdown", 0.10)))
             daily_buffer = float(prop_firm.get("daily_dd_safety_buffer", 0.008))
             max_buffer = float(prop_firm.get("max_dd_safety_buffer", 0.015))
 
             # Use buffered limits for emergency (stop BEFORE hitting actual limit)
-            emergency_dd = min(daily_dd_limit - daily_buffer, max_dd_limit - max_buffer)
+            emergency_default = risk_overrides.get("emergency_drawdown_trigger", max_dd_limit)
+            emergency_dd = min(daily_dd_limit - daily_buffer, max_dd_limit - max_buffer, float(emergency_default))
 
-            # Position limits from YAML
-            max_pos_size = float(limits.get("max_position_size", 0.05))
-            max_exposure = float(limits.get("max_exposure_pct", 0.30))
+            # Position limits from YAML / overrides
+            max_pos_size = float(limits.get("max_position_size", risk_overrides.get("max_position_pct", 0.05)))
+            max_exposure = float(limits.get("max_exposure_pct", risk_overrides.get("max_total_exposure", 0.30)))
 
             self.logger.info(f"Prop firm limits: Daily={daily_dd_limit:.1%}, Max={max_dd_limit:.1%}, Emergency={emergency_dd:.1%}")
 
@@ -288,14 +262,14 @@ class LiveTradingLauncher:
             url = f"{self.backend_url}/api/trading/start"
             payload = {
                 "instruments": self.instruments,
-                "timeframes": ["M15", "H1", "H4", "D1"],
-                "update_interval": 5,
+                "timeframes": self.timeframes,
+                "update_interval": self.update_interval,
                 "max_position_size": max_pos_size,
                 "max_total_exposure": max_exposure,
-                "min_trade_interval": 60,
-                "use_trailing_stop": True,
+                "min_trade_interval": self.min_trade_interval,
+                "use_trailing_stop": self.use_trailing_stop,
                 "emergency_drawdown_limit": emergency_dd,
-                "debug": False
+                "debug": self.app_config.logging.debug,
             }
 
             self.logger.info(f"Trading instruments: {', '.join(self.instruments)}")
@@ -517,15 +491,15 @@ def main():
     )
     parser.add_argument(
         "--log-level",
-        default="INFO",
+        default=None,
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        help="Logging level"
+        help="Logging level override (default from config)"
     )
     parser.add_argument(
         "--instruments",
         nargs="+",
-        default=["EURUSD", "XAUUSD"],
-        help="Trading instruments (default: EURUSD XAUUSD)"
+        default=None,
+        help="Trading instruments (default from config)"
     )
     parser.add_argument(
         "--port",
@@ -536,8 +510,15 @@ def main():
 
     args = parser.parse_args()
 
-    # Setup logging
-    logger = setup_logging(args.log_level)
+    app_config = load_app_config(mode="live")
+    if args.log_level:
+        app_config.logging.level = args.log_level
+        app_config.logging.debug = app_config.logging.debug or args.log_level.upper() == "DEBUG"
+    if args.instruments:
+        app_config.environment.instruments = args.instruments
+
+    setup_logging(app_config.logging)
+    logger = get_logger("LiveTrading")
 
     logger.info("="*60)
     logger.info("MT5 LIVE TRADING LAUNCHER")
@@ -545,10 +526,11 @@ def main():
     logger.info(f"Python: {sys.version.split()[0]}")
     logger.info(f"Project: {project_root}")
     logger.info(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"Mode: {app_config.mode.name} (debug={app_config.logging.debug})")
     logger.info("="*60 + "\n")
 
     # Create and run launcher
-    launcher = LiveTradingLauncher(logger, instruments=args.instruments, backend_port=args.port)
+    launcher = LiveTradingLauncher(logger, app_config, instruments=app_config.environment.instruments, backend_port=args.port)
     launcher.run()
 
 

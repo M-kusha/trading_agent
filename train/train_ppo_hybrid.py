@@ -28,12 +28,12 @@ from __future__ import annotations
 import os
 import sys
 import platform
-import logging
 import argparse
 from datetime import datetime
 from threading import Thread
 from typing import Dict, Any, Optional, Protocol, Callable
 from pathlib import Path
+import logging
 
 import numpy as np
 import pandas as pd
@@ -54,9 +54,10 @@ from stable_baselines3.common.callbacks import CallbackList, CheckpointCallback,
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.utils import set_random_seed
 
+from config import get_logger, load_app_config, setup_logging
 from envs.modern_env import ModernTradingEnv
 from envs.exploration_env import ExplorationTradingEnv, ExplorationConfig
-from envs.config import TradingConfig, ConfigPresets, ConfigFactory
+from envs.config import TradingConfig
 from modules.core.module_system import ModuleOrchestrator
 
 # Global flag to track exploration mode (set by main())
@@ -872,10 +873,6 @@ def evaluate_model(
 # MAIN
 # ───────────────────────────────────────────────────────────────────
 def main():
-    os.makedirs("models/best", exist_ok=True)
-    os.makedirs("checkpoints", exist_ok=True)
-    logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
-
     # Parse args first to check if exploration mode
     p = argparse.ArgumentParser(description="Modern PPO Training")
     p.add_argument("--mode", choices=["offline", "online", "test", "eval"], default="offline",
@@ -897,7 +894,7 @@ def main():
     p.add_argument("--eval_freq", type=int)
     p.add_argument("--num_envs", type=int)
     p.add_argument("--balance", type=float)
-    p.add_argument("--data_dir", type=str, default="data/processed")
+    p.add_argument("--data_dir", type=str, default=None, help="Override data directory from config")
     p.add_argument("--pretrained", type=str)
     p.add_argument("--auto-pretrained", action="store_true")
     p.add_argument("--debug", action="store_true")
@@ -905,15 +902,28 @@ def main():
     p.add_argument("--fast", action="store_true", 
                    help="Use ExplorationEnv (no modules) for fastest training")
     p.add_argument("--model", type=str, help="Model path for evaluation (--mode eval)")
-    p.add_argument("--eval-episodes", type=int, default=50, help="Number of evaluation episodes (default: 50)")
+    p.add_argument("--eval-episodes", type=int, default=None, help="Number of evaluation episodes (default from config)")
     p.add_argument("--render", action="store_true", help="Print per-episode details during eval")
     p.add_argument(
         "--data-source",
         choices=["auto", "files", "orchestrator"],
-        default="auto",
-        help="Where to load training data from",
+        default=None,
+        help="Where to load training data from (default from config)",
     )
     args = p.parse_args()
+
+    app_mode = "live" if args.mode == "online" else "training"
+    preset_name = args.preset if args.preset not in (None, "exploration") else None
+    app_config = load_app_config(mode=app_mode, preset=preset_name)
+    if args.data_dir:
+        app_config.paths.data = args.data_dir
+    if args.debug:
+        app_config.logging.debug = True
+    app_config.rl.n_eval_episodes = args.eval_episodes or app_config.rl.n_eval_episodes
+
+    setup_logging(app_config.logging)
+    logger = get_logger("train.train_ppo_hybrid")
+    logger.info("Loaded app config (mode=%s%s)", app_mode, f", preset={preset_name}" if preset_name else "")
 
     # Determine if exploration mode (no modules) - for fast parallel training
     # --fast flag or --preset exploration both enable this
@@ -985,50 +995,43 @@ def main():
         print("="*70 + "\n")
 
     # Config
-    if args.mode == "online":
-        config = ConfigPresets.conservative_live()
-        config.live_mode = True
-    elif args.preset == "exploration":
-        config = ConfigPresets.exploration_mode()
-        print("[INFO] Using EXPLORATION preset - modules disabled for free exploration")
-    elif args.preset == "conservative":
-        config = ConfigPresets.conservative_live()
-    elif args.preset == "aggressive":
-        config = ConfigFactory.create_config("backtest", "aggressive")
-    elif args.preset == "research":
-        config = ConfigPresets.research_mode()
-    elif args.preset == "production":
-        config = ConfigPresets.production_backtest()
-    elif args.preset == "training_fast":
-        config = ConfigPresets.training_fast()
-        print("[INFO] Using TRAINING_FAST preset - optimized for high-speed PPO training")
-    else:
-        config = TradingConfig(test_mode=(args.mode == "test"), live_mode=False)
+    config = app_config.to_trading_config()
+    if args.mode == "test":
+        config.test_mode = True
 
     # Overrides
-    if args.timesteps: config.final_training_steps = args.timesteps
-    if args.lr: config.learning_rate = args.lr
-    if args.batch_size: config.batch_size = args.batch_size
-    if args.n_epochs: config.n_epochs = args.n_epochs
-    if args.gamma: config.gamma = args.gamma
-    if args.n_steps: config.n_steps = args.n_steps
-    if args.clip_range: config.clip_range = args.clip_range
-    if args.ent_coef: config.ent_coef = args.ent_coef
-    if args.vf_coef: config.vf_coef = args.vf_coef
-    if args.max_grad_norm: config.max_grad_norm = args.max_grad_norm
-    if args.target_kl: config.target_kl = args.target_kl
-    if args.checkpoint_freq: config.checkpoint_freq = args.checkpoint_freq
-    if args.eval_freq: config.eval_freq = args.eval_freq
-    if args.num_envs: config.num_envs = args.num_envs
-    if args.balance: config.initial_balance = args.balance
-    if args.data_dir: config.data_dir = args.data_dir
-    if args.debug: config.debug = True
+    overrides: Dict[str, Any] = {}
+    if args.timesteps: overrides["final_training_steps"] = args.timesteps
+    if args.lr: overrides["learning_rate"] = args.lr
+    if args.batch_size: overrides["batch_size"] = args.batch_size
+    if args.n_epochs: overrides["n_epochs"] = args.n_epochs
+    if args.gamma: overrides["gamma"] = args.gamma
+    if args.n_steps: overrides["n_steps"] = args.n_steps
+    if args.clip_range: overrides["clip_range"] = args.clip_range
+    if args.ent_coef: overrides["ent_coef"] = args.ent_coef
+    if args.vf_coef: overrides["vf_coef"] = args.vf_coef
+    if args.max_grad_norm: overrides["max_grad_norm"] = args.max_grad_norm
+    if args.target_kl: overrides["target_kl"] = args.target_kl
+    if args.checkpoint_freq: overrides["checkpoint_freq"] = args.checkpoint_freq
+    if args.eval_freq: overrides["eval_freq"] = args.eval_freq
+    if args.num_envs: overrides["num_envs"] = args.num_envs
+    if args.balance: overrides["initial_balance"] = args.balance
+    if args.data_dir: overrides["data_dir"] = args.data_dir
+    if args.debug: overrides["debug"] = True
+    if overrides:
+        config.apply_overrides(**overrides)
 
     # Sensible default when not specified
     if not args.timesteps and args.mode == "test":
         config.final_training_steps = 10_000
     elif not args.timesteps:
         config.final_training_steps = max(50_000, config.final_training_steps)
+
+    data_source = args.data_source or app_config.environment.data_source
+
+    Path(config.model_dir).mkdir(parents=True, exist_ok=True)
+    Path(config.checkpoint_dir).mkdir(parents=True, exist_ok=True)
+    Path(Path(config.model_dir) / "best").mkdir(parents=True, exist_ok=True)
 
     # Pretrained
     pretrained_path = None
@@ -1090,12 +1093,12 @@ def main():
         pass
 
     # Display summary
-    print(f"Mode: {args.mode.upper()}")
+    logger.info("Mode: %s", args.mode.upper())
     if args.mode != "eval":
-        print(f"Training Steps: {config.final_training_steps:,}")
-        print(f"Learning Rate: {config.learning_rate}")
-    print(f"Initial Balance: ${config.initial_balance:,.0f}")
-    print(f"Data Source: {args.data_source}")
+        logger.info("Training Steps: %s", f"{config.final_training_steps:,}")
+        logger.info("Learning Rate: %s", config.learning_rate)
+    logger.info("Initial Balance: $%s", f"{config.initial_balance:,.0f}")
+    logger.info("Data Source: %s", data_source)
 
     # Bus visibility (non-fatal if fallback)
     # Debug prints removed - bus info available in logs if needed
@@ -1134,7 +1137,7 @@ def main():
             results = evaluate_model(
                 model_path=model_path,
                 config=config,
-                data_source=args.data_source,
+                data_source=data_source,
                 n_episodes=args.eval_episodes,
                 render=args.render,
                 verbose=True,
@@ -1151,7 +1154,7 @@ def main():
     # TRAINING MODE
     # ═══════════════════════════════════════════════════════════════
     try:
-        train_modern_ppo(config, data_source=args.data_source, pretrained_model_path=pretrained_path)
+        train_modern_ppo(config, data_source=data_source, pretrained_model_path=pretrained_path)
         print("TRAINING COMPLETED SUCCESSFULLY!")
         if bus_inspector:
             try:

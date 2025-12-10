@@ -124,13 +124,25 @@ smart_position:
   # For now we keep this OFF so losers are handled primarily by ExitEngine + SL.
   enable_smart_scale_down: false     # You can set true later if you want partial cuts
 
+  # ═══════════════════════════════════════════════════════════════
+  # SCALE-UP CONFIGURATION
+  # NOTE: MT5 hedging accounts create a NEW ticket for each scale-up order.
+  # SmartPositionManager automatically nets multiple tickets into 1 logical position.
+  # When closing, ALL tickets for the symbol are closed together.
+  # ═══════════════════════════════════════════════════════════════
+  enable_scale_up: true              # Allow scaling up winning positions
+
   # NOTE: Exit thresholds (hard_stop, soft_stop, trailing, etc.) are in ExitConfig
   # See modules/position/exit_engine.py for all exit strategy settings
 
-  # Scaling rules (EUR-based fallback when R-based disabled)
+  # Scaling rules (EUR-based fallback when R-based disabled) - ONLY USED IF enable_scale_up: true
   scale_up_min_profit_eur: 50.0
   scale_up_cooldown_seconds: 600.0
   scale_down_trigger_loss_eur: 40.0
+
+  # Breakeven SL activation - move SL to entry when profit reaches this threshold
+  # Should match trailing_activation_eur in exit_strategies for consistency
+  breakeven_activation_eur: 150.0
 
   # Trade cooldowns
   same_direction_cooldown_seconds: 300.0

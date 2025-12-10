@@ -336,29 +336,17 @@ class PPOAgentShell(
                     committee_data,
                     position_focus,
                 )
-                # Log ALL positions, not just primary
-                all_positions = position_focus.get('positions', {})
-                if all_positions:
-                    pos_summary = ", ".join([
-                        f"{inst}(side={pos.get('side', 0)}, pnl={float(pos.get('unrealized_pnl', 0)):.2f})"
-                        for inst, pos in all_positions.items()
-                    ])
-                    self.logger.info(f"[PPO] POSITION FOCUS MODE: {pos_summary}")
-                else:
-                    self.logger.info(
-                        f"[PPO] POSITION FOCUS MODE: {position_focus.get('primary_instrument')} "
-                        f"side={position_focus.get('primary_side')}, pnl={float(position_focus.get('primary_pnl', 0.0)):.2f}"
-                    )
+                # Don't log here - will log detailed per-instrument info later
 
             # 2) Build observations for each instrument
             observations = self._build_observations_for_instruments()
 
-            # DEBUG: Log observation summary
-            self.logger.info(
-                f"[PPO] Processing: obs_dims={[len(v) for v in observations.values()]}, "
-                f"committee={bool(committee_data)}, risk={risk_info.portfolio_risk:.2f}"
-                f"{', POSITION_FOCUS' if in_position_focus_mode else ''}"
-            )
+            # Brief processing log (only in debug mode or if not in position focus)
+            if not in_position_focus_mode:
+                self.logger.debug(
+                    f"[PPO] Processing: obs_dims={[len(v) for v in observations.values()]}, "
+                    f"committee={bool(committee_data)}, risk={risk_info.portfolio_risk:.2f}"
+                )
 
             # 3) Make multi-instrument decision (with full integration)
             multi_decision = self.arbiter.make_multi_instrument_decision(
@@ -389,14 +377,68 @@ class PPOAgentShell(
             autonomy_phase = autonomy_meta.get("phase", "UNKNOWN")
             autonomy_level = autonomy_meta.get("autonomy_level", 0.0)
             
-            # Log per-instrument decisions
+            # ═══════════════════════════════════════════════════════════════════
+            # CLEAN LOGGING: Separate per-instrument, context-aware
+            # ═══════════════════════════════════════════════════════════════════
+            all_positions = position_focus.get('positions', {}) if position_focus else {}
+            
             for inst, decision in multi_decision.instruments.items():
-                self.logger.info(
-                    f"[PPO] {inst}: dir={decision.direction}, conf={decision.confidence:.2f}, "
-                    f"gate={'PASS' if decision.gate_passed else 'BLOCK'}, "
-                    f"trust={decision.trust_score:.2f}, regime={decision.regime}, "
-                    f"phase={autonomy_phase}"
-                )
+                pos_data = all_positions.get(inst, {})
+                has_position = bool(pos_data and pos_data.get('side', 0) != 0)
+                
+                if has_position:
+                    # ─── POSITION MODE: Show position management info ───
+                    side = pos_data.get('side', 0)
+                    side_str = "LONG" if side > 0 else "SHORT" if side < 0 else "FLAT"
+                    pnl = float(pos_data.get('unrealized_pnl', 0))
+                    pnl_emoji = "🟢" if pnl > 0 else "🔴" if pnl < 0 else "⚪"
+                    lots = float(pos_data.get('lots', 0))
+                    age_h = float(pos_data.get('age_hours', 0))
+                    
+                    # Decision context for open position
+                    # "flat" or "hold" = keep position, no action
+                    # Same direction as position = aligned, keep position
+                    # Opposite direction = actual reversal signal
+                    dir_lower = decision.direction.lower()
+                    pos_dir = "long" if side > 0 else "short"
+                    opposite_dir = "short" if side > 0 else "long"
+                    
+                    if dir_lower in ("flat", "hold"):
+                        action_str = "HOLD ✓"  # Neutral = keep position
+                    elif dir_lower == pos_dir:
+                        action_str = "HOLD ✓ (aligned)"  # Same direction = keep position
+                    elif dir_lower == opposite_dir:
+                        action_str = f"⚠️ REVERSAL→{decision.direction.upper()}"  # Actual reversal
+                    else:
+                        action_str = f"HOLD ({decision.direction})"  # Unknown
+                    
+                    self.logger.info(
+                        f"[PPO] ═══ {inst} ═══ POSITION ACTIVE"
+                    )
+                    self.logger.info(
+                        f"[PPO]   {pnl_emoji} {side_str} {lots:.2f} lots │ P&L: €{pnl:+.2f} │ Age: {age_h:.1f}h"
+                    )
+                    self.logger.info(
+                        f"[PPO]   Signal: {action_str} │ Conf: {decision.confidence:.0%} │ "
+                        f"Trust: {decision.trust_score:.2f} │ Regime: {decision.regime}"
+                    )
+                else:
+                    # ─── NO POSITION: Show entry signal (only if interesting) ───
+                    if decision.direction != "flat" and decision.gate_passed:
+                        self.logger.info(
+                            f"[PPO] ═══ {inst} ═══ ENTRY SIGNAL"
+                        )
+                        self.logger.info(
+                            f"[PPO]   🎯 {decision.direction.upper()} │ Conf: {decision.confidence:.0%} │ "
+                            f"Trust: {decision.trust_score:.2f} │ Gate: PASS"
+                        )
+                    elif decision.direction != "flat":
+                        # Blocked signal - log briefly
+                        self.logger.debug(
+                            f"[PPO] {inst}: {decision.direction.upper()} blocked │ "
+                            f"Conf: {decision.confidence:.0%} │ Gate: BLOCK"
+                        )
+                    # else: flat with no position = nothing interesting, skip logging
 
             # 4) Build result dict
             result = self._build_process_result(multi_decision)

@@ -317,6 +317,10 @@ class TradingConfig:
     audit_log_dir: str = "logs/audit"
     operator_log_dir: str = "logs/operator"
 
+    # External risk configuration payloads (injected by central config layer)
+    risk_policy_payload: Optional[Dict[str, Any]] = None
+    risk_overrides_payload: Optional[Dict[str, Any]] = None
+
     # Internal flag: ensure risk_policy.yaml is only loaded once per instance
     _risk_policy_loaded: bool = field(init=False, default=False, repr=False)
 
@@ -327,8 +331,8 @@ class TradingConfig:
         """Post-initialization setup with clamps, dirs, mode, and invariants."""
         object.__setattr__(self, "max_steps_per_episode", int(self.max_steps))
 
-        # Load risk_policy.yaml only once per instance
-        self._load_from_risk_policy()
+        # Load risk policy from injected payload or fallback file
+        self._load_from_risk_policy(self.risk_policy_payload)
 
         # AUTO-SET TRADING MODE based on live_mode flag
         # Only upgrade to LIVE; never downgrade from LIVE to TRAINING.
@@ -409,7 +413,7 @@ class TradingConfig:
     # ─────────────────────────────────────────────────────────
     # risk_policy.yaml integration
     # ─────────────────────────────────────────────────────────
-    def _load_from_risk_policy(self) -> None:
+    def _load_from_risk_policy(self, payload: Optional[Dict[str, Any]] = None) -> None:
         """
         Load risk parameters from config/risk_policy.yaml.
 
@@ -422,15 +426,19 @@ class TradingConfig:
             return
 
         try:
-            import yaml
+            cfg: Dict[str, Any] = {}
+            if payload is not None:
+                cfg = dict(payload)
+            else:
+                import yaml
 
-            risk_policy_path = Path("config/risk_policy.yaml")
-            if not risk_policy_path.exists():
-                object.__setattr__(self, "_risk_policy_loaded", True)
-                return
+                risk_policy_path = Path("config/risk_policy.yaml")
+                if not risk_policy_path.exists():
+                    object.__setattr__(self, "_risk_policy_loaded", True)
+                    return
 
-            with open(risk_policy_path, "r", encoding="utf-8") as f:
-                cfg = yaml.safe_load(f) or {}
+                with open(risk_policy_path, "r", encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f) or {}
 
             prop_firm = cfg.get("prop_firm", {})
             lot_sizing = cfg.get("lot_sizing", {})
@@ -487,6 +495,18 @@ class TradingConfig:
             # Profit target from prop firm
             if "profit_target" in prop_firm:
                 self.profit_target = float(prop_firm["profit_target"])
+
+            # Explicit overrides from central config (last-write-wins)
+            if self.risk_overrides_payload:
+                ro = self.risk_overrides_payload
+                if "max_total_exposure" in ro and ro["max_total_exposure"] is not None:
+                    self.max_total_exposure = float(ro["max_total_exposure"])
+                if "max_position_pct" in ro and ro["max_position_pct"] is not None:
+                    self.max_position_pct = float(ro["max_position_pct"])
+                if "max_drawdown" in ro and ro["max_drawdown"] is not None:
+                    self.max_drawdown = float(ro["max_drawdown"])
+                if "emergency_drawdown_trigger" in ro and ro["emergency_drawdown_trigger"] is not None:
+                    self.emergency_drawdown_trigger = float(ro["emergency_drawdown_trigger"])
 
         except Exception:
             # Keep defaults if config load fails

@@ -1022,9 +1022,20 @@ class Executor(BaseModule):
             )
             instruments = env_cfg.get("instruments") or []
             
-            # Fallback: if no instruments from config, use known trading instruments
+            # Fallback: if no instruments from config, use canonical broker format
+            # NOTE: Use ONLY ONE format to avoid duplicate orders!
             if not instruments:
-                instruments = ["EUR_USD", "XAU_USD", "EURUSD", "XAUUSD"]
+                instruments = ["EURUSD", "XAUUSD"]  # MT5 canonical format
+            
+            # Deduplicate by normalized form (EUR_USD and EURUSD are the same)
+            seen_normalized = set()
+            unique_instruments = []
+            for inst in instruments:
+                normalized = inst.replace("/", "").replace("_", "").upper()
+                if normalized not in seen_normalized:
+                    seen_normalized.add(normalized)
+                    unique_instruments.append(inst)
+            instruments = unique_instruments
             
             # Debug: Log what instruments we're checking
             self.logger.debug(f"[EXEC] Checking position_decisions for instruments: {instruments}")

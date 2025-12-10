@@ -25,7 +25,7 @@ This sits between:
 - PPOCore (pure RL policy/value model)
 - PPOAgentShell / SmartInfoBus integration
 
-Version: 5.0.0 (PPO Master, Experts-as-Advisors, Cleaned Autonomy Analytics)
+Version: 5.0.1 (PPO Master, Experts-as-Advisors, Configurable Hysteresis)
 """
 
 from __future__ import annotations
@@ -838,6 +838,7 @@ class ArbiterLogic:
         ppo_core: PPOCore,
         instruments: Optional[List[str]] = None,
         debug: bool = False,
+        hysteresis_config: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.ppo_core = ppo_core
         self.instruments = instruments or DEFAULT_INSTRUMENTS
@@ -845,6 +846,17 @@ class ArbiterLogic:
         self.debug = debug
 
         self.logger = logging.getLogger("ArbiterLogic")
+
+        # SmartInfoBus reference (for seasonality gates and optional config)
+        self._smart_bus: Optional[Any] = None
+        try:
+            from modules.utils.info_bus import InfoBusManager
+            self._smart_bus = InfoBusManager.get_instance()
+        except Exception:
+            self._smart_bus = None
+
+        # Hysteresis configuration (entry/exit/reversal thresholds)
+        self._init_hysteresis_config(hysteresis_config)
 
         # Per-instrument statistics
         self.stats_tracker = InstrumentStatsTracker()
@@ -868,13 +880,93 @@ class ArbiterLogic:
         self._autonomy_save_counter = 0
         self._autonomy_save_interval = 10  # Save every 10 trade outcomes
 
-        # SmartInfoBus reference (for seasonality gates etc.)
-        self._smart_bus: Optional[Any] = None
+    # ─────────────────────────────────────────────────────────────
+    # Hysteresis config initialisation
+    # ─────────────────────────────────────────────────────────────
+
+    def _init_hysteresis_config(self, hysteresis_config: Optional[Dict[str, Any]]) -> None:
+        """
+        Initialize hysteresis thresholds from defaults, SmartInfoBus, and optional overrides.
+
+        Invariants enforced:
+        - 0 <= exit < entry < reversal <= 1
+        - min_hold_before_reversal >= 0
+
+        Defaults are tuned for stability. External config can override via:
+        - SmartInfoBus key: "ArbiterHysteresisConfig"
+        - Direct constructor argument `hysteresis_config`
+        """
+        cfg: Dict[str, Any] = {
+            # PICKY MODE - High thresholds for quality over quantity
+            # v5.1: Significantly raised to reduce overtrading
+            "entry_threshold": 0.55,       # Was 0.35 - need strong conviction to enter
+            "reversal_threshold": 0.70,    # Was 0.50 - very hard to flip direction
+            "exit_threshold": 0.25,        # Was 0.15 - stay in position longer
+            "min_hold_before_reversal": 10,  # Was 5 - must hold 10 ticks before reversing
+        }
+
+        # Optional SmartInfoBus overrides
+        bus_cfg: Optional[Dict[str, Any]] = None
+        if self._smart_bus is not None:
+            try:
+                raw = self._smart_bus.get("ArbiterHysteresisConfig", "ArbiterLogic")
+                if isinstance(raw, dict):
+                    bus_cfg = raw
+            except Exception as e:
+                self.logger.warning(
+                    "[ArbiterLogic] Failed to load hysteresis config from bus: %s", e
+                )
+
+        def _merge(source: Optional[Dict[str, Any]]) -> None:
+            if not isinstance(source, dict):
+                return
+            for key in ("entry_threshold", "reversal_threshold", "exit_threshold", "min_hold_before_reversal"):
+                if key in source and source[key] is not None:
+                    cfg[key] = source[key]
+
+        # Merge bus → explicit override
+        _merge(bus_cfg)
+        _merge(hysteresis_config)
+
+        # Normalise and enforce constraints
+        entry = float(_safe_float(cfg.get("entry_threshold"), 0.35))
+        reversal = float(_safe_float(cfg.get("reversal_threshold"), 0.50))
+        exit_thr = float(_safe_float(cfg.get("exit_threshold"), 0.15))
+        min_hold = cfg.get("min_hold_before_reversal", 5)
+
+        entry = float(_clip(entry, 0.0, 1.0))
+        reversal = float(_clip(reversal, 0.0, 1.0))
+        exit_thr = float(_clip(exit_thr, 0.0, 1.0))
+
+        # Ensure ordering: exit < entry < reversal
+        if entry <= 0.0:
+            entry = 0.05
+        if reversal <= entry:
+            reversal = min(1.0, entry + 0.1)
+        if exit_thr >= entry:
+            exit_thr = max(0.0, entry - 0.05)
+
         try:
-            from modules.utils.info_bus import InfoBusManager
-            self._smart_bus = InfoBusManager.get_instance()
-        except Exception:
-            pass
+            min_hold_int = int(min_hold)
+        except (TypeError, ValueError):
+            min_hold_int = 5
+        if min_hold_int < 0:
+            min_hold_int = 0
+
+        self._hysteresis_cfg: Dict[str, Any] = {
+            "entry_threshold": entry,
+            "reversal_threshold": reversal,
+            "exit_threshold": exit_thr,
+            "min_hold_before_reversal": min_hold_int,
+        }
+
+        self.logger.info(
+            "[ArbiterLogic] Hysteresis config: entry=%.3f, exit=%.3f, reversal=%.3f, min_hold=%d",
+            entry,
+            exit_thr,
+            reversal,
+            min_hold_int,
+        )
 
     # ─────────────────────────────────────────────────────────────
     # Seasonality time gate
@@ -936,6 +1028,29 @@ class ArbiterLogic:
             "trades_allowed": allowed,
             "reason": reason,
         }
+
+    def _is_live_mode(self) -> bool:
+        """
+        Check if we're in live/paper trading mode (vs training).
+
+        In live mode, use deterministic policy (mean action) for stability.
+        In training mode, use stochastic policy for exploration.
+        """
+        # Check training mode flag first
+        if is_training_mode():
+            return False
+
+        # Also check execution mode from bus
+        if self._smart_bus is not None:
+            try:
+                exec_mode = self._smart_bus.get("execution_mode", "ArbiterLogic")
+                if exec_mode and str(exec_mode).lower() in ("live", "paper"):
+                    return True
+            except Exception:
+                pass
+
+        # Default to live (safer - deterministic)
+        return True
 
     # ─────────────────────────────────────────────────────────────
     # Main Decision Method (Multi-instrument)
@@ -1062,7 +1177,14 @@ class ArbiterLogic:
         6. Compute final position size and build InstrumentDecision.
         """
         # 1) Run PPO policy
-        action, log_prob, value = self.ppo_core.select_action(observation)
+        # Use DETERMINISTIC mode for live trading to avoid noisy sampling
+        # This takes the mean action instead of sampling from the distribution
+        # Training still uses stochastic sampling for exploration
+        is_live = self._is_live_mode()
+        action, log_prob, value = self.ppo_core.select_action(
+            observation,
+            deterministic=is_live,  # Deterministic in live, stochastic in training
+        )
 
         direction_score = float(action[0]) if len(action) > 0 else 0.0
         size_score = float(action[1]) if len(action) > 1 else 0.0
@@ -1120,6 +1242,21 @@ class ArbiterLogic:
                 reasoning += f" | GATED: {', '.join(gating_result.reasons)}"
         elif gating_result.soft_scaling_applied and gating_result.reasons:
             reasoning += f" | SCALED: {', '.join(gating_result.reasons)}"
+
+        # ═══════════════════════════════════════════════════════════════════
+        # MINIMUM CONFIDENCE GATE (PICKY MODE v5.1)
+        # Require minimum confidence of 0.55 for any directional trade.
+        # This prevents low-conviction noise trades.
+        # ═══════════════════════════════════════════════════════════════════
+        MIN_TRADE_CONFIDENCE = 0.55
+        if direction != "flat" and confidence < MIN_TRADE_CONFIDENCE:
+            gating_result.gate_passed = False
+            gating_result.reasons.append(f"LOW_CONFIDENCE({confidence:.2f}<{MIN_TRADE_CONFIDENCE})")
+            reasoning += f" | BLOCKED: confidence {confidence:.2f} < {MIN_TRADE_CONFIDENCE} minimum"
+            self.logger.debug(
+                f"[PICKY_GATE] {instrument}: Blocked due to low confidence "
+                f"({confidence:.2f} < {MIN_TRADE_CONFIDENCE})"
+            )
 
         # Base position size from size_score
         raw_size = (size_score + 1.0) / 2.0  # [-1,1] -> [0,1]
@@ -1278,16 +1415,18 @@ class ArbiterLogic:
     def _score_to_direction(
         self,
         score: float,
-        long_threshold: float = 0.3,
-        short_threshold: float = -0.3,
+        long_threshold: float = 0.50,
+        short_threshold: float = -0.50,
     ) -> str:
         """
         Convert a direction_score to a discrete direction.
 
-        PPO's raw intent:
+        PPO's raw intent (PICKY MODE - high thresholds):
         - score >  long_threshold  → LONG
         - score <  short_threshold → SHORT
         - otherwise                → FLAT
+        
+        v5.1: Raised from ±0.30 to ±0.50 for pickier trading.
         """
         if score > long_threshold:
             return "long"
@@ -1515,35 +1654,63 @@ class ArbiterLogic:
 
         Uses different thresholds for entry, exit, and reversal.
         Direction is still PPO's decision; this just smooths the transitions.
+
+        TUNED FOR STABILITY: Higher thresholds prevent noisy rapid decisions.
+        PPO runs every ~3 seconds; without strong hysteresis it flip-flops.
+
+        Thresholds are loaded from self._hysteresis_cfg and can be overridden via
+        SmartInfoBus ("ArbiterHysteresisConfig") or constructor kwargs.
         """
         last_dir = self._last_directions.get(instrument, "flat")
 
-        entry_threshold = 0.10
-        reversal_threshold = 0.15
-        exit_threshold = 0.03
+        cfg = getattr(self, "_hysteresis_cfg", None)
+        if not cfg:
+            # Hard fallback (should not normally happen) - PICKY MODE defaults
+            cfg = {
+                "entry_threshold": 0.55,
+                "reversal_threshold": 0.70,
+                "exit_threshold": 0.25,
+                "min_hold_before_reversal": 10,
+            }
+
+        entry_threshold = float(cfg["entry_threshold"])
+        reversal_threshold = float(cfg["reversal_threshold"])
+        exit_threshold = float(cfg["exit_threshold"])
+        min_hold_before_reversal = int(cfg["min_hold_before_reversal"])
+
+        # Get current hold count for this instrument
+        hold_count = self._direction_hold_counts.get(instrument, 0)
 
         if last_dir == "flat":
+            # Entering from flat: need entry threshold
             if proposed_direction != "flat" and abs(trust_score) > entry_threshold:
                 direction = proposed_direction
             else:
                 direction = "flat"
 
         elif last_dir == proposed_direction:
+            # Same direction: continue holding
             direction = proposed_direction
-            self._direction_hold_counts[instrument] = self._direction_hold_counts.get(instrument, 0) + 1
+            self._direction_hold_counts[instrument] = hold_count + 1
 
         elif proposed_direction == "flat":
+            # Going to flat from a position: need trust to drop below exit threshold
             if abs(trust_score) < exit_threshold:
                 direction = "flat"
             else:
                 direction = last_dir
+                self._direction_hold_counts[instrument] = hold_count + 1
 
         else:
-            if abs(trust_score) > reversal_threshold:
+            # REVERSAL: from long->short or short->long
+            # Require BOTH high conviction AND minimum hold time
+            if abs(trust_score) > reversal_threshold and hold_count >= min_hold_before_reversal:
                 direction = proposed_direction
                 self._direction_hold_counts[instrument] = 0
             else:
-                direction = "flat"
+                # Not enough conviction or haven't held long enough - go flat or keep
+                direction = last_dir if abs(trust_score) > exit_threshold else "flat"
+                self._direction_hold_counts[instrument] = hold_count + 1
 
         if direction != last_dir:
             self._direction_hold_counts[instrument] = 0
@@ -1657,6 +1824,7 @@ class ArbiterLogic:
                 "autonomy": autonomy_state,
             },
             "gating": gating_result.to_dict(),
+            "hysteresis": dict(self._hysteresis_cfg),
         }
 
     # ─────────────────────────────────────────────────────────────

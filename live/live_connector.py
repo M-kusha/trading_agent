@@ -14,6 +14,8 @@ import numpy as np
 import pandas as pd
 from stable_baselines3.common.callbacks import BaseCallback
 
+from config import get_logger
+
 # Pylance-friendly alias: the MT5 library exposes dynamic attributes at runtime.
 # Casting to Any avoids false-positive attribute errors while retaining runtime behavior.
 mt5: Any = cast(Any, _MT5)
@@ -65,13 +67,8 @@ class InfoBusLiveDataConnector:
         # Enhanced InfoBus Infrastructure
         # ══════════════════════════════════════════════════════════════
 
-        # InfoBus-integrated logging with 2000-line rotation
-        self.live_logger = RotatingLogger(
-            name="LiveDataConnector",
-            log_path=f"logs/live/infobus_live_{datetime.datetime.now().strftime('%Y%m%d')}.log",
-            max_lines=2000,
-            operator_mode=True,
-        )
+        # Shared logging (root-level config driven by config.logging.debug)
+        self.live_logger = get_logger("LiveDataConnector")
 
         # Audit tracker for live trading events
         self.audit_tracker = AuditTracker("LiveTradingSystem")

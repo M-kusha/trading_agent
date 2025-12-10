@@ -30,6 +30,7 @@ from gymnasium import spaces
 from concurrent.futures import Future
 
 from .config import TradingConfig, MarketState, EpisodeMetrics
+from config import build_trading_config
 
 # SmartInfoBus infrastructure
 try:
@@ -93,7 +94,12 @@ class ModernTradingEnv(gym.Env):
         super().__init__()
 
         # Defaults to avoid init failures
-        self.config = config or TradingConfig()
+        if config is None:
+            try:
+                config = build_trading_config(mode="training")
+            except Exception:
+                config = TradingConfig()
+        self.config: TradingConfig = config
 
         # Observation size: use PPO_OBS_SIZE (64) for unified training/live schema (v4.0)
         # config.environment_observation_size is legacy; PPO_OBS_SIZE takes precedence

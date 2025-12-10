@@ -1,13 +1,23 @@
-# mt5_credentials.py
 #!/usr/bin/env python3
-import os
+"""MT5 credentials sourced from central config + environment overrides."""
+
+from typing import Any, Dict, Optional
+
+from config import get_config
+
 
 class MT5Credentials:
     """
-    MetaTrader5 credentials loaded from environment variables,
-    with safe fallbacks if you haven’t set them.
+    MetaTrader5 credentials loaded from config/app_config.yaml (live mode)
+    with environment variable overrides (MT5_ACCOUNT/MT5_PASSWORD/MT5_SERVER).
     """
-    ACCOUNT  = int(os.getenv("MT5_ACCOUNT",  "5043450868"))
-    PASSWORD = os.getenv("MT5_PASSWORD", "@7TqLtGb")
-    SERVER   = os.getenv("MT5_SERVER",   "MetaQuotes-Demo")
 
+    _cfg = get_config(mode="live")
+
+    ACCOUNT: Optional[int] = _cfg.mt5.account
+    PASSWORD: Optional[str] = _cfg.mt5.password
+    SERVER: str = _cfg.mt5.server
+
+    @classmethod
+    def as_dict(cls) -> Dict[str, Any]:
+        return {"login": cls.ACCOUNT, "password": cls.PASSWORD, "server": cls.SERVER}

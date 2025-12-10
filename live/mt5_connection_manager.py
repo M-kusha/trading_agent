@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from datetime import datetime
 import logging
 
+from config import get_logger
+
 try:
     import MetaTrader5 as mt5
     MT5_AVAILABLE = True
@@ -60,7 +62,7 @@ class MT5ConnectionManager:
     def __init__(self, config: ConnectionConfig):
         self.config = config
         self.status = ConnectionStatus()
-        self.logger = logging.getLogger("MT5ConnectionManager")
+        self.logger = get_logger("MT5ConnectionManager")
         self._lock = threading.RLock()
         self._monitor_thread: Optional[threading.Thread] = None
         self._stop_monitor = threading.Event()
@@ -70,15 +72,7 @@ class MT5ConnectionManager:
             "on_reconnect": None,
             "on_error": None,
         }
-
-        # Setup logging
-        if not self.logger.handlers:
-            handler = logging.StreamHandler()
-            handler.setFormatter(logging.Formatter(
-                '%(asctime)s [%(levelname)s] %(name)s: %(message)s'
-            ))
-            self.logger.addHandler(handler)
-            self.logger.setLevel(logging.INFO)
+        self.logger.setLevel(logging.INFO)
 
     def register_callback(self, event: str, callback: Callable) -> None:
         """Register callback for connection events"""

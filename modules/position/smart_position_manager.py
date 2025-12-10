@@ -393,6 +393,14 @@ class SmartPositionConfig:
     scale_up_min_profit_eur: float = 50.0
     scale_up_cooldown_seconds: float = 600.0
     scale_down_trigger_loss_eur: float = 40.0
+    
+    # Scale-up toggle - Creates additional ticket in MT5 hedging mode.
+    # SmartPositionManager nets all tickets into 1 logical position per symbol.
+    enable_scale_up: bool = True
+    
+    # Breakeven SL threshold - move SL to entry price when profit reaches this
+    # Should match or be close to ExitEngine trailing_activation_eur (€150)
+    breakeven_activation_eur: float = 150.0
 
     # Trade cooldowns
     same_direction_cooldown_seconds: float = 300.0
@@ -608,6 +616,12 @@ class SmartPositionManager:
             if "enable_smart_scale_down" in smart_pos:
                 self.config.enable_smart_scale_down = bool(
                     smart_pos.get("enable_smart_scale_down", False)
+                )
+
+            # Scale-up toggle (default OFF - MT5 creates new tickets)
+            if "enable_scale_up" in smart_pos:
+                self.config.enable_scale_up = bool(
+                    smart_pos.get("enable_scale_up", False)
                 )
 
             return per_inst
@@ -1378,8 +1392,27 @@ class SmartPositionManager:
           - Position profitable enough (R-based or EUR-based)
           - Cooldown passed
           - NOT in DEFEND state (profit retracing from peak)
+          
+        NOTE: Scale-up is DISABLED by default (enable_scale_up=false) because
+        MT5 creates new tickets instead of modifying existing positions.
         """
         cfg = self.config
+
+        # ═══════════════════════════════════════════════════════════════════
+        # SCALE-UP DISABLED CHECK
+        # MT5 hedging mode creates new tickets for each order. There's no way
+        # to increase lot size on an existing ticket. Keep scale-up disabled
+        # to maintain 1 ticket per symbol (prop firm friendly).
+        # ═══════════════════════════════════════════════════════════════════
+        if not cfg.enable_scale_up:
+            # Just hold - don't scale up
+            return self._make_decision(
+                action=PositionAction.HOLD,
+                symbol=symbol,
+                confidence=0.60,
+                reasons=reasons,
+            )
+
         symbol = position.symbol
 
         # ═══════════════════════════════════════════════════════════════════
@@ -1686,6 +1719,31 @@ class SmartPositionManager:
             "position_age_hours": position.age_hours,
         }
 
+        # ═══════════════════════════════════════════════════════════════════
+        # PRIORITY -1: BREAKEVEN SL CHECK (runs BEFORE ExitEngine)
+        # This ensures SL is moved to breakeven BEFORE trailing exit triggers.
+        # Without this, profit could retrace and ExitEngine would close before
+        # we had a chance to protect with breakeven SL.
+        # ═══════════════════════════════════════════════════════════════════
+        breakeven_threshold = cfg.breakeven_activation_eur
+        if position.unrealized_pnl >= breakeven_threshold:
+            new_sl = self._calculate_breakeven_sl(position)
+            if new_sl is not None and self._is_sl_improvement(position, new_sl):
+                reasons.append(
+                    f"🔒 BREAKEVEN FIRST: Profit €{position.unrealized_pnl:.2f} >= €{breakeven_threshold:.0f} "
+                    f"→ moving SL to breakeven before exit evaluation"
+                )
+                return self._make_decision(
+                    action=PositionAction.ADJUST_SL,
+                    symbol=symbol,
+                    side=position.side,
+                    confidence=0.75,
+                    reasons=reasons,
+                    new_sl=new_sl,
+                    management_context=management_ctx,
+                    expert_support_ratio=support_ratio,
+                )
+
         # PRIORITY 0: unified ExitEngine
         if signal.consensus_action == "BUY":
             signal_dir = 1
@@ -1787,12 +1845,28 @@ class SmartPositionManager:
 
         # ExitEngine wants HOLD – cooperative management mode
 
+        # Get per-instrument thresholds (respects XAUUSD/EURUSD overrides from risk_policy.yaml)
+        sym_cfg = self._get_symbol_cfg(symbol)
+        scale_up_min_profit = sym_cfg.get("scale_up_min_profit_eur", cfg.scale_up_min_profit_eur)
+        scale_up_min_r = sym_cfg.get("scale_up_min_r", cfg.scale_up_min_r)
+        use_r_based = cfg.use_r_based_scaling
+        r_mult = self._get_r_multiple(symbol, position.unrealized_pnl)
+
+        # Determine if profit is sufficient for scaling (R-based or EUR-based)
+        profit_ok_for_scale = (
+            (use_r_based and r_mult >= scale_up_min_r)
+            or (not use_r_based and position.unrealized_pnl >= scale_up_min_profit)
+        )
+
         # PRIORITY 1: strong expert support + profit
         if support_ratio >= 0.6 and position.unrealized_pnl > 0:
             # 1a) scale up with strong support + good profit
+            # NOTE: Scale-up is DISABLED by default (enable_scale_up=false)
+            # because MT5 creates new tickets instead of modifying existing positions.
             if (
-                support_ratio >= 0.75
-                and position.unrealized_pnl >= cfg.scale_up_min_profit_eur
+                cfg.enable_scale_up  # Must be explicitly enabled
+                and support_ratio >= 0.75
+                and profit_ok_for_scale
             ):
                 last_scale = self._last_scale_time.get(symbol, 0.0)
                 if (time.time() - last_scale) >= cfg.scale_up_cooldown_seconds:
@@ -1801,7 +1875,8 @@ class SmartPositionManager:
                         if add_lots >= 0.01:
                             reasons.append(
                                 f"📈 SCALE UP: {int(support_ratio * 100)}% expert support, "
-                                f"+€{position.unrealized_pnl:.2f} profit"
+                                f"+€{position.unrealized_pnl:.2f} profit ({r_mult:.1f}R), "
+                                f"threshold={scale_up_min_r:.1f}R/€{scale_up_min_profit:.0f}"
                             )
                             return self._make_decision(
                                 action=PositionAction.SCALE_UP,
@@ -1814,17 +1889,18 @@ class SmartPositionManager:
                                 expert_support_ratio=support_ratio,
                             )
 
-            # 1b) move SL to breakeven+ once profit is meaningful
-            if position.unrealized_pnl >= 30.0:
-                new_sl = self._calculate_breakeven_sl(position)
+            # 1b) tighten SL further beyond breakeven when profit is high
+            # Note: Breakeven already set at PRIORITY -1; this tightens further
+            # Only if profit significantly above breakeven threshold
+            if position.unrealized_pnl >= breakeven_threshold * 1.5:  # €225+ for €150 threshold
+                new_sl = self._calculate_tightened_sl(position, signal)
                 if new_sl is not None and self._is_sl_improvement(position, new_sl):
                     reasons.append(
-                        f"🔒 LOCK PROFIT: Moving SL to breakeven+ "
-                        f"(€{position.unrealized_pnl:.2f} profit, "
-                        f"{int(support_ratio * 100)}% expert support)"
+                        f"🔒 TIGHTEN FURTHER: High profit €{position.unrealized_pnl:.2f} "
+                        f"({int(support_ratio * 100)}% expert support) → locking more gains"
                     )
                     return self._make_decision(
-                        action=PositionAction.ADJUST_SL,
+                        action=PositionAction.TIGHTEN_PROTECTION,
                         symbol=symbol,
                         side=position.side,
                         confidence=0.65,

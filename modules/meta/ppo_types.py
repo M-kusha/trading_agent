@@ -11,7 +11,7 @@ This module defines the core data types for the PPO arbiter system:
 - InstrumentStats / InstrumentStatsTracker: Per-instrument stats
 - GatingResult: Result of combined memory/risk/PPO gating
 
-Version: 3.1.0 (Smarter gating, safer parsing, richer diagnostics)
+Version: 3.2.0 (Centralized thresholds, PPO-safe gating, richer diagnostics)
 """
 
 from __future__ import annotations
@@ -22,6 +22,30 @@ from datetime import datetime
 from typing import Any, Deque, Dict, List, Optional
 
 from modules.meta.numeric_utils import _safe_float, _clip
+
+
+# ═══════════════════════════════════════════════════════════════════
+# GATING / PPO THRESHOLDS (CENTRALIZED)
+# ═══════════════════════════════════════════════════════════════════
+
+# PPO signal: how strong the direction_score must be to consider a trade.
+# MUST be aligned with ArbiterLogic._score_to_direction() (long/short at ~0.3).
+PPO_SIGNAL_UNCERTAIN_THRESHOLD: float = 0.30  # |score| < this ⇒ "uncertain"
+
+# Memory hard veto thresholds
+MEMORY_HARD_VETO_RISK_SCORE: float = 0.98
+MEMORY_HARD_VETO_LOSS_PROB: float = 0.98
+
+# Memory soft scaling thresholds
+MEMORY_SOFT_RISK_SCORE_START: float = 0.70  # above → soft penalty
+MEMORY_SOFT_LOSS_PROB_START: float = 0.50   # above → soft penalty
+
+# Portfolio risk soft scaling
+PORTFOLIO_RISK_PENALTY_START: float = 0.70  # above → confidence penalty
+
+# Instrument risk scaling (per-instrument)
+INSTRUMENT_RISK_ELEVATED: float = 0.60
+INSTRUMENT_RISK_HIGH: float = 0.80
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -643,7 +667,7 @@ class GatingResult:
         Stage 1: Hard veto (risk.hard_block, emergency_mode, memory.veto,
                  or extreme memory risk/loss probability)
         Stage 2: Soft scaling (risk_multiplier, risk_scale, caps, risk levels)
-        Stage 3: PPO override check
+        Stage 3: PPO uncertainty check (analytics + safety)
 
         v4.2.0+: Uses DynamicRiskController's risk_scale and risk_level,
         plus UnifiedMemory's loss_prob and risk_score.
@@ -670,7 +694,10 @@ class GatingResult:
 
         # Extreme memory-based risk: treat as hard veto
         if not result.hard_veto_triggered:
-            if memory.loss_prob >= 0.98 or memory.risk_score >= 0.98:
+            if (
+                memory.loss_prob >= MEMORY_HARD_VETO_LOSS_PROB
+                or memory.risk_score >= MEMORY_HARD_VETO_RISK_SCORE
+            ):
                 result.gate_passed = False
                 result.hard_veto_triggered = True
                 result.reasons.append("MEMORY_MAX_RISK")
@@ -709,7 +736,7 @@ class GatingResult:
             result.soft_scaling_applied = True
             result.reasons.append(f"DRC_SCALE={rs:.2f}")
         elif risk.risk_scale > 1.0:
-            # Recovery mode: limited boost
+            # Recovery mode: limited boost (size only; confidence stays as-is)
             boost = min(1.2, risk.risk_scale)
             result.position_size_cap *= boost
             result.soft_scaling_applied = True
@@ -729,54 +756,62 @@ class GatingResult:
 
         # Memory danger similarity penalty
         if memory.danger_similarity > 0.5:
+            # Linearly reduce confidence as similarity increases from 0.5 → 1.0
             penalty = max(0.0, 1.0 - (memory.danger_similarity - 0.5))
             result.confidence_multiplier *= penalty
             result.soft_scaling_applied = True
             result.reasons.append(f"DANGER_SIM={memory.danger_similarity:.2f}")
 
         # Memory risk_score soft penalty (when not already hard veto)
-        if memory.risk_score > 0.7 and memory.risk_score < 0.98:
-            mem_penalty = 1.0 - 0.7 * (memory.risk_score - 0.7) / 0.28
+        if MEMORY_SOFT_RISK_SCORE_START < memory.risk_score < MEMORY_HARD_VETO_RISK_SCORE:
+            # Map [0.7,0.98] → [1.0,0.3]
+            mem_penalty = 1.0 - 0.7 * (memory.risk_score - MEMORY_SOFT_RISK_SCORE_START) / (
+                MEMORY_HARD_VETO_RISK_SCORE - MEMORY_SOFT_RISK_SCORE_START
+            )
             mem_penalty = max(0.3, min(1.0, mem_penalty))
             result.confidence_multiplier *= mem_penalty
             result.soft_scaling_applied = True
             result.reasons.append(f"MEM_RISK={memory.risk_score:.2f}")
 
-        # Loss probability soft penalty (0.5..1.0 -> 1.0..0.4)
-        if memory.loss_prob > 0.5 and memory.loss_prob < 0.98:
-            lp_penalty = 1.0 - 0.6 * (memory.loss_prob - 0.5) / 0.48
+        # Loss probability soft penalty
+        if MEMORY_SOFT_LOSS_PROB_START < memory.loss_prob < MEMORY_HARD_VETO_LOSS_PROB:
+            # Map [0.5,0.98] → [1.0,0.4]
+            lp_penalty = 1.0 - 0.6 * (memory.loss_prob - MEMORY_SOFT_LOSS_PROB_START) / (
+                MEMORY_HARD_VETO_LOSS_PROB - MEMORY_SOFT_LOSS_PROB_START
+            )
             lp_penalty = max(0.4, min(1.0, lp_penalty))
             result.confidence_multiplier *= lp_penalty
             result.soft_scaling_applied = True
             result.reasons.append(f"LOSS_PROB={memory.loss_prob:.2f}")
 
         # High portfolio risk penalty
-        if risk.portfolio_risk > 0.7:
-            penalty = 1.0 - (risk.portfolio_risk - 0.7) * 2.0
+        if risk.portfolio_risk > PORTFOLIO_RISK_PENALTY_START:
+            # Map [0.7,1.0] → [1.0,0.4]
+            penalty = 1.0 - (risk.portfolio_risk - PORTFOLIO_RISK_PENALTY_START) * 2.0
             penalty = max(0.3, min(1.0, penalty))
             result.confidence_multiplier *= penalty
             result.soft_scaling_applied = True
             result.reasons.append(f"HIGH_RISK={risk.portfolio_risk:.2f}")
 
         # Instrument-specific risk scaling
-        if risk.instrument_risk > 0.8:
+        if risk.instrument_risk > INSTRUMENT_RISK_HIGH:
             result.position_size_cap *= 0.4
             result.soft_scaling_applied = True
             result.reasons.append(f"INSTR_RISK_HIGH={risk.instrument_risk:.2f}")
-        elif risk.instrument_risk > 0.6:
+        elif risk.instrument_risk > INSTRUMENT_RISK_ELEVATED:
             result.position_size_cap *= 0.7
             result.soft_scaling_applied = True
             result.reasons.append(f"INSTR_RISK_ELEVATED={risk.instrument_risk:.2f}")
 
         # ─────────────────────────────────────────────────────────
-        # Stage 3: PPO uncertainty check
+        # Stage 3: PPO uncertainty check (aligned with direction logic)
         # ─────────────────────────────────────────────────────────
         # If PPO's direction signal is very weak (near zero), it's uncertain.
         # We block trades when PPO is indecisive, not when it wants to SHORT.
         # Note: direction_score is signed (-1 to 1) where negative = SHORT.
         # A strong SHORT signal (e.g., -0.8) should PASS, not be blocked.
         direction_magnitude = abs(trust_score)
-        if direction_magnitude < 0.3:
+        if direction_magnitude < PPO_SIGNAL_UNCERTAIN_THRESHOLD:
             result.ppo_override = True
             result.gate_passed = False
             result.reasons.append(f"PPO_UNCERTAIN={trust_score:.2f}")

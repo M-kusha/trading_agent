@@ -1,0 +1,24 @@
+logging:
+  debug: true
+  level: DEBUG
+  log_dir: logs/training
+
+paths:
+  logs: logs/training
+
+environment:
+  num_envs: 16
+  data_source: "auto"
+
+mode:
+  name: "training"
+  training: true
+  live: false
+  enable_shadow_sim: true
+
+rl:
+  batch_size: 128
+  final_training_steps: 200000
+  checkpoint_freq: 10000
+  eval_freq: 5000
+  log_interval: 10
