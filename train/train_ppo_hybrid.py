@@ -409,7 +409,15 @@ def create_environments(data: Dict, config: TradingConfig, n_envs: int = 1, seed
 
     if use_subproc and n_envs > 1:
         # SubprocVecEnv runs each env in a separate process (true parallelism)
-        env = SubprocVecEnv([make(i) for i in range(n_envs)], start_method='spawn')
+        # Use 'fork' on Linux (faster, avoids pickle issues) or 'forkserver' as fallback
+        # 'spawn' requires all objects to be picklable which ModernTradingEnv is not
+        try:
+            import multiprocessing
+            start_method = 'fork' if platform.system() != 'Darwin' else 'forkserver'
+            env = SubprocVecEnv([make(i) for i in range(n_envs)], start_method=start_method)
+        except Exception as e:
+            print(f"[WARN] SubprocVecEnv failed ({e}), falling back to DummyVecEnv")
+            env = DummyVecEnv([make(i) for i in range(n_envs)])
     else:
         # DummyVecEnv runs all envs sequentially in the same process
         env = DummyVecEnv([make(i) for i in range(n_envs)])
