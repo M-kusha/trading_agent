@@ -85,6 +85,15 @@ class PPOShellConfig:
     # When False, each instrument is evaluated independently (multi-position allowed)
     position_focus_blocks_other_instruments: bool = False
 
+    # ═══════════════════════════════════════════════════════════════════
+    # WARMUP SETTINGS (v3.2.0)
+    # ═══════════════════════════════════════════════════════════════════
+    # PPO needs time to observe market conditions before making decisions.
+    # During warmup, the agent observes but does NOT generate entry signals.
+    # This prevents hasty trades based on incomplete market context.
+    warmup_cycles: int = 100  # ~60 seconds at 3s/cycle - observe first before trading
+    warmup_enabled: bool = True  # Set to False to disable warmup (not recommended)
+
     # Debug
     debug: bool = False
 
@@ -150,6 +159,14 @@ class PPOAgentShell(
         self.circuit_breaker: Dict[str, Any] = {}
         self._performance_metrics: Dict[str, Any] = {}
         self._monitoring_active: bool = False
+        
+        # ═══════════════════════════════════════════════════════════════════
+        # WARMUP STATE (v3.2.0)
+        # ═══════════════════════════════════════════════════════════════════
+        # Track session cycles to implement warmup period
+        self._session_cycle_count: int = 0
+        self._warmup_complete: bool = False
+        self._session_start_time: datetime = datetime.now()
 
         # Setup components
         self._setup_logging()
@@ -160,10 +177,14 @@ class PPOAgentShell(
         # Start monitoring
         self._start_monitoring()
 
+        warmup_info = ""
+        if self._cfg.warmup_enabled:
+            warmup_info = f" | warmup={self._cfg.warmup_cycles} cycles"
+        
         self.logger.info(
-            "[PPOAgentShell] Initialized v3.1.0 | "
+            "[PPOAgentShell] Initialized v3.2.0 | "
             f"instruments={self._cfg.instruments} | "
-            f"obs_size={self._cfg.core_config.obs_size}"
+            f"obs_size={self._cfg.core_config.obs_size}{warmup_info}"
         )
 
     # ─────────────────────────────────────────────────────────────
@@ -304,6 +325,37 @@ class PPOAgentShell(
         start_time = time.time()
 
         try:
+            # ═══════════════════════════════════════════════════════════════════
+            # WARMUP CHECK (v3.2.0)
+            # ═══════════════════════════════════════════════════════════════════
+            # Increment session cycle counter
+            self._session_cycle_count += 1
+            
+            # Check if we're still in warmup period
+            in_warmup = (
+                self._cfg.warmup_enabled 
+                and not self._warmup_complete 
+                and self._session_cycle_count <= self._cfg.warmup_cycles
+            )
+            
+            if in_warmup:
+                remaining = self._cfg.warmup_cycles - self._session_cycle_count
+                if self._session_cycle_count == 1:
+                    self.logger.info(
+                        f"[PPO] ═══ WARMUP STARTED ═══ Observing market for {self._cfg.warmup_cycles} cycles (~{self._cfg.warmup_cycles * 3}s)"
+                    )
+                elif self._session_cycle_count % 5 == 0:  # Log every 5 cycles
+                    self.logger.info(
+                        f"[PPO] 🔄 WARMUP: {self._session_cycle_count}/{self._cfg.warmup_cycles} cycles │ {remaining} remaining"
+                    )
+            elif not self._warmup_complete and self._cfg.warmup_enabled:
+                # Just completed warmup
+                self._warmup_complete = True
+                elapsed = (datetime.now() - self._session_start_time).total_seconds()
+                self.logger.info(
+                    f"[PPO] ═══ WARMUP COMPLETE ═══ Ready to trade after {elapsed:.0f}s observation"
+                )
+
             # 0) Check for trade outcomes and update autonomy tracker
             self._check_trade_outcomes_for_autonomy()
 
@@ -367,6 +419,27 @@ class PPOAgentShell(
                     position_focus,
                 )
 
+            # ═══════════════════════════════════════════════════════════════════
+            # 3.6) WARMUP GATE BLOCK (v3.2.0)
+            # ═══════════════════════════════════════════════════════════════════
+            # During warmup, observe but don't generate entry signals.
+            # Position management (if we already have positions) is still allowed.
+            all_positions_for_warmup = position_focus.get('positions', {}) if position_focus else {}
+            
+            if in_warmup:
+                for inst, decision in multi_decision.instruments.items():
+                    # Check if we have a position in this instrument
+                    pos_data = all_positions_for_warmup.get(inst, {})
+                    has_position = bool(pos_data and pos_data.get('side', 0) != 0)
+                    
+                    # Only block NEW entries, not position management
+                    if not has_position and decision.gate_passed:
+                        decision.gate_passed = False
+                        decision.position_size = 0.0
+                        # Update reasoning
+                        original_reasoning = decision.reasoning or ""
+                        decision.reasoning = f"[WARMUP] {original_reasoning}"
+
             # Cache decisions
             self._last_multi_decision = multi_decision
             self._last_observations = observations
@@ -389,8 +462,11 @@ class PPOAgentShell(
                 if has_position:
                     # ─── POSITION MODE: Show position management info ───
                     side = pos_data.get('side', 0)
+                    # Direction emoji: 📈 = LONG (bullish), 📉 = SHORT (bearish)
+                    side_emoji = "📈" if side > 0 else "📉" if side < 0 else "➖"
                     side_str = "LONG" if side > 0 else "SHORT" if side < 0 else "FLAT"
                     pnl = float(pos_data.get('unrealized_pnl', 0))
+                    # P&L emoji: 🟢 = profit, 🔴 = loss, ⚪ = breakeven
                     pnl_emoji = "🟢" if pnl > 0 else "🔴" if pnl < 0 else "⚪"
                     lots = float(pos_data.get('lots', 0))
                     age_h = float(pos_data.get('age_hours', 0))
@@ -416,7 +492,7 @@ class PPOAgentShell(
                         f"[PPO] ═══ {inst} ═══ POSITION ACTIVE"
                     )
                     self.logger.info(
-                        f"[PPO]   {pnl_emoji} {side_str} {lots:.2f} lots │ P&L: €{pnl:+.2f} │ Age: {age_h:.1f}h"
+                        f"[PPO]   {side_emoji} {side_str} {lots:.2f} lots │ {pnl_emoji} P&L: €{pnl:+.2f} │ Age: {age_h:.1f}h"
                     )
                     self.logger.info(
                         f"[PPO]   Signal: {action_str} │ Conf: {decision.confidence:.0%} │ "
@@ -424,7 +500,18 @@ class PPOAgentShell(
                     )
                 else:
                     # ─── NO POSITION: Show entry signal (only if interesting) ───
-                    if decision.direction != "flat" and decision.gate_passed:
+                    
+                    # Check if blocked by warmup
+                    is_warmup_blocked = in_warmup and decision.direction != "flat"
+                    
+                    if is_warmup_blocked:
+                        # Show warmup blocking status
+                        remaining = self._cfg.warmup_cycles - self._session_cycle_count
+                        self.logger.info(
+                            f"[PPO] 🔄 {inst}: {decision.direction.upper()} signal observed │ "
+                            f"WARMUP ({remaining} cycles left)"
+                        )
+                    elif decision.direction != "flat" and decision.gate_passed:
                         self.logger.info(
                             f"[PPO] ═══ {inst} ═══ ENTRY SIGNAL"
                         )
