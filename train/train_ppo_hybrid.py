@@ -377,6 +377,8 @@ def test_environment_creation(data: Dict, config: TradingConfig) -> bool:
         return False
 
 def create_environments(data: Dict, config: TradingConfig, n_envs: int = 1, seed: int = 42):
+    global _EXPLORATION_MODE
+    
     if not test_environment_creation(data, config):
         raise RuntimeError("Environment creation test failed")
 
@@ -384,23 +386,24 @@ def create_environments(data: Dict, config: TradingConfig, n_envs: int = 1, seed
     requested_envs = max(1, int(getattr(config, "num_envs", n_envs)))
     n_envs = requested_envs
     
-    # Determine vectorization strategy based on OS and mode
-    # ModernTradingEnv now supports lazy initialization for SubprocVecEnv compatibility
+    # Determine vectorization strategy
+    # SubprocVecEnv requires 'fork' on Linux (not Windows) to avoid pickling issues
+    # With fork, child processes inherit parent memory, so unpicklable objects work
     use_subproc = False
     
     if getattr(config, "live_mode", False):
         n_envs = 1
         print("[TOOL] Live mode: using single environment")
-    elif platform.system() == "Windows":
-        # Windows has issues with multiprocessing + PyTorch
-        n_envs = min(n_envs, 4)
-        print(f"[TOOL] Windows: using {n_envs} sequential env(s) (DummyVecEnv)")
-    elif n_envs > 1:
-        # Linux/Mac: use SubprocVecEnv for true parallelism
+    elif n_envs > 1 and platform.system() != "Windows":
+        # Use SubprocVecEnv with fork for true parallelism on Linux/Mac
+        # fork() clones parent memory - no pickling needed for closure variables
         use_subproc = True
-        print(f"[TOOL] Linux/Mac: using {n_envs} parallel env(s) (SubprocVecEnv)")
+        env_type = "ExplorationEnv" if _EXPLORATION_MODE else "ModernEnv+Modules"
+        print(f"[TOOL] {env_type} + SubprocVecEnv: {n_envs} PARALLEL environments (fast!)")
+    elif n_envs > 1:
+        print(f"[TOOL] DummyVecEnv: {n_envs} sequential environments (Windows)")
     else:
-        print(f"[TOOL] Using {n_envs} sequential env(s) (DummyVecEnv)")
+        print(f"[TOOL] Using {n_envs} environment(s)")
 
     def make(rank: int):
         def _init():
@@ -410,17 +413,13 @@ def create_environments(data: Dict, config: TradingConfig, n_envs: int = 1, seed
         set_random_seed(seed + rank)
         return _init
 
-    if use_subproc and n_envs > 1:
-        # SubprocVecEnv runs each env in a separate process (true parallelism)
-        # Use 'fork' on Linux for best performance
-        try:
-            start_method = 'fork' if platform.system() == 'Linux' else 'forkserver'
-            env = SubprocVecEnv([make(i) for i in range(n_envs)], start_method=start_method)
-        except Exception as e:
-            print(f"[WARN] SubprocVecEnv failed ({e}), falling back to DummyVecEnv")
-            env = DummyVecEnv([make(i) for i in range(n_envs)])
+    if use_subproc:
+        # SubprocVecEnv with fork for true parallelism
+        # fork() copies parent process memory - closures work without pickling
+        # ModernTradingEnv has lazy init for bus/orchestrator (created in subprocess after fork)
+        env = SubprocVecEnv([make(i) for i in range(n_envs)], start_method='fork')
     else:
-        # DummyVecEnv runs all envs sequentially in the same process
+        # DummyVecEnv for Windows or single env (sequential, same process)
         env = DummyVecEnv([make(i) for i in range(n_envs)])
     
     if hasattr(env, "seed"):
@@ -903,6 +902,8 @@ def main():
     p.add_argument("--auto-pretrained", action="store_true")
     p.add_argument("--debug", action="store_true")
     p.add_argument("--no-dashboard", action="store_true", help="Disable web dashboard")
+    p.add_argument("--fast", action="store_true", 
+                   help="Use ExplorationEnv (no modules) for fastest training")
     p.add_argument("--model", type=str, help="Model path for evaluation (--mode eval)")
     p.add_argument("--eval-episodes", type=int, default=50, help="Number of evaluation episodes (default: 50)")
     p.add_argument("--render", action="store_true", help="Print per-episode details during eval")
@@ -914,8 +915,9 @@ def main():
     )
     args = p.parse_args()
 
-    # Determine if exploration mode (no modules)
-    exploration_mode = (args.preset == "exploration")
+    # Determine if exploration mode (no modules) - for fast parallel training
+    # --fast flag or --preset exploration both enable this
+    exploration_mode = (args.preset == "exploration") or getattr(args, "fast", False)
     
     # Set global flag for environment creation
     global _EXPLORATION_MODE
