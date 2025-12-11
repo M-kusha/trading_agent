@@ -406,8 +406,15 @@ modules:
 # ═══════════════════════════════════════════════════════════════
 # SEASONALITY & TRADING WINDOW CONFIGURATION
 # Used by SeasonalityRiskExpert, ArbiterLogic, SmartPositionManager, LotCalculator
+# NOTE: Primary config is in system_config.yaml -> SeasonalityRiskExpert
+# These are FALLBACK values used by other modules (LotCalculator, etc.)
 # ═══════════════════════════════════════════════════════════════
 seasonality:
+  # ═════════════════════════════════════════════════════════════
+  # TRADING TIMEZONE - Bavaria/Germany
+  # ═════════════════════════════════════════════════════════════
+  timezone: "Europe/Berlin"
+
   # ═════════════════════════════════════════════════════════════
   # PRIME HOURS - Best trading windows (local time)
   # During prime hours: boost signal confidence & lot size
@@ -427,11 +434,11 @@ seasonality:
   final_exit_max_loss_pct: 0.02      # Max 2% loss to force exit (protect from big gap)
 
   # ═════════════════════════════════════════════════════════════
-  # NO NEW TRADES WINDOW
+  # NO NEW TRADES WINDOW (must match system_config.yaml)
   # Block new trades in certain hours (overnight, low liquidity)
   # ═════════════════════════════════════════════════════════════
-  no_new_trades_start: 21            # 21:00 local = stop new trades
-  no_new_trades_end: 8               # 08:00 local = resume new trades
+  no_new_trades_start: 18            # 18:00 local = stop new trades (matches local_trade_end_hour)
+  no_new_trades_end: 9               # 09:00 local = resume new trades (matches local_trade_start_hour)
   allow_close_during_block: true     # Always allow CLOSE/TIGHTEN when blocked
   allow_defend_during_block: true    # Allow defensive actions when blocked
 

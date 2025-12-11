@@ -1074,56 +1074,42 @@ class ModuleOrchestrator:
         return 0.5
 
     def _enter_emergency_mode(self, reason: str):
-        if self.emergency_mode:
-            return
-        self.emergency_mode = True
-        self.emergency_mode_reason = reason
-        self.emergency_activation_time = time.time()
-        self.emergency_activation_count += 1
-
-        self.logger.critical(
+        """Handle high resource usage - WARNING ONLY, no module shutdown.
+        
+        v5.4: Changed from hard shutdown to warning-only mode.
+        Disabling modules caused the system to get stuck and never recover.
+        Instead, we just log warnings and try to free memory.
+        """
+        # Log the warning but DON'T actually enter emergency mode
+        self.logger.warning(
             format_operator_message(
-                "[ALERT]", "EMERGENCY MODE ACTIVATED",
+                "[WARN]", "HIGH MEMORY USAGE DETECTED",
                 details=reason,
-                context="emergency"
+                context="memory_warning"
             )
         )
 
-        # If memory-triggered, try to free memory immediately
+        # If memory-triggered, try to free memory
         if "memory" in reason.lower():
             self._try_free_memory()
-
-        disabled_count = 0
-        for module_name, metadata in self.metadata.items():
-            if not metadata.critical:
-                self.smart_bus.record_module_failure(module_name, "Emergency mode - non-critical disabled")
-                disabled_count += 1
-
-        with self._executor_lock:
-            if self._executor:
-                self._executor._max_workers = max(1, self.config.max_parallel_modules // 2)
-
-        if self.health_monitor:
-            try:
-                self.health_monitor.trigger_emergency_alert(reason)
-            except Exception:
-                pass
-
+            
+        # Publish warning to bus but don't disable anything
         self._safe_bus_set(
-            'emergency_mode_event',
+            'memory_warning_event',
             {
-                'activated': True,
+                'warning': True,
                 'reason': reason,
-                'timestamp': self.emergency_activation_time,
-                'disabled_modules': disabled_count,
-                'activation_count': self.emergency_activation_count
+                'timestamp': time.time(),
+                'action': 'gc_triggered',
             },
             module='Orchestrator',
-            thesis=f"Emergency mode activated due to: {reason}",
-            confidence=0.9
+            thesis=f"Memory warning (no shutdown): {reason}",
+            confidence=0.7
         )
-
-        self.logger.info(f"[ALERT] Disabled {disabled_count} non-critical modules")
+        
+        # DO NOT set emergency_mode = True
+        # DO NOT disable modules
+        # Just let the system continue with the warning logged
 
     def disable_module(self, module_name: str, reason: str = "Manual disable") -> bool:
         if module_name in self.modules:

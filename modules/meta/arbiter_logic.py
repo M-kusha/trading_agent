@@ -897,12 +897,13 @@ class ArbiterLogic:
         - Direct constructor argument `hysteresis_config`
         """
         cfg: Dict[str, Any] = {
-            # ULTRA PICKY MODE - Very high thresholds for quality over quantity
-            # v5.2: Aggressively raised to drastically reduce overtrading
-            "entry_threshold": 0.70,       # Was 0.55 - need very strong conviction to enter
-            "reversal_threshold": 0.85,    # Was 0.70 - almost impossible to flip direction
-            "exit_threshold": 0.35,        # Was 0.25 - stay in position even longer
-            "min_hold_before_reversal": 20,  # Was 10 - must hold 20 ticks (~60s) before reversing
+            # BALANCED MODE - Allow both LONG and SHORT signals properly
+            # v5.3: Fixed to allow reversals - was causing LONG-only bias
+            # The model should be able to go SHORT when direction_score < -0.70
+            "entry_threshold": 0.70,       # Need strong conviction to enter
+            "reversal_threshold": 0.72,    # Was 0.85 (too high!) - just slightly above entry
+            "exit_threshold": 0.35,        # Stay in position reasonably
+            "min_hold_before_reversal": 5,  # Was 20 (too long!) - allow reversal after ~15s
         }
 
         # Optional SmartInfoBus overrides
@@ -1760,13 +1761,14 @@ class ArbiterLogic:
         trust_score: float,
     ) -> str:
         """
-        Apply hysteresis to prevent flip-flopping.
+        Apply hysteresis to prevent flip-flopping on OPEN POSITIONS only.
 
-        Uses different thresholds for entry, exit, and reversal.
-        Direction is still PPO's decision; this just smooths the transitions.
+        v5.3: Hysteresis ONLY applies when already in a position.
+        When flat (no position), the agent is FREE to decide LONG or SHORT
+        without any bias - let the model's conviction speak for itself.
 
-        TUNED FOR STABILITY: Higher thresholds prevent noisy rapid decisions.
-        PPO runs every ~3 seconds; without strong hysteresis it flip-flops.
+        Hysteresis protects existing positions from noisy reversals,
+        it should NOT influence the initial direction decision.
 
         Thresholds are loaded from self._hysteresis_cfg and can be overridden via
         SmartInfoBus ("ArbiterHysteresisConfig") or constructor kwargs.
@@ -1775,15 +1777,14 @@ class ArbiterLogic:
 
         cfg = getattr(self, "_hysteresis_cfg", None)
         if not cfg:
-            # Hard fallback (should not normally happen) - ULTRA PICKY MODE defaults
+            # Hard fallback (should not normally happen)
             cfg = {
                 "entry_threshold": 0.70,
-                "reversal_threshold": 0.85,
+                "reversal_threshold": 0.72,
                 "exit_threshold": 0.35,
-                "min_hold_before_reversal": 20,
+                "min_hold_before_reversal": 5,
             }
 
-        entry_threshold = float(cfg["entry_threshold"])
         reversal_threshold = float(cfg["reversal_threshold"])
         exit_threshold = float(cfg["exit_threshold"])
         min_hold_before_reversal = int(cfg["min_hold_before_reversal"])
@@ -1792,11 +1793,13 @@ class ArbiterLogic:
         hold_count = self._direction_hold_counts.get(instrument, 0)
 
         if last_dir == "flat":
-            # Entering from flat: need entry threshold
-            if proposed_direction != "flat" and abs(trust_score) > entry_threshold:
-                direction = proposed_direction
-            else:
-                direction = "flat"
+            # ═══════════════════════════════════════════════════════════════════
+            # NO POSITION: Agent is FREE to decide direction without bias
+            # ═══════════════════════════════════════════════════════════════════
+            # The _score_to_direction() already applied the ±0.70 threshold.
+            # If the agent says LONG or SHORT, trust it. No additional gating.
+            # This ensures LONG and SHORT have equal opportunity.
+            direction = proposed_direction
 
         elif last_dir == proposed_direction:
             # Same direction: continue holding
@@ -1812,14 +1815,18 @@ class ArbiterLogic:
                 self._direction_hold_counts[instrument] = hold_count + 1
 
         else:
-            # REVERSAL: from long->short or short->long
-            # Require BOTH high conviction AND minimum hold time
+            # ═══════════════════════════════════════════════════════════════════
+            # REVERSAL: from long->short or short->long (HAS OPEN POSITION)
+            # ═══════════════════════════════════════════════════════════════════
+            # This is where hysteresis matters - protect open positions from
+            # noisy flip-flopping. Require conviction AND minimum hold time.
             if abs(trust_score) > reversal_threshold and hold_count >= min_hold_before_reversal:
                 direction = proposed_direction
                 self._direction_hold_counts[instrument] = 0
             else:
-                # Not enough conviction or haven't held long enough - go flat or keep
-                direction = last_dir if abs(trust_score) > exit_threshold else "flat"
+                # Not enough conviction or haven't held long enough
+                # Go flat rather than keeping old direction (don't force a side)
+                direction = "flat" if abs(trust_score) < exit_threshold else last_dir
                 self._direction_hold_counts[instrument] = hold_count + 1
 
         if direction != last_dir:

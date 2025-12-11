@@ -165,17 +165,17 @@ class SeasonalityRiskExpert(VotingExpertBase):
         )
 
         # Local trading-window configuration (user's timezone)
-        # For you: Europe/Berlin, trade 09:00–18:00 local, avoid late new entries.
+        # Bavaria/Germany timezone: trade 09:00–18:00 local, avoid late new entries.
         self.trading_timezone: str = self.config.get(
             "trading_timezone", "Europe/Berlin"
         )
 
-        # Primary trading window (local hours)
+        # Primary trading window (local hours) - Bavaria time
         self.local_trade_start_hour: int = int(
-            self.config.get("local_trade_start_hour", 9)   # was 7
+            self.config.get("local_trade_start_hour", 9)   # 9:00 local time
         )
         self.local_trade_end_hour: int = int(
-            self.config.get("local_trade_end_hour", 18)    # was 22
+            self.config.get("local_trade_end_hour", 18)    # 18:00 local time
         )
 
         # Hard close hour: by default we consider the day "closed" at 22:00 or 23:00

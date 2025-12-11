@@ -370,6 +370,14 @@ class PPOCore:
 
             # Convert to numpy / scalars
             action_np = action_tensor.squeeze(0).cpu().numpy().astype(np.float32)
+            
+            # CRITICAL: Clip actions to [-1, 1] range
+            # The Gaussian policy can output values outside this range, but:
+            # - direction_score must be in [-1, 1] for threshold logic to work
+            # - Scores > 1.0 would always trigger LONG, scores < -1.0 always SHORT
+            # - This ensures proper balance between LONG/SHORT/FLAT decisions
+            action_np = np.clip(action_np, -1.0, 1.0)
+            
             log_prob_np = float(log_prob_tensor.item())
             value_np = float(value.squeeze().item())
 
