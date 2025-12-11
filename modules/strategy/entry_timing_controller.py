@@ -7,7 +7,8 @@ This module wraps the pure timing_features library for live trading.
 It reads inputs from SmartInfoBus and publishes timing features back.
 
 Architecture:
-- Reads: market_data_latest, atr_values, session_info, position_state_summary
+- Reads: market_data_latest, atr_values, session_info
+- Optional: position_state_summary (gracefully handled if missing)
 - Computes: timing features via timing_features.compute_timing_features()
 - Publishes:
     - entry_timing: per-instrument TimingFeatures as dicts
@@ -16,7 +17,7 @@ Architecture:
 
 This is a thin adapter layer - all core logic lives in timing_features.py.
 
-Version: 1.1.0 (aligned with TimingFeatures v1.1.0, stronger validation/logging)
+Version: 1.2.0 (v5.2: position_state_summary now optional)
 """
 
 from __future__ import annotations
@@ -55,7 +56,7 @@ logger = logging.getLogger(__name__)
         "market_data_latest",
         "atr_values",
         "session_info",
-        "position_state_summary",
+        # v5.2: position_state_summary is optional - code handles missing gracefully
     ],
     dependencies=[],
     thesis_required=False,

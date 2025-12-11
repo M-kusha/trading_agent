@@ -334,7 +334,8 @@ CONTRACTS: Dict[str, ModuleContract] = {
         name='EntryTimingController',
         file='strategy/entry_timing_controller.py',
         provides=['entry_timing', 'entry_timing_array', 'entry_timing_allowed'],
-        requires=['market_data_latest', 'atr_values', 'session_info', 'position_state_summary'],
+        # v5.2: position_state_summary is optional - code handles missing gracefully with defaults
+        requires=['market_data_latest', 'atr_values', 'session_info'],
         meta={'thesis_required': False, 'health_monitoring': True, 'performance_tracking': False,
               'category': 'strategy', 'version': '1.0.0'}
     ),
@@ -756,6 +757,8 @@ CONTRACTS: Dict[str, ModuleContract] = {
             'volatility_level', 'volume_data', 'liquidity_data',
             # FIX: Per-instrument volatility for HorizonAligner and Executor
             'volatility_level_by_instrument', 'volatility_by_instrument',
+            # FIX: Keys required by EntryTimingController
+            'market_data_latest', 'atr_values', 'session_info',
             # Specific instrument data
             'market_data_EUR_USD_M15',
             'market_data_EUR_USD_H1', 'market_data_EUR_USD_H4', 'market_data_EUR_USD_D1',

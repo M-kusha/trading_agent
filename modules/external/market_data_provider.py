@@ -1526,6 +1526,8 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 'symbols', 'universe', 'watched_instruments',
                 'volatility_level_by_instrument', 'volatility_by_instrument',
                 'technical_indicators', 'provider_status', 'tick_prices',
+                # v5.2: Keys required by EntryTimingController
+                'market_data_latest', 'atr_values', 'session_info',
             ]
             for key in core_keys:
                 if key in snapshot:
@@ -1828,6 +1830,35 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             "strategy_status": {
                 "status": "running",
                 "volatility_level": vol_level,
+                "timestamp": ts_iso,
+            },
+            # ─────────────────────────────────────────────────────────────────
+            # FIX: Keys required by EntryTimingController
+            # ─────────────────────────────────────────────────────────────────
+            # market_data_latest: per-instrument latest bar data (simplified view)
+            "market_data_latest": {
+                s: {
+                    "open": float(market_data[s].get("open", 0.0)) if s in market_data else 0.0,
+                    "high": float(market_data[s].get("high", 0.0)) if s in market_data else 0.0,
+                    "low": float(market_data[s].get("low", 0.0)) if s in market_data else 0.0,
+                    "close": float(market_data[s].get("close", 0.0)) if s in market_data else 0.0,
+                    "volume": float(market_data[s].get("volume", 0.0)) if s in market_data else 0.0,
+                    "timestamp": market_data[s].get("timestamp", ts_iso) if s in market_data else ts_iso,
+                }
+                for s in self.cfg.supported_symbols
+            },
+            # atr_values: per-instrument ATR values
+            "atr_values": {
+                s: float(self.technical_indicators[s].get("atr", 0.0))
+                for s in self.cfg.supported_symbols
+            },
+            # session_info: current time information for timing features
+            "session_info": {
+                "hour": self.current_timestamp.hour if self.current_timestamp is not None else 12,
+                "minute": self.current_timestamp.minute if self.current_timestamp is not None else 0,
+                "weekday": self.current_timestamp.weekday() if self.current_timestamp is not None else 0,
+                "session_type": self.session_type,
+                "trading_session": self.trading_session,
                 "timestamp": ts_iso,
             },
         }
