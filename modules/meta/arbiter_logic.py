@@ -1031,6 +1031,12 @@ class ArbiterLogic:
             if not isinstance(trading_window, dict):
                 return (True, "No trading_window data")
 
+            # If SeasonalityRiskExpert explicitly allows off-hours trading,
+            # treat all times as valid and bypass time-based blocks.
+            if trading_window.get("allow_off_hours_override", False):
+                local_time = trading_window.get("local_time", "unknown")
+                return (True, f"Off-hours trading override (local={local_time})")
+
             no_new_trades = trading_window.get("no_new_trades", False)
             if no_new_trades:
                 local_time = trading_window.get("local_time", "unknown")
