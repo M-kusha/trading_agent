@@ -15,6 +15,13 @@ from modules.utils.info_bus import InfoBusManager
 from modules.utils.audit_utils import RotatingLogger, format_operator_message
 from modules.utils.lot_calculator import UnifiedLotCalculator
 
+# Import centralized trade limits
+try:
+    from config import get_trade_limits
+    _TRADE_LIMITS = get_trade_limits()
+except ImportError:
+    _TRADE_LIMITS = {"max_trades_per_day": 20, "training_mode_limit": 9999}
+
 from .shared.types import PositionSnap, TradeFill, _parse_timestamp
 from .shared.utils import SafeBus, resolve_symbol
 from .debug.debugger import ExecutorDebugManager
@@ -678,7 +685,8 @@ class Executor(BaseModule):
         # CurriculumPlannerPlus + BiasAuditor
         # ==========================================================
         strategy_position_multiplier: float = 1.0
-        strategy_max_trades_per_day: int = 50  # Default high limit
+        # Use centralized config default for max_trades_per_day
+        strategy_max_trades_per_day: int = _TRADE_LIMITS.get("max_trades_per_day", 20)
         curriculum_stage: str = "Expert"       # Default to no restrictions
         bias_active: List[str] = []
 
@@ -724,12 +732,14 @@ class Executor(BaseModule):
                     strategy_position_multiplier = min(strategy_position_multiplier, max_pos)
 
                 # Max trades per day constraint (ONLY in live mode)
+                # Use centralized config default
+                default_max_trades = _TRADE_LIMITS.get("max_trades_per_day", 20)
                 strategy_max_trades_per_day = int(
-                    learning_constraints.get("max_trades_per_day", 50) or 50
+                    learning_constraints.get("max_trades_per_day", default_max_trades) or default_max_trades
                 )
             elif not is_live_mode:
                 # Training mode: allow effectively unlimited trades and full position sizes
-                strategy_max_trades_per_day = 9999
+                strategy_max_trades_per_day = 1000
 
             if isinstance(curriculum_stage_data, dict):
                 curriculum_stage = str(curriculum_stage_data.get("name", "Expert") or "Expert")

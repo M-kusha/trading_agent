@@ -64,6 +64,13 @@ except ImportError:
     def is_training_mode() -> bool:
         return False
 
+# Import centralized trade limits
+try:
+    from config import get_trade_limits
+    _TRADE_LIMITS = get_trade_limits()
+except ImportError:
+    _TRADE_LIMITS = {"max_trades_per_day": 20, "curriculum_stage_limits": {}}
+
 # Alias for typing.Optional so we can use OptType[...] as in your original code
 OptType = Optional
 
@@ -468,7 +475,8 @@ class StrategyInfo:
     curriculum_stage: str = "Foundation"
     stage_difficulty: float = 1.0
     max_position_size: float = 1.0
-    max_trades_per_day: int = 20
+    # Loaded from config/risk_policy.yaml -> trade_limits.max_trades_per_day
+    max_trades_per_day: int = field(default_factory=lambda: _TRADE_LIMITS.get("max_trades_per_day", 20))
     mastery_level: float = 0.5
 
     # ThesisEvolutionEngine outputs
@@ -518,11 +526,13 @@ class StrategyInfo:
         # Learning constraints
         constraints = learning_constraints or {}
         max_pos = _safe_float(constraints.get("max_position_size"), 1.0)
-        max_trades_raw = constraints.get("max_trades_per_day", 20)
+        # Use centralized config default for max_trades_per_day
+        default_max_trades = _TRADE_LIMITS.get("max_trades_per_day", 20)
+        max_trades_raw = constraints.get("max_trades_per_day", default_max_trades)
         try:
             max_trades = int(max_trades_raw)
         except (TypeError, ValueError):
-            max_trades = 20
+            max_trades = default_max_trades
 
         # Mastery assessment
         mastery = mastery_assessment or {}

@@ -114,6 +114,30 @@ def _apply_mt5_env_overrides(cfg: TradingAgentConfig) -> None:
         cfg.mt5.server = server
 
 
+def get_trade_limits(path: Optional[Path] = None) -> Dict[str, Any]:
+    """
+    Load trade limits from risk_policy.yaml.
+    
+    Returns dict with:
+        - max_trades_per_day: int (default 20)
+        - curriculum_stage_limits: dict of stage -> limit
+        - training_mode_limit: int (effectively unlimited in training)
+    """
+    risk_policy = load_risk_policy(path)
+    trade_limits = risk_policy.get("trade_limits", {})
+    return {
+        "max_trades_per_day": trade_limits.get("max_trades_per_day", 20),
+        "curriculum_stage_limits": trade_limits.get("curriculum_stage_limits", {
+            "Foundation": 15,
+            "Development": 20,
+            "Intermediate": 12,
+            "Advanced": 15,
+            "Expert": 20,
+        }),
+        "training_mode_limit": trade_limits.get("training_mode_limit", 9999),
+    }
+
+
 def get_config(
     mode: str = "training",
     preset: Optional[str] = None,

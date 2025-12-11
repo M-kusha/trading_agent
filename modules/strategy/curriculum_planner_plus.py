@@ -22,6 +22,22 @@ from modules.utils.audit_utils import RotatingLogger, format_operator_message
 from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 from modules.monitoring.performance_tracker import PerformanceTracker
 
+# Import centralized trade limits
+try:
+    from config import get_trade_limits
+    _TRADE_LIMITS = get_trade_limits()
+except ImportError:
+    _TRADE_LIMITS = {
+        "max_trades_per_day": 20,
+        "curriculum_stage_limits": {
+            "Foundation": 15,
+            "Development": 20,
+            "Intermediate": 12,
+            "Advanced": 15,
+            "Expert": 20,
+        }
+    }
+
 
 @module(**module_args(
     "CurriculumPlannerPlus",
@@ -147,7 +163,8 @@ class CurriculumPlannerPlus(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 'market_conditions': ['ranging', 'low_volatility'],
                 'constraints': {
                     'max_position_size': 0.5,
-                    'max_trades_per_day': 15,  # Raised from 5 for testing
+                    # Use centralized config for max_trades_per_day
+                    'max_trades_per_day': _TRADE_LIMITS.get("curriculum_stage_limits", {}).get("Foundation", 15),
                     'max_risk_per_trade': 0.01
                 },
                 'learning_objectives': [
@@ -168,7 +185,8 @@ class CurriculumPlannerPlus(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 'market_conditions': ['trending', 'ranging'],
                 'constraints': {
                     'max_position_size': 0.75,
-                    'max_trades_per_day': 20,  # Raised from 8 for testing
+                    # Use centralized config for max_trades_per_day
+                    'max_trades_per_day': _TRADE_LIMITS.get("curriculum_stage_limits", {}).get("Development", 20),
                     'max_risk_per_trade': 0.015
                 },
                 'learning_objectives': [
@@ -189,7 +207,8 @@ class CurriculumPlannerPlus(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 'market_conditions': ['trending', 'ranging', 'volatile'],
                 'constraints': {
                     'max_position_size': 1.0,
-                    'max_trades_per_day': 12,
+                    # Use centralized config for max_trades_per_day
+                    'max_trades_per_day': _TRADE_LIMITS.get("curriculum_stage_limits", {}).get("Intermediate", 12),
                     'max_risk_per_trade': 0.02
                 },
                 'learning_objectives': [
@@ -210,7 +229,8 @@ class CurriculumPlannerPlus(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 'market_conditions': ['all'],
                 'constraints': {
                     'max_position_size': 1.5,
-                    'max_trades_per_day': 15,
+                    # Use centralized config for max_trades_per_day
+                    'max_trades_per_day': _TRADE_LIMITS.get("curriculum_stage_limits", {}).get("Advanced", 15),
                     'max_risk_per_trade': 0.025
                 },
                 'learning_objectives': [
@@ -231,7 +251,8 @@ class CurriculumPlannerPlus(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 'market_conditions': ['all'],
                 'constraints': {
                     'max_position_size': 2.0,
-                    'max_trades_per_day': 20,
+                    # Use centralized config for max_trades_per_day
+                    'max_trades_per_day': _TRADE_LIMITS.get("curriculum_stage_limits", {}).get("Expert", 20),
                     'max_risk_per_trade': 0.03
                 },
                 'learning_objectives': [

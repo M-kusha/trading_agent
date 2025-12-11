@@ -42,6 +42,28 @@ prop_firm:
 
 
 # ═══════════════════════════════════════════════════════════════
+# TRADE LIMITS - CENTRALIZED CONFIGURATION
+# Single source of truth for max trades per day / session
+# Used by: Executor, PPOObservationBuilder, ArbiterLogic, CurriculumPlannerPlus
+# ═══════════════════════════════════════════════════════════════
+trade_limits:
+  # Maximum trades per day (across all instruments)
+  max_trades_per_day: 20             # Default: 20 trades/day
+  
+  # Per-stage curriculum overrides (used by CurriculumPlannerPlus)
+  # These are multipliers/overrides for different learning stages
+  curriculum_stage_limits:
+    Foundation: 15                   # Conservative during learning
+    Development: 20                  # Slightly more freedom
+    Intermediate: 12                 # Focus on quality over quantity
+    Advanced: 15                     # Balance
+    Expert: 20                       # Full autonomy
+  
+  # Training mode override (effectively unlimited in training)
+  training_mode_limit: 9999          # Don't restrict during training
+
+
+# ═══════════════════════════════════════════════════════════════
 # UNIFIED LOT SIZING - PROP FIRM OPTIMIZED
 # Used by modules.utils.lot_calculator.UnifiedLotCalculator
 # ═══════════════════════════════════════════════════════════════

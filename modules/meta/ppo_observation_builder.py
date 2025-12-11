@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
 import numpy as np
@@ -32,6 +32,13 @@ except ImportError:
     PRIMARY_TIMEFRAME = "M15"
     CONTEXT_TIMEFRAMES = ("H1", "H4", "D1")
     SUPPORTED_TIMEFRAMES = ("M15", "H1", "H4", "D1")
+
+# Import centralized trade limits
+try:
+    from config import get_trade_limits
+    _TRADE_LIMITS = get_trade_limits()
+except ImportError:
+    _TRADE_LIMITS = {"max_trades_per_day": 20}
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -86,7 +93,8 @@ class PPOObservationConfig:
     # Feature scaling
     max_drawdown_clip: float = 0.5
     max_danger_zones: int = 10
-    max_trades_per_day: int = 20
+    # Loaded from config/risk_policy.yaml -> trade_limits.max_trades_per_day
+    max_trades_per_day: int = field(default_factory=lambda: _TRADE_LIMITS.get("max_trades_per_day", 20))
 
     # World model parameters (v4.0)
     # If overall prediction confidence is below this threshold,
