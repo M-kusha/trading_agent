@@ -341,6 +341,40 @@ class LivePosition:
 
 
 @dataclass
+class PPODecisionView:
+    """
+    Normalised view of Arbiter → PPO decision for one symbol.
+
+    This is what SmartPositionManager cares about:
+    - direction/confidence for analytics
+    - explicit CLOSE / REVERSE flags for exits
+    - whether this is a reversal vs the *current* position
+
+    Version: v5.2 - Supports PPO explicit close/reverse intents from ArbiterLogic
+    """
+    direction: str = "flat"          # "long" / "short" / "flat"
+    confidence: float = 0.0          # 0–1 normalised
+    position_size: float = 0.0       # 0–1 relative sizing from Arbiter
+    action_intent: str = ""          # "open_long", "close", "reverse", ...
+
+    explicit_close: bool = False     # PPO wants this instrument FLAT
+    explicit_reverse: bool = False   # PPO wants hard reverse (close+reopen)
+
+    wants_flat: bool = False         # "target state = no position"
+    is_reversal: bool = False        # opposite of current position_side
+
+    # Legacy compatibility - integer direction (-1, 0, 1)
+    @property
+    def direction_int(self) -> int:
+        """Integer direction for backward compatibility: 1=long, -1=short, 0=flat."""
+        if self.direction == "long":
+            return 1
+        elif self.direction == "short":
+            return -1
+        return 0
+
+
+@dataclass
 class SmartDecision:
     """Result of smart position analysis."""
     action: PositionAction
@@ -410,6 +444,12 @@ class SmartPositionConfig:
     min_signal_strength: float = 0.10
     strong_signal_threshold: float = 0.50
     reversal_signal_threshold: float = 0.45
+
+    # PPO exit/reversal thresholds (v5.2+)
+    # ppo_exit_conf_threshold: Minimum confidence for PPO explicit close/reversal
+    # ppo_reversal_conf_threshold: Legacy threshold (use ppo_exit_conf_threshold)
+    ppo_exit_conf_threshold: float = 0.60
+    ppo_reversal_conf_threshold: float = 0.60  # Legacy alias
 
     # Smart scale-down toggle (for losers). Default OFF for safety.
     enable_smart_scale_down: bool = False
@@ -708,7 +748,8 @@ class SmartPositionManager:
         Returns per-instrument overrides merged with global defaults.
         This is the SINGLE SOURCE OF TRUTH for symbol-specific thresholds.
         """
-        cfg = {
+        cfg: Dict[str, Any] = {
+            # P&L / scaling thresholds
             "scale_up_min_profit_eur": self.config.scale_up_min_profit_eur,
             "scale_down_trigger_loss_eur": self.config.scale_down_trigger_loss_eur,
             "min_signal_strength": self.config.min_signal_strength,
@@ -719,17 +760,21 @@ class SmartPositionManager:
             "scale_down_trigger_r": self.config.scale_down_trigger_r,
             "scale_down_aggressive_r": self.config.scale_down_aggressive_r,
             "scale_down_emergency_r": self.config.scale_down_emergency_r,
-            # Lifecycle
+            # Lifecycle thresholds (age / regime)
             "probe_max_age_hours": self.config.probe_max_age_hours,
             "probe_max_profit_r": self.config.probe_max_profit_r,
             "build_max_age_hours": self.config.build_max_age_hours,
             "build_max_profit_r": self.config.build_max_profit_r,
+            "ride_min_profit_r": self.config.ride_min_profit_r,
+            "defend_trigger_drawdown_pct": self.config.defend_trigger_drawdown_pct,
         }
 
-        if symbol in self._per_instrument_cfg:
-            cfg.update(self._per_instrument_cfg[symbol] or {})
+        per_inst = self._per_instrument_cfg.get(symbol)
+        if isinstance(per_inst, dict):
+            cfg.update(per_inst)
 
         return cfg
+
 
     # =========================================================
     # STATE PERSISTENCE (PEAKS & INITIAL RISK)
@@ -833,20 +878,26 @@ class SmartPositionManager:
             if r_mult < cfg.get("build_max_profit_r", 1.0):
                 return PositionLifecycle.BUILD
 
-        # DEFEND – profit retraced from peak
+        # DEFEND – profit retraced from peak (per-instrument override allowed)
         if peak_pnl > 0 and position.unrealized_pnl > 0:
             drawdown_from_peak = (
                 (peak_pnl - position.unrealized_pnl) / peak_pnl if peak_pnl > 0 else 0.0
             )
-            if drawdown_from_peak >= self.config.defend_trigger_drawdown_pct:
+            defend_trigger = cfg.get(
+                "defend_trigger_drawdown_pct",
+                self.config.defend_trigger_drawdown_pct,
+            )
+            if drawdown_from_peak >= defend_trigger:
                 return PositionLifecycle.DEFEND
 
-        # RIDE – in solid profit
-        if r_mult >= self.config.ride_min_profit_r:
+        # RIDE – in solid profit (per-instrument override allowed)
+        ride_min_r = cfg.get("ride_min_profit_r", self.config.ride_min_profit_r)
+        if r_mult >= ride_min_r:
             return PositionLifecycle.RIDE
 
         # Default
         return PositionLifecycle.BUILD
+
 
     def _get_aggression_multiplier(self) -> float:
         """
@@ -905,72 +956,205 @@ class SmartPositionManager:
         return self._get_symbol_call_count(symbol) >= grace_calls
 
     # =========================================================
-    # PPO DECISION AWARENESS (v5.3)
-    # PPO is the MASTER for reversal decisions - experts are advisory only
+    # PPO DECISION AWARENESS (v5.2+)
+    # PPO is the MASTER for all trading decisions - experts are advisory only
+    # Now supports explicit close/reverse intents from ArbiterLogic
     # =========================================================
 
-    def _get_ppo_decision(self, symbol: str) -> tuple[int, float, bool]:
+    def _get_ppo_decision(
+        self,
+        symbol: str,
+        position_side: Optional[str] = None,
+    ) -> PPODecisionView:
         """
-        Get PPO's decision for a symbol from SmartInfoBus.
-        
+        Read Arbiter → PPO multi-instrument decision from SmartInfoBus
+        and normalise it for position management.
+
+        - Uses `ppo_multi_decision` (ArbiterMultiDecision → dict) as primary source
+        - Falls back to legacy `ppo_decision` if needed
+        - Understands:
+          * meta.action_intent
+          * meta.ppo_exit.explicit_close / explicit_reverse
+
+        Args:
+            symbol: MT5 symbol, e.g. "XAUUSD", "EURUSD"
+            position_side: current position side for this symbol ("long"/"short"/None)
+                           If not provided, will be inferred from self._positions
+
         Returns:
-            tuple of (direction, confidence, is_ppo_reversal)
-            - direction: 1=long, -1=short, 0=flat
-            - confidence: 0.0-1.0
-            - is_ppo_reversal: True if PPO is signaling direction opposite to current position
+            PPODecisionView with all PPO intent information
         """
+        view = PPODecisionView()
+
         if self._smart_bus is None:
-            return (0, 0.0, False)
-        
-        try:
-            # Try multi-decision first (per-instrument)
-            multi_decision = self._smart_bus.get(
-                "ppo_multi_decision", "SmartPositionManager", default=None
-            )
-            
-            ppo_direction = 0
-            ppo_confidence = 0.0
-            
-            if isinstance(multi_decision, dict):
-                # Check for instrument-specific decision
-                instruments = multi_decision.get("instruments", {})
-                if isinstance(instruments, dict) and symbol in instruments:
-                    inst_dec = instruments[symbol]
-                    if isinstance(inst_dec, dict):
-                        direction = str(inst_dec.get("direction", "flat")).lower()
-                        if direction in ("long", "buy"):
-                            ppo_direction = 1
-                        elif direction in ("short", "sell"):
-                            ppo_direction = -1
-                        ppo_confidence = float(inst_dec.get("confidence", 0.0) or 0.0)
-            
-            # Fallback to global decision if no per-instrument
-            if ppo_direction == 0 and ppo_confidence == 0.0:
-                final_decision = self._smart_bus.get(
-                    "ppo_final_decision", "SmartPositionManager", default=None
-                )
-                if isinstance(final_decision, dict):
-                    direction = str(final_decision.get("direction", "flat")).lower()
-                    if direction in ("long", "buy"):
-                        ppo_direction = 1
-                    elif direction in ("short", "sell"):
-                        ppo_direction = -1
-                    ppo_confidence = float(final_decision.get("confidence", 0.0) or 0.0)
-            
-            # Check if this is a reversal relative to current position
+            return view
+
+        # Infer position_side if not provided
+        if position_side is None:
             position = self._positions.get(symbol)
-            is_reversal = False
-            if position is not None and ppo_direction != 0:
-                is_reversal = (
-                    (position.side > 0 and ppo_direction < 0) or  # Long pos, PPO says short
-                    (position.side < 0 and ppo_direction > 0)     # Short pos, PPO says long
+            if position is not None:
+                position_side = "long" if position.side > 0 else "short"
+
+        def _normalise_symbol_key(key: str) -> str:
+            return key.replace("_", "").replace(".", "").upper()
+
+        sym_key = _normalise_symbol_key(symbol)
+
+        try:
+            # ─────────────────────────────────────────────────────────
+            # 1) Preferred: structured multi-instrument decision
+            # ─────────────────────────────────────────────────────────
+            multi_decision = self._smart_bus.get(
+                "ppo_multi_decision",
+                "SmartPositionManager",
+                default=None,
+            )
+
+            inst_dec = None
+
+            # Dataclass style: multi_decision.instruments: Dict[str, InstrumentDecision]
+            if hasattr(multi_decision, "instruments"):
+                inst_map = getattr(multi_decision, "instruments", {}) or {}
+                for k, v in inst_map.items():
+                    if _normalise_symbol_key(str(k)) == sym_key:
+                        inst_dec = v
+                        break
+
+            # Dict style: {"instruments": {...}} or {"decisions": {...}}
+            if inst_dec is None and isinstance(multi_decision, dict):
+                inst_map = (
+                    multi_decision.get("instruments")
+                    or multi_decision.get("decisions")
+                    or {}
                 )
-            
-            return (ppo_direction, ppo_confidence, is_reversal)
-            
+                if isinstance(inst_map, dict):
+                    # Try direct, then normalised keys
+                    inst_dec = inst_map.get(symbol)
+                    if inst_dec is None:
+                        for k, v in inst_map.items():
+                            if _normalise_symbol_key(str(k)) == sym_key:
+                                inst_dec = v
+                                break
+
+            if inst_dec is not None:
+                # dataclass vs dict normalisation
+                if not isinstance(inst_dec, dict):
+                    # Assume InstrumentDecision dataclass
+                    direction = str(getattr(inst_dec, "direction", "flat") or "flat").lower()
+                    confidence = float(getattr(inst_dec, "confidence", 0.0) or 0.0)
+                    position_size = float(getattr(inst_dec, "position_size", 0.0) or 0.0)
+                    meta = getattr(inst_dec, "meta", {}) or {}
+                else:
+                    direction = str(inst_dec.get("direction", "flat") or "flat").lower()
+                    confidence = float(inst_dec.get("confidence", 0.0) or 0.0)
+                    position_size = float(inst_dec.get("position_size", 0.0) or 0.0)
+                    meta = inst_dec.get("meta", {}) or {}
+
+                action_intent = str(meta.get("action_intent", "") or "")
+                ppo_exit = meta.get("ppo_exit", {}) or {}
+
+                explicit_close = bool(ppo_exit.get("explicit_close", False))
+                explicit_reverse = bool(ppo_exit.get("explicit_reverse", False))
+
+                wants_flat = (
+                    direction == "flat"
+                    or action_intent in ("close", "no_position")
+                    or explicit_close
+                )
+
+                # Reversal = opposite direction vs current live position
+                is_reversal = False
+                if position_side in ("long", "short"):
+                    if explicit_reverse:
+                        is_reversal = True
+                    elif direction in ("long", "short"):
+                        is_reversal = (
+                            position_side == "long" and direction == "short"
+                        ) or (
+                            position_side == "short" and direction == "long"
+                        )
+
+                view.direction = direction
+                view.confidence = max(0.0, min(1.0, confidence))
+                view.position_size = max(0.0, min(1.0, position_size))
+                view.action_intent = action_intent
+                view.explicit_close = explicit_close
+                view.explicit_reverse = explicit_reverse
+                view.wants_flat = wants_flat
+                view.is_reversal = is_reversal
+
+                self.logger.debug(
+                    f"[PPO_DECISION] {symbol}: dir={view.direction} conf={view.confidence:.3f} "
+                    f"size={view.position_size:.3f} intent={view.action_intent or '-'} "
+                    f"close={view.explicit_close} reverse={view.explicit_reverse} "
+                    f"flat={view.wants_flat} rev={view.is_reversal}"
+                )
+                return view
+
+            # ─────────────────────────────────────────────────────────
+            # 2) Legacy single-instrument decision (older PPO shell)
+            # ─────────────────────────────────────────────────────────
+            legacy_dec = self._smart_bus.get(
+                "ppo_decision",
+                "SmartPositionManager",
+                default=None,
+            )
+
+            if isinstance(legacy_dec, dict):
+                direction = str(legacy_dec.get("direction", "flat") or "flat").lower()
+                confidence = float(legacy_dec.get("confidence", 0.0) or 0.0)
+
+                view.direction = direction
+                view.confidence = max(0.0, min(1.0, confidence))
+                view.wants_flat = direction == "flat"
+
+                if position_side in ("long", "short") and direction in ("long", "short"):
+                    view.is_reversal = (
+                        position_side == "long" and direction == "short"
+                    ) or (
+                        position_side == "short" and direction == "long"
+                    )
+
+                self.logger.debug(
+                    f"[PPO_DECISION_LEGACY] {symbol}: dir={view.direction} "
+                    f"conf={view.confidence:.3f} rev={view.is_reversal}"
+                )
+                return view
+
+            # Also try ppo_final_decision as fallback
+            final_dec = self._smart_bus.get(
+                "ppo_final_decision",
+                "SmartPositionManager",
+                default=None,
+            )
+
+            if isinstance(final_dec, dict):
+                direction = str(final_dec.get("direction", "flat") or "flat").lower()
+                confidence = float(final_dec.get("confidence", 0.0) or 0.0)
+
+                view.direction = direction
+                view.confidence = max(0.0, min(1.0, confidence))
+                view.wants_flat = direction == "flat"
+
+                if position_side in ("long", "short") and direction in ("long", "short"):
+                    view.is_reversal = (
+                        position_side == "long" and direction == "short"
+                    ) or (
+                        position_side == "short" and direction == "long"
+                    )
+
+                self.logger.debug(
+                    f"[PPO_DECISION_FINAL] {symbol}: dir={view.direction} "
+                    f"conf={view.confidence:.3f} rev={view.is_reversal}"
+                )
+                return view
+
         except Exception as e:
-            self.logger.warning(f"[PPO_DECISION] Error getting PPO decision: {e}")
-            return (0, 0.0, False)
+            self.logger.warning(
+                f"[PPO_DECISION] Failed to read PPO decision for {symbol}: {e}"
+            )
+
+        return view
 
     def _should_respect_ppo_reversal(
         self,
@@ -1433,25 +1617,48 @@ class SmartPositionManager:
 
         # Case 4: Signal opposes but ExitEngine said HOLD
         # ═══════════════════════════════════════════════════════════════════
-        # PPO MASTER REVERSAL (v5.3)
-        # Check if PPO is signaling reversal - PPO is the master decision maker
-        # If PPO says reverse with high confidence, respect it over committee signal
+        # PPO MASTER EXIT / REVERSAL CHECK (v5.2+)
+        # PPO now has explicit close/reverse intents from ArbiterLogic
+        # If PPO explicitly wants to close/reverse, respect it over committee
         # ═══════════════════════════════════════════════════════════════════
-        ppo_dir, ppo_conf, ppo_is_reversal = self._get_ppo_decision(symbol)
-        
-        # Use PPO's reversal signal if strong enough, otherwise fall back to committee signal
-        use_ppo_reversal = False
-        if ppo_is_reversal:
+        side_str = "long" if position.side > 0 else "short"
+        ppo_view = self._get_ppo_decision(symbol, side_str)
+
+        # Single configurable threshold for PPO-led exits
+        ppo_exit_threshold = getattr(
+            self.config,
+            "ppo_exit_conf_threshold",
+            getattr(self.config, "ppo_reversal_conf_threshold", 0.6),
+        )
+
+        # 1) Hard PPO explicit close: PPO explicitly wants this instrument closed
+        if ppo_view.explicit_close and ppo_view.confidence >= ppo_exit_threshold:
+            reasons.append(
+                f"🎯 PPO explicit CLOSE intent (conf={ppo_view.confidence:.2f})"
+            )
+            self.logger.info(
+                f"[PPO_EXIT] {symbol}: PPO explicit CLOSE (conf={ppo_view.confidence:.3f})"
+            )
+            return self._make_decision(
+                action=PositionAction.CLOSE,
+                symbol=symbol,
+                side=position.side,
+                confidence=max(0.75, ppo_view.confidence),
+                reasons=reasons,
+            )
+
+        # 2) PPO reversal: wants to flip side (close + re-enter opposite)
+        if ppo_view.is_reversal and ppo_view.confidence >= ppo_exit_threshold:
             should_respect, ppo_reason = self._should_respect_ppo_reversal(
-                symbol, ppo_conf, position.unrealized_pnl
+                symbol, ppo_view.confidence, position.unrealized_pnl
             )
             if should_respect:
-                use_ppo_reversal = True
-                signal_against = True  # Force reversal path
-                signal_strength = max(signal_strength, ppo_conf)  # Use higher confidence
                 reasons.append(f"🎯 {ppo_reason}")
+                signal_against = True  # Force reversal path
+                signal_strength = max(signal_strength, ppo_view.confidence)
                 self.logger.info(
-                    f"[PPO_REVERSAL] {symbol}: Using PPO reversal signal (conf={ppo_conf:.0%})"
+                    f"[PPO_EXIT] {symbol}: PPO reversal {side_str} → {ppo_view.direction} "
+                    f"(conf={ppo_view.confidence:.3f})"
                 )
 
         if signal_against and signal_strength >= cfg.strong_signal_threshold:
@@ -2196,32 +2403,58 @@ class SmartPositionManager:
                 )
 
             # ═══════════════════════════════════════════════════════════════════
-            # PPO MASTER REVERSAL CHECK (v5.3)
-            # If PPO is signaling reversal with high confidence, respect it
-            # REGARDLESS of what experts say. PPO is the MASTER decision maker.
+            # PPO MASTER EXIT / REVERSAL CHECK (v5.2+)
+            # If PPO explicitly wants to close/reverse, respect it over experts
             # ═══════════════════════════════════════════════════════════════════
-            ppo_dir, ppo_conf, ppo_is_reversal = self._get_ppo_decision(symbol)
-            if ppo_is_reversal:
+            side_str = "long" if position.side > 0 else "short"
+            ppo_view = self._get_ppo_decision(symbol, side_str)
+
+            ppo_exit_threshold = getattr(
+                self.config,
+                "ppo_exit_conf_threshold",
+                getattr(self.config, "ppo_reversal_conf_threshold", 0.6),
+            )
+
+            # 1) Hard PPO explicit close
+            if ppo_view.explicit_close and ppo_view.confidence >= ppo_exit_threshold:
+                reasons.append(
+                    f"🎯 PPO explicit CLOSE intent (conf={ppo_view.confidence:.2f})"
+                )
+                self.logger.info(
+                    f"[PPO_EXIT] {symbol}: PPO explicit CLOSE - "
+                    f"overriding expert support {support_ratio * 100:.0f}%"
+                )
+                return self._make_decision(
+                    action=PositionAction.CLOSE,
+                    symbol=symbol,
+                    side=position.side,
+                    confidence=max(exit_decision.confidence, ppo_view.confidence),
+                    reasons=reasons,
+                    management_context=management_ctx,
+                    expert_support_ratio=support_ratio,
+                )
+
+            # 2) PPO reversal
+            if ppo_view.is_reversal and ppo_view.confidence >= ppo_exit_threshold:
                 should_respect, ppo_reason = self._should_respect_ppo_reversal(
-                    symbol, ppo_conf, position.unrealized_pnl
+                    symbol, ppo_view.confidence, position.unrealized_pnl
                 )
                 if should_respect:
                     reasons.append(f"🎯 {ppo_reason}")
                     self.logger.info(
-                        f"[PPO_REVERSAL] {symbol}: {ppo_reason} - closing position "
-                        f"(overriding expert support {support_ratio:.0%})"
+                        f"[PPO_EXIT] {symbol}: {ppo_reason} - "
+                        f"closing position (overriding expert support {support_ratio * 100:.0f}%)"
                     )
                     return self._make_decision(
                         action=PositionAction.CLOSE,
                         symbol=symbol,
                         side=position.side,
-                        confidence=max(exit_decision.confidence, ppo_conf),
+                        confidence=max(exit_decision.confidence, ppo_view.confidence),
                         reasons=reasons,
                         management_context=management_ctx,
                         expert_support_ratio=support_ratio,
                     )
                 else:
-                    # PPO wants reversal but confidence is too low
                     reasons.append(f"⏸️ PPO reversal signal too weak: {ppo_reason}")
 
             # Non-critical: experts may influence whether we tighten or close
@@ -2274,30 +2507,66 @@ class SmartPositionManager:
         # ExitEngine wants HOLD – cooperative management mode
 
         # ═══════════════════════════════════════════════════════════════════
-        # PPO MASTER REVERSAL CHECK (v5.3) - Even when ExitEngine says HOLD
-        # If PPO is signaling strong reversal, respect it over experts.
-        # This ensures PPO remains the MASTER decision maker for reversals.
+        # PPO MASTER EXIT / REVERSAL CHECK (v5.2+) - Even when ExitEngine says HOLD
+        # If PPO explicitly wants to close/reverse this instrument, respect it.
+        # This ensures PPO has a voice in exit decisions.
         # ═══════════════════════════════════════════════════════════════════
-        ppo_dir, ppo_conf, ppo_is_reversal = self._get_ppo_decision(symbol)
-        if ppo_is_reversal:
+        side_str = "long" if position.side > 0 else "short"
+        ppo_view = self._get_ppo_decision(symbol, side_str)
+
+        ppo_exit_threshold = getattr(
+            self.config,
+            "ppo_exit_conf_threshold",
+            getattr(self.config, "ppo_reversal_conf_threshold", 0.6),
+        )
+
+        # 1) Hard PPO explicit close: direction can be FLAT, but PPO
+        #    explicitly wants this instrument closed.
+        if ppo_view.explicit_close and ppo_view.confidence >= ppo_exit_threshold:
+            reasons.append(
+                f"🎯 PPO explicit CLOSE intent (conf={ppo_view.confidence:.2f})"
+            )
+            reasons.append(
+                f"PPO MASTER: Overriding ExitEngine HOLD and expert support "
+                f"({support_ratio:.0%}) for explicit close"
+            )
+            self.logger.info(
+                f"[PPO_EXIT] {symbol}: PPO explicit CLOSE (conf={ppo_view.confidence:.3f}) - "
+                f"overriding ExitEngine HOLD, experts={support_ratio * 100:.0f}%"
+            )
+            return self._make_decision(
+                action=PositionAction.CLOSE,
+                symbol=symbol,
+                side=position.side,
+                confidence=ppo_view.confidence,
+                reasons=reasons,
+                management_context=management_ctx,
+                expert_support_ratio=support_ratio,
+            )
+
+        # 2) PPO reversal: wants to flip side (close + re-enter opposite).
+        #    PositionManager only handles the CLOSE; entry logic will
+        #    see PPO's new direction on the next cycle.
+        if ppo_view.is_reversal and ppo_view.confidence >= ppo_exit_threshold:
             should_respect, ppo_reason = self._should_respect_ppo_reversal(
-                symbol, ppo_conf, position.unrealized_pnl
+                symbol, ppo_view.confidence, position.unrealized_pnl
             )
             if should_respect:
                 reasons.append(f"🎯 {ppo_reason}")
                 reasons.append(
                     f"PPO MASTER: Overriding ExitEngine HOLD and expert support "
-                    f"({support_ratio:.0%}) for reversal"
+                    f"({support_ratio:.0%}) for reversal {side_str} → {ppo_view.direction}"
                 )
                 self.logger.info(
-                    f"[PPO_REVERSAL] {symbol}: {ppo_reason} - closing on PPO reversal signal "
-                    f"(ExitEngine said HOLD, experts={support_ratio:.0%})"
+                    f"[PPO_EXIT] {symbol}: PPO reversal {side_str} → {ppo_view.direction} "
+                    f"(conf={ppo_view.confidence:.3f}) - overriding ExitEngine HOLD, "
+                    f"experts={support_ratio * 100:.0f}%"
                 )
                 return self._make_decision(
                     action=PositionAction.CLOSE,
                     symbol=symbol,
                     side=position.side,
-                    confidence=ppo_conf,
+                    confidence=ppo_view.confidence,
                     reasons=reasons,
                     management_context=management_ctx,
                     expert_support_ratio=support_ratio,
@@ -2305,7 +2574,7 @@ class SmartPositionManager:
             else:
                 # Log weak PPO reversal signal for debugging
                 self.logger.debug(
-                    f"[PPO_REVERSAL] {symbol}: Weak reversal signal - {ppo_reason}"
+                    f"[PPO_EXIT] {symbol}: Weak reversal signal - {ppo_reason}"
                 )
 
         # Get per-instrument thresholds (respects XAUUSD/EURUSD overrides from risk_policy.yaml)

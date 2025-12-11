@@ -50,7 +50,7 @@ except Exception:
     ModuleOrchestrator = None  # type: ignore
     MODULE_SYSTEM_AVAILABLE = False
 
-# Unified PPO observation builder (v4.0)
+# Unified PPO observation builder (v5.0)
 # Ensures training (SB3 PPO) and live (PPOAgentShell) use identical observation schemas
 # The 64-dim observation includes market, account, risk, consensus, world model, and trading mode signals
 try:
@@ -63,10 +63,28 @@ try:
     PPO_OBS_BUILDER_AVAILABLE = True
 except ImportError:
     PPOObservationBuilder = None  # type: ignore
-    PPO_OBS_SIZE = 64  # Must match modules.meta.ppo_observation_builder v4.0
-    PPO_OBS_VERSION = "4.0"
+    PPO_OBS_SIZE = 64  # Must match modules.meta.ppo_observation_builder v5.0
+    PPO_OBS_VERSION = "5.0"
     get_ppo_observation_builder = None  # type: ignore
     PPO_OBS_BUILDER_AVAILABLE = False
+
+# Timing features for training (v5.1)
+try:
+    from modules.timing.timing_features import (
+        TimingFeatures,
+        TimingConfig,
+        compute_timing_features,
+        timing_features_to_array,
+        TIMING_FEATURE_DIM,
+    )
+    TIMING_FEATURES_AVAILABLE = True
+except ImportError:
+    TimingFeatures = None  # type: ignore
+    TimingConfig = None  # type: ignore
+    compute_timing_features = None  # type: ignore
+    timing_features_to_array = None  # type: ignore
+    TIMING_FEATURE_DIM = 8
+    TIMING_FEATURES_AVAILABLE = False
 
 if TYPE_CHECKING:
     # Expose the builder type to static type checkers without importing at runtime
@@ -101,9 +119,9 @@ class ModernTradingEnv(gym.Env):
                 config = TradingConfig()
         self.config: TradingConfig = config
 
-        # Observation size: use PPO_OBS_SIZE (64) for unified training/live schema (v4.0)
+        # Observation size: use PPO_OBS_SIZE (64) for unified training/live schema (v5.0)
         # config.environment_observation_size is legacy; PPO_OBS_SIZE takes precedence
-        self._default_obs_size = PPO_OBS_SIZE  # 64 dims (unified PPO schema v4.0)
+        self._default_obs_size = PPO_OBS_SIZE  # 64 dims (unified PPO schema v5.0)
         self.observation_space = spaces.Box(
             low=-np.inf,
             high=np.inf,
@@ -113,9 +131,9 @@ class ModernTradingEnv(gym.Env):
         self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32)
         self.action_dim = int(np.prod(self.action_space.shape)) if self.action_space.shape else 0
 
-        # Unified PPO observation builder (v4.0)
+        # Unified PPO observation builder (v5.0)
         # Observation builder instance (may be None if builder unavailable)
-        self.obs_builder = None
+        self.obs_builder: Optional[PPOObservationBuilder] = None  # type: ignore[assignment]
         if PPO_OBS_BUILDER_AVAILABLE and get_ppo_observation_builder is not None:
             self.obs_builder = get_ppo_observation_builder()
 
@@ -147,7 +165,7 @@ class ModernTradingEnv(gym.Env):
         self.smart_bus_enabled = False
         self.orchestrator = None  # type: ignore[assignment]
         self.orchestrator_enabled = False
-        
+
         # Flag to track if runtime systems are initialized
         # This enables pickle compatibility for SubprocVecEnv
         self._runtime_initialized = False
@@ -239,7 +257,7 @@ class ModernTradingEnv(gym.Env):
         self.action_dim = int(np.prod(self.action_space.shape)) if self.action_space.shape else 0
         self.observation_space = self._get_observation_space()
 
-        # Detect whether provider is active on the bus
+        # Detect whether provider is active on the bus (initially false; rechecked after runtime init)
         self._bus_data_active = self._detect_bus_data_active()
 
         # Setup env context
@@ -272,9 +290,6 @@ class ModernTradingEnv(gym.Env):
 
     # ──────────────────────────────────────────────────────────────
     # Logging
-    # ──────────────────────────────────────────────────────────────
-    # ──────────────────────────────────────────────────────────────
-    # Logger property (lazy init for pickle compatibility)
     # ──────────────────────────────────────────────────────────────
     @property
     def logger(self):
@@ -329,18 +344,18 @@ class ModernTradingEnv(gym.Env):
         """
         if self._runtime_initialized:
             return
-        
+
         # Create threading primitives
         self._aio_ready = threading.Event()
         self._pending_futures = set()
         self._pend_lock = threading.Lock()
         self._bus_ready = threading.Event()
         self._orch_ready = threading.Event()
-        
+
         # Now bring up the systems
         self._initialize_systems()
         self._start_event_loop_thread()
-        
+
         self._runtime_initialized = True
 
     # ──────────────────────────────────────────────────────────────
@@ -411,17 +426,16 @@ class ModernTradingEnv(gym.Env):
             try:
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
-                
+
                 # Suppress CancelledError warnings during shutdown
                 def exception_handler(loop, context):
                     exc = context.get("exception")
                     if isinstance(exc, asyncio.CancelledError):
                         return  # Silently ignore CancelledError
                     msg = context.get("message", "Unhandled exception in event loop")
-                    # Only log non-cancellation errors
                     if "cancel" not in str(msg).lower():
                         print(f"[ASYNC] {msg}")
-                
+
                 loop.set_exception_handler(exception_handler)
                 self._aio_loop = loop
                 if self._aio_ready is not None:
@@ -535,11 +549,11 @@ class ModernTradingEnv(gym.Env):
                     w = min(100, step + 1)
                     s = max(0, step - w + 1)
                     ohlcv = {
-                        "open": df["open"].iloc[s : step + 1].values,
-                        "high": df["high"].iloc[s : step + 1].values,
-                        "low": df["low"].iloc[s : step + 1].values,
-                        "close": df["close"].iloc[s : step + 1].values,
-                        "volume": df["volume"].iloc[s : step + 1].values,
+                        "open": df["open"].iloc[s: step + 1].values,
+                        "high": df["high"].iloc[s: step + 1].values,
+                        "low": df["low"].iloc[s: step + 1].values,
+                        "close": df["close"].iloc[s: step + 1].values,
+                        "volume": df["volume"].iloc[s: step + 1].values,
                         "step": step,
                         "instrument": instrument,
                         "timeframe": timeframe,
@@ -571,9 +585,7 @@ class ModernTradingEnv(gym.Env):
         self.episode_count += 1
         self.episode_metrics = EpisodeMetrics()
         # PERF: Don't deep copy data - it's read-only during training
-        # Deep copy of 60k+ rows per instrument was causing multi-minute stalls on reset
-        # self.data = copy.deepcopy(self.orig_data)  # OLD: very slow!
-        self.data = self.orig_data  # NEW: reference only (data is read-only)
+        self.data = self.orig_data  # reference only (data is read-only)
 
         # Recompute minimum data length on each reset (in case of hot-reload)
         try:
@@ -696,30 +708,30 @@ class ModernTradingEnv(gym.Env):
         # For autonomous training, PPO's direction is derived directly from
         # direction_score without expert blending.
         # ═══════════════════════════════════════════════════════════════
-        
+
         # Get per-instrument actions (action array has 2 dims per instrument)
         ppo_direction = "flat"
         ppo_direction_score = 0.0
         ppo_size_score = 0.0
         ppo_confidence = 0.0
-        
+
         if action is not None and len(action) >= 2:
             # For first instrument (or global action)
             ppo_direction_score = float(action[0])
             ppo_size_score = float(action[1])
             ppo_confidence = float(np.clip(abs(ppo_direction_score), 0.0, 1.0))
-            
+
             # Interpret direction using configurable thresholds
             long_th = float(getattr(self.config, "direction_long_threshold", 0.3))
             short_th = float(getattr(self.config, "direction_short_threshold", -0.3))
-            
+
             if ppo_direction_score > long_th:
                 ppo_direction = "long"
             elif ppo_direction_score < short_th:
                 ppo_direction = "short"
             else:
                 ppo_direction = "flat"
-        
+
         # Compute position size from size_score: [-1,1] → [0,1]
         raw_position_size = (ppo_size_score + 1.0) / 2.0
 
@@ -740,7 +752,7 @@ class ModernTradingEnv(gym.Env):
                     module="Environment",
                     thesis="Environment echo of action",
                 )
-                
+
                 # Publish step_idx for cooldown tracking across modules
                 self.smart_bus.set(
                     "step_idx",
@@ -748,7 +760,7 @@ class ModernTradingEnv(gym.Env):
                     module="Environment",
                     thesis=f"Current simulation step: {self.current_step}",
                 )
-                
+
                 # Publish interpreted PPO decision for autonomous training
                 # This is the PPO's direct intent, before any expert blending
                 self.smart_bus.set(
@@ -822,7 +834,7 @@ class ModernTradingEnv(gym.Env):
                     df = self.data[inst][tf]
                     s = max(0, self.current_step - 50)
                     e = min(self.current_step, len(df) - 1)
-                    window = df["close"].iloc[s : e + 1].to_numpy(dtype=np.float64)
+                    window = df["close"].iloc[s: e + 1].to_numpy(dtype=np.float64)
                     if window.size >= 2:
                         ret = np.diff(window) / np.maximum(window[:-1], 1e-12)
                         vol = float(np.std(ret))
@@ -1067,15 +1079,16 @@ class ModernTradingEnv(gym.Env):
     # ──────────────────────────────────────────────────────────────
     def _get_observation(self) -> np.ndarray:
         """
-        Build observation using the unified PPO observation builder (v3.0).
+        Build observation using the unified PPO observation builder (v5.0).
 
         Bus-first semantics:
         - If MarketDataProvider is active on SmartInfoBus AND prefer_bus_data=True,
-          let PPOObservationBuilder pull OHLC/multi-timeframe data directly from
-          the bus (exactly like PPOAgentShell in live trading).
-        - Otherwise, fall back to local CSV data via _prepare_market_data_for_obs().
+          let PPOObservationBuilder pull OHLC/multi-timeframe data and timing/state
+          directly from the bus (exactly like PPOAgentShell in live trading).
+        - Otherwise, fall back to local CSV data via _prepare_market_data_for_obs()
+          and compute timing features locally for training.
 
-        The same 48-dim observation schema is used in both:
+        The same 64-dim observation schema is used in both:
         - Training (SB3 PPO via ModernTradingEnv)
         - Live trading (PPOAgentShell via SmartInfoBus)
         """
@@ -1096,11 +1109,16 @@ class ModernTradingEnv(gym.Env):
                 )
 
                 if use_bus_market_data:
-                    # MarketDataProvider owns OHLC/multi-TF data; builder will read from bus
+                    # MarketDataProvider owns OHLC/multi-TF data; builder will read from bus.
+                    # Trading mode/timing should also come from bus (EntryTimingController),
+                    # so we pass None here and let the builder's _fetch_trading_mode_state()
+                    # handle it.
                     market_data = None
+                    trading_mode_state = None
                 else:
-                    # Fallback: build market_data from local CSVs
+                    # Fallback: build market_data from local CSVs and compute timing locally.
                     market_data = self._prepare_market_data_for_obs()
+                    trading_mode_state = self._compute_timing_state(market_data)
 
                 # Prepare account state (env anchor; Executor may override via bus)
                 account_state = {
@@ -1126,6 +1144,7 @@ class ModernTradingEnv(gym.Env):
                 obs = self.obs_builder.build(
                     market_data=market_data,
                     account_state=account_state,
+                    trading_mode_state=trading_mode_state,
                     smart_bus=self.smart_bus if self.smart_bus_enabled else None,
                     module_name="Environment",
                 )
@@ -1208,6 +1227,100 @@ class ModernTradingEnv(gym.Env):
 
         return result
 
+    def _compute_timing_state(self, market_data: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Compute timing features for all instruments (v5.1).
+        
+        This allows PPO to learn timing patterns during training.
+        The same features are computed by EntryTimingController in live trading.
+        """
+        if not TIMING_FEATURES_AVAILABLE or compute_timing_features is None:
+            return {"trading_mode": "normal"}
+
+        timing_state: Dict[str, Any] = {
+            "trading_mode": "normal",
+            "entry_timing": {},
+        }
+
+        if not market_data:
+            return timing_state
+
+        # Simulated session info (training uses historical data, approximate time)
+        # In real training with timestamps, this would use actual bar times
+        session_info = {
+            "hour": 14,    # Assume mid-session (NY/London overlap)
+            "minute": 0,
+            "weekday": 2,  # Wednesday
+        }
+
+        # Simulated position state (env doesn't track individual positions in detail)
+        position_state = {
+            "side": 0,
+            "minutes_since_entry": 999.0,
+            "minutes_since_loss": 999.0,
+            "trades_this_session": 0,
+            "had_recent_loss": False,
+        }
+
+        for instrument in self.instruments:
+            if instrument not in market_data:
+                continue
+
+            inst_data = market_data[instrument]
+
+            # Get M15 OHLC (primary timeframe)
+            m15_data = inst_data.get("M15", {})
+            if not m15_data:
+                continue
+
+            opens = m15_data.get("open", np.array([]))
+            highs = m15_data.get("high", np.array([]))
+            lows = m15_data.get("low", np.array([]))
+            closes = m15_data.get("close", np.array([]))
+
+            if len(closes) < 5:
+                continue
+
+            # Build OHLC window
+            ohlc_window = np.column_stack([opens, highs, lows, closes])[-50:]
+
+            # Compute ATR (14-period average true range)
+            n = len(closes)
+            if n >= 14:
+                recent_highs = highs[-14:]
+                recent_lows = lows[-14:]
+                atr_value = float(np.mean(recent_highs - recent_lows))
+            else:
+                atr_value = float(np.mean(highs - lows))
+
+            try:
+                features: TimingFeatures = compute_timing_features(  # type: ignore[assignment]
+                    instrument=instrument,
+                    ohlc_window=ohlc_window,
+                    atr_value=atr_value,
+                    session_info=session_info,
+                    position_state=position_state,
+                    timing_config=None,  # Use defaults
+                )
+                timing_state["entry_timing"][instrument] = features.to_dict()
+            except Exception:
+                # Default timing on error
+                timing_state["entry_timing"][instrument] = {
+                    "entry_allowed": True,
+                    "entry_quality_long": 0.5,
+                    "entry_quality_short": 0.5,
+                    "zone_type": "good",
+                    "vol_state": "normal",
+                    "micro_trend_dir": 0.0,
+                }
+
+        # Use first instrument's timing as the "global" timing for observation
+        if timing_state["entry_timing"]:
+            first_inst = list(timing_state["entry_timing"].keys())[0]
+            timing_state["entry_timing"] = timing_state["entry_timing"][first_inst]
+
+        return timing_state
+
     def _create_fallback_observation(self, expected_size: int) -> np.ndarray:
         feats: List[float] = []
         feats.extend(
@@ -1231,12 +1344,12 @@ class ModernTradingEnv(gym.Env):
 
                         s = max(0, self.current_step - 50)
                         m_close = (
-                            float(np.mean(df["close"].iloc[s : self.current_step + 1]))
+                            float(np.mean(df["close"].iloc[s: self.current_step + 1]))
                             if self.current_step >= s
                             else close_
                         )
                         m_vol = (
-                            float(np.mean(df["volume"].iloc[s : self.current_step + 1]))
+                            float(np.mean(df["volume"].iloc[s: self.current_step + 1]))
                             if self.current_step >= s
                             else max(vol_, 1.0)
                         )
@@ -1253,7 +1366,7 @@ class ModernTradingEnv(gym.Env):
                             mom5 = 0.0
 
                         if self.current_step >= 20:
-                            recent = df["close"].iloc[self.current_step - 19 : self.current_step + 1].to_numpy(
+                            recent = df["close"].iloc[self.current_step - 19: self.current_step + 1].to_numpy(
                                 dtype=np.float64
                             )
                             v = float(
@@ -1367,9 +1480,9 @@ class ModernTradingEnv(gym.Env):
 
         return [
             float(np.clip(daily_dd_ratio, 0.0, 1.5)),  # Daily DD ratio (allow >1 to show breach)
-            float(np.clip(max_dd_ratio, 0.0, 1.5)),  # Max DD ratio
-            float(np.clip(profit_progress, 0.0, 2.0)),  # Profit progress (allow >1 for over-target)
-            can_trade,  # Can trade flag
+            float(np.clip(max_dd_ratio, 0.0, 1.5)),    # Max DD ratio
+            float(np.clip(profit_progress, 0.0, 2.0)), # Profit progress (allow >1 for over-target)
+            can_trade,                                 # Can trade flag
         ]
 
     def _get_memory_observation_features(self) -> List[float]:
@@ -1434,14 +1547,14 @@ class ModernTradingEnv(gym.Env):
             pass
 
         return [
-            float(np.clip(risk_multiplier, 0.0, 1.0)),  # 1: Risk multiplier (inverted: 0=risky, 1=safe)
-            float(np.clip(danger_similarity, 0.0, 1.0)),  # 2: Danger zone similarity
-            float(np.clip(loss_prob, 0.0, 1.0)),  # 3: Neural P(loss)
-            float(np.clip(veto_active, 0.0, 1.0)),  # 4: Memory veto active
-            float(np.clip(signed_bias, -1.0, 1.0)),  # 5: Playbook directional bias
-            float(np.clip(playbook_confidence, 0.0, 1.0)),  # 6: Playbook confidence
+            float(np.clip(risk_multiplier, 0.0, 1.0)),          # 1: Risk multiplier (inverted: 0=risky, 1=safe)
+            float(np.clip(danger_similarity, 0.0, 1.0)),        # 2: Danger zone similarity
+            float(np.clip(loss_prob, 0.0, 1.0)),                # 3: Neural P(loss)
+            float(np.clip(veto_active, 0.0, 1.0)),              # 4: Memory veto active
+            float(np.clip(signed_bias, -1.0, 1.0)),             # 5: Playbook directional bias
+            float(np.clip(playbook_confidence, 0.0, 1.0)),      # 6: Playbook confidence
             float(np.clip(consecutive_losses_norm, 0.0, 1.0)),  # 7: Loss streak (normalized)
-            float(np.clip(neural_risk_hint, 0.0, 1.0)),  # 8: Neural attention risk
+            float(np.clip(neural_risk_hint, 0.0, 1.0)),         # 8: Neural attention risk
         ]
 
     # ──────────────────────────────────────────────────────────────
@@ -1562,7 +1675,7 @@ class ModernTradingEnv(gym.Env):
                 # Guard against None events (lazy init for pickle compatibility)
                 if self._bus_ready is None or self._orch_ready is None:
                     return
-                    
+
                 if not self._bus_ready.is_set():
                     self._bus_ready.wait(
                         timeout=max(

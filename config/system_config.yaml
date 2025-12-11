@@ -688,11 +688,15 @@ modules:
   # Extra voting experts
   SeasonalityRiskExpert:
     config:
-      # Trading window configuration (Bavaria/Germany timezone)
+      # ═══════════════════════════════════════════════════════════
+      # CANONICAL SOURCE: config/risk_policy.yaml → session_management
+      # These values MUST match risk_policy.yaml. If you change them,
+      # update risk_policy.yaml first (it's the single source of truth).
+      # ═══════════════════════════════════════════════════════════
       trading_timezone: "Europe/Berlin"
-      local_trade_start_hour: 9     # Start trading at 9:00 local time
-      local_trade_end_hour: 18      # Stop new trades at 18:00 local time
-      local_hard_close_hour: 22     # Hard close at 22:00 local time
+      local_trade_start_hour: 9     # Must match risk_policy.yaml no_new_trades_end
+      local_trade_end_hour: 18      # Must match risk_policy.yaml no_new_trades_start
+      local_hard_close_hour: 22     # Must match risk_policy.yaml hard_close_hour
       no_trade_last_minutes: 30
       # TEST MODE: Set to true to allow trades during off-hours (for testing only)
       allow_off_hours_trading: false

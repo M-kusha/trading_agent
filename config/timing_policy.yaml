@@ -1,0 +1,81 @@
+# ═══════════════════════════════════════════════════════════════════
+# Timing Policy Configuration
+# ═══════════════════════════════════════════════════════════════════
+# 
+# Controls entry timing features for PPO observation and optional gating.
+# Used by:
+#   - modules/timing/timing_features.py (pure utility)
+#   - modules/strategy/entry_timing_controller.py (live integration)
+#   - envs/modern_env.py (training integration)
+#
+# ═══════════════════════════════════════════════════════════════════
+# CANONICAL SOURCES - DO NOT DUPLICATE HERE
+# ═══════════════════════════════════════════════════════════════════
+# Trading hours & windows are defined in:
+#   - config/risk_policy.yaml → session_management section
+#   - config/system_config.yaml → SeasonalityRiskExpert section
+#
+# Both use timezone: "Europe/Berlin" (local time).
+# 
+# Canonical values (from risk_policy.yaml):
+#   - trade_start:  09:00 local  (no_new_trades_end)
+#   - trade_end:    18:00 local  (no_new_trades_start)
+#   - prime_start:  14:00 local  (prime_hours_start)
+#   - prime_end:    17:00 local  (prime_hours_end)
+#   - hard_close:   22:00 local  (hard_close_hour)
+#
+# timing_features.py reads these from risk_policy.yaml at runtime.
+# ═══════════════════════════════════════════════════════════════════
+
+# ─────────────────────────────────────────────────────────────────
+# TRADE SPACING RULES (timing-specific, not in other configs)
+# ─────────────────────────────────────────────────────────────────
+# Prevents overtrading and revenge trading.
+
+min_minutes_between_entries: 5.0    # Minimum wait between any entries
+min_minutes_after_loss: 15.0        # Extended wait after a losing trade
+max_trades_per_session: 10          # Maximum trades per trading session
+
+# ─────────────────────────────────────────────────────────────────
+# ZONE CLASSIFICATION
+# ─────────────────────────────────────────────────────────────────
+# Classifies price zones based on distance to key levels (ATR normalized).
+# "hot" zones are near support/resistance - high reversal probability.
+# "good" zones are normal trading conditions.
+# "bad" zones are extended from key levels - poor entry quality.
+
+hot_zone_atr_max: 0.3      # Within 0.3 ATR of key level = "hot"
+good_zone_atr_max: 1.0     # Within 1.0 ATR = "good"
+bad_zone_atr_min: 2.0      # Beyond 2.0 ATR = "bad"
+
+# ─────────────────────────────────────────────────────────────────
+# VOLATILITY CLASSIFICATION
+# ─────────────────────────────────────────────────────────────────
+# Classifies current volatility relative to recent average.
+# Extreme volatility blocks new entries.
+
+vol_low_threshold: 0.5     # Normalized vol < 0.5 = "low"
+vol_high_threshold: 1.5    # Normalized vol > 1.5 = "high"
+vol_extreme_threshold: 2.5 # Normalized vol > 2.5 = "extreme" (blocked)
+
+# ─────────────────────────────────────────────────────────────────
+# MICRO-TREND ANALYSIS
+# ─────────────────────────────────────────────────────────────────
+# Short-term price structure analysis.
+
+micro_trend_bars: 5        # Number of bars for micro-trend calculation
+rejection_wick_ratio: 2.0  # Wick > 2x body = rejection candle detected
+
+# ─────────────────────────────────────────────────────────────────
+# INSTRUMENT-SPECIFIC OVERRIDES (optional)
+# ─────────────────────────────────────────────────────────────────
+# Override defaults for specific instruments.
+
+# instrument_overrides:
+#   XAUUSD:
+#     min_minutes_between_entries: 10.0
+#     max_trades_per_session: 8
+#     vol_extreme_threshold: 3.0
+#   EURUSD:
+#     min_minutes_between_entries: 3.0
+#     max_trades_per_session: 15

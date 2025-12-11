@@ -10,7 +10,7 @@ This module contains the domain-specific arbiter logic that:
 - Produces structured InstrumentDecision objects
 - Tracks PPO performance AUTONOMY as analytics only
 
-ARCHITECTURE (v5.0 - PPO Master / Experts as Advisors)
+ARCHITECTURE (v5.2 - PPO Master / Experts as Advisors)
 ------------------------------------------------------
 - PPO is ALWAYS the master decision maker.
 - action[0] = direction_score  ∈ [-1, 1]  → primary directional intent
@@ -21,11 +21,17 @@ Experts / committee:
 - Only adjust confidence and size slightly (advisory influence).
 - Are fully exposed in metadata for dashboards / explanations.
 
+Timing:
+- Timing / session features are encoded in the unified PPO observation
+  (via PPOObservationBuilder + TimingFeatures in ModernTradingEnv).
+- Arbiter does NOT need to manually recompute timing; PPO sees it all
+  through the obs vector and learns entries/exits directly.
+
 This sits between:
 - PPOCore (pure RL policy/value model)
 - PPOAgentShell / SmartInfoBus integration
 
-Version: 5.0.1 (PPO Master, Experts-as-Advisors, Configurable Hysteresis)
+Version: 5.2.0 (PPO Master, Explicit Close Intent Meta, Position-Aware Hysteresis)
 """
 
 from __future__ import annotations
@@ -695,7 +701,8 @@ class WorldModelInfo:
             price_4h = _safe_float(price_changes[2], 0.0) if len(price_changes) > 2 else 0.0
             price_1d = _safe_float(price_changes[3], 0.0) if len(price_changes) > 3 else 0.0
         else:
-            price_m15 = price_1h = price_4h = price_1d = 0.0
+            price_m15 = price_1h = price_4h = 0.0
+            price_1d = 0.0
 
         # Weighted directional signal
         weighted_change = (
@@ -831,6 +838,11 @@ class ArbiterLogic:
     It does NOT:
     - Let experts/committee override PPO direction
     - Control module lifecycle or bus management (PPOAgentShell does that)
+
+    PPO exit semantics:
+    - direction = "long"/"short"  → wants to be in that direction
+    - direction = "flat"          → wants to be FLAT
+      If has_existing_position=True, "flat" is an explicit CLOSE intent.
     """
 
     def __init__(
@@ -897,13 +909,12 @@ class ArbiterLogic:
         - Direct constructor argument `hysteresis_config`
         """
         cfg: Dict[str, Any] = {
-            # BALANCED MODE - Allow both LONG and SHORT signals properly
-            # v5.3: Fixed to allow reversals - was causing LONG-only bias
-            # The model should be able to go SHORT when direction_score < -0.70
-            "entry_threshold": 0.70,       # Need strong conviction to enter
-            "reversal_threshold": 0.72,    # Was 0.85 (too high!) - just slightly above entry
-            "exit_threshold": 0.35,        # Stay in position reasonably
-            "min_hold_before_reversal": 5,  # Was 20 (too long!) - allow reversal after ~15s
+            # BALANCED MODE v5.4 - Allow both LONG and SHORT signals properly
+            # Thresholds lowered to allow more trades through while still filtering noise.
+            "entry_threshold": 0.35,       # Need moderate conviction to enter
+            "reversal_threshold": 0.40,    # Slightly above entry for reversals
+            "exit_threshold": 0.20,        # Stay in position reasonably
+            "min_hold_before_reversal": 3, # Allow reversal after a few bars
         }
 
         # Optional SmartInfoBus overrides
@@ -1039,7 +1050,7 @@ class ArbiterLogic:
             "trades_allowed": allowed,
             "reason": reason,
         }
-        
+
         # Also include prime hours and final exit window info
         try:
             if self._smart_bus is not None:
@@ -1060,14 +1071,14 @@ class ArbiterLogic:
                         info["minutes_to_close"] = trading_window.get("minutes_to_close", 0)
         except Exception:
             pass
-        
+
         return info
 
     def _get_prime_hours_confidence_boost(self) -> float:
         """
         Get confidence boost from prime trading hours.
-        
-        During prime hours (e.g. 14:00-17:00 local time), 
+
+        During prime hours (e.g. 14:00-17:00 local time),
         we boost confidence as market quality is highest.
         """
         try:
@@ -1089,7 +1100,7 @@ class ArbiterLogic:
     def _check_final_exit_window(self) -> Tuple[bool, bool, float]:
         """
         Check if we're in the final exit window before market close.
-        
+
         Returns:
             Tuple of (in_final_exit_window, is_obligatory, max_loss_pct)
         """
@@ -1151,7 +1162,7 @@ class ArbiterLogic:
     ) -> ArbiterMultiDecision:
         """
         Make trading decisions for multiple instruments.
-        
+
         v5.2: positions_by_instrument is a dict mapping instrument -> has_position (bool).
         Instruments without positions get relaxed portfolio-level confidence penalties.
         """
@@ -1176,7 +1187,7 @@ class ArbiterLogic:
 
             inst_committee = self._extract_instrument_committee(committee_data, instrument)
             inst_experts = self._extract_instrument_experts(expert_signals, instrument)
-            
+
             # v5.2: Check if this specific instrument has a position
             has_position = positions_by_instrument.get(instrument, False)
 
@@ -1261,18 +1272,17 @@ class ArbiterLogic:
         Steps:
         1. Run PPO policy to get direction_score and size_score.
         2. Interpret direction_score → PPO direction & base confidence.
-        3. Apply hysteresis to smooth direction.
+        3. Apply hysteresis to smooth direction (for existing positions).
         4. Apply gating pipeline (risk/memory + seasonality).
         5. Apply strategy/mode/world-model adjustments (advisory).
         6. Compute final position size and build InstrumentDecision.
-        
-        v5.2: has_existing_position controls per-instrument independence.
-        When False, portfolio-level confidence penalties are skipped.
+
+        Exit semantics:
+        - If has_existing_position=True and final direction='flat', this is
+          an explicit CLOSE intent (encoded in meta.action_intent and
+          meta.ppo_exit.explicit_close).
         """
         # 1) Run PPO policy
-        # Use DETERMINISTIC mode for live trading to avoid noisy sampling
-        # This takes the mean action instead of sampling from the distribution
-        # Training still uses stochastic sampling for exploration
         is_live = self._is_live_mode()
         action, log_prob, value = self.ppo_core.select_action(
             observation,
@@ -1311,20 +1321,24 @@ class ArbiterLogic:
             instrument=instrument,
         )
 
-        # 4) Hysteresis on direction (stability)
+        # 4) Hysteresis on direction (stability for OPEN positions only)
         hysteresis_score = direction_score
-        direction = self._apply_hysteresis(instrument, direction, hysteresis_score)
+        direction = self._apply_hysteresis(
+            instrument=instrument,
+            proposed_direction=direction,
+            trust_score=hysteresis_score,
+            has_existing_position=has_existing_position,
+        )
 
         # 5) Gating pipeline (memory + risk)
-        # v5.2: Pass has_existing_position for per-instrument independence
         gating_result = GatingResult.apply_gates(
             memory_info, risk_info, direction_score,
             has_existing_position=has_existing_position,
         )
 
-        # 5b) Seasonality time gate (HARD in live, bypass in training)
+        # 5b) Seasonality time gate (HARD for NEW entries in live mode)
         seasonality_allowed, seasonality_reason = self._check_seasonality_time_gate()
-        if not seasonality_allowed and direction != "flat":
+        if not seasonality_allowed and direction != "flat" and not has_existing_position:
             gating_result.gate_passed = False
             gating_result.reasons.append("SEASONALITY_BLOCKED")
             self.logger.info(
@@ -1334,11 +1348,7 @@ class ArbiterLogic:
         confidence *= gating_result.confidence_multiplier
         confidence = float(np.clip(confidence, 0.0, 1.0))
 
-        # ═══════════════════════════════════════════════════════════════════
         # PRIME HOURS CONFIDENCE BOOST (v5.3)
-        # During prime trading hours (e.g. 14:00-17:00), boost confidence
-        # as market quality and liquidity are highest.
-        # ═══════════════════════════════════════════════════════════════════
         prime_boost = self._get_prime_hours_confidence_boost()
         if prime_boost > 0.0 and direction != "flat":
             confidence = min(1.0, confidence + prime_boost)
@@ -1353,18 +1363,14 @@ class ArbiterLogic:
         elif gating_result.soft_scaling_applied and gating_result.reasons:
             reasoning += f" | SCALED: {', '.join(gating_result.reasons)}"
 
-        # ═══════════════════════════════════════════════════════════════════
-        # MINIMUM CONFIDENCE GATE (ULTRA PICKY MODE v5.2)
-        # Require minimum confidence of 0.70 for any directional trade.
-        # This prevents low-conviction noise trades - only trade when SURE.
-        # ═══════════════════════════════════════════════════════════════════
-        MIN_TRADE_CONFIDENCE = 0.70
-        if direction != "flat" and confidence < MIN_TRADE_CONFIDENCE:
+        # MINIMUM CONFIDENCE GATE (BALANCED MODE v5.4) for NEW trades only
+        MIN_TRADE_CONFIDENCE = 0.50
+        if direction != "flat" and confidence < MIN_TRADE_CONFIDENCE and not has_existing_position:
             gating_result.gate_passed = False
             gating_result.reasons.append(f"LOW_CONFIDENCE({confidence:.2f}<{MIN_TRADE_CONFIDENCE})")
             reasoning += f" | BLOCKED: confidence {confidence:.2f} < {MIN_TRADE_CONFIDENCE} minimum"
             self.logger.debug(
-                f"[ULTRA_PICKY_GATE] {instrument}: Blocked due to low confidence "
+                f"[MIN_CONF_GATE] {instrument}: Blocked new entry due to low confidence "
                 f"({confidence:.2f} < {MIN_TRADE_CONFIDENCE})"
             )
 
@@ -1378,11 +1384,19 @@ class ArbiterLogic:
             f"[SIZE_DEBUG] {instrument}: size_score={size_score:.4f}, raw_size={raw_size:.4f}, "
             f"confidence={confidence:.4f}, cap={gating_result.position_size_cap:.4f}, "
             f"position_size={position_size:.4f}, gating_passed={gating_result.gate_passed}, "
-            f"direction={direction}"
+            f"direction={direction}, has_position={has_existing_position}"
         )
 
+        # If gate failed or direction is flat, size is logically zero
         if not gating_result.gate_passed or direction == "flat":
             position_size = 0.0
+
+        # Final exit window hint (does NOT override PPO; used only for meta)
+        in_final_exit, final_exit_obligatory, max_loss_pct = self._check_final_exit_window()
+        if in_final_exit and has_existing_position:
+            gating_result.reasons.append(
+                f"FINAL_EXIT_WINDOW(obligatory={final_exit_obligatory},max_loss_pct={max_loss_pct:.2%})"
+            )
 
         # Advisory modules
         strat = strategy_info or StrategyInfo()
@@ -1478,6 +1492,26 @@ class ArbiterLogic:
 
         autonomy_meta = self.autonomy_tracker.get_state_summary()
 
+        # ─────────────────────────────────────────────────────────
+        # Action intent (explicit CLOSE / OPEN / REVERSE inference)
+        # ─────────────────────────────────────────────────────────
+        prev_dir = self._last_directions.get(instrument, "flat")
+        if has_existing_position:
+            if direction == "flat" or position_size == 0.0:
+                action_intent = "close"
+            elif direction == prev_dir:
+                action_intent = "scale"  # add / scale in same direction
+            else:
+                action_intent = "reverse"  # close then open opposite
+        else:
+            if direction == "flat" or position_size == 0.0:
+                action_intent = "no_position"
+            else:
+                action_intent = f"open_{direction}"
+
+        explicit_close = bool(has_existing_position and action_intent == "close")
+        explicit_reverse = bool(has_existing_position and action_intent == "reverse")
+
         decision = InstrumentDecision(
             instrument=instrument,
             direction=direction,
@@ -1497,6 +1531,13 @@ class ArbiterLogic:
             gate_reasons=gating_result.reasons + strategy_reasons + tm_reasons + wm_reasons,
             reasoning=reasoning,
             meta=self._build_decision_meta(
+                instrument=instrument,
+                direction=direction,
+                position_size=position_size,
+                has_existing_position=has_existing_position,
+                action_intent=action_intent,
+                explicit_close=explicit_close,
+                explicit_reverse=explicit_reverse,
                 trust_score=trust_score,
                 size_score=size_score,
                 committee=committee,
@@ -1525,19 +1566,16 @@ class ArbiterLogic:
     def _score_to_direction(
         self,
         score: float,
-        long_threshold: float = 0.70,
-        short_threshold: float = -0.70,
+        long_threshold: float = 0.35,
+        short_threshold: float = -0.35,
     ) -> str:
         """
         Convert a direction_score to a discrete direction.
 
-        PPO's raw intent (ULTRA PICKY MODE - very high thresholds):
+        PPO's raw intent (BALANCED MODE v5.4 - symmetric thresholds):
         - score >  long_threshold  → LONG
         - score <  short_threshold → SHORT
         - otherwise                → FLAT
-
-        v5.2: Raised from ±0.50 to ±0.70 for ultra picky trading.
-        Only trade when PPO is highly confident in the direction.
         """
         if score > long_threshold:
             return "long"
@@ -1759,19 +1797,18 @@ class ArbiterLogic:
         instrument: str,
         proposed_direction: str,
         trust_score: float,
+        has_existing_position: bool,
     ) -> str:
         """
         Apply hysteresis to prevent flip-flopping on OPEN POSITIONS only.
 
-        v5.3: Hysteresis ONLY applies when already in a position.
-        When flat (no position), the agent is FREE to decide LONG or SHORT
-        without any bias - let the model's conviction speak for itself.
+        v5.3+: Hysteresis ONLY applies when there is a real open position for
+        this instrument (has_existing_position=True). When flat, the agent is
+        FREE to choose LONG/SHORT based purely on PPO conviction.
 
         Hysteresis protects existing positions from noisy reversals,
-        it should NOT influence the initial direction decision.
-
-        Thresholds are loaded from self._hysteresis_cfg and can be overridden via
-        SmartInfoBus ("ArbiterHysteresisConfig") or constructor kwargs.
+        it should NOT influence the initial direction decision or ghost
+        positions after manual closes.
         """
         last_dir = self._last_directions.get(instrument, "flat")
 
@@ -1779,10 +1816,10 @@ class ArbiterLogic:
         if not cfg:
             # Hard fallback (should not normally happen)
             cfg = {
-                "entry_threshold": 0.70,
-                "reversal_threshold": 0.72,
-                "exit_threshold": 0.35,
-                "min_hold_before_reversal": 5,
+                "entry_threshold": 0.35,
+                "reversal_threshold": 0.40,
+                "exit_threshold": 0.20,
+                "min_hold_before_reversal": 3,
             }
 
         reversal_threshold = float(cfg["reversal_threshold"])
@@ -1792,16 +1829,21 @@ class ArbiterLogic:
         # Get current hold count for this instrument
         hold_count = self._direction_hold_counts.get(instrument, 0)
 
-        if last_dir == "flat":
-            # ═══════════════════════════════════════════════════════════════════
-            # NO POSITION: Agent is FREE to decide direction without bias
-            # ═══════════════════════════════════════════════════════════════════
-            # The _score_to_direction() already applied the ±0.70 threshold.
-            # If the agent says LONG or SHORT, trust it. No additional gating.
-            # This ensures LONG and SHORT have equal opportunity.
+        # If no real position, do NOT apply hysteresis – trust PPO direction
+        if not has_existing_position:
+            direction = proposed_direction
+            self._direction_hold_counts[instrument] = 0
+            self._last_directions[instrument] = direction
+            return direction
+
+        # There IS an open position – use last_dir as the held direction
+        last_dir_effective = last_dir
+
+        if last_dir_effective == "flat":
+            # We have a position but no history (e.g. restart) – let PPO take over
             direction = proposed_direction
 
-        elif last_dir == proposed_direction:
+        elif last_dir_effective == proposed_direction:
             # Same direction: continue holding
             direction = proposed_direction
             self._direction_hold_counts[instrument] = hold_count + 1
@@ -1811,22 +1853,18 @@ class ArbiterLogic:
             if abs(trust_score) < exit_threshold:
                 direction = "flat"
             else:
-                direction = last_dir
+                direction = last_dir_effective
                 self._direction_hold_counts[instrument] = hold_count + 1
 
         else:
-            # ═══════════════════════════════════════════════════════════════════
             # REVERSAL: from long->short or short->long (HAS OPEN POSITION)
-            # ═══════════════════════════════════════════════════════════════════
-            # This is where hysteresis matters - protect open positions from
-            # noisy flip-flopping. Require conviction AND minimum hold time.
             if abs(trust_score) > reversal_threshold and hold_count >= min_hold_before_reversal:
                 direction = proposed_direction
                 self._direction_hold_counts[instrument] = 0
             else:
                 # Not enough conviction or haven't held long enough
                 # Go flat rather than keeping old direction (don't force a side)
-                direction = "flat" if abs(trust_score) < exit_threshold else last_dir
+                direction = "flat" if abs(trust_score) < exit_threshold else last_dir_effective
                 self._direction_hold_counts[instrument] = hold_count + 1
 
         if direction != last_dir:
@@ -1841,6 +1879,13 @@ class ArbiterLogic:
 
     def _build_decision_meta(
         self,
+        instrument: str,
+        direction: str,
+        position_size: float,
+        has_existing_position: bool,
+        action_intent: str,
+        explicit_close: bool,
+        explicit_reverse: bool,
         trust_score: float,
         size_score: float,
         committee: Dict[str, Any],
@@ -1854,7 +1899,14 @@ class ArbiterLogic:
         autonomy_state: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
-        Build rich metadata for debugging and dashboard display.
+        Build rich metadata for debugging, dashboards, and execution modules.
+
+        Key semantics:
+        - action_intent encodes PPO's position-level intent:
+          "open_long", "open_short", "close", "reverse", "scale",
+          "hold", "no_position", ...
+        - explicit_close/explicit_reverse give a clean hook for
+          SmartPositionManager to implement PPO-led exits.
         """
         strat = strategy_info or StrategyInfo()
         tm = trading_mode_info or TradingModeInfo()
@@ -1862,6 +1914,16 @@ class ArbiterLogic:
         autonomy_state = autonomy_state or self.autonomy_tracker.get_state_summary()
 
         return {
+            "instrument": instrument,
+            "direction": direction,
+            "position_size": position_size,
+            "has_existing_position": has_existing_position,
+            "action_intent": action_intent,
+            "ppo_exit": {
+                "explicit_close": explicit_close,
+                "explicit_reverse": explicit_reverse,
+                "has_existing_position": has_existing_position,
+            },
             "contributors": {
                 "committee": {
                     "action": committee.get("action", "hold"),
@@ -1880,6 +1942,10 @@ class ArbiterLogic:
                     "trust_score": trust_score,
                     "raw_size_score": size_score,
                     "value": self.ppo_core._last_value,
+                    "action_intent": action_intent,
+                    "explicit_close": explicit_close,
+                    "explicit_reverse": explicit_reverse,
+                    "has_existing_position": has_existing_position,
                 },
                 "risk": {
                     "hard_block": risk_info.hard_block,
@@ -2018,6 +2084,12 @@ class ArbiterLogic:
 
         if modifiers:
             parts.append("; " + ", ".join(modifiers))
+
+        action_intent = decision.meta.get("action_intent", "")
+        if action_intent == "close":
+            parts.append("; explicit CLOSE intent")
+        elif action_intent.startswith("open_"):
+            parts.append(f"; OPEN intent ({action_intent})")
 
         if decision.gate_passed and decision.position_size > 0.0:
             parts.append(f"; position {decision.position_size:.1%}")

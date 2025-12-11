@@ -404,16 +404,21 @@ modules:
 
 
 # ═══════════════════════════════════════════════════════════════
-# SEASONALITY & TRADING WINDOW CONFIGURATION
-# Used by SeasonalityRiskExpert, ArbiterLogic, SmartPositionManager, LotCalculator
-# NOTE: Primary config is in system_config.yaml -> SeasonalityRiskExpert
-# These are FALLBACK values used by other modules (LotCalculator, etc.)
+# SESSION MANAGEMENT - CANONICAL SOURCE
 # ═══════════════════════════════════════════════════════════════
-seasonality:
-  # ═════════════════════════════════════════════════════════════
-  # TRADING TIMEZONE - Bavaria/Germany
-  # ═════════════════════════════════════════════════════════════
-  timezone: "Europe/Berlin"
+# ALL trading time configuration lives here. Do NOT duplicate elsewhere.
+# Referenced by:
+#   - system_config.yaml → SeasonalityRiskExpert (inherits from here)
+#   - timing_policy.yaml → (references these values, no duplication)
+#   - modules/timing/timing_features.py → load_timing_config()
+#   - modules/strategy/entry_timing_controller.py
+#   - LotCalculator, SmartPositionManager, ArbiterLogic
+# ═══════════════════════════════════════════════════════════════
+session_management:
+  # ─────────────────────────────────────────────────────────────
+  # TRADING TIMEZONE
+  # ─────────────────────────────────────────────────────────────
+  timezone: "Europe/Berlin"   # All hours below are in this timezone
 
   # ═════════════════════════════════════════════════════════════
   # PRIME HOURS - Best trading windows (local time)

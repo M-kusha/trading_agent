@@ -43,11 +43,11 @@ except ImportError:
 # [0-9]   M15 Price Features (PRIMARY) - 10 dims
 # [10-15] Higher TF Context (H1/H4/D1 aggregated) - 6 dims
 # [16-23] Expert ADVISOR Signals (SIGNED: +bull/-bear) - 8 dims
-# [24-31] Committee Consensus (SIGNED + metrics) - 8 dims  
+# [24-31] Committee Consensus (SIGNED + metrics) - 8 dims
 # [32-39] Risk/Memory Signals - 8 dims
 # [40-47] Account/Position State - 8 dims
 # [48-55] World Model Predictions - 8 dims
-# [56-63] Trading Mode State - 8 dims
+# [56-63] Trading Mode State (incl. timing features) - 8 dims
 #
 # KEY: Expert signals are FEATURES, not directives. PPO learns which
 # expert signals correlate with profitable trades and how to weight them.
@@ -66,7 +66,7 @@ FEATURE_GROUPS: Dict[str, tuple[int, int]] = {
     "risk": (32, 40),            # Risk/memory
     "account": (40, 48),         # Account state
     "world_model": (48, 56),     # World model predictions (NEW)
-    "trading_mode": (56, 64),    # Trading mode state (NEW)
+    "trading_mode": (56, 64),    # Trading mode state (NEW, incl. timing)
 }
 
 
@@ -119,6 +119,10 @@ class PPOObservationBuilder:
     def version(self) -> str:
         return self.config.version
 
+    # ======================================================================
+    # Public Builders
+    # ======================================================================
+
     def build(
         self,
         # Market data
@@ -140,7 +144,7 @@ class PPOObservationBuilder:
         module_name: str = "PPOObservationBuilder",
     ) -> np.ndarray:
         """
-        Build the unified PPO observation vector (v4.0).
+        Build the unified PPO observation vector.
 
         Can be called with explicit dicts OR with a SmartInfoBus reference.
         If smart_bus is provided, it will fetch missing data from the bus.
@@ -191,14 +195,14 @@ class PPOObservationBuilder:
         account_state: Optional[Dict[str, Any]] = None,
         # World Model state (v4.0)
         world_model_state: Optional[Dict[str, Any]] = None,
-        # Trading Mode state (v4.0)
+        # Trading Mode state (v4.0 + timing)
         trading_mode_state: Optional[Dict[str, Any]] = None,
         # SmartInfoBus (optional)
         smart_bus: Optional[Any] = None,
         module_name: str = "PPOObservationBuilder",
     ) -> np.ndarray:
         """
-        Build observation vector for a SPECIFIC instrument (v4.0).
+        Build observation vector for a SPECIFIC instrument.
 
         This method extracts instrument-specific market/risk/account data while using
         the same observation structure as the global build() method.
@@ -228,7 +232,10 @@ class PPOObservationBuilder:
                 smart_bus, module_name, instrument
             )
             world_model_state = world_model_state or self._fetch_world_model_state(smart_bus, module_name)
-            trading_mode_state = trading_mode_state or self._fetch_trading_mode_state(smart_bus, module_name)
+            # IMPORTANT: timing must be per-instrument, not the global dict
+            trading_mode_state = trading_mode_state or self._fetch_trading_mode_state_for_instrument(
+                smart_bus, module_name, instrument
+            )
 
         # Build each feature group (same structure as global)
         obs[0:10] = self._build_m15_features_for_instrument(market_data, instrument)
@@ -356,6 +363,10 @@ class PPOObservationBuilder:
 
         return account
 
+    # ======================================================================
+    # M15 Price Features (PRIMARY) - 10 dims
+    # ======================================================================
+
     def _build_m15_features_for_instrument(
         self, market_data: Optional[Dict[str, Any]], instrument: str
     ) -> np.ndarray:
@@ -382,10 +393,6 @@ class PPOObservationBuilder:
         """Build voting features for a specific instrument."""
         # Same structure, but expert_signals may already be instrument-filtered.
         return self._build_voting_features(expert_signals)
-
-    # ─────────────────────────────────────────────────────────────
-    # M15 Price Features (PRIMARY) - 10 dims
-    # ─────────────────────────────────────────────────────────────
 
     def _build_m15_features(self, market_data: Optional[Dict[str, Any]]) -> np.ndarray:
         """Build M15 primary price features."""
@@ -476,9 +483,9 @@ class PPOObservationBuilder:
 
         return feats
 
-    # ─────────────────────────────────────────────────────────────
+    # ======================================================================
     # Higher TF Context (H1/H4/D1) - 6 dims
-    # ─────────────────────────────────────────────────────────────
+    # ======================================================================
 
     def _build_htf_context(self, market_data: Optional[Dict[str, Any]]) -> np.ndarray:
         """Build higher timeframe context features."""
@@ -549,31 +556,19 @@ class PPOObservationBuilder:
 
         return feats
 
-    # ─────────────────────────────────────────────────────────────
+    # ======================================================================
     # Voting Expert Signals - 8 dims
-    # ─────────────────────────────────────────────────────────────
-    #
-    # IMPORTANT (v4.1 - Autonomous PPO):
-    # We NO LONGER encode expert directions (long/short/flat) as categorical signals.
-    # This prevents PPO from simply copying expert directions during training.
-    #
-    # Instead, we encode:
-    # - feats[i*2]: Expert numeric strength/score (if available), or 0.0
-    # - feats[i*2+1]: Expert confidence (clipped to [0,1])
-    #
-    # PPO should learn to derive its own directional decisions from market features,
-    # while using expert confidence/strength as auxiliary information.
-    # ─────────────────────────────────────────────────────────────
+    # ======================================================================
 
     def _build_voting_features(self, expert_signals: Optional[Dict[str, Any]]) -> np.ndarray:
         """
         Build voting expert features as RAW SIGNALS for PPO to learn from.
-        
+
         PPO is the MASTER - experts provide ADVICE as features:
         - feats[i*2]: Expert SIGNED strength (+ve=bullish, -ve=bearish, 0=neutral)
           This is NOT a directive - PPO learns to correlate with profitable trades.
         - feats[i*2+1]: Expert confidence level (how sure is the expert?)
-        
+
         PPO must learn which expert signals correlate with success.
         """
         feats = np.zeros(8, dtype=np.float32)
@@ -597,7 +592,7 @@ class PPOObservationBuilder:
                 strength_val = abs(float(strength_raw))
             except (TypeError, ValueError):
                 strength_val = 0.0
-            
+
             # Get direction to create SIGNED strength
             direction = str(sig.get("direction", sig.get("action", "neutral"))).lower()
             if direction in ("bullish", "long", "buy"):
@@ -606,7 +601,7 @@ class PPOObservationBuilder:
                 signed_strength = -strength_val
             else:
                 signed_strength = 0.0  # Neutral
-            
+
             # feats[i*2]: Signed strength (-1 to +1)
             feats[i * 2] = float(np.clip(signed_strength, -1.0, 1.0))
 
@@ -620,21 +615,9 @@ class PPOObservationBuilder:
 
         return feats
 
-    # ─────────────────────────────────────────────────────────────
-    # Committee/Consensus Metrics - 8 dims
-    # ─────────────────────────────────────────────────────────────
-    #
-    # PPO MASTER / EXPERT ADVISOR Architecture (v5.0):
-    # Committee signals are RAW ADVICE - PPO decides what to do with them.
-    # - [0] signed_consensus: +ve=bullish consensus, -ve=bearish (-1 to +1)
-    # - [1] committee_conf: How confident is the committee? (0-1)
-    # - [2] vote_alignment: Do experts agree with each other? (0-1)
-    # - [3] avg_expert_confidence: Mean confidence across experts (0-1)
-    # - [4] fragility: How fragile is the consensus? (0-1)
-    # - [5] regime_type: Market character (trending/ranging/volatile) (0-1)
-    # - [6] regime_strength: Strength of current regime (0-1)
-    # - [7] expert_conviction: % of experts with strong signals (0-1)
-    # ─────────────────────────────────────────────────────────────
+    # ======================================================================
+    # Committee / Consensus Metrics - 8 dims
+    # ======================================================================
 
     def _build_committee_features(
         self,
@@ -643,12 +626,12 @@ class PPOObservationBuilder:
     ) -> np.ndarray:
         """
         Build committee/consensus features as RAW SIGNALS for PPO.
-        
+
         PPO is the MASTER - committee provides ADVICE:
         - Signed consensus (+bullish/-bearish) as a feature, not directive
         - Agreement/confidence metrics
         - Regime information
-        
+
         PPO learns to correlate these with profitable trades.
         """
         feats = np.zeros(8, dtype=np.float32)
@@ -657,10 +640,9 @@ class PPOObservationBuilder:
         expert_signals = expert_signals or {}
 
         # [0] signed_consensus: SIGNED committee direction (-1 to +1)
-        # PPO can learn to follow, inverse, or ignore this signal
         consensus_score = committee_state.get("consensus_score", 0.5)
         consensus_action = str(committee_state.get("action", committee_state.get("direction", "flat"))).lower()
-        
+
         if consensus_action in ("long", "bullish", "buy"):
             signed_consensus = abs(float(consensus_score))
         elif consensus_action in ("short", "bearish", "sell"):
@@ -673,7 +655,6 @@ class PPOObservationBuilder:
         feats[1] = float(np.clip(committee_state.get("confidence", 0.5), 0.0, 1.0))
 
         # [2] vote_alignment: Do experts agree with EACH OTHER?
-        # Calculate signed scores from expert signals
         experts = expert_signals.get("experts", {}) if isinstance(expert_signals, dict) else {}
         signed_expert_scores: list[float] = []
         if isinstance(experts, dict):
@@ -721,7 +702,7 @@ class PPOObservationBuilder:
         # [4] fragility
         feats[4] = float(np.clip(committee_state.get("fragility", 0.5), 0.0, 1.0))
 
-        # [5] regime_type: Market character (0.8=trending, 0.2=ranging, 0.5=volatile)
+        # [5] regime_type
         market = expert_signals.get("market", {}) if isinstance(expert_signals, dict) else {}
         regime = (market.get("regime", "unknown") if isinstance(market, dict) else "unknown")
         regime_map = {
@@ -747,9 +728,9 @@ class PPOObservationBuilder:
 
         return feats
 
-    # ─────────────────────────────────────────────────────────────
-    # Risk/Memory Signals - 8 dims
-    # ─────────────────────────────────────────────────────────────
+    # ======================================================================
+    # Risk / Memory Signals - 8 dims
+    # ======================================================================
 
     def _build_risk_features(
         self,
@@ -826,9 +807,9 @@ class PPOObservationBuilder:
 
         return feats
 
-    # ─────────────────────────────────────────────────────────────
-    # Account/Position State - 8 dims
-    # ─────────────────────────────────────────────────────────────
+    # ======================================================================
+    # Account / Position State - 8 dims
+    # ======================================================================
 
     def _build_account_features(self, account_state: Optional[Dict[str, Any]]) -> np.ndarray:
         """Build account and position state features."""
@@ -895,7 +876,6 @@ class PPOObservationBuilder:
         )
 
         # [7] cooldown-aware flag (repurposed from legacy last_action)
-        # Prefer explicit cooldown flag if provided; otherwise fall back to last_action.
         if "on_cooldown" in account_state:
             try:
                 cd_val = float(account_state.get("on_cooldown") or 0.0)
@@ -912,9 +892,9 @@ class PPOObservationBuilder:
 
         return feats
 
-    # ─────────────────────────────────────────────────────────────
+    # ======================================================================
     # World Model Features (v4.0) - 8 dims
-    # ─────────────────────────────────────────────────────────────
+    # ======================================================================
 
     def _build_world_model_features(self, world_model_state: Optional[Dict[str, Any]]) -> np.ndarray:
         """
@@ -945,12 +925,10 @@ class PPOObservationBuilder:
 
         # [0] prediction_confidence
         base_conf = predictions.get("model_confidence", latest.get("confidence", 0.0))
-        # Allow an external prediction_confidence block to refine this
         extra_conf = world_model_state.get("prediction_confidence")
         if extra_conf is not None:
             try:
                 if isinstance(extra_conf, dict):
-                    # e.g. {"current_confidence": 0.7}
                     extra_conf_val = float(extra_conf.get("current_confidence", base_conf))
                 else:
                     extra_conf_val = float(extra_conf)
@@ -991,7 +969,6 @@ class PPOObservationBuilder:
         vol_preds = latest.get("volatility_predictions", predictions.get("volatility_predictions", []))
         if isinstance(vol_preds, (list, np.ndarray)) and len(vol_preds) > 0:
             try:
-                # Use first volatility (M15)
                 m15_vol = float(vol_preds[0])
                 feats[3] = float(np.clip(m15_vol, 0.0, 1.0))
             except (TypeError, ValueError):
@@ -1002,7 +979,6 @@ class PPOObservationBuilder:
         # [4] predicted_regime (encoded: trending_up=0.8, trending_down=-0.8, volatile=0, ranging=0.3)
         regime_probs = latest.get("regime_probabilities", predictions.get("regime_probabilities", []))
         predicted_regime = latest.get("predicted_regime", predictions.get("predicted_regime", -1))
-        # Regime classes: 0=trending_up, 1=trending_down, 2=ranging, 3=volatile
         regime_map = {0: 0.8, 1: -0.8, 2: 0.3, 3: 0.0}
         if isinstance(predicted_regime, int) and predicted_regime in regime_map:
             feats[4] = regime_map[predicted_regime]
@@ -1017,10 +993,9 @@ class PPOObservationBuilder:
         is_trained = predictions.get("is_trained", latest.get("model_trained", False))
         feats[5] = 1.0 if is_trained else 0.0
 
-        # [6] scenario_bullish_prob (from scenario_generation if available)
+        # [6] scenario_bullish_prob
         scenarios = world_model_state.get("scenario_generation", world_model_state.get("scenarios", {}))
         if isinstance(scenarios, dict):
-            # Extract scenarios list and compute bullish probability
             scenarios_list = scenarios.get("scenarios", [])
             bullish_prob = 0.5
             if isinstance(scenarios_list, list) and len(scenarios_list) > 0:
@@ -1052,107 +1027,116 @@ class PPOObservationBuilder:
         except (TypeError, ValueError):
             feats[7] = 0.5
 
-        # ── CONFIDENCE-GATED WORLD MODEL CONTRIBUTION ─────────────
-        # If overall confidence is low, aggressively neutralize directional signal
-        # while still exposing "is_trained" and a small hint via stability.
+        # Confidence-gated contribution
         conf_val = float(feats[0])
         if conf_val < self.config.prediction_confidence_threshold or not bool(is_trained):
-            # Keep confidence + trained flag + stability; flatten directional parts
             feats[1] = 0.0  # m15 direction
             feats[2] = 0.0  # weighted direction
             feats[3] = 0.5  # neutral volatility
             feats[4] = 0.0  # neutral regime
-            # Scenario prob remains as soft prior, but not extreme
             feats[6] = float(np.clip(feats[6], 0.25, 0.75))
 
         return feats
 
-    # ─────────────────────────────────────────────────────────────
-    # Trading Mode Features (v4.0) - 8 dims
-    # ─────────────────────────────────────────────────────────────
+    # ======================================================================
+    # Trading Mode Features (v5.1) - 8 dims (with timing integration)
+    # ======================================================================
 
     def _build_trading_mode_features(self, trading_mode_state: Optional[Dict[str, Any]]) -> np.ndarray:
         """
-        Build trading mode state features (v4.0).
+        Build trading mode state features (v5.1 - with timing integration).
 
-        Features from TradingModeManager:
+        Features:
         [0] mode_encoded: Current mode (safe=0.25, normal=0.5, aggressive=0.75, extreme=1.0)
-        [1] risk_multiplier: Mode-based risk multiplier (0.5-2.0 scaled to 0-1)
-        [2] max_exposure: Maximum allowed exposure (0-1)
-        [3] mode_effectiveness: How well current mode is performing (0-1)
-        [4] performance_score: Decision factor score (0-1)
-        [5] consensus_score: Decision factor consensus (0-1)
-        [6] stability_score: System stability (0-1)
-        [7] mode_confidence: Confidence in mode selection (0-1)
+        [1] entry_allowed: Whether entry is allowed by timing rules (0/1)
+        [2] entry_quality_long: Quality score for long entry (0-1)
+        [3] entry_quality_short: Quality score for short entry (0-1)
+        [4] zone_encoded: Zone type (hot=0.9, good=0.5, bad=0.1)
+        [5] vol_state_encoded: Volatility state (low=0, normal=0.33, high=0.66, extreme=1)
+        [6] micro_trend_dir: Short-term trend direction (-1 to 1, scaled to 0-1)
+        [7] mode_confidence: Confidence in mode/timing selection (0-1)
         """
         feats = np.zeros(8, dtype=np.float32)
 
-        # Default to "normal" mode with standard values
+        # Defaults (neutral values)
         feats[0] = 0.5   # normal mode
-        feats[1] = 0.5   # risk_multiplier 1.0 scaled
-        feats[2] = 0.6   # max_exposure 60%
-        feats[3] = 0.5   # mode_effectiveness neutral
-        feats[4] = 0.5   # performance_score neutral
-        feats[5] = 0.5   # consensus_score neutral
-        feats[6] = 0.5   # stability_score neutral
+        feats[1] = 1.0   # entry_allowed = True
+        feats[2] = 0.5   # entry_quality_long neutral
+        feats[3] = 0.5   # entry_quality_short neutral
+        feats[4] = 0.5   # zone_encoded (good)
+        feats[5] = 0.33  # vol_state (normal)
+        feats[6] = 0.5   # micro_trend_dir (neutral, scaled 0-1)
         feats[7] = 0.5   # mode_confidence neutral
 
         if not trading_mode_state or not isinstance(trading_mode_state, dict):
             return feats
 
-        # [0] mode_encoded
+        # [0] mode_encoded (from TradingModeManager)
         mode = trading_mode_state.get("trading_mode", trading_mode_state.get("current_mode", "normal"))
         mode_map = {"safe": 0.25, "normal": 0.5, "aggressive": 0.75, "extreme": 1.0}
         if isinstance(mode, str):
             feats[0] = mode_map.get(mode.lower(), 0.5)
 
-        # [1] risk_multiplier (scale 0.5-2.0 to 0-1)
-        mode_config = trading_mode_state.get("mode_config", {})
-        if isinstance(mode_config, dict):
-            risk_mult = mode_config.get("risk_multiplier", 1.0)
+        # Check for timing features (from EntryTimingController)
+        timing = trading_mode_state.get("entry_timing", {})
+        if isinstance(timing, dict) and timing:
+            # [1] entry_allowed
+            feats[1] = 1.0 if timing.get("entry_allowed", True) else 0.0
+
+            # [2] entry_quality_long
+            eql = timing.get("entry_quality_long", 0.5)
             try:
-                # Scale: 0.5 -> 0.0, 1.0 -> ~0.33, 2.0 -> 1.0
-                feats[1] = float(np.clip((float(risk_mult) - 0.5) / 1.5, 0.0, 1.0))
+                feats[2] = float(np.clip(float(eql), 0.0, 1.0))
             except (TypeError, ValueError):
-                feats[1] = 0.5
+                feats[2] = 0.5
 
-            # [2] max_exposure
-            max_exp = mode_config.get("max_exposure", 0.6)
+            # [3] entry_quality_short
+            eqs = timing.get("entry_quality_short", 0.5)
             try:
-                feats[2] = float(np.clip(float(max_exp), 0.0, 1.0))
+                feats[3] = float(np.clip(float(eqs), 0.0, 1.0))
             except (TypeError, ValueError):
-                feats[2] = 0.6
+                feats[3] = 0.5
 
-        # [3] mode_effectiveness
-        effectiveness = trading_mode_state.get("mode_effectiveness", 0.5)
-        try:
-            feats[3] = float(np.clip(float(effectiveness), 0.0, 1.0))
-        except (TypeError, ValueError):
-            feats[3] = 0.5
+            # [4] zone_encoded
+            zone_type = timing.get("zone_type", "good")
+            zone_map = {"hot": 0.9, "good": 0.5, "bad": 0.1}
+            feats[4] = zone_map.get(zone_type, 0.5) if isinstance(zone_type, str) else 0.5
 
-        # Decision factors
-        decision_factors = trading_mode_state.get("decision_factors", {})
-        if isinstance(decision_factors, dict):
-            # [4] performance_score
-            perf_score = decision_factors.get("performance_score", 0.5)
+            # [5] vol_state_encoded
+            vol_state = timing.get("vol_state", "normal")
+            vol_map = {"low": 0.0, "normal": 0.33, "high": 0.66, "extreme": 1.0}
+            feats[5] = vol_map.get(vol_state, 0.33) if isinstance(vol_state, str) else 0.33
+
+            # [6] micro_trend_dir (scale -1..1 to 0..1)
+            mtd = timing.get("micro_trend_dir", 0.0)
             try:
-                feats[4] = float(np.clip(float(perf_score), 0.0, 1.0))
-            except (TypeError, ValueError):
-                feats[4] = 0.5
-
-            # [5] consensus_score
-            cons_score = decision_factors.get("consensus_score", 0.5)
-            try:
-                feats[5] = float(np.clip(float(cons_score), 0.0, 1.0))
-            except (TypeError, ValueError):
-                feats[5] = 0.5
-
-            # [6] stability_score
-            stab_score = decision_factors.get("stability_score", 0.5)
-            try:
-                feats[6] = float(np.clip(float(stab_score), 0.0, 1.0))
+                feats[6] = float(np.clip((float(mtd) + 1.0) / 2.0, 0.0, 1.0))
             except (TypeError, ValueError):
                 feats[6] = 0.5
+        else:
+            # Fallback: use legacy trading mode features
+            mode_config = trading_mode_state.get("mode_config", {})
+            if isinstance(mode_config, dict):
+                max_exp = mode_config.get("max_exposure", 0.6)
+                try:
+                    feats[2] = float(np.clip(float(max_exp), 0.0, 1.0))
+                except (TypeError, ValueError):
+                    feats[2] = 0.5
+                feats[3] = feats[2]  # Symmetric for legacy mode
+
+            decision_factors = trading_mode_state.get("decision_factors", {})
+            if isinstance(decision_factors, dict):
+                perf_score = decision_factors.get("performance_score", 0.5)
+                try:
+                    feats[4] = float(np.clip(float(perf_score), 0.0, 1.0))
+                except (TypeError, ValueError):
+                    feats[4] = 0.5
+
+                stab_score = decision_factors.get("stability_score", 0.5)
+                try:
+                    feats[5] = float(np.clip(float(stab_score), 0.0, 1.0))
+                except (TypeError, ValueError):
+                    feats[5] = 0.5
 
         # [7] mode_confidence (from mode stats)
         mode_stats = trading_mode_state.get("mode_stats", {})
@@ -1165,9 +1149,9 @@ class PPOObservationBuilder:
 
         return feats
 
-    # ─────────────────────────────────────────────────────────────
+    # ======================================================================
     # SmartInfoBus Data Fetchers
-    # ─────────────────────────────────────────────────────────────
+    # ======================================================================
 
     def _fetch_market_data(self, bus: Any, module: str) -> Dict[str, Any]:
         """Fetch market data from SmartInfoBus."""
@@ -1317,7 +1301,6 @@ class PPOObservationBuilder:
                 state["prediction_quality"] = market_predictions.get("prediction_quality", 0.0)
                 state["stability_score"] = market_predictions.get("stability_score", 0.5)
 
-                # Latest predictions if available
                 latest = market_predictions.get("latest_predictions", {})
                 if isinstance(latest, dict):
                     state["price_changes"] = latest.get("price_changes", [])
@@ -1331,7 +1314,7 @@ class PPOObservationBuilder:
             return {}
 
     def _fetch_trading_mode_state(self, bus: Any, module: str) -> Dict[str, Any]:
-        """Fetch trading mode state from SmartInfoBus (v4.0)."""
+        """Fetch global trading mode state from SmartInfoBus (v5.1 - with timing)."""
         try:
             trading_mode = bus.get("trading_mode", module)
             mode_config = bus.get("mode_config", module) or {}
@@ -1340,6 +1323,9 @@ class PPOObservationBuilder:
             mode_thresholds = bus.get("mode_thresholds", module) or {}
             decision_factors = bus.get("decision_factors", module) or {}
 
+            # NOTE: this gets the *global* entry_timing dict
+            entry_timing = bus.get("entry_timing", module) or {}
+
             state: Dict[str, Any] = {
                 "trading_mode": trading_mode if isinstance(trading_mode, str) else "normal",
                 "mode_config": mode_config if isinstance(mode_config, dict) else {},
@@ -1347,15 +1333,66 @@ class PPOObservationBuilder:
                 "mode_stats": mode_stats if isinstance(mode_stats, dict) else {},
                 "mode_thresholds": mode_thresholds if isinstance(mode_thresholds, dict) else {},
                 "decision_factors": decision_factors if isinstance(decision_factors, dict) else {},
+                # For global build(), this may remain the full dict; for per-instrument we override.
+                "entry_timing": entry_timing if isinstance(entry_timing, dict) else {},
             }
 
             return state
         except Exception:
             return {}
 
-    # ─────────────────────────────────────────────────────────────
+    def _fetch_trading_mode_state_for_instrument(
+        self,
+        bus: Any,
+        module: str,
+        instrument: str,
+    ) -> Dict[str, Any]:
+        """
+        Fetch trading mode state and splice in *per-instrument* timing features.
+
+        - Global fields (mode, stats, thresholds) remain as in _fetch_trading_mode_state()
+        - entry_timing is replaced with the slice for the given instrument:
+
+              state["entry_timing"] = entry_timing_all[instrument]
+
+        so that _build_trading_mode_features() sees a flat timing dict with keys:
+        'entry_allowed', 'entry_quality_long', 'zone_type', etc.
+        """
+        base_state = self._fetch_trading_mode_state(bus, module)
+        if not isinstance(base_state, dict):
+            base_state = {}
+
+        try:
+            entry_timing_all = bus.get("entry_timing", module) or {}
+        except Exception:
+            entry_timing_all = {}
+
+        inst_timing: Dict[str, Any] = {}
+
+        if isinstance(entry_timing_all, dict):
+            # Direct key first
+            raw = entry_timing_all.get(instrument)
+
+            # Fallback: normalized instrument name (XAUUSD vs XAU/USD)
+            if not isinstance(raw, dict):
+                norm = instrument.replace("/", "").replace("_", "").upper()
+                for key, val in entry_timing_all.items():
+                    if not isinstance(key, str) or not isinstance(val, dict):
+                        continue
+                    key_norm = key.replace("/", "").replace("_", "").upper()
+                    if key_norm == norm:
+                        raw = val
+                        break
+
+            if isinstance(raw, dict):
+                inst_timing = raw
+
+        base_state["entry_timing"] = inst_timing
+        return base_state
+
+    # ======================================================================
     # Helper Functions
-    # ─────────────────────────────────────────────────────────────
+    # ======================================================================
 
     def _extract_timeframe_data(
         self, market_data: Dict[str, Any], timeframe: str
@@ -1367,7 +1404,6 @@ class PPOObservationBuilder:
         # Try direct timeframe key
         if timeframe in market_data and isinstance(market_data[timeframe], dict):
             tf_data = market_data[timeframe]
-            # REAL-TIME RESPONSIVENESS: Update last bar with forming bar data
             return self._apply_forming_bar(tf_data)
 
         # Try nested structure: market_data[symbol][timeframe]
@@ -1392,23 +1428,19 @@ class PPOObservationBuilder:
         forming_low = cur_bar.get("low")
         forming_volume = cur_bar.get("volume")
 
-        # Only modify if we have forming bar data
         if forming_close is None:
             return tf_data
 
-        # Create a copy to avoid mutating original
         result = dict(tf_data)
 
         try:
             close = result.get("close")
             if close is not None and len(close) > 0:
-                # Replace last closed bar with forming bar's current value
                 close_list = list(close)
                 if abs(float(forming_close) - float(close_list[-1])) > 0.0001:
                     close_list[-1] = float(forming_close)
                     result["close"] = close_list
 
-                    # Also update high/low/volume
                     if forming_high is not None:
                         high = result.get("high")
                         if high is not None and len(high) > 0:
@@ -1430,7 +1462,6 @@ class PPOObservationBuilder:
                             vol_list[-1] = float(forming_volume)
                             result["volume"] = vol_list
         except Exception:
-            # On any error, return original data
             return tf_data
 
         return result
@@ -1602,7 +1633,7 @@ def build_ppo_observation_for_instrument(
     module_name: str = "PPOObservationBuilder",
 ) -> np.ndarray:
     """
-    Convenience function to build PPO observation for a specific instrument (v4.0).
+    Convenience function to build PPO observation for a specific instrument.
 
     Args:
         instrument: The instrument symbol (e.g., "XAUUSD", "EURUSD")

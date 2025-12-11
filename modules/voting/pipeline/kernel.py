@@ -605,39 +605,51 @@ class SlimVotingKernel(VotingModuleBase):
         """
         Apply hysteresis to prevent BUY/SELL flip-flopping.
 
-        Rules:
-        1. If confidence < 20% and consensus < 50%, stay with last action (if not HOLD).
-        2. Must hold current direction for min_hold_ticks before reversing.
-        3. Reversals (BUY↔SELL) require either enough hold time OR >= 40% confidence.
+        FIXED v5.4: Critical fixes for BUY-only bias:
+        1. If upstream action is HOLD/ABSTAIN, return HOLD without hysteresis.
+        2. If confidence < 20% and consensus < 50%, return HOLD (not last action).
+        3. Reversals are allowed with lower thresholds (25% confidence OR 3 ticks).
         4. Going to HOLD is always allowed (safety).
+        
+        The key insight: PPO is the master, kernel should not fabricate BUY.
         """
         last_action = getattr(self, "_last_final_action", "HOLD")
         hold_count = getattr(self, "_action_hold_count", 0)
-        min_hold = getattr(self, "_min_hold_ticks", 5)
+        min_hold = getattr(self, "_min_hold_ticks", 3)  # Reduced from 5
 
-        # Low confidence/consensus: stay with last action to avoid noise
-        if (
-            confidence < 0.20
-            and consensus_score < 0.50
-            and last_action != "HOLD"
-        ):
-            self._action_hold_count = hold_count + 1
-            return last_action
+        # CRITICAL FIX: If upstream says HOLD/ABSTAIN, respect it - no hysteresis
+        if new_action in ("HOLD", "ABSTAIN", "hold", "abstain"):
+            self._action_hold_count = 0
+            self._last_final_action = "HOLD"
+            return "HOLD"
 
-        # Direction reversal (BUY ↔ SELL)
+        # CRITICAL FIX: Low confidence → HOLD, not "keep last action"
+        # This was causing BUY lock-in when confidence decayed.
+        if confidence < 0.20 and consensus_score < 0.50:
+            self.log_info(
+                f"[KERNEL][HYSTERESIS] Low conf/consensus → HOLD "
+                f"(was {new_action}, conf={confidence:.1%}, cons={consensus_score:.1%})"
+            )
+            self._action_hold_count = 0
+            self._last_final_action = "HOLD"
+            return "HOLD"
+
+        # Direction reversal (BUY ↔ SELL) - more permissive now
         is_reversal = (last_action == "BUY" and new_action == "SELL") or (
             last_action == "SELL" and new_action == "BUY"
         )
 
         if is_reversal:
-            # Too soon and too weak → block reversal
-            if hold_count < min_hold and confidence < 0.40:
+            # FIXED: Lower threshold (25%) and shorter hold time (3) for reversals
+            # Also allow reversal if confidence >= 25% regardless of hold time
+            if hold_count < min_hold and confidence < 0.25:
                 self._action_hold_count = hold_count + 1
                 self.log_info(
                     f"[KERNEL][HYSTERESIS] Blocked reversal {last_action}→{new_action} "
                     f"(hold={hold_count}/{min_hold}, conf={confidence:.1%})"
                 )
-                return last_action
+                # FIXED: Return HOLD instead of last_action to avoid lock-in
+                return "HOLD"
 
         # Action is allowed – update hysteresis state
         if new_action != last_action:

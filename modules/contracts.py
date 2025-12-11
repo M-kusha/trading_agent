@@ -330,6 +330,15 @@ CONTRACTS: Dict[str, ModuleContract] = {
         meta={'thesis_required': 'True', 'explainable': 'True', 'health_monitoring': 'True', 'performance_tracking': 'True', 'category': 'strategy', 'version': '3.0.0'}
     ),
 
+    'EntryTimingController': ModuleContract(
+        name='EntryTimingController',
+        file='strategy/entry_timing_controller.py',
+        provides=['entry_timing', 'entry_timing_array', 'entry_timing_allowed'],
+        requires=['market_data_latest', 'atr_values', 'session_info', 'position_state_summary'],
+        meta={'thesis_required': False, 'health_monitoring': True, 'performance_tracking': False,
+              'category': 'strategy', 'version': '1.0.0'}
+    ),
+
     # ═══════════════════════════════ VOTING ══════════════════════════════════
     # LEGACY VOTING MODULES - DEPRECATED (code in voting/legacy/, commented out)
     # These contracts are preserved for reference but modules are disabled.
