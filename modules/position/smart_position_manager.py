@@ -592,6 +592,9 @@ class SmartPositionManager:
         # Position lifecycle states (optional sticky override; normally computed on the fly)
         self._lifecycle_states: Dict[str, PositionLifecycle] = {}
 
+        # PPO decision change tracking (v5.5 - reduce log noise)
+        self._last_ppo_decision: Dict[str, str] = {}  # symbol -> "dir|intent" signature
+
         # PER-INSTRUMENT CONFIGURATION (v4.0)
         self._per_instrument_cfg: Dict[str, Dict[str, Any]] = self._load_per_instrument_config()
 
@@ -1083,12 +1086,18 @@ class SmartPositionManager:
                 view.wants_flat = wants_flat
                 view.is_reversal = is_reversal
 
-                self.logger.debug(
-                    f"[PPO_DECISION] {symbol}: dir={view.direction} conf={view.confidence:.3f} "
-                    f"size={view.position_size:.3f} intent={view.action_intent or '-'} "
-                    f"close={view.explicit_close} reverse={view.explicit_reverse} "
-                    f"flat={view.wants_flat} rev={view.is_reversal}"
-                )
+                # v5.5: Only log when PPO decision changes (reduce noise)
+                decision_sig = f"{direction}|{action_intent}|{explicit_close}|{explicit_reverse}"
+                last_sig = self._last_ppo_decision.get(symbol, "")
+                if decision_sig != last_sig:
+                    self._last_ppo_decision[symbol] = decision_sig
+                    # Only log actionable changes (not hold/no_position)
+                    if action_intent not in ("hold", "no_position", "") or explicit_close or explicit_reverse:
+                        self.logger.info(
+                            f"[PPO_DECISION] {symbol}: dir={view.direction} conf={view.confidence:.3f} "
+                            f"intent={view.action_intent or '-'} close={view.explicit_close} "
+                            f"reverse={view.explicit_reverse}"
+                        )
                 return view
 
             # ─────────────────────────────────────────────────────────
@@ -1115,10 +1124,12 @@ class SmartPositionManager:
                         position_side == "short" and direction == "long"
                     )
 
-                self.logger.debug(
-                    f"[PPO_DECISION_LEGACY] {symbol}: dir={view.direction} "
-                    f"conf={view.confidence:.3f} rev={view.is_reversal}"
-                )
+                # v5.5: Only log actionable legacy decisions
+                if view.is_reversal or view.wants_flat:
+                    self.logger.info(
+                        f"[PPO_DECISION_LEGACY] {symbol}: dir={view.direction} "
+                        f"conf={view.confidence:.3f} rev={view.is_reversal}"
+                    )
                 return view
 
             # Also try ppo_final_decision as fallback
@@ -1143,10 +1154,12 @@ class SmartPositionManager:
                         position_side == "short" and direction == "long"
                     )
 
-                self.logger.debug(
-                    f"[PPO_DECISION_FINAL] {symbol}: dir={view.direction} "
-                    f"conf={view.confidence:.3f} rev={view.is_reversal}"
-                )
+                # v5.5: Only log actionable final decisions
+                if view.is_reversal or view.wants_flat:
+                    self.logger.info(
+                        f"[PPO_DECISION_FINAL] {symbol}: dir={view.direction} "
+                        f"conf={view.confidence:.3f} rev={view.is_reversal}"
+                    )
                 return view
 
         except Exception as e:

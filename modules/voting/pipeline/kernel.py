@@ -468,9 +468,30 @@ class SlimVotingKernel(VotingModuleBase):
             raw_action = final_decision.get(
                 "action", committee_decision.get("action", "abstain")
             )
-            confidence = float(
-                final_decision.get("confidence", committee_confidence)
-            )
+
+            # FIX v5.5: Use per-instrument confidence instead of global confidence
+            # The global final_decision.confidence is heavily penalized by fragility,
+            # while per-instrument confidence (from committee) is more accurate.
+            # This prevents the hysteresis from forcing HOLD due to artificially low confidence.
+            per_inst_confidence = None
+            if committee_decisions_by_instrument:
+                # Get max confidence from any active instrument (prefer highest)
+                for inst, inst_data in committee_decisions_by_instrument.items():
+                    if isinstance(inst_data, dict):
+                        inst_conf = float(inst_data.get("confidence", 0.0) or 0.0)
+                        if per_inst_confidence is None or inst_conf > per_inst_confidence:
+                            per_inst_confidence = inst_conf
+
+            # Use per-instrument confidence if available and reasonable, else fall back to global
+            global_confidence = float(final_decision.get("confidence", committee_confidence))
+            if per_inst_confidence is not None and per_inst_confidence > global_confidence:
+                confidence = per_inst_confidence
+                self.log_info(
+                    f"[KERNEL] Using per-instrument confidence {confidence:.1%} "
+                    f"(global was {global_confidence:.1%})"
+                )
+            else:
+                confidence = global_confidence
 
             # Translate semantic action to trading action (BUY/SELL/HOLD)
             action = translate_action(raw_action)

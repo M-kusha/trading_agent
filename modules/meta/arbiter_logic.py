@@ -1516,7 +1516,12 @@ class ArbiterLogic:
             if direction == "flat" or position_size == 0.0:
                 action_intent = "close"
             elif direction == prev_dir:
-                action_intent = "scale"  # add / scale in same direction
+                # DISABLED v5.5: PPO cannot scale positions - SmartPosition handles scaling
+                # PPO should only close or hold when position exists in same direction
+                action_intent = "hold"
+                position_size = 0.0  # No trade signal for scaling
+                gating_result.gate_passed = False
+                gating_result.reasons.append("SCALE_DISABLED_PPO")
             else:
                 action_intent = "reverse"  # close then open opposite
         else:

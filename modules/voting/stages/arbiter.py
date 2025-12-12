@@ -534,12 +534,17 @@ class FinalArbiter(VotingModuleBase):
 
         adjusted_confidence = confidence * gate_result["weighted_score"]
 
-        # Penalize high global fragility
+        # Penalize high global fragility (TUNED v2.1: reduced penalty, floor at 50%)
+        # Previous: full 50% penalty when fragility=1.0 (e.g., 0.25 * 0.5 = 0.125)
+        # New: capped at 25% penalty, floor at 50% of original to prevent over-suppression
         fragility = float(data.get("fragility", 0.5))
         if fragility > 0.5:
-            adjusted_confidence *= (1.0 - (fragility - 0.5))
+            # Cap the penalty factor to max 0.25 (was 0.5)
+            penalty = min(0.25, (fragility - 0.5))
+            adjusted_confidence *= (1.0 - penalty)
 
-        adjusted_confidence = max(0.1, min(1.0, adjusted_confidence))
+        # Floor at 0.2 instead of 0.1 to allow signals through
+        adjusted_confidence = max(0.2, min(1.0, adjusted_confidence))
 
         return {
             "action": action,
