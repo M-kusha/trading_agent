@@ -74,6 +74,61 @@ except ImportError:
 # Alias for typing.Optional so we can use OptType[...] as in your original code
 OptType = Optional
 
+def _norm_symbol(sym: str) -> str:
+    """Canonical symbol normalization used across shell/arbiter."""
+    return str(sym or "").upper().replace("/", "").replace("_", "").replace("-", "")
+
+
+@dataclass
+class PositionSnapshot:
+    """
+    Minimal position snapshot for arbiter correctness.
+    side: +1 (long), -1 (short), 0 (flat/unknown)
+    """
+    has: bool = False
+    side: int = 0
+    lots: float = 0.0
+    age_hours: float = 0.0
+    unrealized_pnl: float = 0.0
+
+    @property
+    def direction(self) -> str:
+        if self.side > 0:
+            return "long"
+        if self.side < 0:
+            return "short"
+        return "flat"
+
+
+def _coerce_position_snapshot(raw: Any) -> PositionSnapshot:
+    """
+    Accepts:
+      - bool (legacy)
+      - dict with keys like: has/side/lots/age_hours/unrealized_pnl
+      - None
+    """
+    if isinstance(raw, bool):
+        return PositionSnapshot(has=raw, side=0 if not raw else 0)
+    if isinstance(raw, dict):
+        has_val = bool(raw.get("has", raw.get("has_position", raw.get("open", False))))
+        # side can be provided as int (+1/-1/0) or string ("long"/"short")
+        side_raw = raw.get("side", raw.get("position_side", 0))
+        side: int = 0
+        try:
+            if isinstance(side_raw, str):
+                s = side_raw.lower()
+                side = 1 if s in ("long", "buy", "bullish") else -1 if s in ("short", "sell", "bearish") else 0
+            else:
+                side = int(side_raw)
+        except Exception:
+            side = 0
+
+        lots = _safe_float(raw.get("lots", raw.get("volume", 0.0)), 0.0)
+        age_hours = _safe_float(raw.get("age_hours", 0.0), 0.0)
+        pnl = _safe_float(raw.get("unrealized_pnl", raw.get("pnl", 0.0)), 0.0)
+        return PositionSnapshot(has=has_val or side != 0, side=side, lots=lots, age_hours=age_hours, unrealized_pnl=pnl)
+    return PositionSnapshot()
+
 
 # ═══════════════════════════════════════════════════════════════════
 # PPO PERFORMANCE TRACKER (Analytics Only - PPO Always Decides)
@@ -996,68 +1051,71 @@ class ArbiterLogic:
 
     def _check_seasonality_time_gate(self) -> Tuple[bool, str]:
         """
-        Check if SeasonalityRiskExpert allows NEW trades at this time.
+        LIVE-SAFE Seasonality gate for NEW entries.
 
-        HARD gate in LIVE mode:
-        - Blocks new entries outside trading hours / near close.
-        - In TRAINING mode, we still allow trades to keep the full distribution,
-          but LIVE mode always respects the Seasonality trading window.
+        Policy:
+        - TRAINING runs: allow all times (keep full distribution).
+        - LIVE/PAPER runs: if seasonality data is missing/invalid -> BLOCK new entries (fail-closed).
+        Position management (close/reverse) is handled elsewhere (we only block new entries).
         """
-        # In pure TRAINING runs (no live execution), skip the gate entirely.
-        # In LIVE runs (execution_mode='live' on the bus), always enforce it,
-        # even if voting mode was left in TRAINING by mistake.
+        # 1) Training bypass (unless explicitly live)
+        exec_mode = None
         try:
             if self._smart_bus is not None:
                 exec_mode = self._smart_bus.get("execution_mode", "ArbiterLogic", default=None)
-                if str(exec_mode).lower() != "live" and is_training_mode():
-                    return (True, "Training mode - all times allowed")
         except Exception:
-            if is_training_mode():
-                return (True, "Training mode - all times allowed")
+            exec_mode = None
 
+        exec_mode_str = str(exec_mode or "").lower()
+        is_live_exec = exec_mode_str in ("live", "paper")
+
+        if not is_live_exec and is_training_mode():
+            return (True, "Training mode - all times allowed")
+
+        # 2) In live/paper, fail CLOSED if bus/seasonality is unavailable
         if self._smart_bus is None:
-            return (True, "No bus access")
+            return (False, "Seasonality unavailable in LIVE - blocking new entries")
 
         try:
             seasonality = self._smart_bus.get(
                 "SeasonalityRiskExpert_voting_proposal",
-                "ArbiterLogic"
+                "ArbiterLogic",
             )
 
             if not isinstance(seasonality, dict):
+                if is_live_exec:
+                    return (False, "Seasonality missing in LIVE - blocking new entries")
                 return (True, "No seasonality data")
 
-            trading_window = seasonality.get("trading_window", {})
+            trading_window = seasonality.get("trading_window", None)
             if not isinstance(trading_window, dict):
+                if is_live_exec:
+                    return (False, "Seasonality trading_window missing in LIVE - blocking new entries")
                 return (True, "No trading_window data")
 
-            # If SeasonalityRiskExpert explicitly allows off-hours trading,
-            # treat all times as valid and bypass time-based blocks.
-            if trading_window.get("allow_off_hours_override", False):
+            # Optional override: if expert explicitly allows off-hours, allow all times.
+            if bool(trading_window.get("allow_off_hours_override", False)):
                 local_time = trading_window.get("local_time", "unknown")
-                return (True, f"Off-hours trading override (local={local_time})")
+                return (True, f"Off-hours override enabled (local={local_time})")
 
-            no_new_trades = trading_window.get("no_new_trades", False)
-            if no_new_trades:
+            # Hard blocks:
+            if bool(trading_window.get("no_new_trades", False)):
                 local_time = trading_window.get("local_time", "unknown")
                 minutes_to_close = trading_window.get("minutes_to_close", 0)
-                reason = (
-                    f"Seasonality: No new trades "
-                    f"(local={local_time}, close_in={minutes_to_close}min)"
-                )
-                return (False, reason)
+                return (False, f"Seasonality: No new trades (local={local_time}, close_in={minutes_to_close}min)")
 
-            in_primary = trading_window.get("in_primary_window", True)
-            if not in_primary:
-                local_hour = trading_window.get("local_hour", 0)
-                reason = f"Seasonality: Outside trading hours (hour={local_hour})"
-                return (False, reason)
+            if not bool(trading_window.get("in_primary_window", True)):
+                local_hour = trading_window.get("local_hour", "unknown")
+                return (False, f"Seasonality: Outside trading hours (hour={local_hour})")
 
             return (True, "Within trading window")
 
         except Exception as e:
-            self.logger.warning(f"[SEASONALITY_GATE] Error checking time gate: {e}")
-            return (True, "Error checking - default allow")
+            # In live/paper: fail closed. In non-live: fail open.
+            if is_live_exec:
+                return (False, f"Seasonality error in LIVE - blocking new entries ({type(e).__name__})")
+            return (True, f"Seasonality error - default allow ({type(e).__name__})")
+
 
     def _get_seasonality_gate_info(self) -> Dict[str, Any]:
         """Get seasonality gate info for metadata."""
@@ -1174,7 +1232,8 @@ class ArbiterLogic:
         strategy_info: Optional[StrategyInfo] = None,
         trading_mode_info: Optional[TradingModeInfo] = None,
         world_model_info: Optional[WorldModelInfo] = None,
-        positions_by_instrument: Optional[Dict[str, bool]] = None,  # v5.2: Per-instrument positions
+        positions_by_instrument: Optional[Dict[str, Any]] = None,  # v5.6: bool legacy OR dict PositionSnapshot-like
+        defer_stats_recording: bool = False,  # v5.6: allow caller to post-process then record stats once
     ) -> ArbiterMultiDecision:
         """
         Make trading decisions for multiple instruments.
@@ -1204,8 +1263,14 @@ class ArbiterLogic:
             inst_committee = self._extract_instrument_committee(committee_data, instrument)
             inst_experts = self._extract_instrument_experts(expert_signals, instrument)
 
-            # v5.2: Check if this specific instrument has a position
-            has_position = positions_by_instrument.get(instrument, False)
+            # v5.6: Side-aware position snapshot (fixes hysteresis + intent correctness)
+            pos_raw = None
+            # Try exact key, then normalized key
+            if instrument in positions_by_instrument:
+                pos_raw = positions_by_instrument.get(instrument)
+            else:
+                pos_raw = positions_by_instrument.get(_norm_symbol(instrument))
+            pos = _coerce_position_snapshot(pos_raw)
 
             decision = self._make_single_instrument_decision(
                 instrument=instrument,
@@ -1217,11 +1282,12 @@ class ArbiterLogic:
                 strategy_info=strat,
                 trading_mode_info=tm_info,
                 world_model_info=wm_info,
-                has_existing_position=has_position,  # v5.2
+                position=pos,  # v5.6
             )
 
             decisions[instrument] = decision
-            self.stats_tracker.record_decision(decision)
+            if not defer_stats_recording:
+                self.stats_tracker.record_decision(decision)
 
         autonomy_state = self.autonomy_tracker.get_state_summary()
 
@@ -1231,6 +1297,11 @@ class ArbiterLogic:
             "memory_gate_value": memory_info.risk_multiplier,
             "risk_portfolio": risk_info.portfolio_risk,
             "stats": self.stats_tracker.to_dict(),
+            "thresholds": {
+                "direction_long_short": 0.35,
+                "min_trade_confidence_new": 0.50,
+                "hysteresis": dict(getattr(self, "_hysteresis_cfg", {})),
+            },
             "strategy": {
                 "curriculum_stage": strat.curriculum_stage,
                 "stage_difficulty": strat.stage_difficulty,
@@ -1265,6 +1336,18 @@ class ArbiterLogic:
             global_meta=global_meta,
         )
 
+    def record_multi_decision(self, multi_decision: ArbiterMultiDecision) -> None:
+        """
+        Record FINAL decisions for stats tracking.
+        Use when caller post-processes decisions (warmup/focus) and wants stats to match published payload.
+        """
+        try:
+            for _, decision in multi_decision.instruments.items():
+                self.stats_tracker.record_decision(decision)
+        except Exception:
+            # Stats must never block trading.
+            pass
+
     # ─────────────────────────────────────────────────────────────
     # Single-instrument decision
     # ─────────────────────────────────────────────────────────────
@@ -1280,7 +1363,7 @@ class ArbiterLogic:
         strategy_info: Optional[StrategyInfo] = None,
         trading_mode_info: Optional[TradingModeInfo] = None,
         world_model_info: Optional[WorldModelInfo] = None,
-        has_existing_position: bool = False,  # v5.2: Per-instrument independence
+        position: Optional[PositionSnapshot] = None,  # v5.6: side-aware positions
     ) -> InstrumentDecision:
         """
         Make a trading decision for a single instrument.
@@ -1303,6 +1386,7 @@ class ArbiterLogic:
         action, log_prob, value = self.ppo_core.select_action(
             observation,
             deterministic=is_live,  # Deterministic in live, stochastic in training
+            instrument=instrument,
         )
 
         direction_score = float(action[0]) if len(action) > 0 else 0.0
@@ -1343,10 +1427,12 @@ class ArbiterLogic:
             instrument=instrument,
             proposed_direction=direction,
             trust_score=hysteresis_score,
-            has_existing_position=has_existing_position,
+            position=position or PositionSnapshot(),
         )
 
         # 5) Gating pipeline (memory + risk)
+        pos = position or PositionSnapshot()
+        has_existing_position = bool(pos.has)
         gating_result = GatingResult.apply_gates(
             memory_info, risk_info, direction_score,
             has_existing_position=has_existing_position,
@@ -1511,11 +1597,12 @@ class ArbiterLogic:
         # ─────────────────────────────────────────────────────────
         # Action intent (explicit CLOSE / OPEN / REVERSE inference)
         # ─────────────────────────────────────────────────────────
-        prev_dir = self._last_directions.get(instrument, "flat")
+        # v5.6: Use REAL position direction (side-aware), not stale last_dir
+        held_dir = (pos.direction if has_existing_position and pos.direction != "flat" else self._last_directions.get(instrument, "flat"))
         if has_existing_position:
             if direction == "flat" or position_size == 0.0:
                 action_intent = "close"
-            elif direction == prev_dir:
+            elif direction == held_dir:
                 # DISABLED v5.5: PPO cannot scale positions - SmartPosition handles scaling
                 # PPO should only close or hold when position exists in same direction
                 action_intent = "hold"
@@ -1533,6 +1620,33 @@ class ArbiterLogic:
         explicit_close = bool(has_existing_position and action_intent == "close")
         explicit_reverse = bool(has_existing_position and action_intent == "reverse")
 
+        # ─────────────────────────────────────────────────────────
+        # v5.7 FIX: gate_passed for position management actions
+        # ─────────────────────────────────────────────────────────
+        # BUG: Old logic `gate_passed = gating_result.gate_passed and position_size > 0.0`
+        # suppresses CLOSE/REVERSE because they have position_size=0.
+        # FIX: Position management actions (close/reverse) should be actionable!
+        should_execute = False
+        if has_existing_position:
+            # Allow explicit position-management actions even with size=0
+            if action_intent in ("close", "reverse"):
+                should_execute = True
+            # "hold" is explicitly NOT actionable (no trade signal)
+        else:
+            # New entries must pass gate + have size
+            should_execute = bool(gating_result.gate_passed and position_size > 0.0)
+
+        # ─────────────────────────────────────────────────────────
+        # DIAGNOSTIC LOGGING (v5.7) - Critical for debugging buy-only issues
+        # ─────────────────────────────────────────────────────────
+        if self.debug or action_intent in ("close", "reverse", "open_short"):
+            self.logger.info(
+                f"[ARBITER][{instrument}] direction_score={direction_score:.3f} → "
+                f"direction={direction} | action_intent={action_intent} | "
+                f"gate_passed={should_execute} | has_pos={has_existing_position} | "
+                f"held_dir={held_dir} | pos_size={position_size:.3f}"
+            )
+
         decision = InstrumentDecision(
             instrument=instrument,
             direction=direction,
@@ -1548,7 +1662,7 @@ class ArbiterLogic:
             regime_strength=regime_strength,
             value_estimate=value,
             raw_action=action.tolist(),
-            gate_passed=gating_result.gate_passed and position_size > 0.0,
+            gate_passed=should_execute,  # v5.7: Use should_execute instead of suppressing close/reverse
             gate_reasons=gating_result.reasons + strategy_reasons + tm_reasons + wm_reasons,
             reasoning=reasoning,
             meta=self._build_decision_meta(
@@ -1570,6 +1684,7 @@ class ArbiterLogic:
                 trading_mode_info=tm,
                 world_model_info=wm,
                 autonomy_state=autonomy_meta,
+                position=pos,
             ),
         )
 
@@ -1587,8 +1702,8 @@ class ArbiterLogic:
     def _score_to_direction(
         self,
         score: float,
-        long_threshold: float = 0.35,
-        short_threshold: float = -0.35,
+        long_threshold: Optional[float] = None,
+        short_threshold: Optional[float] = None,
     ) -> str:
         """
         Convert a direction_score to a discrete direction.
@@ -1598,6 +1713,27 @@ class ArbiterLogic:
         - score <  short_threshold → SHORT
         - otherwise                → FLAT
         """
+        if long_threshold is None:
+            try:
+                long_threshold = float(
+                    getattr(self.ppo_core.config, "direction_long_threshold", 0.35)
+                )
+            except Exception:
+                long_threshold = 0.35
+        if short_threshold is None:
+            try:
+                short_threshold = float(
+                    getattr(self.ppo_core.config, "direction_short_threshold", -0.35)
+                )
+            except Exception:
+                short_threshold = -0.35
+
+        # Guard against misconfiguration (keep thresholds symmetric-ish).
+        if long_threshold < 0.0:
+            long_threshold = abs(long_threshold)
+        if short_threshold > 0.0:
+            short_threshold = -abs(short_threshold)
+
         if score > long_threshold:
             return "long"
         if score < short_threshold:
@@ -1656,9 +1792,18 @@ class ArbiterLogic:
                     f"(experts aligned, +{agreement_boost:.0%} conf)"
                 )
             else:
-                # Disagreement: penalty up to -20%, PPO still decides
-                disagreement_penalty = 0.20 * combined_expert_conf
-                confidence = max(0.1, ppo_conf - disagreement_penalty)
+                # Disagreement: only penalize if experts/committee have a NON-FLAT directional preference.
+                # "flat" means "no strong opinion" in most expert systems.
+                # v5.7.1 FIX (buy-only bias):
+                # Use multiplicative penalty instead of subtractive penalty.
+                # Subtractive penalties can wipe out moderate SHORT signals when
+                # experts are biased LONG, effectively preventing shorts.
+                if combined_expert_dir == "flat":
+                    disagreement_penalty = 0.02 * combined_expert_conf
+                else:
+                    disagreement_penalty = 0.20 * combined_expert_conf
+                penalty_factor = max(0.0, 1.0 - disagreement_penalty)
+                confidence = max(0.1, ppo_conf * penalty_factor)
                 reasoning = (
                     f"[{phase}] PPO decides {direction.upper()} "
                     f"(experts prefer {combined_expert_dir}, -{disagreement_penalty:.0%} conf)"
@@ -1744,31 +1889,46 @@ class ArbiterLogic:
         committee_data: Dict[str, Any],
         instrument: str,
     ) -> Dict[str, Any]:
-        """Extract committee data for a specific instrument, with safe fallbacks."""
+        """Extract committee data for a specific instrument, with normalized-key fallbacks."""
         inst_map = committee_data.get("instruments")
+        picked: Dict[str, Any] = {}
+
         if isinstance(inst_map, dict):
-            inst_data = inst_map.get(instrument, {}) or {}
-            if inst_data:
-                if self.debug:
-                    self.logger.debug(
-                        f"[DIRECTION] {instrument}: per-instrument committee data: "
-                        f"action={inst_data.get('action', 'N/A')}, "
-                        f"conf={inst_data.get('confidence', 'N/A')}"
-                    )
-                return {
-                    "action": inst_data.get("action", "hold"),
-                    "confidence": inst_data.get("confidence", 0.5),
-                    "consensus_score": inst_data.get("consensus_score", 0.5),
-                    "fragility": committee_data.get("fragility", 0.5),
-                    "regime": committee_data.get("regime", "unknown"),
-                    "regime_strength": committee_data.get("regime_strength", 0.5),
-                }
+            # Try direct key first
+            direct = inst_map.get(instrument)
+            if isinstance(direct, dict) and direct:
+                picked = direct
+            else:
+                # Normalize lookup (handles EURUSD vs EURUSDm / EURUSD_ etc.)
+                target = _norm_symbol(instrument)
+                for k, v in inst_map.items():
+                    if not isinstance(k, str) or not isinstance(v, dict):
+                        continue
+                    if _norm_symbol(k) == target:
+                        picked = v
+                        break
+
+        if picked:
+            if self.debug:
+                self.logger.debug(
+                    f"[DIRECTION] {instrument}: per-instrument committee data: "
+                    f"action={picked.get('action', 'N/A')}, conf={picked.get('confidence', 'N/A')}"
+                )
+            return {
+                "action": picked.get("action", picked.get("direction", "hold")),
+                "confidence": picked.get("confidence", picked.get("weight", 0.5)),
+                "consensus_score": picked.get("consensus_score", 0.5),
+                "fragility": committee_data.get("fragility", 0.5),
+                "regime": committee_data.get("regime", "unknown"),
+                "regime_strength": committee_data.get("regime_strength", 0.5),
+            }
 
         if self.debug:
             self.logger.warning(
                 f"[DIRECTION] {instrument}: no per-instrument committee data; "
                 f"using global action={committee_data.get('action', 'hold')}"
             )
+
         return {
             "action": committee_data.get("action", "hold"),
             "confidence": committee_data.get("confidence", 0.5),
@@ -1777,6 +1937,7 @@ class ArbiterLogic:
             "regime": committee_data.get("regime", "unknown"),
             "regime_strength": committee_data.get("regime_strength", 0.5),
         }
+
 
     def _extract_instrument_experts(
         self,
@@ -1818,7 +1979,7 @@ class ArbiterLogic:
         instrument: str,
         proposed_direction: str,
         trust_score: float,
-        has_existing_position: bool,
+        position: PositionSnapshot,
     ) -> str:
         """
         Apply hysteresis to prevent flip-flopping on OPEN POSITIONS only.
@@ -1850,6 +2011,8 @@ class ArbiterLogic:
         # Get current hold count for this instrument
         hold_count = self._direction_hold_counts.get(instrument, 0)
 
+        has_existing_position = bool(position.has)
+
         # If no real position, do NOT apply hysteresis – trust PPO direction
         if not has_existing_position:
             direction = proposed_direction
@@ -1857,8 +2020,8 @@ class ArbiterLogic:
             self._last_directions[instrument] = direction
             return direction
 
-        # There IS an open position – use last_dir as the held direction
-        last_dir_effective = last_dir
+        # There IS an open position – use REAL position direction if known, else fallback to last_dir
+        last_dir_effective = position.direction if position.direction != "flat" else last_dir
 
         if last_dir_effective == "flat":
             # We have a position but no history (e.g. restart) – let PPO take over
@@ -1918,6 +2081,7 @@ class ArbiterLogic:
         trading_mode_info: Optional[TradingModeInfo] = None,
         world_model_info: Optional[WorldModelInfo] = None,
         autonomy_state: Optional[Dict[str, Any]] = None,
+        position: Optional[PositionSnapshot] = None,
     ) -> Dict[str, Any]:
         """
         Build rich metadata for debugging, dashboards, and execution modules.
@@ -1933,12 +2097,26 @@ class ArbiterLogic:
         tm = trading_mode_info or TradingModeInfo()
         wm = world_model_info or WorldModelInfo()
         autonomy_state = autonomy_state or self.autonomy_tracker.get_state_summary()
+        pos = position or PositionSnapshot()
 
         return {
             "instrument": instrument,
             "direction": direction,
             "position_size": position_size,
             "has_existing_position": has_existing_position,
+            "position": {
+                "has": bool(pos.has),
+                "side": int(pos.side),
+                "direction": pos.direction,
+                "lots": float(pos.lots),
+                "age_hours": float(pos.age_hours),
+                "unrealized_pnl": float(pos.unrealized_pnl),
+            },
+            "thresholds": {
+                "direction_long_short": 0.35,
+                "min_trade_confidence_new": 0.50,
+                "hysteresis": dict(self._hysteresis_cfg),
+            },
             "action_intent": action_intent,
             "ppo_exit": {
                 "explicit_close": explicit_close,
@@ -1962,7 +2140,7 @@ class ArbiterLogic:
                 "ppo": {
                     "trust_score": trust_score,
                     "raw_size_score": size_score,
-                    "value": self.ppo_core._last_value,
+                    "value": getattr(self.ppo_core, "_last_value", None),
                     "action_intent": action_intent,
                     "explicit_close": explicit_close,
                     "explicit_reverse": explicit_reverse,

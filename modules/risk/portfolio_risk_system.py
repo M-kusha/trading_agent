@@ -135,7 +135,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
         else:
             self._cfg = config
 
-        self.instruments = instruments or ["EUR_USD", "XAU_USD"]
+        self.instruments = instruments or ["EURUSD", "XAUUSD"]
 
         # Minimal pre-initialization so BaseModule.__init__ can safely call self._initialize()
         # without attribute errors.

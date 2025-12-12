@@ -355,12 +355,9 @@ class MT5DataCollector:
     # ═══════════════════════════════════════════════════════════════════
     
     def standardize_symbol_name(self, symbol: str) -> str:
-        """Convert MT5 symbol name to standard format"""
-        symbol_map = {
-            "EURUSD": "EUR_USD",
-            "XAUUSD": "XAU_USD", 
-        }
-        return symbol_map.get(symbol, symbol)
+        """Convert any symbol format to MT5 canonical format (no separators)."""
+        # Remove common separators and convert to uppercase
+        return symbol.replace("_", "").replace("/", "").upper()
     
     def get_expected_interval(self, timeframe: str) -> timedelta:
         """Get expected time interval for timeframe"""

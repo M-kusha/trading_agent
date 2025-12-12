@@ -48,6 +48,36 @@ except ImportError:
     EXIT_ENGINE_AVAILABLE = False
 
 
+# ═══════════════════════════════════════════════════════════════════
+# v5.7: Canonical direction mapper to unify long/short/buy/sell
+# ═══════════════════════════════════════════════════════════════════
+def _canon_direction(d: str) -> str:
+    """
+    Normalize direction strings to canonical form: 'buy', 'sell', or 'hold'.
+    
+    This prevents mismatches where PPO outputs 'long'/'short' but 
+    SmartPositionManager expects 'BUY'/'SELL'.
+    """
+    d = (d or "").lower().strip()
+    if d in ("buy", "long", "bullish", "open_long"):
+        return "buy"
+    if d in ("sell", "short", "bearish", "open_short"):
+        return "sell"
+    return "hold"
+
+
+def _direction_to_side(d: str) -> int:
+    """
+    Convert direction string to numeric side: +1 (long), -1 (short), 0 (flat).
+    """
+    d = (d or "").lower().strip()
+    if d in ("buy", "long", "bullish", "open_long", "scale_up"):
+        return 1
+    if d in ("sell", "short", "bearish", "open_short", "scale_down"):
+        return -1
+    return 0
+
+
 @dataclass
 class ExecutorConfig:
     execution_mode: str = "sim"        # 'sim' | 'live'
@@ -1939,6 +1969,29 @@ class Executor(BaseModule):
             self.logger.warning(f"[SMART] Failed to sync MT5 positions: {e}")
             mt5_positions = []
 
+        # ══════════════════════════════════════════════════════════════════
+        # v5.7 DIAGNOSTIC: Log PPO decisions for debugging buy-only issues
+        # ══════════════════════════════════════════════════════════════════
+        try:
+            ppo_multi = self.bus.get("ppo_multi_decision", "Executor", default=None)
+            if isinstance(ppo_multi, dict):
+                instruments_data = ppo_multi.get("instruments", {})
+                for inst, dec in instruments_data.items():
+                    if isinstance(dec, dict):
+                        direction = dec.get("direction", "flat")
+                        dir_score = dec.get("direction_score", 0.0)
+                        gate_passed = dec.get("gate_passed", False)
+                        action_intent = (dec.get("meta") or {}).get("action_intent", "unknown")
+                        
+                        # Only log actionable decisions or shorts (for debugging)
+                        if gate_passed or direction == "short" or dir_score < -0.2:
+                            self.logger.info(
+                                f"[PPO→EXEC] {inst}: direction={direction} dir_score={dir_score:.3f} "
+                                f"gate_passed={gate_passed} action_intent={action_intent}"
+                            )
+        except Exception:
+            pass
+
         # Step 2: hedge cleanup
         try:
             hedge_cleanup = self.smart_position_manager.needs_hedge_cleanup(mt5_positions)
@@ -2054,8 +2107,8 @@ class Executor(BaseModule):
                     consensus_confidence=signal_strength,
                 )
 
-            # CLOSE / REVERSE
-            if decision.action in (PositionAction.CLOSE, PositionAction.REVERSE):
+            # CLOSE
+            if decision.action == PositionAction.CLOSE:
                 self.logger.info(
                     format_operator_message(
                         "🎯",
@@ -2076,6 +2129,86 @@ class Executor(BaseModule):
                         }
                     )
                     self.smart_position_manager.record_trade(symbol)
+
+            # REVERSE (close then open opposite)
+            elif decision.action == PositionAction.REVERSE:
+                self.logger.info(
+                    format_operator_message(
+                        "🔁",
+                        "SMART_REVERSE",
+                        symbol=symbol,
+                        side=("BUY" if decision.side > 0 else "SELL"),
+                        reasons=decision.reasons[:2],
+                    )
+                )
+
+                close_result = self.adapter.close_position(symbol)
+                if not close_result.get("ok"):
+                    self.logger.warning(
+                        format_operator_message(
+                            "⚠️",
+                            "SMART_REVERSE_CLOSE_FAILED",
+                            symbol=symbol,
+                            error=close_result.get("error", "unknown"),
+                        )
+                    )
+                    continue
+
+                fills.append(
+                    {
+                        "action": "reverse_close",
+                        "symbol": symbol,
+                        "reasons": decision.reasons,
+                        "ok": True,
+                    }
+                )
+                self.smart_position_manager.record_trade(symbol)
+
+                # Size the new position (align with SMART_OPEN: prefer unified lot calculator)
+                lots = 0.0
+                try:
+                    volatility = self._get_current_volatility(symbol)
+                    lots, _ = self.lot_calculator.calculate_lots(
+                        symbol=symbol,
+                        signal_strength=float(max(0.1, decision.confidence)),
+                        volatility=volatility,
+                    )
+                except Exception:
+                    lots = float(decision.lots or self.adapter.cfg.min_lot)
+
+                lots = max(float(lots), float(self.adapter.cfg.min_lot))
+
+                open_result = self.adapter.market_order(symbol, decision.side, lots)
+                if open_result.get("ok"):
+                    px = float(open_result.get("price", 0) or 0)
+                    contract_size = self._get_contract_size(symbol)
+                    fill = TradeFill(
+                        id=f"fill-{uuid.uuid4().hex[:10]}",
+                        ts=time.time(),
+                        step=self.step_idx,
+                        instrument=symbol,
+                        action="reverse",
+                        side=decision.side,
+                        units=lots * contract_size,
+                        price=px,
+                        notional_eur=lots * contract_size * px,
+                        realized_pnl=0.0,
+                        origin_id="smart_reverse",
+                        comment="; ".join(decision.reasons[:2]),
+                    ).as_bus()
+                    self.trades.append(fill)
+                    fills.append(fill)
+                    self.smart_position_manager.record_trade(symbol)
+                else:
+                    self.logger.warning(
+                        format_operator_message(
+                            "⚠️",
+                            "SMART_REVERSE_OPEN_FAILED",
+                            symbol=symbol,
+                            lots=f"{lots:.2f}",
+                            error=open_result.get("error", "unknown"),
+                        )
+                    )
 
             # SCALE_UP
             elif decision.action == PositionAction.SCALE_UP and decision.lots > 0:
@@ -2545,10 +2678,33 @@ class Executor(BaseModule):
         try:
             final_decision = self.bus.get("final_decision", "Executor")
             if isinstance(final_decision, dict):
-                consensus_action = str(final_decision.get("action", "HOLD")).upper()
+                raw_action = str(final_decision.get("action", "HOLD")).lower()
+                # v5.7: Normalize direction strings to BUY/SELL/HOLD
+                if raw_action in ("buy", "long", "bullish", "open_long"):
+                    consensus_action = "BUY"
+                elif raw_action in ("sell", "short", "bearish", "open_short"):
+                    consensus_action = "SELL"
+                else:
+                    consensus_action = "HOLD"
                 consensus_confidence = float(
                     final_decision.get("confidence", 0.5) or 0.5
                 )
+
+            # Also check PPO decision for consensus override
+            ppo_decision = self.bus.get("ppo_final_decision", "Executor", default=None)
+            if isinstance(ppo_decision, dict):
+                ppo_dir = str(ppo_decision.get("direction", "flat")).lower()
+                ppo_gate = ppo_decision.get("gate_passed", False)
+                ppo_conf = float(ppo_decision.get("confidence", 0.0) or 0.0)
+                
+                # If PPO has a strong signal, override consensus_action
+                if ppo_gate and ppo_conf > 0.5:
+                    if ppo_dir in ("long", "buy"):
+                        consensus_action = "BUY"
+                        consensus_confidence = max(consensus_confidence, ppo_conf)
+                    elif ppo_dir in ("short", "sell"):
+                        consensus_action = "SELL"
+                        consensus_confidence = max(consensus_confidence, ppo_conf)
 
             consensus_result = self.bus.get("consensus_result", "Executor")
             if isinstance(consensus_result, dict):
@@ -3144,4 +3300,3 @@ class Executor(BaseModule):
                 self.logger.warning(f"_log_unified_cycle failed: {outer}")
             except Exception:
                 pass
-

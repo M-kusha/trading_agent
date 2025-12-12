@@ -900,7 +900,7 @@ class UnifiedMarketModule(
             aggregated.setdefault('liquidity_prediction', {})
             aggregated.setdefault('liquidity_score', 0.5)
             aggregated.setdefault('liquidity_thesis', thesis)
-            aggregated.setdefault('liquidity_score_by_instrument', {"EUR_USD": 0.5, "XAU_USD": 0.5})
+            aggregated.setdefault('liquidity_score_by_instrument', {"EURUSD": 0.5, "XAUUSD": 0.5})
             aggregated.setdefault('market_depth', {})
             aggregated.setdefault('session_data', {})
             aggregated.setdefault('spread_analysis', {})
@@ -1025,6 +1025,80 @@ class UnifiedMarketModule(
         self.trace(f"Extracted data sources: {market_data.get('_sources', [])}", level=TraceLevel.TRACE)
         return market_data
 
+    def _extract_data_timestamp(self, market_data: Dict[str, Any]) -> Optional[datetime.datetime]:
+        """
+        Extract timestamp from market data for training consistency.
+
+        During training/backtesting, we must use the data's timestamp, not live time.
+        This ensures session classification is correct for historical data.
+
+        Returns:
+            datetime.datetime if found, None otherwise (components should fallback to UTC)
+        """
+        try:
+            # 1) Check for explicit timestamp in market_data
+            ts = market_data.get('timestamp') or market_data.get('data_timestamp')
+            if ts is not None:
+                return self._parse_timestamp(ts)
+
+            # 2) Check timestamps list (use last one - most recent)
+            timestamps = market_data.get('timestamps', [])
+            if isinstance(timestamps, (list, np.ndarray)) and len(timestamps) > 0:
+                last_ts = timestamps[-1]
+                parsed = self._parse_timestamp(last_ts)
+                if parsed is not None:
+                    return parsed
+
+            # 3) Check _extraction_time from UnifiedDataExtractor
+            ext_time = market_data.get('_extraction_time')
+            if ext_time is not None:
+                parsed = self._parse_timestamp(ext_time)
+                if parsed is not None:
+                    return parsed
+
+            # 4) Check nested instrument data for timestamps
+            for key in ['EURUSD', 'XAUUSD', 'EUR/USD', 'XAU/USD']:
+                inst_data = market_data.get(key)
+                if isinstance(inst_data, dict):
+                    inst_ts = inst_data.get('timestamp') or inst_data.get('timestamps')
+                    if inst_ts is not None:
+                        if isinstance(inst_ts, (list, np.ndarray)) and len(inst_ts) > 0:
+                            parsed = self._parse_timestamp(inst_ts[-1])
+                        else:
+                            parsed = self._parse_timestamp(inst_ts)
+                        if parsed is not None:
+                            return parsed
+        except Exception as e:
+            self.trace(f"Error extracting data timestamp: {e}", level=TraceLevel.WARNING)
+
+        return None  # Components should fallback to UTC now
+
+    def _parse_timestamp(self, ts: Any) -> Optional[datetime.datetime]:
+        """Parse various timestamp formats to datetime."""
+        try:
+            if ts is None:
+                return None
+            if isinstance(ts, datetime.datetime):
+                return ts
+            if isinstance(ts, np.datetime64):
+                # Convert numpy datetime64 to python datetime
+                return ts.astype('datetime64[us]').astype(datetime.datetime)
+            if isinstance(ts, str):
+                # Handle ISO format with Z suffix
+                if ts.endswith('Z'):
+                    ts = ts[:-1] + '+00:00'
+                return datetime.datetime.fromisoformat(ts)
+            if isinstance(ts, (int, float)):
+                # Assume Unix timestamp
+                return datetime.datetime.utcfromtimestamp(ts)
+            # Try pandas Timestamp
+            import pandas as pd
+            if isinstance(ts, pd.Timestamp):
+                return ts.to_pydatetime()
+        except Exception:
+            pass
+        return None
+
     def _check_circuit_breakers(self):
         """Check all circuit breakers before execution"""
         self.trace("Checking circuit breakers", level=TraceLevel.TRACE)
@@ -1142,10 +1216,15 @@ class UnifiedMarketModule(
         start_time = time.time()
 
         try:
-            # Prepare input data
+            # FIX: Extract data timestamp for training consistency
+            # Components use this to determine session, not live UTC time
+            data_timestamp = self._extract_data_timestamp(market_data)
+
+            # Prepare input data with unified timestamp and pre-extracted data
             input_data = {
                 "market_data": market_data,
                 "shared_context": shared_context,
+                "data_timestamp": data_timestamp,  # Pass to all components
             }
 
             self.trace(
@@ -1489,7 +1568,7 @@ class UnifiedMarketModule(
             "liquidity_prediction": {},
             "liquidity_score": 0.5,
             "liquidity_thesis": error_thesis,
-            "liquidity_score_by_instrument": {"EUR_USD": 0.5, "XAU_USD": 0.5},
+            "liquidity_score_by_instrument": {"EURUSD": 0.5, "XAUUSD": 0.5},
             "market_depth": {},
             "session_data": {},
             "spread_analysis": {},

@@ -2434,8 +2434,14 @@ class ModuleOrchestrator:
             with self._circuit_breaker_lock:
                 self.circuit_breakers[name] = CircuitBreakerState()
 
-            self.smart_bus.register_provider(name, metadata.provides)
-            self.smart_bus.register_consumer(name, metadata.requires)
+            try:
+                self.smart_bus.register_capabilities(name, provides=metadata.provides, requires=metadata.requires)
+                if getattr(metadata, "name", None) and metadata.name != name:
+                    self.smart_bus.register_capabilities(metadata.name, provides=metadata.provides, requires=metadata.requires)
+            except Exception:
+                # Capability tracking is best-effort; avoid blocking registration.
+                self.smart_bus.register_provider(name, metadata.provides)
+                self.smart_bus.register_consumer(name, metadata.requires)
 
             if metadata.is_voting_member:
                 self.voting_members.append(name)

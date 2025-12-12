@@ -382,7 +382,7 @@ class MarketDataConfig:
     circuit_breaker_threshold: int = 3
     
     # Symbols and timeframes
-    supported_symbols: List[str] = field(default_factory=lambda: ["XAU_USD", "EUR_USD"])
+    supported_symbols: List[str] = field(default_factory=lambda: ["XAUUSD", "EURUSD"])
     # Default multi-timeframe set: M15 primary, H1/H4/D1 for context.
     supported_timeframes: List[str] = field(default_factory=lambda: ["M15", "H1", "H4", "D1"])
     # M15 is the primary trading timeframe (decision/execution level).

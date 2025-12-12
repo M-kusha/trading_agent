@@ -192,12 +192,12 @@ modules:
     - SeasonalityRiskExpert_confidence
     - MomentumExpert_voting_proposal
     - MomentumExpert_confidence
-      - TrendExpert_voting_proposal
-      - TrendExpert_confidence
-      - DynamicRiskController_voting_proposal
-      - DynamicRiskController_confidence
-      - market_regime
-      - volatility_data
+    - TrendExpert_voting_proposal
+    - TrendExpert_confidence
+    - DynamicRiskController_voting_proposal
+    - DynamicRiskController_confidence
+    - market_regime
+    - volatility_data
 
   ConsensusAnalyzer:
     category: voting
@@ -961,14 +961,14 @@ modules:
     - indicators
     - liquidity_data
     - market_data
-    - market_data_EUR_USD_M15
-    - market_data_EUR_USD_D1
-    - market_data_EUR_USD_H1
-    - market_data_EUR_USD_H4
-    - market_data_XAU_USD_M15
-    - market_data_XAU_USD_D1
-    - market_data_XAU_USD_H1
-    - market_data_XAU_USD_H4
+    - market_data_EURUSD_M15
+    - market_data_EURUSD_D1
+    - market_data_EURUSD_H1
+    - market_data_EURUSD_H4
+    - market_data_XAUUSD_M15
+    - market_data_XAUUSD_D1
+    - market_data_XAUUSD_H1
+    - market_data_XAUUSD_H4
     - market_liquidity
     - module_insights
     - multi_timeframe_data

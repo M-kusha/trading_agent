@@ -121,6 +121,8 @@ class UnifiedLotCalculator:
         - Drawdown scaling
         - DynamicRiskController risk_scale
         - Trading mode multiplier
+        - Prime hours boost
+        - Market context adjustment (regime stability, theme transition, liquidity)
         - Prop firm headroom reduction
 
     ❌ NOT HERE (handled elsewhere):
@@ -426,6 +428,98 @@ class UnifiedLotCalculator:
         except Exception:
             pass
         return 1.0, False
+
+    def get_market_context_adjustment(self) -> Tuple[float, Dict[str, float]]:
+        """
+        Get lot size adjustment based on market context from UnifiedMarketModule.
+
+        Uses underutilized market outputs:
+        - regime_stability: Lower stability = reduce lot size
+        - theme_transition: High transition (choppy market) = reduce lot size
+        - regime_accuracy: Lower accuracy = less trust in regime = reduce size
+        - liquidity_score: Low liquidity = reduce size to avoid slippage
+
+        Returns (multiplier, details) tuple where multiplier is in [0.5, 1.0].
+        """
+        details: Dict[str, float] = {
+            "regime_stability": 0.5,
+            "theme_transition": 0.0,
+            "theme_strength": 0.0,
+            "regime_accuracy": 0.5,
+            "liquidity_score": 0.5,
+        }
+
+        try:
+            if not self.bus:
+                return 1.0, details
+
+            # Fetch regime_stability
+            rs = self.bus.get("regime_stability", "LotCalculator", default=None)
+            if isinstance(rs, (int, float)):
+                details["regime_stability"] = float(max(0.0, min(1.0, rs)))
+            elif isinstance(rs, dict):
+                rsv = rs.get("value", rs.get("stability", 0.5))
+                if isinstance(rsv, (int, float)):
+                    details["regime_stability"] = float(max(0.0, min(1.0, rsv)))
+
+            # Fetch theme_transition
+            tt = self.bus.get("theme_transition", "LotCalculator", default=None)
+            if isinstance(tt, (int, float)):
+                details["theme_transition"] = float(max(0.0, min(1.0, tt)))
+
+            # Fetch theme_strength
+            ts = self.bus.get("theme_strength", "LotCalculator", default=None)
+            if isinstance(ts, (int, float)):
+                details["theme_strength"] = float(max(0.0, min(1.0, ts)))
+
+            # Fetch regime_accuracy
+            ra = self.bus.get("regime_accuracy", "LotCalculator", default=None)
+            if isinstance(ra, dict):
+                rav = ra.get("value", ra.get("accuracy", 0.5))
+                if isinstance(rav, (int, float)):
+                    details["regime_accuracy"] = float(max(0.0, min(1.0, rav)))
+            elif isinstance(ra, (int, float)):
+                details["regime_accuracy"] = float(max(0.0, min(1.0, ra)))
+
+            # Fetch liquidity_score
+            liq = self.bus.get("liquidity_score", "LotCalculator", default=None)
+            if isinstance(liq, (int, float)):
+                details["liquidity_score"] = float(max(0.0, min(1.0, liq)))
+            elif isinstance(liq, dict):
+                lv = liq.get("score", liq.get("value", 0.5))
+                if isinstance(lv, (int, float)):
+                    details["liquidity_score"] = float(max(0.0, min(1.0, lv)))
+
+            # Calculate adjustment factors:
+
+            # 1) Regime stability: [0.7, 1.0]
+            # Low stability -> reduce size
+            stability_factor = 0.7 + 0.3 * details["regime_stability"]
+
+            # 2) Theme transition: [0.8, 1.0]
+            # High transition (choppy) -> reduce size
+            # theme_stability = strength penalized by transition rate
+            theme_stability = details["theme_strength"] * (1.0 - details["theme_transition"])
+            theme_factor = 0.8 + 0.2 * theme_stability
+
+            # 3) Regime accuracy: [0.85, 1.0]
+            # Low accuracy -> less trust -> smaller size
+            accuracy_factor = 0.85 + 0.15 * details["regime_accuracy"]
+
+            # 4) Liquidity: [0.7, 1.0]
+            # Low liquidity -> reduce size to avoid slippage
+            liquidity_factor = 0.7 + 0.3 * details["liquidity_score"]
+
+            # Combine multiplicatively
+            combined = stability_factor * theme_factor * accuracy_factor * liquidity_factor
+
+            # Clamp to [0.5, 1.0] - never reduce more than 50%, never increase
+            adjustment = float(max(0.5, min(1.0, combined)))
+
+            return adjustment, details
+
+        except Exception:
+            return 1.0, details
 
     def get_daily_pnl(self) -> float:
         """Get today's P&L from InfoBus (in account currency)."""
@@ -873,6 +967,15 @@ class UnifiedLotCalculator:
             details["adjustments"].append(f"prime_hours_boost→{prime_multiplier:.2f}x")
         details["in_prime_window"] = in_prime
         details["prime_hours_multiplier"] = prime_multiplier
+
+        # 11c. Market context adjustment (regime stability, theme transition, liquidity)
+        # Uses underutilized outputs from UnifiedMarketModule
+        market_ctx_multiplier, market_ctx_details = self.get_market_context_adjustment()
+        if market_ctx_multiplier < 1.0:
+            base_lots *= market_ctx_multiplier
+            details["adjustments"].append(f"market_context={market_ctx_multiplier:.2f}x")
+        details["market_context"] = market_ctx_details
+        details["market_context_multiplier"] = market_ctx_multiplier
 
         # 12. Prop firm headroom reduction
         # CRITICAL: If prop firm limits are breached, return 0 lots to block trading

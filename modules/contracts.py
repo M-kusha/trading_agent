@@ -760,10 +760,10 @@ CONTRACTS: Dict[str, ModuleContract] = {
             # FIX: Keys required by EntryTimingController
             'market_data_latest', 'atr_values', 'session_info',
             # Specific instrument data
-            'market_data_EUR_USD_M15',
-            'market_data_EUR_USD_H1', 'market_data_EUR_USD_H4', 'market_data_EUR_USD_D1',
-            'market_data_XAU_USD_M15',
-            'market_data_XAU_USD_H1', 'market_data_XAU_USD_H4', 'market_data_XAU_USD_D1',
+            'market_data_EURUSD_M15',
+            'market_data_EURUSD_H1', 'market_data_EURUSD_H4', 'market_data_EURUSD_D1',
+            'market_data_XAUUSD_M15',
+            'market_data_XAUUSD_H1', 'market_data_XAUUSD_H4', 'market_data_XAUUSD_D1',
             'universe', 'watched_instruments'
         ],
         requires=[],

@@ -313,7 +313,7 @@ def resolve_data_provider(source: str) -> DataProvider:
 # ───────────────────────────────────────────────────────────────────
 def create_dummy_data(config: TradingConfig) -> Dict[str, Dict[str, pd.DataFrame]]:
     dummy: Dict[str, Dict[str, pd.DataFrame]] = {}
-    instruments = getattr(config, "instruments", None) or ["EUR_USD"]
+    instruments = getattr(config, "instruments", None) or ["EURUSD"]
     for instrument in instruments:
         base = 1.10 if "EUR" in instrument else (1800.0 if "XAU" in instrument else 1.0)
         vol = 0.01 if "EUR" in instrument else (0.02 if "XAU" in instrument else 0.015)
@@ -490,7 +490,7 @@ def _validate_pretrained_model(model_path: str, config: TradingConfig) -> bool:
                 # Check action shape - should be [n_instruments * 2]
                 # Both SimpleTradingEnv and ModernTradingEnv use (2 * n_instruments,) action space
                 model_action = metadata.get("action_shape", [4])
-                model_instruments = metadata.get("instruments", ["EUR_USD", "XAU_USD"])
+                model_instruments = metadata.get("instruments", ["EURUSD", "XAUUSD"])
                 expected_action_dim = len(model_instruments) * 2
                 
                 if model_action != [expected_action_dim]:

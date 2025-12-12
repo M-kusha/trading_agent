@@ -322,6 +322,16 @@ exit_strategies:
   emergency_daily_loss_buffer_pct: 0.84  # 84% of firm 5% => ~4.2% if limit is 5%
   emergency_max_open_risk_eur: 2000.0    # Failsafe on total open risk
 
+  # Per-instrument exit overrides (merged over globals)
+  per_instrument:
+    XAUUSD:
+      hard_stop_loss_eur: 220
+      trailing_activation_eur: 120
+      trailing_retrace_pct: 0.22
+    EURUSD:
+      trailing_use_atr: true
+      trailing_retrace_pct: 0.25
+
 
 # ═══════════════════════════════════════════════════════════════
 # Stop Loss / Take Profit Settings (in pips)

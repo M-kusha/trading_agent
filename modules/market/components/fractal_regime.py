@@ -209,7 +209,7 @@ class FractalRegimeComponent(BaseMarketComponent):
             return arr
 
         # 2) Instrument dicts with OHLC arrays
-        for symbol in ('EUR_USD', 'XAU_USD'):
+        for symbol in ('EURUSD', 'XAUUSD'):
             if symbol in market_data:
                 d = market_data[symbol]
                 if isinstance(d, dict) and 'close' in d:
@@ -231,7 +231,7 @@ class FractalRegimeComponent(BaseMarketComponent):
                 if not instruments:
                     continue
                 # Simple preference order
-                inst_pref = ['EUR_USD', 'XAU_USD'] + instruments
+                inst_pref = ['EURUSD', 'XAUUSD'] + instruments
                 tf_pref = ['M1', 'M5', 'M15', 'M30', 'H1', 'H4', 'D1']
                 chosen_inst = next((s for s in inst_pref if s in nested), instruments[0])
                 inst_block = nested.get(chosen_inst)

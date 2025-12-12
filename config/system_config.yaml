@@ -96,7 +96,7 @@ execution:
   MarketDataProvider:
     config:
       data_directory: "data/processed"
-      supported_symbols: ["XAU_USD", "EUR_USD"]
+      supported_symbols: ["XAUUSD", "EURUSD"]
       supported_timeframes: ["M15", "H1", "H4", "D1"]
       primary_timeframe: "H4"
       update_frequency: 1.0  # Update every second for live tick-by-tick data
@@ -471,6 +471,13 @@ modules:
   # PPO Agent v3.0 (3-layer architecture)
   PPOAgent:
     config:
+      # Trained SB3 PPO model (used by PPOAgentShell via PPOCore.load)
+      model_path: "models/modern_ppo_final.zip"
+
+      # Instrument order must match the trading config/environment order
+      instruments: ["EURUSD", "XAUUSD"]
+      primary_instrument: "XAUUSD"
+
       # Core PPO settings
       learning_rate: 0.0003
       clip_eps: 0.2
@@ -490,7 +497,7 @@ modules:
       max_processing_time_ms: 500
       circuit_breaker_threshold: 3
       # Debug
-      debug: false
+      debug: true
 
   # Memory
   UnifiedMemory:
@@ -590,23 +597,23 @@ modules:
       quality_threshold: 0.95
       timeout_ms: 200
       instruments:
-        EUR_USD:
+        EURUSD:
           timeframes: ['M15', 'H1', 'H4', 'D1']
           enabled: true
           priority: "high"
-        XAU_USD:
+        XAUUSD:
           timeframes: ['M15', 'H1', 'H4', 'D1']
           enabled: true
           priority: "high"
       provides_data:
-        - market_data_EUR_USD_M15
-        - market_data_EUR_USD_H1
-        - market_data_EUR_USD_H4
-        - market_data_EUR_USD_D1
-        - market_data_XAU_USD_M15
-        - market_data_XAU_USD_H1
-        - market_data_XAU_USD_H4
-        - market_data_XAU_USD_D1
+        - market_data_EURUSD_M15
+        - market_data_EURUSD_H1
+        - market_data_EURUSD_H4
+        - market_data_EURUSD_D1
+        - market_data_XAUUSD_M15
+        - market_data_XAUUSD_H1
+        - market_data_XAUUSD_H4
+        - market_data_XAUUSD_D1
         - volatility_data
         - universe
         - watched_instruments
@@ -699,7 +706,7 @@ modules:
       local_hard_close_hour: 22     # Must match risk_policy.yaml hard_close_hour
       no_trade_last_minutes: 30
       # TEST MODE: Set to true to allow trades during off-hours (for testing only)
-      allow_off_hours_trading: false
+      allow_off_hours_trading: true
 
   # DEPRECATED - use SeasonalityRiskExpert instead
   EnhancedSeasonalityRiskExpert:

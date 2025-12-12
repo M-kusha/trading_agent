@@ -71,7 +71,7 @@ class TimeRiskComponent(BaseMarketComponent):
             'risk_threshold_critical': 0.95,
 
             # Instruments used to derive realized volatility if not provided
-            'instruments': ('XAU_USD', 'EUR_USD'),
+            'instruments': ('XAUUSD', 'EURUSD'),
 
             # Misc
             'timezone': 'UTC',              # informational; we use UTC uniformly
@@ -165,8 +165,11 @@ class TimeRiskComponent(BaseMarketComponent):
         market_data = inputs.get('market_data', {}) or {}
         shared_context = inputs.get('shared_context', {}) or {}
 
-        # Use UTC consistently for session logic
-        timestamp = pd.Timestamp.utcnow()
+        # FIX: Use data timestamp for training consistency, fallback to UTC for live
+        # This ensures session classification is correct during backtesting/training
+        timestamp = self._extract_data_timestamp(inputs)
+        if timestamp is None:
+            timestamp = pd.Timestamp.utcnow()
         hour = int(timestamp.hour)
         weekday = int(timestamp.weekday())
         weekend = (weekday == 5) or (weekday == 6)
@@ -217,6 +220,67 @@ class TimeRiskComponent(BaseMarketComponent):
             return float(self.current_volatility)
 
         return 0.01
+
+    def _extract_data_timestamp(self, inputs: Dict[str, Any]) -> Optional[pd.Timestamp]:
+        """
+        Extract timestamp from data for training consistency.
+        During training/backtesting, we must use the data's timestamp, not live time.
+        """
+        try:
+            # 1) Check for explicit data_timestamp passed by market_module
+            data_ts = inputs.get('data_timestamp')
+            if data_ts is not None:
+                if isinstance(data_ts, pd.Timestamp):
+                    return data_ts
+                if isinstance(data_ts, datetime.datetime):
+                    return pd.Timestamp(data_ts)
+                if isinstance(data_ts, str):
+                    return pd.Timestamp(data_ts)
+                if isinstance(data_ts, (int, float)):
+                    return pd.Timestamp(datetime.datetime.utcfromtimestamp(data_ts))
+
+            # 2) Check market_data for timestamp
+            market_data = inputs.get('market_data', {}) or {}
+            ts = market_data.get('timestamp') or market_data.get('data_timestamp')
+            if ts is not None:
+                if isinstance(ts, pd.Timestamp):
+                    return ts
+                if isinstance(ts, datetime.datetime):
+                    return pd.Timestamp(ts)
+                if isinstance(ts, str):
+                    return pd.Timestamp(ts)
+                if isinstance(ts, (int, float)):
+                    return pd.Timestamp(datetime.datetime.utcfromtimestamp(ts))
+
+            # 3) Check timestamps list (use last one)
+            timestamps = market_data.get('timestamps', [])
+            if isinstance(timestamps, (list, np.ndarray)) and len(timestamps) > 0:
+                last_ts = timestamps[-1]
+                if isinstance(last_ts, pd.Timestamp):
+                    return last_ts
+                if isinstance(last_ts, datetime.datetime):
+                    return pd.Timestamp(last_ts)
+                if isinstance(last_ts, str):
+                    return pd.Timestamp(last_ts)
+                if isinstance(last_ts, np.datetime64):
+                    return pd.Timestamp(last_ts)
+                if isinstance(last_ts, (int, float)):
+                    return pd.Timestamp(datetime.datetime.utcfromtimestamp(last_ts))
+
+            # 4) Check shared_context for timestamp
+            shared = inputs.get('shared_context', {}) or {}
+            ctx_ts = shared.get('timestamp') or shared.get('data_timestamp')
+            if ctx_ts is not None:
+                if isinstance(ctx_ts, pd.Timestamp):
+                    return ctx_ts
+                if isinstance(ctx_ts, datetime.datetime):
+                    return pd.Timestamp(ctx_ts)
+                if isinstance(ctx_ts, str):
+                    return pd.Timestamp(ctx_ts)
+        except Exception:
+            pass
+
+        return None  # Caller should fallback to UTC now
 
     # -------------------------------------------------------------------------
     # Sessions

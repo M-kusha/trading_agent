@@ -652,14 +652,14 @@ class VotingExpertBase(VotingModuleBase):
         primary_symbol = self.config.get('primary_symbol')
         if not isinstance(primary_symbol, str) or not primary_symbol:
             if isinstance(historical, dict):
-                for candidate in ('XAU_USD', 'EUR_USD'):
+                for candidate in ('XAUUSD', 'EURUSD'):
                     if candidate in historical:
                         primary_symbol = candidate
                         break
                 if not primary_symbol and historical:
                     primary_symbol = next(iter(historical.keys()))
             elif isinstance(price_data, dict) and price_data:
-                for candidate in ('XAU_USD', 'EUR_USD'):
+                for candidate in ('XAUUSD', 'EURUSD'):
                     if candidate in price_data:
                         primary_symbol = candidate
                         break

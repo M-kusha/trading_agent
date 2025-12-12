@@ -139,6 +139,11 @@ class InfoBusConfig:
     # [FIXED] New contract enforcement flags from audit
     enforce_single_writer: bool = True
     enforce_dependency_declaration: bool = True
+    # Contract enforcement mode:
+    # - "off":   no enforcement/logging
+    # - "warn":  log first-time violations, allow operation
+    # - "strict": raise on violations
+    contract_enforcement: str = "off"
 
     # Cross-process persistence (enables frontend to see training data)
     persistence_enabled: bool = True  # Default ON for frontend visibility
@@ -203,6 +208,8 @@ class InfoBusConfig:
             errors.append("rate_limit_writes_per_sec must be between 0 and 100000")
         if self.log_level not in ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']:
             errors.append("log_level must be one of DEBUG, INFO, WARNING, ERROR, CRITICAL")
+        if str(self.contract_enforcement).lower() not in {"off", "warn", "strict"}:
+            errors.append("contract_enforcement must be one of off, warn, strict")
         if errors:
             raise ValueError(f"InfoBusConfig validation failed: {errors}")
 
@@ -616,6 +623,8 @@ class SmartInfoBus:
             self._performance_lock = threading.Lock()
             self._circuit_breaker_lock = threading.Lock()
             self._request_lock = threading.Lock()
+            self._contract_lock = threading.Lock()
+            self._contract_violations_seen: Set[Tuple[str, str, str]] = set()
 
             # Events log
             self._event_log: deque = deque(maxlen=self.config.max_event_log_size)
@@ -1528,6 +1537,56 @@ class SmartInfoBus:
         except Exception:
             pass
 
+        # Contract enforcement: writers should only write declared provides.
+        try:
+            mode = str(getattr(self.config, "contract_enforcement", "off")).lower().strip()
+        except Exception:
+            mode = "off"
+        if mode in {"warn", "strict"}:
+            declared_provides: Set[str] = set()
+            try:
+                with self._registry_lock:
+                    caps = self._capabilities.get(module)
+                    if caps:
+                        declared_provides = set(caps.get("provides") or set())
+            except Exception:
+                declared_provides = set()
+
+            if declared_provides:
+                try:
+                    base_key = full_key.split(":", 1)[-1]
+                except Exception:
+                    base_key = key
+                if (
+                    base_key not in declared_provides
+                    and full_key not in declared_provides
+                    and key not in declared_provides
+                ):
+                    msg = f"[BUS-CONTRACT] Module '{module}' tried to write undeclared key '{base_key}'."
+                    try:
+                        self._log_event({
+                            "type": "contract_violation",
+                            "operation": "set",
+                            "module": module,
+                            "key": base_key,
+                            "full_key": full_key,
+                            "timestamp": time.time(),
+                        })
+                    except Exception:
+                        pass
+                    if mode == "strict":
+                        raise PermissionError(msg)
+                    try:
+                        token = (module, "set", base_key)
+                        with self._contract_lock:
+                            if token not in self._contract_violations_seen:
+                                if len(self._contract_violations_seen) > 5000:
+                                    self._contract_violations_seen.clear()
+                                self._contract_violations_seen.add(token)
+                                self.logger.warning(msg)
+                    except Exception:
+                        pass
+
         value = self._apply_pre_set(full_key, value, meta)
 
         # Ownership guard: block non-owner writes to canonical keys (soft-fail)
@@ -1703,11 +1762,52 @@ class SmartInfoBus:
             full_key = self._ns_key(key, namespace)
 
             # Enforce dependency declaration (contract)
-            if self.config.enforce_dependency_declaration and declared_dependencies is not None:
-                if full_key not in declared_dependencies and key not in declared_dependencies:
-                    raise PermissionError(
-                        f"[BUS-CONTRACT] Module '{module}' tried to access undeclared dependency '{key}'."
-                    )
+            if self.config.enforce_dependency_declaration:
+                if declared_dependencies is not None:
+                    if full_key not in declared_dependencies and key not in declared_dependencies:
+                        raise PermissionError(
+                            f"[BUS-CONTRACT] Module '{module}' tried to access undeclared dependency '{key}'."
+                        )
+                else:
+                    try:
+                        mode = str(getattr(self.config, "contract_enforcement", "off")).lower().strip()
+                    except Exception:
+                        mode = "off"
+                    if mode in {"warn", "strict"}:
+                        declared_requires: Set[str] = set()
+                        try:
+                            with self._registry_lock:
+                                caps = self._capabilities.get(module)
+                                if caps:
+                                    declared_requires = set(caps.get("requires") or set())
+                        except Exception:
+                            declared_requires = set()
+
+                        if declared_requires and (full_key not in declared_requires and key not in declared_requires):
+                            msg = f"[BUS-CONTRACT] Module '{module}' tried to access undeclared dependency '{key}'."
+                            try:
+                                self._log_event({
+                                    "type": "contract_violation",
+                                    "operation": "get",
+                                    "module": module,
+                                    "key": key,
+                                    "full_key": full_key,
+                                    "timestamp": time.time(),
+                                })
+                            except Exception:
+                                pass
+                            if mode == "strict":
+                                raise PermissionError(msg)
+                            try:
+                                token = (module, "get", key)
+                                with self._contract_lock:
+                                    if token not in self._contract_violations_seen:
+                                        if len(self._contract_violations_seen) > 5000:
+                                            self._contract_violations_seen.clear()
+                                        self._contract_violations_seen.add(token)
+                                        self.logger.warning(msg)
+                            except Exception:
+                                pass
 
             self._apply_pre_get(full_key, module, {"max_age": max_age, "min_confidence": min_confidence})
 
