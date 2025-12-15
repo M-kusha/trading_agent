@@ -1303,6 +1303,7 @@ class ArbiterLogic:
         action, log_prob, value = self.ppo_core.select_action(
             observation,
             deterministic=is_live,  # Deterministic in live, stochastic in training
+            instrument=instrument,
         )
 
         direction_score = float(action[0]) if len(action) > 0 else 0.0
@@ -1582,8 +1583,8 @@ class ArbiterLogic:
     def _score_to_direction(
         self,
         score: float,
-        long_threshold: float = 0.35,
-        short_threshold: float = -0.35,
+        long_threshold: Optional[float] = None,
+        short_threshold: Optional[float] = None,
     ) -> str:
         """
         Convert a direction_score to a discrete direction.
@@ -1593,6 +1594,27 @@ class ArbiterLogic:
         - score <  short_threshold → SHORT
         - otherwise                → FLAT
         """
+        if long_threshold is None:
+            try:
+                long_threshold = float(
+                    getattr(self.ppo_core.config, "direction_long_threshold", 0.35)
+                )
+            except Exception:
+                long_threshold = 0.35
+        if short_threshold is None:
+            try:
+                short_threshold = float(
+                    getattr(self.ppo_core.config, "direction_short_threshold", -0.35)
+                )
+            except Exception:
+                short_threshold = -0.35
+
+        # Guard against misconfiguration (keep thresholds symmetric-ish).
+        if long_threshold < 0.0:
+            long_threshold = abs(long_threshold)
+        if short_threshold > 0.0:
+            short_threshold = -abs(short_threshold)
+
         if score > long_threshold:
             return "long"
         if score < short_threshold:

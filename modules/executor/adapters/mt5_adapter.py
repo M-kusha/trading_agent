@@ -213,6 +213,68 @@ def _get_sl_tp_pips(symbol: str) -> Tuple[float, float]:
     return float(sl_pips), float(tp_pips)
 
 
+def _validate_and_adjust_lot_size(symbol: str, requested_lots: float) -> Tuple[float, Optional[str]]:
+    """
+    Validate lot size against broker's constraints and adjust if needed.
+    
+    MT5 symbol_info provides:
+    - volume_min: minimum lot size
+    - volume_max: maximum lot size  
+    - volume_step: lot increment (precision)
+    
+    Args:
+        symbol: Trading symbol
+        requested_lots: Requested lot size
+        
+    Returns:
+        Tuple of (adjusted_lot_size, warning_message)
+        - adjusted_lot_size: Validated lot size (may be reduced if too high)
+        - warning_message: None if no adjustment, otherwise explanation
+    """
+    if not _MT5:
+        return requested_lots, None
+    
+    try:
+        info = mt5.symbol_info(symbol)
+        if not info:
+            return requested_lots, f"Could not get symbol info for {symbol}"
+        
+        vol_min = getattr(info, "volume_min", None)
+        vol_max = getattr(info, "volume_max", None)
+        vol_step = getattr(info, "volume_step", None)
+        
+        if vol_min is None or vol_max is None or vol_step is None:
+            return requested_lots, f"Incomplete volume constraints for {symbol}"
+        
+        vol_min = float(vol_min)
+        vol_max = float(vol_max)
+        vol_step = float(vol_step)
+        
+        # Check if below minimum
+        if requested_lots < vol_min:
+            warning = f"Lot {requested_lots:.4f} below minimum {vol_min:.4f}"
+            return vol_min, warning
+        
+        # Check if above maximum
+        if requested_lots > vol_max:
+            warning = f"Lot {requested_lots:.4f} exceeds maximum {vol_max:.4f}, reducing to {vol_max:.4f}"
+            return vol_max, warning
+        
+        # Round to lot step
+        if vol_step > 0:
+            rounded = round(requested_lots / vol_step) * vol_step
+            # Ensure rounded value stays within bounds
+            rounded = max(vol_min, min(vol_max, rounded))
+            if abs(rounded - requested_lots) > 1e-6:
+                warning = f"Lot {requested_lots:.4f} rounded to {rounded:.4f} (step={vol_step})"
+                return rounded, warning
+        
+        return requested_lots, None
+        
+    except Exception as e:
+        return requested_lots, f"Lot validation error: {e}"
+
+
 def _pips_to_price(symbol: str, pips: float) -> float:
     """Convert pips to price distance based on symbol."""
     sym_upper = symbol.upper()
@@ -459,18 +521,37 @@ class MT5Adapter(BaseLiveAdapter):
     # Execution helpers
     # ─────────────────────────────────────────────────────
     def _pick_filling_mode(self, sym: str) -> int:
-        """Pick a reasonable fill mode; fallback to IOC."""
+        """Pick a fill mode supported by the broker for this symbol."""
         try:
             info = mt5.symbol_info(sym)
+            if not info:
+                return getattr(mt5, "ORDER_FILLING_IOC", 1)
+
+            # Prefer the symbol's own fill mode if it's a known constant
             fm = int(getattr(info, "filling_mode", -1))
-            if fm in (
+            valid_modes = {
+                getattr(mt5, "ORDER_FILLING_FOK", 0),
+                getattr(mt5, "ORDER_FILLING_IOC", 1),
+                getattr(mt5, "ORDER_FILLING_RETURN", 2),
+            }
+            if fm in valid_modes:
+                return fm
+
+            # Fallback: if trade_fill_mode is a bitmask, pick a supported mode
+            trade_fill_mode = int(getattr(info, "trade_fill_mode", 0))
+            for mode in (
+                getattr(mt5, "ORDER_FILLING_RETURN", 2),
                 getattr(mt5, "ORDER_FILLING_IOC", 1),
                 getattr(mt5, "ORDER_FILLING_FOK", 0),
             ):
-                return fm
+                if trade_fill_mode & (1 << mode):
+                    return mode
         except Exception:
             pass
+
+        # Last resort
         return getattr(mt5, "ORDER_FILLING_IOC", 1)
+
 
     def _send_deal(
         self,
@@ -499,6 +580,25 @@ class MT5Adapter(BaseLiveAdapter):
                 return {"ok": False, "error": "no_tick_data"}
 
             current_price = tick.ask if side > 0 else tick.bid
+
+            # CRITICAL: Validate lot size against broker's constraints
+            adjusted_lots, lot_warning = _validate_and_adjust_lot_size(sym, lots)
+            if lot_warning:
+                try:
+                    self.log.warning(f"[MT5] {lot_warning}")
+                except Exception:
+                    pass
+            
+            # If validation forces a reduction to zero, reject the order
+            if adjusted_lots <= 0:
+                try:
+                    self.log.error(f"[MT5] Lot validation failed: adjusted to {adjusted_lots} (was {lots})")
+                except Exception:
+                    pass
+                return {"ok": False, "error": "invalid_lot_size"}
+            
+            # Use adjusted lot size for the order
+            lots = adjusted_lots
 
             # Calculate SL/TP if not provided
             if sl_price is None or tp_price is None:

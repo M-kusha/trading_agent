@@ -345,7 +345,7 @@ class ConfigurationManager:
         self.module_specs['PPOAgent'] = ModuleConfigSpec(
             name='PPOAgent',
             category='meta',
-            config_section='modules.MetaRLController.config',
+            config_section='modules.PPOAgent.config',
             default_config={
                 'learning_rate': 0.0003,
                 'clip_eps': 0.2,
@@ -812,25 +812,6 @@ class ConfigurationManager:
             validation_rules={
                 'planning_horizon': lambda x: x > 0,
                 'adaptation_rate': lambda x: x > 0
-            }
-        )
-
-        self.module_specs['MetaRLController'] = ModuleConfigSpec(
-            name='MetaRLController',
-            category='meta',
-            config_section='modules.MetaRLController.config',
-            default_config={
-                'learning_rate': 0.001,
-                'batch_size': 64,
-                'replay_buffer_size': 10000,
-                'target_update_frequency': 100,
-                'exploration_rate': 0.1,
-                'timeout_ms': 500
-            },
-            required_keys=['learning_rate'],
-            validation_rules={
-                'learning_rate': lambda x: x > 0,
-                'batch_size': lambda x: x > 0
             }
         )
 

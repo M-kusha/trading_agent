@@ -472,6 +472,14 @@ modules:
   PPOAgent:
     config:
       # Core PPO settings
+      # Trained SB3 PPO model (used by PPOAgentShell via PPOCore.load)
+      model_path: "models/modern_ppo_final.zip"
+
+      # Instrument order must match the trading config/environment order
+      instruments: ["EURUSD", "XAUUSD"]
+      primary_instrument: "XAUUSD"
+
+
       learning_rate: 0.0003
       clip_eps: 0.2
       value_coeff: 0.5
@@ -699,7 +707,7 @@ modules:
       local_hard_close_hour: 22     # Must match risk_policy.yaml hard_close_hour
       no_trade_last_minutes: 30
       # TEST MODE: Set to true to allow trades during off-hours (for testing only)
-      allow_off_hours_trading: false
+      allow_off_hours_trading: true
 
   # DEPRECATED - use SeasonalityRiskExpert instead
   EnhancedSeasonalityRiskExpert:

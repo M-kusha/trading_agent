@@ -2175,12 +2175,25 @@ class PositionManagerBase(
         ]
 
         for instrument, decision in decisions.items():
+            ctx = decision.context
             payload = {
                 "decision": decision.decision.value,
                 "intensity": float(decision.intensity),
                 "size": float(decision.size),
                 "confidence": float(decision.confidence),
                 "risk_factors": decision.risk_factors,
+                "context": {
+                    "market_intensity": float(getattr(ctx, "market_intensity", 0.0) or 0.0),
+                    "market_direction": int(getattr(ctx, "market_direction", 0) or 0),
+                    "volatility": float(getattr(ctx, "volatility", 0.0) or 0.0),
+                    "trend_strength": float(getattr(ctx, "trend_strength", 0.0) or 0.0),
+                    "momentum": float(getattr(ctx, "momentum", 0.0) or 0.0),
+                    "correlation_penalty": float(getattr(ctx, "correlation_penalty", 0.0) or 0.0),
+                    "session": str(getattr(ctx, "session", "unknown") or "unknown"),
+                    "current_exposure": float(getattr(ctx, "current_exposure", 0.0) or 0.0),
+                    "drawdown": float(getattr(ctx, "drawdown", 0.0) or 0.0),
+                    "balance": float(getattr(ctx, "balance", 0.0) or 0.0),
+                },
             }
 
             key_verbatim = f"position_decision_{instrument}"
@@ -2247,6 +2260,7 @@ class PositionManagerBase(
         )
 
         _register_keys(to_register)
+
 
     # ---------- state persistence
     def get_state(self) -> Dict[str, Any]:

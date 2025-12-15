@@ -48,7 +48,7 @@ prop_firm:
 # ═══════════════════════════════════════════════════════════════
 trade_limits:
   # Maximum trades per day (across all instruments)
-  max_trades_per_day: 20             # Default: 20 trades/day
+  max_trades_per_day: 100             # Default: 20 trades/day
   
   # Per-stage curriculum overrides (used by CurriculumPlannerPlus)
   # These are multipliers/overrides for different learning stages

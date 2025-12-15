@@ -17,6 +17,7 @@ Version: 3.1.0 (Multi-instrument architecture, position-focus aware)
 """
 
 from __future__ import annotations
+import os
 
 import time
 import threading
@@ -67,6 +68,7 @@ class PPOShellConfig:
 
     # Core PPO configuration
     core_config: PPOCoreConfig = field(default_factory=PPOCoreConfig)
+    model_path: Optional[str] = None
 
     # Instruments: should be aligned with DEFAULT_INSTRUMENTS in ppo_types
     instruments: List[str] = field(default_factory=lambda: DEFAULT_INSTRUMENTS.copy())
@@ -172,7 +174,7 @@ class PPOAgentShell(
         # Setup components
         self._setup_logging()
         self._setup_smart_bus()
-        self._setup_core_components(model_path)
+        self._setup_core_components(model_path or self._cfg.model_path)
         self._setup_health_tracking()
 
         # Start monitoring
@@ -211,8 +213,35 @@ class PPOAgentShell(
         self.ppo_core = PPOCore(config=self._cfg.core_config)
 
         # Load model if path provided
-        if model_path:
-            self.ppo_core.load(model_path)
+        # Provide instrument ordering to PPOCore (used by SB3 action slicing)
+        try:
+            self.ppo_core.set_instruments(self._cfg.instruments)
+        except Exception:
+            pass
+
+        # Resolve model path (explicit > config > auto-discovery)
+        resolved_model_path = model_path
+        if not resolved_model_path:
+            candidates = [
+                "models/ppo_trading_model.zip",
+                "models/ppo_final_model.zip",
+                "models/modern_ppo_final.zip",
+            ]
+            for cand in candidates:
+                if os.path.exists(cand):
+                    resolved_model_path = cand
+                    break
+
+        # Load model if available
+        if resolved_model_path:
+            try:
+                self.ppo_core.load(resolved_model_path)
+                self.logger.info(f"[PPO] Loaded model: {resolved_model_path}")
+            except Exception as e:  # noqa: BLE001
+                self.logger.error(f"[PPO] Failed to load model '{resolved_model_path}': {e}")
+        else:
+            self.logger.warning("[PPO] No model_path provided; using untrained PPOCore weights")
+
 
         # Arbiter logic
         self.arbiter = ArbiterLogic(
@@ -559,10 +588,8 @@ class PPOAgentShell(
                             block_reasons.append("SEASONALITY: Outside trading hours")
                         elif blocked_by_focus:
                             block_reasons.append("POSITION_FOCUS blocking other instruments")
-                        elif conf < 0.70:
-                            block_reasons.append(f"Conf {conf:.0%} < 70%")
-                        if abs(trust) < 0.70:
-                            block_reasons.append(f"Trust {trust:+.2f} < ±0.70")
+                        elif gate_reasons:
+                            block_reasons.append("Gate: " + ", ".join(gate_reasons[:3]))
                         if not block_reasons:
                             block_reasons.append("Gate check failed")
                         
@@ -575,8 +602,11 @@ class PPOAgentShell(
                         self.logger.info(
                             f"[PPO] │  Reason: {' + '.join(block_reasons)}"
                         )
+                        long_th = float(getattr(self._cfg.core_config, "direction_long_threshold", 0.35))
+                        short_th = float(getattr(self._cfg.core_config, "direction_short_threshold", -0.35))
+                        min_conf = 0.50
                         self.logger.info(
-                            f"[PPO] │  Thresholds → Dir: ±0.70 │ Entry: 0.70 │ MinConf: 70%"
+                             f"[PPO] │  Thresholds → Dir: {long_th:+.2f}/{short_th:+.2f} │ MinConf: {min_conf:.0%}"
                         )
                         if in_focus_mode:
                             self.logger.info(
