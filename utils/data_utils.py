@@ -5,8 +5,8 @@ import numpy as np
 
 def load_data(data_dir: str = "data/processed") -> Dict[str, Dict[str, pd.DataFrame]]:
     instruments = {
-        "XAU_USD": {"H1": "XAUUSD_H1_features.csv", "H4": "XAUUSD_H4_features.csv", "D1": "XAUUSD_D1_features.csv"},
-        "EUR_USD": {"H1": "EURUSD_H1_features.csv", "H4": "EURUSD_H4_features.csv", "D1": "EURUSD_D1_features.csv"},
+        "XAUUSD": {"H1": "XAUUSD_H1_features.csv", "H4": "XAUUSD_H4_features.csv", "D1": "XAUUSD_D1_features.csv"},
+        "EURUSD": {"H1": "EURUSD_H1_features.csv", "H4": "EURUSD_H4_features.csv", "D1": "EURUSD_D1_features.csv"},
     }
 
     data: Dict[str, Dict[str, pd.DataFrame]] = {}

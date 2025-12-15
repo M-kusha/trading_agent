@@ -179,7 +179,7 @@ class TradingConfig:
     # Data and Instruments (used as defaults/fallbacks)
     # ===================================================================
     data_dir: str = "data/processed"
-    instruments: List[str] = field(default_factory=lambda: ["EUR_USD", "XAU_USD"])
+    instruments: List[str] = field(default_factory=lambda: ["EURUSD", "XAUUSD"])
     timeframes: List[str] = field(default_factory=lambda: ["M15", "H1", "H4", "D1"])
 
     # ===================================================================
@@ -759,7 +759,7 @@ class ConfigPresets:
             debug=True,
 
             # Data
-            instruments=["EUR_USD", "XAU_USD"],
+            instruments=["EURUSD", "XAUUSD"],
             timeframes=["M15", "H1", "H4", "D1"],
 
             # No execution costs for clean exploration
@@ -830,7 +830,7 @@ class ConfigPresets:
             eval_freq=500,
 
             # Start live with a single instrument
-            instruments=["EUR_USD"],
+            instruments=["EURUSD"],
             timeframes=["M15", "H1", "H4", "D1"],
         )
 
@@ -878,7 +878,7 @@ class ConfigPresets:
             checkpoint_freq=5_000,
             eval_freq=2_500,
 
-            instruments=["EUR_USD", "XAU_USD"],
+            instruments=["EURUSD", "XAUUSD"],
             timeframes=["M15", "H1", "H4", "D1"],
         )
 
@@ -926,7 +926,7 @@ class ConfigPresets:
             checkpoint_freq=10_000,
             eval_freq=5_000,
 
-            instruments=["EUR_USD", "XAU_USD"],
+            instruments=["EURUSD", "XAUUSD"],
             timeframes=["M15", "H1", "H4", "D1"],
         )
 
@@ -1041,7 +1041,7 @@ class ConfigPresets:
             # ═══════════════════════════════════════════════════════════
             # Instruments & timeframes
             # ═══════════════════════════════════════════════════════════
-            instruments=["EUR_USD", "XAU_USD"],
+            instruments=["EURUSD", "XAUUSD"],
             timeframes=["M15", "H1", "H4", "D1"],
         )
 

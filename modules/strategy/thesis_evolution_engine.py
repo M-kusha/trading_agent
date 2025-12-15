@@ -1296,7 +1296,7 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         """Mutate thesis instrument focus"""
         try:
             instrument_replacements = {
-                'EUR_USD': 'GBP_USD',
+                'EURUSD': 'GBPUSD',
 
             }
             

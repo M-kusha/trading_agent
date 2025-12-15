@@ -5,6 +5,7 @@
 
 from typing import Dict, Any, Optional, List, Tuple
 from collections import deque
+import datetime
 import math
 import numpy as np
 import torch
@@ -224,8 +225,9 @@ class LiquidityHeatmapComponent(BaseMarketComponent):
         # 3) Neural prediction (with optional MC-Dropout)
         prediction_result = await self._neural_liquidity_prediction(liquidity_metrics)
 
-        # 4) Sessions (unchanged shape)
-        sessions_map, session_meta = self._compute_trading_sessions()
+        # 4) Sessions - FIX: Use data timestamp for training consistency
+        data_timestamp = self._extract_data_timestamp(inputs)
+        sessions_map, session_meta = self._compute_trading_sessions(data_timestamp)
 
         self.trace(
             f"Liquidity analysis complete: score={liquidity_metrics['liquidity_score']:.3f}, "
@@ -267,8 +269,8 @@ class LiquidityHeatmapComponent(BaseMarketComponent):
         # Prices (prefer time-series if available)
         if 'prices' in market_data and isinstance(market_data['prices'], list):
             prices = [float(p) for p in market_data['prices'] if np.isfinite(p)]
-        elif 'EUR_USD' in market_data:
-            d = market_data['EUR_USD']
+        elif 'EURUSD' in market_data:
+            d = market_data['EURUSD']
             if isinstance(d, dict) and isinstance(d.get('close'), (list, tuple, np.ndarray)):
                 prices = [float(p) for p in d['close'] if np.isfinite(p)]
         # Try nested providers (multi_timeframe_data / historical_prices)
@@ -278,7 +280,7 @@ class LiquidityHeatmapComponent(BaseMarketComponent):
                 if not isinstance(nested, dict):
                     continue
                 # choose instrument and timeframe
-                inst_pref = ['EUR_USD', 'XAU_USD'] + list(nested.keys())
+                inst_pref = ['EURUSD', 'XAUUSD'] + list(nested.keys())
                 tf_pref = ['M1', 'M5', 'M15', 'M30', 'H1', 'H4', 'D1']
                 chosen_inst = next((s for s in inst_pref if s in nested), None)
                 if not chosen_inst:
@@ -800,13 +802,77 @@ class LiquidityHeatmapComponent(BaseMarketComponent):
         confidence = baseline * 0.7 + data_quality * 0.3
         return float(np.clip(confidence, 0.0, 1.0))
 
+    def _extract_data_timestamp(self, inputs: Dict[str, Any]) -> Optional[datetime.datetime]:
+        """
+        Extract timestamp from data for training consistency.
+        During training/backtesting, we must use the data's timestamp, not live time.
+        """
+        import datetime as dt
+        try:
+            # 1) Check for explicit data_timestamp passed by market_module
+            data_ts = inputs.get('data_timestamp')
+            if data_ts is not None:
+                if isinstance(data_ts, dt.datetime):
+                    return data_ts
+                if isinstance(data_ts, str):
+                    if data_ts.endswith('Z'):
+                        data_ts = data_ts[:-1] + '+00:00'
+                    return dt.datetime.fromisoformat(data_ts)
+                if isinstance(data_ts, (int, float)):
+                    return dt.datetime.utcfromtimestamp(data_ts)
+
+            # 2) Check market_data for timestamp
+            market_data = inputs.get('market_data', {}) or {}
+            ts = market_data.get('timestamp') or market_data.get('data_timestamp')
+            if ts is not None:
+                if isinstance(ts, dt.datetime):
+                    return ts
+                if isinstance(ts, str):
+                    if ts.endswith('Z'):
+                        ts = ts[:-1] + '+00:00'
+                    return dt.datetime.fromisoformat(ts)
+                if isinstance(ts, (int, float)):
+                    return dt.datetime.utcfromtimestamp(ts)
+
+            # 3) Check timestamps list (use last one)
+            timestamps = market_data.get('timestamps', [])
+            if isinstance(timestamps, (list, np.ndarray)) and len(timestamps) > 0:
+                last_ts = timestamps[-1]
+                if isinstance(last_ts, dt.datetime):
+                    return last_ts
+                if isinstance(last_ts, str):
+                    if last_ts.endswith('Z'):
+                        last_ts = last_ts[:-1] + '+00:00'
+                    return dt.datetime.fromisoformat(last_ts)
+                if isinstance(last_ts, np.datetime64):
+                    # Convert numpy datetime64 to datetime
+                    return last_ts.astype('datetime64[ms]').astype(dt.datetime)
+                if isinstance(last_ts, (int, float)):
+                    return dt.datetime.utcfromtimestamp(last_ts)
+
+            # 4) Check shared_context for timestamp
+            shared = inputs.get('shared_context', {}) or {}
+            ctx_ts = shared.get('timestamp') or shared.get('data_timestamp')
+            if ctx_ts is not None:
+                if isinstance(ctx_ts, dt.datetime):
+                    return ctx_ts
+                if isinstance(ctx_ts, str):
+                    if ctx_ts.endswith('Z'):
+                        ctx_ts = ctx_ts[:-1] + '+00:00'
+                    return dt.datetime.fromisoformat(ctx_ts)
+        except Exception:
+            pass
+
+        return None  # Caller should fallback to UTC now
+
     # -----------------------------
     # Trading sessions (kept compatible)
     # -----------------------------
-    def _compute_trading_sessions(self) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    def _compute_trading_sessions(self, data_timestamp: Optional[datetime.datetime] = None) -> tuple[Dict[str, Any], Dict[str, Any]]:
         import datetime
 
-        now = datetime.datetime.utcnow()
+        # FIX: Use data timestamp for training consistency, fallback to UTC for live
+        now = data_timestamp if data_timestamp is not None else datetime.datetime.utcnow()
         weekday = now.weekday()
         hour = now.hour + now.minute / 60.0
 

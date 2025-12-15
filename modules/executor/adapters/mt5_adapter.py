@@ -956,30 +956,59 @@ class MT5Adapter(BaseLiveAdapter):
             current_sl = float(getattr(pos, "sl", 0.0) or 0.0)
             current_tp = float(getattr(pos, "tp", 0.0) or 0.0)
 
+            # Ensure symbol is selected (required for symbol_info metadata)
+            if not self._ensure_symbol(symbol):
+                return {"ok": False, "error": "symbol_not_available"}
+
+            # Determine precision/tick-size so micro-adjustments don't spam "NO_CHANGES".
+            digits = 5
+            tick_size = 0.0
+            try:
+                info = mt5.symbol_info(symbol)
+                if info is not None:
+                    digits = int(getattr(info, "digits", digits) or digits)
+                    tick_size = _sf(getattr(info, "trade_tick_size", 0.0), 0.0)
+                    if tick_size <= 0.0:
+                        tick_size = _sf(getattr(info, "point", 0.0), 0.0)
+            except Exception:
+                pass
+            if digits < 0:
+                digits = 5
+            if tick_size <= 0.0:
+                try:
+                    tick_size = 10 ** (-digits)
+                except Exception:
+                    tick_size = 0.00001
+
             # Use current values if not changing
             new_sl = sl if sl is not None else current_sl
             new_tp = tp if tp is not None else current_tp
 
-            # Skip if no change needed
-            if abs(new_sl - current_sl) < 0.00001 and abs(new_tp - current_tp) < 0.00001:
-                return {"ok": True, "message": "no_change_needed", "sl": current_sl, "tp": current_tp}
+            # Round to symbol precision (broker-normalized values)
+            cur_sl_r = round(current_sl, digits) if current_sl else 0.0
+            cur_tp_r = round(current_tp, digits) if current_tp else 0.0
+            new_sl_r = round(float(new_sl), digits) if new_sl else 0.0
+            new_tp_r = round(float(new_tp), digits) if new_tp else 0.0
 
-            # Ensure symbol is selected
-            if not self._ensure_symbol(symbol):
-                return {"ok": False, "error": "symbol_not_available"}
+            # Skip if there is no effective change after rounding.
+            min_delta = (float(tick_size) * 0.5) if tick_size > 0 else 0.0
+            sl_changes = (sl is not None) and (abs(new_sl_r - cur_sl_r) > min_delta)
+            tp_changes = (tp is not None) and (abs(new_tp_r - cur_tp_r) > min_delta)
+            if not sl_changes and not tp_changes:
+                return {"ok": True, "message": "no_effective_change", "sl": cur_sl_r, "tp": cur_tp_r}
 
             # Build modify request
             request = {
                 "action": mt5.TRADE_ACTION_SLTP,
                 "symbol": symbol,
                 "position": ticket,
-                "sl": new_sl,
-                "tp": new_tp,
+                "sl": new_sl_r,
+                "tp": new_tp_r,
             }
 
             self.log.debug(
-                f"[MT5] modify_position: ticket={ticket} sl={current_sl:.5f}->{new_sl:.5f} "
-                f"tp={current_tp:.5f}->{new_tp:.5f}"
+                f"[MT5] modify_position: ticket={ticket} sl={current_sl:.5f}->{new_sl_r:.5f} "
+                f"tp={current_tp:.5f}->{new_tp_r:.5f}"
             )
 
             result = mt5.order_send(request)
@@ -992,10 +1021,14 @@ class MT5Adapter(BaseLiveAdapter):
             if result.retcode == mt5.TRADE_RETCODE_DONE:
                 self.log.info(
                     f"[MT5] modify_position: ✅ Modified ticket {ticket} "
-                    f"SL={new_sl:.5f} TP={new_tp:.5f}"
+                    f"SL={new_sl_r:.5f} TP={new_tp_r:.5f}"
                 )
-                return {"ok": True, "sl": new_sl, "tp": new_tp}
+                return {"ok": True, "sl": new_sl_r, "tp": new_tp_r}
             else:
+                ret_no_changes = getattr(mt5, "TRADE_RETCODE_NO_CHANGES", 10025)
+                if result.retcode == ret_no_changes:
+                    # Treat as success/no-op to avoid BaseLiveAdapter retries and log spam.
+                    return {"ok": True, "message": "no_changes", "sl": cur_sl_r, "tp": cur_tp_r}
                 error_msg = f"retcode={result.retcode}: {result.comment}"
                 self.log.error(f"[MT5] modify_position: ❌ {error_msg}")
                 return {"ok": False, "error": error_msg}

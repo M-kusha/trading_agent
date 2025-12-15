@@ -21,10 +21,21 @@ Actions: long, short, flat
 from __future__ import annotations
 
 import calendar
-from datetime import datetime, time as dt_time
+from datetime import datetime, time as dt_time, timezone as dt_timezone
 from typing import Any, Dict, List, Tuple, Optional
 
 import numpy as np
+
+# Simulation time support for training/prebaking
+try:
+    from modules.utils.simulation_time import get_simulation_time, is_simulation_mode
+    _HAS_SIMULATION_TIME = True
+except ImportError:
+    _HAS_SIMULATION_TIME = False
+    def get_simulation_time(*args, **kwargs):
+        return datetime.now(dt_timezone.utc)
+    def is_simulation_mode():
+        return False
 
 from modules.contracts import module_args
 from modules.core.module_base import module
@@ -235,11 +246,15 @@ class SeasonalityRiskExpert(VotingExpertBase):
 
     def _publish_seasonality_baseline(self) -> None:
         """Publish baseline seasonality keys to avoid stale consumers."""
-        from datetime import timezone as dt_timezone
         thesis = "Seasonality baseline"
         confidence = 0.1
         # Generate trading window - default to blocking new trades in baseline state
-        trading_window = self._analyze_trading_window(datetime.now(dt_timezone.utc))
+        # Use simulation time during training/prebaking, wall-clock in live
+        if _HAS_SIMULATION_TIME and is_simulation_mode():
+            current_time_utc = get_simulation_time(self.smart_bus, self.__class__.__name__, fallback_to_wall_clock=True)
+        else:
+            current_time_utc = datetime.now(dt_timezone.utc)
+        trading_window = self._analyze_trading_window(current_time_utc)
         proposal = {
             "action": "flat",
             "signal_strength": confidence,
@@ -335,8 +350,11 @@ class SeasonalityRiskExpert(VotingExpertBase):
             # IMPORTANT: Use timezone-aware datetime to ensure correct UTC→local conversion
             # datetime.utcnow() returns naive datetime which Python treats as LOCAL time
             # when calling .astimezone(), causing 1-hour DST errors
-            from datetime import timezone as dt_timezone
-            current_time_utc = datetime.now(dt_timezone.utc)
+            # Use simulation time during training/prebaking, wall-clock in live
+            if _HAS_SIMULATION_TIME and is_simulation_mode():
+                current_time_utc = get_simulation_time(self.smart_bus, self.__class__.__name__, fallback_to_wall_clock=True)
+            else:
+                current_time_utc = datetime.now(dt_timezone.utc)
             trading_window = self._analyze_trading_window(current_time_utc)
 
             market_data = self.smart_bus.get("market_data", name, default={})
@@ -1403,7 +1421,6 @@ class SeasonalityRiskExpert(VotingExpertBase):
 
     def _neutral_output(self, reason: str) -> Dict[str, Any]:
         """Generate neutral output with explanation and publish neutral keys."""
-        from datetime import timezone as dt_timezone
         name = self.__class__.__name__
         thesis = f"Seasonal flat: {reason}"
 
@@ -1411,7 +1428,12 @@ class SeasonalityRiskExpert(VotingExpertBase):
         confidence = max(0.1, conf_floor * 0.5)
 
         # Generate trading window for the gate check
-        trading_window = self._analyze_trading_window(datetime.now(dt_timezone.utc))
+        # Use simulation time during training/prebaking, wall-clock in live
+        if _HAS_SIMULATION_TIME and is_simulation_mode():
+            current_time_utc = get_simulation_time(self.smart_bus, self.__class__.__name__, fallback_to_wall_clock=True)
+        else:
+            current_time_utc = datetime.now(dt_timezone.utc)
+        trading_window = self._analyze_trading_window(current_time_utc)
 
         proposal = {
             "action": "flat",

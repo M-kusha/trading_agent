@@ -241,6 +241,21 @@ class HorizonAligner(VotingModuleBase):
             elapsed_ms = (time.time() - start) * 1000
             self.performance_tracker.record_metric(name, "process", elapsed_ms, True)
 
+            # LOGGING v2.1: Add process-level logging for visibility
+            n_instruments = len(per_instrument) if per_instrument else 0
+            n_members = len(data.get("member_confidences", []))
+            multipliers = aligned_global.get("multipliers", {})
+            mult_summary = ", ".join(
+                f"{k}={v:.2f}" for k, v in list(multipliers.items())[:3]
+            ) if multipliers else "none"
+
+            self.logger.info(
+                f"[HORIZON] Aligned | regime={self.current_regime} | "
+                f"session={self.current_session} | members={n_members} | "
+                f"instruments={n_instruments} | multipliers=[{mult_summary}] | "
+                f"{elapsed_ms:.0f}ms"
+            )
+
             return {
                 "horizon_alignment": aligned_global,
                 "aligned_weights": aligned_global.get("weights", []),

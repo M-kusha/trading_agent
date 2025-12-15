@@ -60,10 +60,14 @@ from envs.exploration_env import ExplorationTradingEnv, ExplorationConfig
 from envs.config import TradingConfig
 from modules.core.module_system import ModuleOrchestrator
 
-# Global flag to track exploration mode (set by main())
+# Global flags to track env mode (set by main())
 _EXPLORATION_MODE = False
+_USE_PREBAKED = False
 
 # ───────────────────────────────────────────────────────────────────
+# Simulation Time Initialization (v6.0)
+# ───────────────────────────────────────────────────────────────────
+
 # Logging / InfoBus (treat external types as Any to avoid collisions)
 # ───────────────────────────────────────────────────────────────────
 from typing import Any
@@ -313,7 +317,7 @@ def resolve_data_provider(source: str) -> DataProvider:
 # ───────────────────────────────────────────────────────────────────
 def create_dummy_data(config: TradingConfig) -> Dict[str, Dict[str, pd.DataFrame]]:
     dummy: Dict[str, Dict[str, pd.DataFrame]] = {}
-    instruments = getattr(config, "instruments", None) or ["EUR_USD"]
+    instruments = getattr(config, "instruments", None) or ["EURUSD"]
     for instrument in instruments:
         base = 1.10 if "EUR" in instrument else (1800.0 if "XAU" in instrument else 1.0)
         vol = 0.01 if "EUR" in instrument else (0.02 if "XAU" in instrument else 0.015)
@@ -341,9 +345,10 @@ def create_dummy_data(config: TradingConfig) -> Dict[str, Dict[str, pd.DataFrame
 # ───────────────────────────────────────────────────────────────────
 # ENV / MODEL BUILDERS
 # ───────────────────────────────────────────────────────────────────
+
 def _create_env_instance(data: Dict, config: TradingConfig):
     """Create the appropriate environment based on mode."""
-    global _EXPLORATION_MODE
+    global _EXPLORATION_MODE, _USE_PREBAKED
     if _EXPLORATION_MODE:
         # Use lightweight exploration env (no modules)
         exploration_config = ExplorationConfig(
@@ -354,6 +359,8 @@ def _create_env_instance(data: Dict, config: TradingConfig):
             direction_long_threshold=float(getattr(config, "direction_long_threshold", 0.3)),
             direction_short_threshold=float(getattr(config, "direction_short_threshold", -0.3)),
             max_steps_per_episode=int(getattr(config, "max_steps", 2000)),
+            use_prebaked_signals=_USE_PREBAKED,
+            prebaked_dir="data/prebaked",
         )
         return ExplorationTradingEnv(data, exploration_config)
     else:
@@ -490,7 +497,7 @@ def _validate_pretrained_model(model_path: str, config: TradingConfig) -> bool:
                 # Check action shape - should be [n_instruments * 2]
                 # Both SimpleTradingEnv and ModernTradingEnv use (2 * n_instruments,) action space
                 model_action = metadata.get("action_shape", [4])
-                model_instruments = metadata.get("instruments", ["EUR_USD", "XAU_USD"])
+                model_instruments = metadata.get("instruments", ["EURUSD", "XAUUSD"])
                 expected_action_dim = len(model_instruments) * 2
                 
                 if model_action != [expected_action_dim]:
@@ -901,6 +908,8 @@ def main():
     p.add_argument("--no-dashboard", action="store_true", help="Disable web dashboard")
     p.add_argument("--fast", action="store_true", 
                    help="Use ExplorationEnv (no modules) for fastest training")
+    p.add_argument("--prebaked", action="store_true",
+                   help="Use prebaked module signals from data/prebaked/ (run scripts/prebake_signals.py first)")
     p.add_argument("--model", type=str, help="Model path for evaluation (--mode eval)")
     p.add_argument("--eval-episodes", type=int, default=None, help="Number of evaluation episodes (default from config)")
     p.add_argument("--render", action="store_true", help="Print per-episode details during eval")
@@ -926,12 +935,24 @@ def main():
     logger.info("Loaded app config (mode=%s%s)", app_mode, f", preset={preset_name}" if preset_name else "")
 
     # Determine if exploration mode (no modules) - for fast parallel training
-    # --fast flag or --preset exploration both enable this
-    exploration_mode = (args.preset == "exploration") or getattr(args, "fast", False)
+    # --fast flag, --prebaked, or --preset exploration all enable this
+    exploration_mode = (args.preset == "exploration") or getattr(args, "fast", False) or getattr(args, "prebaked", False)
+    use_prebaked = getattr(args, "prebaked", False)
     
-    # Set global flag for environment creation
-    global _EXPLORATION_MODE
+    # Set global flags for environment creation
+    global _EXPLORATION_MODE, _USE_PREBAKED
     _EXPLORATION_MODE = exploration_mode
+    _USE_PREBAKED = use_prebaked
+    
+    if use_prebaked:
+        logger.info("Using PREBAKED module signals from data/prebaked/")
+        print("[MODE] PREBAKED: Using real module signals (run scripts/prebake_signals.py to generate)")
+    elif exploration_mode:
+        logger.info("Using FAST exploration mode (no modules, inline signal approximation)")
+        print("[MODE] FAST: Using inline signal approximation (no prebaked signals)")
+    else:
+        logger.info("Using FULL module mode (orchestrator + all modules)")
+        print("[MODE] FULL: Using orchestrator with all modules")
     
     # Initialize the ModuleOrchestrator ONLY if not in exploration mode
     orchestrator = None

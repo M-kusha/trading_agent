@@ -186,7 +186,7 @@ class SimpleConfig:
         self.init_seed = kwargs.get("seed", 42)
 
         # ═════ Data settings ═════
-        self.instruments = kwargs.get("instruments", ["EUR_USD", "XAU_USD"])
+        self.instruments = kwargs.get("instruments", ["EURUSD", "XAUUSD"])
         self.timeframes = kwargs.get("timeframes", ["M15", "H1", "H4", "D1"])
 
         # Execution (no fees for pure exploration beyond spread/slippage)
@@ -963,9 +963,9 @@ def load_data(config: SimpleConfig) -> Dict[str, Dict[str, pd.DataFrame]]:
 
             # Normalize instrument name
             if "EUR" in instrument.upper() and "USD" in instrument.upper():
-                instrument = "EUR_USD"
+                instrument = "EURUSD"
             elif "XAU" in instrument.upper():
-                instrument = "XAU_USD"
+                instrument = "XAUUSD"
 
             # Load CSV
             df = pd.read_csv(file)

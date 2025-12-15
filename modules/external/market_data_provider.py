@@ -382,7 +382,7 @@ class MarketDataConfig:
     circuit_breaker_threshold: int = 3
     
     # Symbols and timeframes
-    supported_symbols: List[str] = field(default_factory=lambda: ["XAU_USD", "EUR_USD"])
+    supported_symbols: List[str] = field(default_factory=lambda: ["XAUUSD", "EURUSD"])
     # Default multi-timeframe set: M15 primary, H1/H4/D1 for context.
     supported_timeframes: List[str] = field(default_factory=lambda: ["M15", "H1", "H4", "D1"])
     # M15 is the primary trading timeframe (decision/execution level).
@@ -1844,6 +1844,15 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                     "close": float(market_data[s].get("close", 0.0)) if s in market_data else 0.0,
                     "volume": float(market_data[s].get("volume", 0.0)) if s in market_data else 0.0,
                     "timestamp": market_data[s].get("timestamp", ts_iso) if s in market_data else ts_iso,
+
+                    # Provide a short OHLC history window for timing features.
+                    # EntryTimingController expects one of: ohlc (Nx4), candles (list[dict]),
+                    # or parallel arrays. We keep existing scalar fields and add "candles".
+                    "candles_tf": self.primary_tf.get(s, self.cfg.primary_timeframe),
+                    "candles": self._build_candles_window(
+                        multi_tf.get(s, {}).get(self.primary_tf.get(s, self.cfg.primary_timeframe), {}),
+                        window_size=int(self.config.get("timing_ohlc_window_size", 60)),
+                    ),
                 }
                 for s in self.cfg.supported_symbols
             },
@@ -1882,6 +1891,43 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         except Exception:
             pass
         return snapshot
+
+    def _build_candles_window(self, tf_record: Dict[str, Any], window_size: int = 60) -> List[Dict[str, float]]:
+        """Build a compact candle list (open/high/low/close) from a multi_tf record.
+
+        This is designed specifically for EntryTimingController, which uses the
+        "candles" format when present.
+        """
+        try:
+            if not isinstance(tf_record, dict):
+                return []
+
+            o = tf_record.get("open")
+            h = tf_record.get("high")
+            l = tf_record.get("low")
+            c = tf_record.get("close")
+            if not isinstance(o, list) or not isinstance(h, list) or not isinstance(l, list) or not isinstance(c, list):
+                return []
+
+            n = min(len(o), len(h), len(l), len(c))
+            if n < 2:
+                return []
+
+            n_take = max(2, min(int(window_size), n))
+            start = n - n_take
+            candles: List[Dict[str, float]] = []
+            for i in range(start, n):
+                candles.append(
+                    {
+                        "open": float(o[i]),
+                        "high": float(h[i]),
+                        "low": float(l[i]),
+                        "close": float(c[i]),
+                    }
+                )
+            return candles
+        except Exception:
+            return []
 
     def _build_alias_map(self, snapshot: Dict[str, Any]) -> Dict[str, Any]:
         """Create symbol/TF 'market_data_SYM_TF' alias keys only if declared in contract."""

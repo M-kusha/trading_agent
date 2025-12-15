@@ -324,6 +324,44 @@ class PPOCore:
             self._sb3_instruments = []
 
 
+        # Optional SB3 policy backend (inference-only).
+        # When loaded, select_action() uses SB3 PPO.predict() instead of the internal torch network.
+        self._sb3_model: Optional[Any] = None
+        self._sb3_model_path: Optional[str] = None
+        self._sb3_instruments: List[str] = []
+
+    @staticmethod
+    def _norm_symbol(sym: Any) -> str:
+        if not isinstance(sym, str):
+            return ""
+        return sym.upper().replace("/", "").replace("_", "").replace("-", "")
+
+    def set_instruments(self, instruments: List[str]) -> None:
+        """Set instrument ordering for multi-instrument SB3 action slicing."""
+        try:
+            self._sb3_instruments = [self._norm_symbol(s) for s in (instruments or []) if s]
+        except Exception:
+            self._sb3_instruments = []
+
+        # Optional SB3 policy backend (inference-only).
+        # When loaded, select_action() uses SB3 PPO.predict() instead of the internal torch network.
+        self._sb3_model: Optional[Any] = None
+        self._sb3_model_path: Optional[str] = None
+        self._sb3_instruments: List[str] = []
+
+    @staticmethod
+    def _norm_symbol(sym: Any) -> str:
+        if not isinstance(sym, str):
+            return ""
+        return sym.upper().replace("/", "").replace("_", "").replace("-", "")
+
+    def set_instruments(self, instruments: List[str]) -> None:
+        """Set instrument ordering for multi-instrument SB3 action slicing."""
+        try:
+            self._sb3_instruments = [self._norm_symbol(s) for s in (instruments or []) if s]
+        except Exception:
+            self._sb3_instruments = []
+
     # ─────────────────────────────────────────────────────────────
     # Action Selection
     # ─────────────────────────────────────────────────────────────
@@ -373,6 +411,41 @@ class PPOCore:
             log_prob: Log probability of the action
             value: State value estimate
         """
+        # SB3 backend (inference-only)
+        # IMPORTANT: normalize to the SB3 model's observation_space size (not PPOCoreConfig.obs_size),
+        # otherwise misconfigured configs can silently truncate/pad and skew inference or crash predict().
+        if self._sb3_model is not None:
+            try:
+                obs_arr = np.asarray(obs, dtype=np.float32).reshape(-1)
+                try:
+                    shape = getattr(self._sb3_model.observation_space, "shape", None)
+                    expected = int(shape[0]) if shape and len(shape) == 1 else None
+                except Exception:
+                    expected = None
+
+                if expected is not None and obs_arr.shape[0] != expected:
+                    fixed = np.zeros(expected, dtype=np.float32)
+                    copy_size = min(obs_arr.shape[0], expected)
+                    fixed[:copy_size] = obs_arr[:copy_size]
+                    obs_arr = fixed
+
+                action_full, _ = self._sb3_model.predict(obs_arr, deterministic=deterministic)
+                action_full_arr = np.asarray(action_full, dtype=np.float32).reshape(-1)
+                action_np = self._slice_sb3_action(action_full_arr, instrument=instrument)
+                action_np = np.clip(action_np, -1.0, 1.0).astype(np.float32)
+
+                # SB3 predict() doesn't expose log_prob/value; keep placeholders.
+                log_prob_np = 0.0
+                value_np = 0.0
+
+                self.last_action = action_np
+                self._last_log_prob = log_prob_np
+                self._last_value = value_np
+                return action_np, log_prob_np, value_np
+            except Exception:
+                # Fall back to the internal torch policy if SB3 predict fails.
+                pass
+
         obs_arr = self._normalize_obs(obs)
                 # SB3 backend (inference-only)
         if self._sb3_model is not None:
@@ -393,6 +466,7 @@ class PPOCore:
             except Exception:
                 # Fall back to the internal torch policy if SB3 predict fails.
                 pass
+
 
         obs_tensor = torch.from_numpy(obs_arr).to(self.device).unsqueeze(0)
 
@@ -427,6 +501,78 @@ class PPOCore:
         self._last_value = value_np
 
         return action_np, log_prob_np, value_np
+    def _slice_sb3_action(self, action: np.ndarray, instrument: Optional[str]) -> np.ndarray:
+        """
+        Convert an SB3 multi-instrument action vector into the 2D (direction_score, size_score)
+        slice expected by ArbiterLogic for a single instrument.
+        """
+        try:
+            arr = np.asarray(action, dtype=np.float32).reshape(-1)
+        except Exception:
+            arr = np.zeros(0, dtype=np.float32)
+
+        if arr.size <= 0:
+            return np.zeros(self.config.act_size, dtype=np.float32)
+
+        # If already a single-instrument action, trim/pad to act_size.
+        if arr.size <= self.config.act_size:
+            out = np.zeros(self.config.act_size, dtype=np.float32)
+            out[: min(arr.size, self.config.act_size)] = arr[: self.config.act_size]
+            return out
+
+        insts = self._sb3_instruments
+        if insts and arr.size >= 2 * len(insts):
+            idx = 0
+            if instrument:
+                norm = self._norm_symbol(instrument)
+                try:
+                    idx = insts.index(norm)
+                except ValueError:
+                    idx = 0
+
+            start = 2 * idx
+            if start + 2 <= arr.size:
+                return arr[start : start + 2]
+
+        # Fallback: treat first two dims as (direction, size)
+        return arr[:2]
+
+    def _slice_sb3_action(self, action: np.ndarray, instrument: Optional[str]) -> np.ndarray:
+        """
+        Convert an SB3 multi-instrument action vector into the 2D (direction_score, size_score)
+        slice expected by ArbiterLogic for a single instrument.
+        """
+        try:
+            arr = np.asarray(action, dtype=np.float32).reshape(-1)
+        except Exception:
+            arr = np.zeros(0, dtype=np.float32)
+
+        if arr.size <= 0:
+            return np.zeros(self.config.act_size, dtype=np.float32)
+
+        # If already a single-instrument action, trim/pad to act_size.
+        if arr.size <= self.config.act_size:
+            out = np.zeros(self.config.act_size, dtype=np.float32)
+            out[: min(arr.size, self.config.act_size)] = arr[: self.config.act_size]
+            return out
+
+        insts = self._sb3_instruments
+        if insts and arr.size >= 2 * len(insts):
+            idx = 0
+            if instrument:
+                norm = self._norm_symbol(instrument)
+                try:
+                    idx = insts.index(norm)
+                except ValueError:
+                    idx = 0
+
+            start = 2 * idx
+            if start + 2 <= arr.size:
+                return arr[start : start + 2]
+
+        # Fallback: treat first two dims as (direction, size)
+        return arr[:2]
+
     def _slice_sb3_action(self, action: np.ndarray, instrument: Optional[str]) -> np.ndarray:
         """
         Convert an SB3 multi-instrument action vector into the 2D (direction_score, size_score)

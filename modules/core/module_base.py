@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import time
 import inspect
@@ -228,8 +229,9 @@ def module(**kwargs):
         try:
             from modules.utils.info_bus import InfoBusManager
             bus = InfoBusManager.get_instance()
-            bus.register_provider(cls.__name__, metadata.provides)
-            bus.register_consumer(cls.__name__, metadata.requires)
+            bus.register_capabilities(cls.__name__, provides=metadata.provides, requires=metadata.requires)
+            if metadata.name != cls.__name__:
+                bus.register_capabilities(metadata.name, provides=metadata.provides, requires=metadata.requires)
         except (ImportError, AttributeError):
             pass
         except Exception:
@@ -1038,6 +1040,9 @@ class BaseModule(ABC):
          - circuit_breaker: if orchestrator is available, try to adopt central breaker for this module
          - error pinpointer: prefer orchestrator-aware instance
         """
+        if os.getenv("SMARTINFOBUS_AUTOWIRE", "1").strip().lower() in {"0", "false", "no", "off"}:
+            return
+
         # Bus
         if not getattr(self, 'bus', None):
             try:

@@ -6,12 +6,10 @@
 # Single source of truth for PPO observation construction.
 # Used identically in TRAINING (ModernTradingEnv) and LIVE (PPOAgent).
 #
-# Architecture (v5.0):
-# - PPO is the MASTER - makes all trading decisions
-# - Experts are ADVISORS - provide features/signals as ADVICE
-# - Expert signals are SIGNED (+bullish/-bearish) - PPO learns correlations
-# - M15 is the PRIMARY trading/decision timeframe
-# - H1/H4/D1 are CONTEXT timeframes (filters/regime)
+# FIXES APPLIED (Dec 2025):
+# - Prevent cross-symbol leakage when instrument key mismatches (XAUUSD vs XAU/USD, etc.)
+# - Make expert signals schema match _build_voting_features() (direction + score/strength)
+# - Normalize position direction parsing (string -> signed float)
 # ─────────────────────────────────────────────────────────────
 
 from __future__ import annotations
@@ -55,25 +53,20 @@ except ImportError:
 # [40-47] Account/Position State - 8 dims
 # [48-55] World Model Predictions - 8 dims
 # [56-63] Trading Mode State (incl. timing features) - 8 dims
-#
-# KEY: Expert signals are FEATURES, not directives. PPO learns which
-# expert signals correlate with profitable trades and how to weight them.
 # ═══════════════════════════════════════════════════════════════════
 
-# Observation dimension constants
 PPO_OBS_VERSION = "5.0"  # Master/Advisor Architecture
 PPO_OBS_SIZE = 64
 
-# Feature group indices for debugging/analysis
 FEATURE_GROUPS: Dict[str, tuple[int, int]] = {
-    "m15_price": (0, 10),        # M15 primary features
-    "htf_context": (10, 16),     # H1/H4/D1 context
-    "voting": (16, 24),          # Expert signals
-    "committee": (24, 32),       # Committee metrics
-    "risk": (32, 40),            # Risk/memory
-    "account": (40, 48),         # Account state
-    "world_model": (48, 56),     # World model predictions (NEW)
-    "trading_mode": (56, 64),    # Trading mode state (NEW, incl. timing)
+    "m15_price": (0, 10),
+    "htf_context": (10, 16),
+    "voting": (16, 24),
+    "committee": (24, 32),
+    "risk": (32, 40),
+    "account": (40, 48),
+    "world_model": (48, 56),
+    "trading_mode": (56, 64),
 }
 
 
@@ -97,8 +90,6 @@ class PPOObservationConfig:
     max_trades_per_day: int = field(default_factory=lambda: _TRADE_LIMITS.get("max_trades_per_day", 20))
 
     # World model parameters (v4.0)
-    # If overall prediction confidence is below this threshold,
-    # directional / volatility features are aggressively neutralized.
     prediction_confidence_threshold: float = 0.5
     scenario_confidence_threshold: float = 0.5  # reserved for future use
 
@@ -113,9 +104,7 @@ class PPOObservationBuilder:
 
     def __init__(self, config: Optional[PPOObservationConfig] = None) -> None:
         self.config = config or PPOObservationConfig()
-        # Guard against accidental obs_size drift – the feature layout is hard-coded
         if self.config.obs_size != PPO_OBS_SIZE:
-            # Force to canonical size; layout is fixed by design
             self.config.obs_size = PPO_OBS_SIZE
         self._eps: float = 1e-8
 
@@ -133,36 +122,20 @@ class PPOObservationBuilder:
 
     def build(
         self,
-        # Market data
         market_data: Optional[Dict[str, Any]] = None,
-        # Voting state
         expert_signals: Optional[Dict[str, Any]] = None,
         committee_state: Optional[Dict[str, Any]] = None,
-        # Risk state
         risk_state: Optional[Dict[str, Any]] = None,
         memory_state: Optional[Dict[str, Any]] = None,
-        # Account state
         account_state: Optional[Dict[str, Any]] = None,
-        # World Model state (v4.0)
         world_model_state: Optional[Dict[str, Any]] = None,
-        # Trading Mode state (v4.0)
         trading_mode_state: Optional[Dict[str, Any]] = None,
-        # SmartInfoBus (optional, for convenience)
         smart_bus: Optional[Any] = None,
         module_name: str = "PPOObservationBuilder",
     ) -> np.ndarray:
-        """
-        Build the unified PPO observation vector.
-
-        Can be called with explicit dicts OR with a SmartInfoBus reference.
-        If smart_bus is provided, it will fetch missing data from the bus.
-
-        Returns:
-            np.ndarray of shape (obs_size,) with dtype float32
-        """
+        """Build the unified PPO observation vector."""
         obs = np.zeros(self.config.obs_size, dtype=np.float32)
 
-        # If smart_bus provided, fetch data from bus for any missing fields
         if smart_bus is not None:
             market_data = market_data or self._fetch_market_data(smart_bus, module_name)
             expert_signals = expert_signals or self._fetch_expert_signals(smart_bus, module_name)
@@ -173,7 +146,6 @@ class PPOObservationBuilder:
             world_model_state = world_model_state or self._fetch_world_model_state(smart_bus, module_name)
             trading_mode_state = trading_mode_state or self._fetch_trading_mode_state(smart_bus, module_name)
 
-        # Build each feature group
         obs[0:10] = self._build_m15_features(market_data)
         obs[10:16] = self._build_htf_context(market_data)
         obs[16:24] = self._build_voting_features(expert_signals)
@@ -183,47 +155,25 @@ class PPOObservationBuilder:
         obs[48:56] = self._build_world_model_features(world_model_state)
         obs[56:64] = self._build_trading_mode_features(trading_mode_state)
 
-        # Sanitize NaN/Inf
-        obs = np.nan_to_num(obs, nan=0.0, posinf=1.0, neginf=-1.0)
-
-        return obs
+        return np.nan_to_num(obs, nan=0.0, posinf=1.0, neginf=-1.0)
 
     def build_for_instrument(
         self,
         instrument: str,
-        # Market data
         market_data: Optional[Dict[str, Any]] = None,
-        # Voting state
         expert_signals: Optional[Dict[str, Any]] = None,
         committee_state: Optional[Dict[str, Any]] = None,
-        # Risk state
         risk_state: Optional[Dict[str, Any]] = None,
         memory_state: Optional[Dict[str, Any]] = None,
-        # Account state
         account_state: Optional[Dict[str, Any]] = None,
-        # World Model state (v4.0)
         world_model_state: Optional[Dict[str, Any]] = None,
-        # Trading Mode state (v4.0 + timing)
         trading_mode_state: Optional[Dict[str, Any]] = None,
-        # SmartInfoBus (optional)
         smart_bus: Optional[Any] = None,
         module_name: str = "PPOObservationBuilder",
     ) -> np.ndarray:
-        """
-        Build observation vector for a SPECIFIC instrument.
-
-        This method extracts instrument-specific market/risk/account data while using
-        the same observation structure as the global build() method.
-
-        Args:
-            instrument: The instrument symbol (e.g., "XAUUSD", "EURUSD")
-
-        Returns:
-            np.ndarray of shape (obs_size,) with dtype float32
-        """
+        """Build observation vector for a SPECIFIC instrument."""
         obs = np.zeros(self.config.obs_size, dtype=np.float32)
 
-        # If smart_bus provided, fetch data from bus
         if smart_bus is not None:
             market_data = market_data or self._fetch_market_data_for_instrument(
                 smart_bus, module_name, instrument
@@ -240,12 +190,10 @@ class PPOObservationBuilder:
                 smart_bus, module_name, instrument
             )
             world_model_state = world_model_state or self._fetch_world_model_state(smart_bus, module_name)
-            # IMPORTANT: timing must be per-instrument, not the global dict
             trading_mode_state = trading_mode_state or self._fetch_trading_mode_state_for_instrument(
                 smart_bus, module_name, instrument
             )
 
-        # Build each feature group (same structure as global)
         obs[0:10] = self._build_m15_features_for_instrument(market_data, instrument)
         obs[10:16] = self._build_htf_context_for_instrument(market_data, instrument)
         obs[16:24] = self._build_voting_features_for_instrument(expert_signals, instrument)
@@ -255,47 +203,101 @@ class PPOObservationBuilder:
         obs[48:56] = self._build_world_model_features(world_model_state)
         obs[56:64] = self._build_trading_mode_features(trading_mode_state)
 
-        # Sanitize NaN/Inf
-        obs = np.nan_to_num(obs, nan=0.0, posinf=1.0, neginf=-1.0)
+        return np.nan_to_num(obs, nan=0.0, posinf=1.0, neginf=-1.0)
 
-        return obs
+    # ─────────────────────────────────────────────────────────────
+    # Symbol-safe helpers (prevents cross-instrument leakage)
+    # ─────────────────────────────────────────────────────────────
+
+    def _norm_symbol(self, s: Any) -> str:
+        """Normalize symbol keys (XAU/USD, XAUUSD, xau_usd, EURUSDm -> XAUUSD/EURUSD)."""
+        if not isinstance(s, str):
+            return ""
+        # Keep alphanumerics only:
+        # - Handles broker suffixes/prefixes like "EURUSDm", "EURUSD.m", "XAUUSD#"
+        # - Avoids cross-symbol leakage from separator differences
+        return "".join(ch for ch in s.strip().upper() if ch.isalnum())
+
+    def _lookup_symbol_block(self, mapping: Any, instrument: str) -> Optional[Dict[str, Any]]:
+        """Return mapping[instrument] with normalization fallback; dict-only."""
+        if not isinstance(mapping, dict):
+            return None
+
+        v = mapping.get(instrument)
+        if isinstance(v, dict):
+            return v
+
+        target = self._norm_symbol(instrument)
+        if not target:
+            return None
+
+        # 1) Exact normalized match
+        for k, val in mapping.items():
+            if not (isinstance(k, str) and isinstance(val, dict)):
+                continue
+            if self._norm_symbol(k) == target:
+                return val
+
+        # 2) Loose match for common broker suffixes / aliasing:
+        #    - EURUSD vs EURUSDm / EURUSD.i / EURUSD#
+        #    - US30 vs US30CASH
+        candidates: list[tuple[int, Dict[str, Any]]] = []
+        for k, val in mapping.items():
+            if not (isinstance(k, str) and isinstance(val, dict)):
+                continue
+            k_norm = self._norm_symbol(k)
+            if not k_norm:
+                continue
+            if k_norm.startswith(target) or target.startswith(k_norm):
+                candidates.append((abs(len(k_norm) - len(target)), val))
+
+        if candidates:
+            # Prefer the closest-length match to reduce accidental collisions.
+            candidates.sort(key=lambda t: t[0])
+            return candidates[0][1]
+
+        return None
+
+    def _is_timeframe_dict(self, d: Any) -> bool:
+        """True if dict looks like {M15:{...}, H1:{...}, ...}."""
+        if not isinstance(d, dict):
+            return False
+        return any(tf in d and isinstance(d.get(tf), dict) for tf in SUPPORTED_TIMEFRAMES)
 
     # ─────────────────────────────────────────────────────────────
     # Instrument-aware fetchers / builders
     # ─────────────────────────────────────────────────────────────
 
-    def _fetch_market_data_for_instrument(
-        self, bus: Any, module: str, instrument: str
-    ) -> Dict[str, Any]:
-        """Fetch instrument-specific market data from SmartInfoBus."""
+    def _fetch_market_data_for_instrument(self, bus: Any, module: str, instrument: str) -> Dict[str, Any]:
+        """Fetch instrument-specific market data from SmartInfoBus without cross-symbol leakage."""
         try:
-            # Try instrument-specific multi-timeframe data
             mtf = bus.get("multi_timeframe_data", module)
-            if isinstance(mtf, dict):
-                if instrument in mtf and isinstance(mtf[instrument], dict):
-                    return mtf[instrument]
+            block = self._lookup_symbol_block(mtf, instrument)
+            if isinstance(block, dict):
+                return block
+            if self._is_timeframe_dict(mtf):
                 return mtf
 
-            # Try instrument-specific market_data
             md = bus.get("market_data", module)
-            if isinstance(md, dict):
-                if instrument in md and isinstance(md[instrument], dict):
-                    return md[instrument]
+            block = self._lookup_symbol_block(md, instrument)
+            if isinstance(block, dict):
+                return block
+            if self._is_timeframe_dict(md):
                 return md
 
-            # Try historical_prices
             hp = bus.get("historical_prices", module)
-            if isinstance(hp, dict):
-                if instrument in hp and isinstance(hp[instrument], dict):
-                    return hp[instrument]
+            block = self._lookup_symbol_block(hp, instrument)
+            if isinstance(block, dict):
+                return block
+            if self._is_timeframe_dict(hp):
                 return hp
         except Exception:
             pass
+
+        # IMPORTANT: return empty rather than returning a multi-symbol dict that might pick the wrong symbol
         return {}
 
-    def _fetch_expert_signals_for_instrument(
-        self, bus: Any, module: str, instrument: str
-    ) -> Dict[str, Any]:
+    def _fetch_expert_signals_for_instrument(self, bus: Any, module: str, instrument: str) -> Dict[str, Any]:
         """Fetch instrument-specific expert signals."""
         global_signals = self._fetch_expert_signals(bus, module)
         experts = global_signals.get("experts", {})
@@ -303,7 +305,6 @@ class PPOObservationBuilder:
         if not isinstance(experts, dict):
             return global_signals
 
-        # Check if any expert has per-instrument data
         for expert_name, sig in list(experts.items()):
             if isinstance(sig, dict) and "instruments" in sig:
                 instruments_map = sig.get("instruments", {})
@@ -314,59 +315,57 @@ class PPOObservationBuilder:
         global_signals["experts"] = experts
         return global_signals
 
-    def _fetch_risk_state_for_instrument(
-        self, bus: Any, module: str, instrument: str
-    ) -> Dict[str, Any]:
+    def _fetch_risk_state_for_instrument(self, bus: Any, module: str, instrument: str) -> Dict[str, Any]:
         """Fetch instrument-specific risk state."""
         risk = self._fetch_risk_state(bus, module)
 
-        # Check for per-instrument risk
         portfolio_risk = risk.get("portfolio_risk", {})
         if isinstance(portfolio_risk, dict) and "instruments" in portfolio_risk:
             inst_risk = portfolio_risk["instruments"].get(instrument, {})
-            # Attach a generic per-instrument view; downstream can decide how to use it
             risk["instrument_risk"] = inst_risk
 
         return risk
 
-    def _fetch_account_state_for_instrument(
-        self, bus: Any, module: str, instrument: str
-    ) -> Dict[str, Any]:
+    def _fetch_account_state_for_instrument(self, bus: Any, module: str, instrument: str) -> Dict[str, Any]:
         """Fetch instrument-specific account/position state."""
         account = self._fetch_account_state(bus, module)
 
         positions = bus.get("positions", module) or {}
         if isinstance(positions, dict):
             inst_pos = positions.get(instrument)
+            if not isinstance(inst_pos, dict):
+                # normalized key fallback
+                target = self._norm_symbol(instrument)
+                for k, v in positions.items():
+                    if isinstance(k, str) and isinstance(v, dict) and self._norm_symbol(k) == target:
+                        inst_pos = v
+                        break
+
             if isinstance(inst_pos, dict):
-                account["position_direction"] = inst_pos.get("direction", 0)
+                raw_dir = inst_pos.get("direction", 0)
+                if isinstance(raw_dir, str):
+                    raw_dir = self._extract_direction(raw_dir)
+                account["position_direction"] = raw_dir
                 account["position_size"] = inst_pos.get("size", 0.0)
                 account["unrealized_pnl"] = inst_pos.get("unrealized_pnl", 0.0)
 
-        # Enrich with cooldown information if available from SmartPositionManager.
+        # Enrich with cooldown information if available
         try:
-            cooldown_state = bus.get(
-                "instrument_cooldown_state",
-                module,
-                default=None,
-            )
+            cooldown_state = bus.get("instrument_cooldown_state", module, default=None)
             if isinstance(cooldown_state, dict):
                 inst_cd = cooldown_state.get(instrument)
                 if not isinstance(inst_cd, dict):
-                    norm = instrument.replace("/", "").replace("_", "").upper()
+                    target = self._norm_symbol(instrument)
                     for key, val in cooldown_state.items():
-                        if isinstance(key, str) and isinstance(val, dict):
-                            key_norm = key.replace("/", "").replace("_", "").upper()
-                            if key_norm == norm:
-                                inst_cd = val
-                                break
+                        if isinstance(key, str) and isinstance(val, dict) and self._norm_symbol(key) == target:
+                            inst_cd = val
+                            break
                 if isinstance(inst_cd, dict):
                     on_cd = bool(inst_cd.get("on_cooldown", False))
                     remaining = float(inst_cd.get("cooldown_remaining", 0.0) or 0.0)
                     account["on_cooldown"] = 1.0 if on_cd and remaining > 0.0 else 0.0
                     account["cooldown_remaining"] = remaining
         except Exception:
-            # Cooldown enrichment is advisory only; ignore failures.
             pass
 
         return account
@@ -375,41 +374,39 @@ class PPOObservationBuilder:
     # M15 Price Features (PRIMARY) - 10 dims
     # ======================================================================
 
-    def _build_m15_features_for_instrument(
-        self, market_data: Optional[Dict[str, Any]], instrument: str
-    ) -> np.ndarray:
-        """Build M15 features for a specific instrument."""
-        if market_data and instrument in market_data:
-            inst_data = market_data[instrument]
-            if isinstance(inst_data, dict):
-                return self._build_m15_features(inst_data)
-        return self._build_m15_features(market_data)
+    def _build_m15_features_for_instrument(self, market_data: Optional[Dict[str, Any]], instrument: str) -> np.ndarray:
+        """Build M15 features for a specific instrument safely."""
+        if self._is_timeframe_dict(market_data):
+            return self._build_m15_features(market_data)
 
-    def _build_htf_context_for_instrument(
-        self, market_data: Optional[Dict[str, Any]], instrument: str
-    ) -> np.ndarray:
-        """Build HTF context for a specific instrument."""
-        if market_data and instrument in market_data:
-            inst_data = market_data[instrument]
-            if isinstance(inst_data, dict):
-                return self._build_htf_context(inst_data)
-        return self._build_htf_context(market_data)
+        block = self._lookup_symbol_block(market_data, instrument)
+        if isinstance(block, dict):
+            return self._build_m15_features(block)
 
-    def _build_voting_features_for_instrument(
-        self, expert_signals: Optional[Dict[str, Any]], instrument: str  # instrument kept for symmetry
-    ) -> np.ndarray:
+        return np.zeros(10, dtype=np.float32)
+
+    def _build_htf_context_for_instrument(self, market_data: Optional[Dict[str, Any]], instrument: str) -> np.ndarray:
+        """Build HTF context for a specific instrument safely."""
+        if self._is_timeframe_dict(market_data):
+            return self._build_htf_context(market_data)
+
+        block = self._lookup_symbol_block(market_data, instrument)
+        if isinstance(block, dict):
+            return self._build_htf_context(block)
+
+        return np.zeros(6, dtype=np.float32)
+
+    def _build_voting_features_for_instrument(self, expert_signals: Optional[Dict[str, Any]], instrument: str) -> np.ndarray:
         """Build voting features for a specific instrument."""
-        # Same structure, but expert_signals may already be instrument-filtered.
+        _ = instrument  # symmetry / future use
         return self._build_voting_features(expert_signals)
 
     def _build_m15_features(self, market_data: Optional[Dict[str, Any]]) -> np.ndarray:
         """Build M15 primary price features."""
         feats = np.zeros(10, dtype=np.float32)
-
         if not market_data:
             return feats
 
-        # Extract M15 OHLCV data
         m15 = self._extract_timeframe_data(market_data, PRIMARY_TIMEFRAME)
         if m15 is None or not isinstance(m15, dict):
             return feats
@@ -432,56 +429,41 @@ class PPOObservationBuilder:
         open_arr = np.asarray(open_, dtype=np.float64) if open_ is not None else close_arr
         vol_arr = np.asarray(volume, dtype=np.float64) if volume is not None else np.ones_like(close_arr)
 
-        # Use last values
         c = float(close_arr[-1])
         h = float(high_arr[-1])
         l = float(low_arr[-1])
         o = float(open_arr[-1])
         v = float(vol_arr[-1])
 
-        # Lookback means
         lb = min(self.config.price_lookback, close_arr.size)
         mean_close = float(np.mean(close_arr[-lb:])) if lb > 0 else c
         mean_vol = float(np.mean(vol_arr[-lb:])) if lb > 0 else max(v, 1.0)
 
-        # [0] close_rel: close relative to mean
         feats[0] = float((c / max(mean_close, self._eps)) - 1.0)
-
-        # [1] range_rel: bar range relative to close
         feats[1] = float((h - l) / max(abs(c), self._eps))
-
-        # [2] change_rel: bar change
         feats[2] = float((c - o) / max(abs(o), self._eps))
-
-        # [3] vol_norm: volume relative to mean
         feats[3] = float(np.clip((v / max(mean_vol, self._eps)) - 1.0, -1.0, 2.0))
 
-        # [4] rsi_norm: RSI normalized to [-1, 1]
         rsi = self._compute_rsi(close_arr, self.config.rsi_period)
-        feats[4] = float((rsi - 50.0) / 50.0)  # Maps [0,100] to [-1,1]
+        feats[4] = float((rsi - 50.0) / 50.0)
 
-        # [5] macd_norm: MACD histogram (simplified)
         macd_hist = self._compute_macd_histogram(close_arr)
         denom = max(abs(c) * 0.01, self._eps)
         feats[5] = float(np.clip(macd_hist / denom, -1.0, 1.0))
 
-        # [6] atr_norm: ATR relative to price
         atr = self._compute_atr(high_arr, low_arr, close_arr, self.config.atr_period)
-        feats[6] = float(np.clip(atr / max(c, self._eps), 0.0, 0.1) * 10.0)  # [0,1]
+        feats[6] = float(np.clip(atr / max(c, self._eps), 0.0, 0.1) * 10.0)
 
-        # [7] trend_slope: linear regression slope
         if close_arr.size >= self.config.trend_lookback:
             slope = self._compute_slope(close_arr[-self.config.trend_lookback:])
             denom_slope = max(abs(c) * 0.001, self._eps)
             feats[7] = float(np.clip(slope / denom_slope, -1.0, 1.0))
 
-        # [8] momentum: rate of change
         if close_arr.size >= self.config.momentum_lookback:
             base = float(close_arr[-self.config.momentum_lookback])
             roc = (c - base) / max(abs(base), self._eps)
             feats[8] = float(np.clip(roc * 10.0, -1.0, 1.0))
 
-        # [9] volatility: rolling std of returns
         if close_arr.size >= 20:
             prev = close_arr[-20:-1]
             curr = close_arr[-19:]
@@ -498,7 +480,6 @@ class PPOObservationBuilder:
     def _build_htf_context(self, market_data: Optional[Dict[str, Any]]) -> np.ndarray:
         """Build higher timeframe context features."""
         feats = np.zeros(6, dtype=np.float32)
-
         if not market_data:
             return feats
 
@@ -506,7 +487,7 @@ class PPOObservationBuilder:
         vols: list[float] = []
         moms: list[float] = []
 
-        for i, tf in enumerate(CONTEXT_TIMEFRAMES):  # H1, H4, D1
+        for i, tf in enumerate(CONTEXT_TIMEFRAMES):
             tf_data = self._extract_timeframe_data(market_data, tf)
             if tf_data is None or not isinstance(tf_data, dict):
                 continue
@@ -514,7 +495,6 @@ class PPOObservationBuilder:
             close = tf_data.get("close")
             high = tf_data.get("high")
             low = tf_data.get("low")
-
             if close is None:
                 continue
 
@@ -522,43 +502,30 @@ class PPOObservationBuilder:
             if close_arr.size < 5:
                 continue
 
-            # Trend direction
             trend = self._compute_trend_direction(close_arr)
             trends.append(trend)
-
-            # Store individual HTF trend (first 3 dims)
             if i < 3:
                 feats[i] = float(trend)
 
-            # Volatility
             if high is not None and low is not None:
                 high_arr = np.asarray(high, dtype=np.float64)
                 low_arr = np.asarray(low, dtype=np.float64)
-                atr = self._compute_atr(
-                    high_arr,
-                    low_arr,
-                    close_arr,
-                    min(14, close_arr.size - 1),
-                )
+                atr = self._compute_atr(high_arr, low_arr, close_arr, min(14, close_arr.size - 1))
                 vols.append(float(atr / max(close_arr[-1], self._eps)))
 
-            # Momentum
             if close_arr.size >= 5:
                 base = float(close_arr[-5])
                 mom = (float(close_arr[-1]) - base) / max(abs(base), self._eps)
                 moms.append(mom)
 
-        # [3] htf_alignment: do higher TFs agree?
         if len(trends) >= 2:
             signs = [np.sign(t) for t in trends if abs(t) > 0.1]
             if len(signs) >= 2:
                 feats[3] = float(1.0 if len(set(signs)) == 1 else -abs(np.mean(trends)))
 
-        # [4] htf_volatility: average volatility
         if vols:
             feats[4] = float(np.clip(np.mean(vols) * 100.0, 0.0, 1.0))
 
-        # [5] htf_momentum: average momentum
         if moms:
             feats[5] = float(np.clip(np.mean(moms) * 10.0, -1.0, 1.0))
 
@@ -569,18 +536,8 @@ class PPOObservationBuilder:
     # ======================================================================
 
     def _build_voting_features(self, expert_signals: Optional[Dict[str, Any]]) -> np.ndarray:
-        """
-        Build voting expert features as RAW SIGNALS for PPO to learn from.
-
-        PPO is the MASTER - experts provide ADVICE as features:
-        - feats[i*2]: Expert SIGNED strength (+ve=bullish, -ve=bearish, 0=neutral)
-          This is NOT a directive - PPO learns to correlate with profitable trades.
-        - feats[i*2+1]: Expert confidence level (how sure is the expert?)
-
-        PPO must learn which expert signals correlate with success.
-        """
+        """Build expert signals as signed features for PPO to learn from."""
         feats = np.zeros(8, dtype=np.float32)
-
         if not expert_signals:
             return feats
 
@@ -594,26 +551,22 @@ class PPOObservationBuilder:
             if not isinstance(sig, dict):
                 sig = {}
 
-            # Get raw strength/score
             strength_raw = sig.get("score", sig.get("strength", sig.get("magnitude", 0.0)))
             try:
                 strength_val = abs(float(strength_raw))
             except (TypeError, ValueError):
                 strength_val = 0.0
 
-            # Get direction to create SIGNED strength
             direction = str(sig.get("direction", sig.get("action", "neutral"))).lower()
             if direction in ("bullish", "long", "buy"):
                 signed_strength = strength_val
             elif direction in ("bearish", "short", "sell"):
                 signed_strength = -strength_val
             else:
-                signed_strength = 0.0  # Neutral
+                signed_strength = 0.0
 
-            # feats[i*2]: Signed strength (-1 to +1)
             feats[i * 2] = float(np.clip(signed_strength, -1.0, 1.0))
 
-            # feats[i*2+1]: Confidence (0 to 1)
             conf_raw = sig.get("confidence", 0.0)
             try:
                 conf_val = float(conf_raw)
@@ -632,22 +585,11 @@ class PPOObservationBuilder:
         committee_state: Optional[Dict[str, Any]],
         expert_signals: Optional[Dict[str, Any]],
     ) -> np.ndarray:
-        """
-        Build committee/consensus features as RAW SIGNALS for PPO.
-
-        PPO is the MASTER - committee provides ADVICE:
-        - Signed consensus (+bullish/-bearish) as a feature, not directive
-        - Agreement/confidence metrics
-        - Regime information
-
-        PPO learns to correlate these with profitable trades.
-        """
         feats = np.zeros(8, dtype=np.float32)
 
         committee_state = committee_state or {}
         expert_signals = expert_signals or {}
 
-        # [0] signed_consensus: SIGNED committee direction (-1 to +1)
         consensus_score = committee_state.get("consensus_score", 0.5)
         consensus_action = str(committee_state.get("action", committee_state.get("direction", "flat"))).lower()
 
@@ -659,10 +601,8 @@ class PPOObservationBuilder:
             signed_consensus = 0.0
         feats[0] = float(np.clip(signed_consensus, -1.0, 1.0))
 
-        # [1] committee_conf
         feats[1] = float(np.clip(committee_state.get("confidence", 0.5), 0.0, 1.0))
 
-        # [2] vote_alignment: Do experts agree with EACH OTHER?
         experts = expert_signals.get("experts", {}) if isinstance(expert_signals, dict) else {}
         signed_expert_scores: list[float] = []
         if isinstance(experts, dict):
@@ -670,7 +610,6 @@ class PPOObservationBuilder:
                 sig = experts.get(name, {})
                 if not isinstance(sig, dict):
                     continue
-                # Get strength and direction
                 strength = sig.get("score", sig.get("strength", 0.0))
                 direction = str(sig.get("direction", sig.get("action", "neutral"))).lower()
                 try:
@@ -685,13 +624,11 @@ class PPOObservationBuilder:
                     pass
 
         if len(signed_expert_scores) >= 2:
-            # Agreement = low variance (experts pointing same direction)
             variance = float(np.var(signed_expert_scores))
             feats[2] = float(np.clip(1.0 / (1.0 + variance * 10), 0.0, 1.0))
         else:
-            feats[2] = 0.5  # Neutral when insufficient data
+            feats[2] = 0.5
 
-        # [3] average_expert_confidence
         expert_confidences: list[float] = []
         if isinstance(experts, dict):
             for name in ["trend", "momentum", "theme", "seasonality"]:
@@ -702,15 +639,10 @@ class PPOObservationBuilder:
                         expert_confidences.append(float(conf))
                     except (TypeError, ValueError):
                         pass
-        if expert_confidences:
-            feats[3] = float(np.clip(np.mean(expert_confidences), 0.0, 1.0))
-        else:
-            feats[3] = 0.5
+        feats[3] = float(np.clip(np.mean(expert_confidences), 0.0, 1.0)) if expert_confidences else 0.5
 
-        # [4] fragility
         feats[4] = float(np.clip(committee_state.get("fragility", 0.5), 0.0, 1.0))
 
-        # [5] regime_type
         market = expert_signals.get("market", {}) if isinstance(expert_signals, dict) else {}
         regime = (market.get("regime", "unknown") if isinstance(market, dict) else "unknown")
         regime_map = {
@@ -724,13 +656,14 @@ class PPOObservationBuilder:
         }
         feats[5] = float(regime_map.get(str(regime).lower(), 0.5))
 
-        # [6] regime_strength
         regime_strength = 0.5
         if isinstance(market, dict):
-            regime_strength = float(market.get("regime_strength", 0.5))
+            try:
+                regime_strength = float(market.get("regime_strength", 0.5))
+            except (TypeError, ValueError):
+                regime_strength = 0.5
         feats[6] = float(np.clip(regime_strength, 0.0, 1.0))
 
-        # [7] expert_conviction: % of experts with strong signals (|score| > 0.5)
         strong_conviction_count = sum(1 for s in signed_expert_scores if abs(s) > 0.5)
         feats[7] = float(strong_conviction_count / max(len(signed_expert_scores), 1))
 
@@ -746,14 +679,12 @@ class PPOObservationBuilder:
         memory_state: Optional[Dict[str, Any]],
         account_state: Optional[Dict[str, Any]],
     ) -> np.ndarray:
-        """Build risk and memory features."""
         feats = np.zeros(8, dtype=np.float32)
 
         risk_state = risk_state or {}
         memory_state = memory_state or {}
         account_state = account_state or {}
 
-        # [0] memory_gate
         memory_gate = memory_state.get("memory_gate", 1.0)
         if isinstance(memory_gate, dict):
             memory_gate = memory_gate.get("risk_multiplier", 1.0)
@@ -763,7 +694,6 @@ class PPOObservationBuilder:
             mem_val = 1.0
         feats[0] = float(np.clip(mem_val, 0.0, 1.0))
 
-        # [1] danger_zone_count (normalized)
         danger_zones = memory_state.get("danger_zones", {})
         if isinstance(danger_zones, dict):
             count = int(danger_zones.get("zone_count", 0))
@@ -773,23 +703,31 @@ class PPOObservationBuilder:
             count = 0
         feats[1] = float(np.clip(count / max(self.config.max_danger_zones, 1), 0.0, 1.0))
 
-        # [2] drawdown
-        drawdown = float(account_state.get("current_drawdown", 0.0))
+        try:
+            drawdown = float(account_state.get("current_drawdown", 0.0))
+        except (TypeError, ValueError):
+            drawdown = 0.0
         feats[2] = float(np.clip(drawdown / max(self.config.max_drawdown_clip, self._eps), 0.0, 1.0))
 
-        # [3] balance_ratio
-        balance = float(account_state.get("balance", 100000.0))
-        initial = float(account_state.get("initial_balance", 100000.0))
+        try:
+            balance = float(account_state.get("balance", 100000.0))
+        except (TypeError, ValueError):
+            balance = 100000.0
+        try:
+            initial = float(account_state.get("initial_balance", 100000.0))
+        except (TypeError, ValueError):
+            initial = 100000.0
         feats[3] = float(np.clip(balance / max(initial, 1.0), 0.0, 2.0))
 
-        # [4] position_heat (exposure)
         portfolio_risk = risk_state.get("portfolio_risk", {})
         exposure = 0.0
         if isinstance(portfolio_risk, dict):
-            exposure = float(portfolio_risk.get("total_exposure", 0.0))
+            try:
+                exposure = float(portfolio_risk.get("total_exposure", 0.0))
+            except (TypeError, ValueError):
+                exposure = 0.0
         feats[4] = float(np.clip(exposure, 0.0, 1.0))
 
-        # [5] risk_budget
         risk_budget = risk_state.get("risk_budget", 1.0)
         try:
             rb_val = float(risk_budget)
@@ -797,7 +735,6 @@ class PPOObservationBuilder:
             rb_val = 1.0
         feats[5] = float(np.clip(rb_val, 0.0, 1.0))
 
-        # [6] win_rate_recent
         win_rate = account_state.get("win_rate", 0.5)
         try:
             win_val = float(win_rate)
@@ -805,7 +742,6 @@ class PPOObservationBuilder:
             win_val = 0.5
         feats[6] = float(np.clip(win_val, 0.0, 1.0))
 
-        # [7] pnl_momentum
         pnl_trend = account_state.get("pnl_trend", 0.0)
         try:
             pnl_val = float(pnl_trend)
@@ -820,17 +756,13 @@ class PPOObservationBuilder:
     # ======================================================================
 
     def _build_account_features(self, account_state: Optional[Dict[str, Any]]) -> np.ndarray:
-        """Build account and position state features."""
         feats = np.zeros(8, dtype=np.float32)
-
         account_state = account_state or {}
 
-        # [0] step_progress
         step = int(account_state.get("current_step", 0))
         max_steps = int(account_state.get("max_steps", 10000))
         feats[0] = float(np.clip(step / max(max_steps, 1), 0.0, 1.0))
 
-        # [1] episode_return (normalized)
         episode_return = account_state.get("episode_return", 0.0)
         try:
             ep_val = float(episode_return)
@@ -838,15 +770,15 @@ class PPOObservationBuilder:
             ep_val = 0.0
         feats[1] = float(np.clip(ep_val / 100.0, -1.0, 1.0))
 
-        # [2] position_dir
         position_dir = account_state.get("position_direction", 0)
+        if isinstance(position_dir, str):
+            position_dir = self._extract_direction(position_dir)
         try:
             pos_dir_val = float(position_dir)
         except (TypeError, ValueError):
             pos_dir_val = 0.0
         feats[2] = float(np.clip(pos_dir_val, -1.0, 1.0))
 
-        # [3] position_size
         position_size = account_state.get("position_size", 0.0)
         try:
             pos_size_val = float(position_size)
@@ -854,18 +786,17 @@ class PPOObservationBuilder:
             pos_size_val = 0.0
         feats[3] = float(np.clip(pos_size_val, 0.0, 1.0))
 
-        # [4] unrealized_pnl (normalized)
         unrealized = account_state.get("unrealized_pnl", 0.0)
-        initial = float(account_state.get("initial_balance", 100000.0))
+        try:
+            initial = float(account_state.get("initial_balance", 100000.0))
+        except (TypeError, ValueError):
+            initial = 100000.0
         try:
             unreal_val = float(unrealized)
         except (TypeError, ValueError):
             unreal_val = 0.0
-        feats[4] = float(
-            np.clip(unreal_val / max(initial * 0.01, 1.0), -1.0, 1.0)
-        )
+        feats[4] = float(np.clip(unreal_val / max(initial * 0.01, 1.0), -1.0, 1.0))
 
-        # [5] time_in_position (normalized)
         time_in_pos = account_state.get("time_in_position", 0)
         try:
             tip_val = float(time_in_pos)
@@ -873,17 +804,13 @@ class PPOObservationBuilder:
             tip_val = 0.0
         feats[5] = float(np.clip(tip_val / 100.0, 0.0, 1.0))
 
-        # [6] trades_today (normalized)
         trades = account_state.get("trades_today", 0)
         try:
             trades_val = float(trades)
         except (TypeError, ValueError):
             trades_val = 0.0
-        feats[6] = float(
-            np.clip(trades_val / max(self.config.max_trades_per_day, 1), 0.0, 1.0)
-        )
+        feats[6] = float(np.clip(trades_val / max(self.config.max_trades_per_day, 1), 0.0, 1.0))
 
-        # [7] cooldown-aware flag (repurposed from legacy last_action)
         if "on_cooldown" in account_state:
             try:
                 cd_val = float(account_state.get("on_cooldown") or 0.0)
@@ -905,33 +832,16 @@ class PPOObservationBuilder:
     # ======================================================================
 
     def _build_world_model_features(self, world_model_state: Optional[Dict[str, Any]]) -> np.ndarray:
-        """
-        Build world model prediction features (v4.0).
-
-        Features from EnhancedWorldModel:
-        [0] prediction_confidence: Model confidence (0-1)
-        [1] predicted_price_change_m15: M15 price direction (PRIMARY, -1 to 1)
-        [2] predicted_price_change_weighted: Weighted avg across timeframes (-1 to 1)
-        [3] predicted_volatility: Expected volatility level (0-1)
-        [4] predicted_regime: Regime prediction (encoded)
-        [5] model_trained: Is model trained (0 or 1)
-        [6] scenario_bullish_prob: Bullish scenario probability
-        [7] stability_score: Model stability/reliability
-        """
         feats = np.zeros(8, dtype=np.float32)
-
         if not world_model_state or not isinstance(world_model_state, dict):
             return feats
 
-        # Extract predictions
         predictions = world_model_state.get("market_predictions", world_model_state)
         if not isinstance(predictions, dict):
             predictions = {}
 
-        # Get latest_predictions if nested
         latest = predictions.get("latest_predictions", predictions)
 
-        # [0] prediction_confidence
         base_conf = predictions.get("model_confidence", latest.get("confidence", 0.0))
         extra_conf = world_model_state.get("prediction_confidence")
         if extra_conf is not None:
@@ -949,16 +859,12 @@ class PPOObservationBuilder:
         except (TypeError, ValueError):
             feats[0] = 0.0
 
-        # [1] predicted_price_change_m15 (PRIMARY - from price_changes[0])
-        # [2] predicted_price_change_weighted (weighted across M15/H1/H4/D1)
         price_changes = latest.get("price_changes", predictions.get("price_changes", []))
         if isinstance(price_changes, (list, np.ndarray)) and len(price_changes) > 0:
             try:
-                # M15 is index 0 (primary decision timeframe)
                 m15_change = float(price_changes[0]) if len(price_changes) > 0 else 0.0
                 feats[1] = float(np.clip(m15_change * 100.0, -1.0, 1.0))
 
-                # Weighted average: M15=0.5, H1=0.25, H4=0.15, D1=0.10
                 if len(price_changes) >= 4:
                     weighted = (
                         float(price_changes[0]) * 0.5 +
@@ -973,18 +879,15 @@ class PPOObservationBuilder:
                 feats[1] = 0.0
                 feats[2] = 0.0
 
-        # [3] predicted_volatility
         vol_preds = latest.get("volatility_predictions", predictions.get("volatility_predictions", []))
         if isinstance(vol_preds, (list, np.ndarray)) and len(vol_preds) > 0:
             try:
-                m15_vol = float(vol_preds[0])
-                feats[3] = float(np.clip(m15_vol, 0.0, 1.0))
+                feats[3] = float(np.clip(float(vol_preds[0]), 0.0, 1.0))
             except (TypeError, ValueError):
                 feats[3] = 0.5
         else:
-            feats[3] = 0.5  # Default medium volatility
+            feats[3] = 0.5
 
-        # [4] predicted_regime (encoded: trending_up=0.8, trending_down=-0.8, volatile=0, ranging=0.3)
         regime_probs = latest.get("regime_probabilities", predictions.get("regime_probabilities", []))
         predicted_regime = latest.get("predicted_regime", predictions.get("predicted_regime", -1))
         regime_map = {0: 0.8, 1: -0.8, 2: 0.3, 3: 0.0}
@@ -997,11 +900,9 @@ class PPOObservationBuilder:
             except (TypeError, ValueError):
                 feats[4] = 0.0
 
-        # [5] model_trained (binary)
         is_trained = predictions.get("is_trained", latest.get("model_trained", False))
         feats[5] = 1.0 if is_trained else 0.0
 
-        # [6] scenario_bullish_prob
         scenarios = world_model_state.get("scenario_generation", world_model_state.get("scenarios", {}))
         if isinstance(scenarios, dict):
             scenarios_list = scenarios.get("scenarios", [])
@@ -1028,20 +929,18 @@ class PPOObservationBuilder:
         else:
             feats[6] = 0.5
 
-        # [7] stability_score
         stability = predictions.get("stability_score", predictions.get("prediction_quality", 0.5))
         try:
             feats[7] = float(np.clip(float(stability), 0.0, 1.0))
         except (TypeError, ValueError):
             feats[7] = 0.5
 
-        # Confidence-gated contribution
         conf_val = float(feats[0])
         if conf_val < self.config.prediction_confidence_threshold or not bool(is_trained):
-            feats[1] = 0.0  # m15 direction
-            feats[2] = 0.0  # weighted direction
-            feats[3] = 0.5  # neutral volatility
-            feats[4] = 0.0  # neutral regime
+            feats[1] = 0.0
+            feats[2] = 0.0
+            feats[3] = 0.5
+            feats[4] = 0.0
             feats[6] = float(np.clip(feats[6], 0.25, 0.75))
 
         return feats
@@ -1052,106 +951,158 @@ class PPOObservationBuilder:
 
     def _build_trading_mode_features(self, trading_mode_state: Optional[Dict[str, Any]]) -> np.ndarray:
         """
-        Build trading mode state features (v5.1 - with timing integration).
+        Build trading mode features (8 dims) with enhanced market context.
 
-        Features:
-        [0] mode_encoded: Current mode (safe=0.25, normal=0.5, aggressive=0.75, extreme=1.0)
-        [1] entry_allowed: Whether entry is allowed by timing rules (0/1)
-        [2] entry_quality_long: Quality score for long entry (0-1)
-        [3] entry_quality_short: Quality score for short entry (0-1)
-        [4] zone_encoded: Zone type (hot=0.9, good=0.5, bad=0.1)
-        [5] vol_state_encoded: Volatility state (low=0, normal=0.33, high=0.66, extreme=1)
-        [6] micro_trend_dir: Short-term trend direction (-1 to 1, scaled to 0-1)
-        [7] mode_confidence: Confidence in mode/timing selection (0-1)
+        Feature layout (v5.2 - includes underutilized market context):
+        [0] = Trading mode intensity (safe/normal/aggressive/extreme)
+        [1] = Entry allowed (gated by timing)
+        [2] = Entry quality / regime stability composite
+        [3] = Theme awareness (theme_strength + theme_transition)
+        [4] = Zone type / regime accuracy composite
+        [5] = Volatility state / risk scaling composite
+        [6] = Liquidity awareness
+        [7] = Mode effectiveness / combined market confidence
         """
         feats = np.zeros(8, dtype=np.float32)
 
-        # Defaults (neutral values)
-        feats[0] = 0.5   # normal mode
-        feats[1] = 1.0   # entry_allowed = True
-        feats[2] = 0.5   # entry_quality_long neutral
-        feats[3] = 0.5   # entry_quality_short neutral
-        feats[4] = 0.5   # zone_encoded (good)
-        feats[5] = 0.33  # vol_state (normal)
-        feats[6] = 0.5   # micro_trend_dir (neutral, scaled 0-1)
-        feats[7] = 0.5   # mode_confidence neutral
+        # Defaults
+        feats[0] = 0.5  # Trading mode intensity
+        feats[1] = 1.0  # Entry allowed
+        feats[2] = 0.5  # Entry quality / regime stability
+        feats[3] = 0.5  # Theme awareness
+        feats[4] = 0.5  # Zone type / regime accuracy
+        feats[5] = 0.33  # Volatility / risk scaling
+        feats[6] = 0.5  # Liquidity
+        feats[7] = 0.5  # Mode effectiveness
 
         if not trading_mode_state or not isinstance(trading_mode_state, dict):
             return feats
 
-        # [0] mode_encoded (from TradingModeManager)
+        # [0] Trading mode intensity
         mode = trading_mode_state.get("trading_mode", trading_mode_state.get("current_mode", "normal"))
         mode_map = {"safe": 0.25, "normal": 0.5, "aggressive": 0.75, "extreme": 1.0}
         if isinstance(mode, str):
             feats[0] = mode_map.get(mode.lower(), 0.5)
 
-        # Check for timing features (from EntryTimingController)
+        # Get new market context values (FIX: use underutilized outputs)
+        regime_stability = trading_mode_state.get("regime_stability", 0.5)
+        theme_transition = trading_mode_state.get("theme_transition", 0.0)
+        theme_strength = trading_mode_state.get("theme_strength", 0.0)
+        regime_accuracy = trading_mode_state.get("regime_accuracy", 0.5)
+        risk_scaling_factor = trading_mode_state.get("risk_scaling_factor", 1.0)
+        liquidity_score = trading_mode_state.get("liquidity_score", 0.5)
+
         timing = trading_mode_state.get("entry_timing", {})
         if isinstance(timing, dict) and timing:
-            # [1] entry_allowed
+            # [1] Entry allowed
             feats[1] = 1.0 if timing.get("entry_allowed", True) else 0.0
 
-            # [2] entry_quality_long
+            # [2] Entry quality weighted by regime stability
+            # High regime stability = more confidence in entry quality
             eql = timing.get("entry_quality_long", 0.5)
+            eqs = timing.get("entry_quality_short", 0.5)
             try:
-                feats[2] = float(np.clip(float(eql), 0.0, 1.0))
+                avg_quality = (float(eql) + float(eqs)) / 2.0
+                stability_weight = float(regime_stability)
+                # Composite: quality adjusted by regime stability
+                feats[2] = float(np.clip(avg_quality * (0.5 + 0.5 * stability_weight), 0.0, 1.0))
             except (TypeError, ValueError):
                 feats[2] = 0.5
 
-            # [3] entry_quality_short
-            eqs = timing.get("entry_quality_short", 0.5)
+            # [3] Theme awareness: high theme_strength with low transition = stable theme
+            # Low theme_strength or high transition = uncertain/choppy
             try:
-                feats[3] = float(np.clip(float(eqs), 0.0, 1.0))
+                ts = float(theme_strength)
+                tt = float(theme_transition)
+                # Theme stability = theme_strength penalized by transition rate
+                theme_stability = ts * (1.0 - min(tt, 1.0))
+                feats[3] = float(np.clip(theme_stability, 0.0, 1.0))
             except (TypeError, ValueError):
                 feats[3] = 0.5
 
-            # [4] zone_encoded
+            # [4] Zone type weighted by regime accuracy
             zone_type = timing.get("zone_type", "good")
             zone_map = {"hot": 0.9, "good": 0.5, "bad": 0.1}
-            feats[4] = zone_map.get(zone_type, 0.5) if isinstance(zone_type, str) else 0.5
+            base_zone = zone_map.get(zone_type, 0.5) if isinstance(zone_type, str) else 0.5
+            try:
+                acc = float(regime_accuracy)
+                # If regime accuracy is high, trust the zone more
+                feats[4] = float(np.clip(base_zone * (0.5 + 0.5 * acc), 0.0, 1.0))
+            except (TypeError, ValueError):
+                feats[4] = base_zone
 
-            # [5] vol_state_encoded
+            # [5] Volatility state weighted by risk scaling factor
             vol_state = timing.get("vol_state", "normal")
             vol_map = {"low": 0.0, "normal": 0.33, "high": 0.66, "extreme": 1.0}
-            feats[5] = vol_map.get(vol_state, 0.33) if isinstance(vol_state, str) else 0.33
-
-            # [6] micro_trend_dir (scale -1..1 to 0..1)
-            mtd = timing.get("micro_trend_dir", 0.0)
+            base_vol = vol_map.get(vol_state, 0.33) if isinstance(vol_state, str) else 0.33
             try:
-                feats[6] = float(np.clip((float(mtd) + 1.0) / 2.0, 0.0, 1.0))
+                rsf = float(risk_scaling_factor)
+                # Normalize risk_scaling_factor (typically 0.5-2.0) to 0-1
+                rsf_norm = float(np.clip((rsf - 0.5) / 1.5, 0.0, 1.0))
+                # Composite: volatility state weighted by risk scaling
+                feats[5] = float(np.clip((base_vol + rsf_norm) / 2.0, 0.0, 1.0))
+            except (TypeError, ValueError):
+                feats[5] = base_vol
+
+            # [6] Liquidity awareness
+            try:
+                feats[6] = float(np.clip(float(liquidity_score), 0.0, 1.0))
             except (TypeError, ValueError):
                 feats[6] = 0.5
+
         else:
-            # Fallback: use legacy trading mode features
+            # Fallback when no entry_timing available
             mode_config = trading_mode_state.get("mode_config", {})
             if isinstance(mode_config, dict):
                 max_exp = mode_config.get("max_exposure", 0.6)
                 try:
-                    feats[2] = float(np.clip(float(max_exp), 0.0, 1.0))
+                    feats[2] = float(np.clip(float(max_exp) * float(regime_stability), 0.0, 1.0))
                 except (TypeError, ValueError):
                     feats[2] = 0.5
-                feats[3] = feats[2]  # Symmetric for legacy mode
+
+            # [3] Theme awareness (fallback)
+            try:
+                ts = float(theme_strength)
+                tt = float(theme_transition)
+                feats[3] = float(np.clip(ts * (1.0 - min(tt, 1.0)), 0.0, 1.0))
+            except (TypeError, ValueError):
+                feats[3] = 0.5
 
             decision_factors = trading_mode_state.get("decision_factors", {})
             if isinstance(decision_factors, dict):
+                # [4] Performance score weighted by regime accuracy
                 perf_score = decision_factors.get("performance_score", 0.5)
                 try:
-                    feats[4] = float(np.clip(float(perf_score), 0.0, 1.0))
+                    feats[4] = float(np.clip(float(perf_score) * (0.5 + 0.5 * float(regime_accuracy)), 0.0, 1.0))
                 except (TypeError, ValueError):
                     feats[4] = 0.5
 
+                # [5] Stability score weighted by risk scaling
                 stab_score = decision_factors.get("stability_score", 0.5)
                 try:
-                    feats[5] = float(np.clip(float(stab_score), 0.0, 1.0))
+                    rsf = float(risk_scaling_factor)
+                    rsf_norm = float(np.clip((rsf - 0.5) / 1.5, 0.0, 1.0))
+                    feats[5] = float(np.clip((float(stab_score) + rsf_norm) / 2.0, 0.0, 1.0))
                 except (TypeError, ValueError):
                     feats[5] = 0.5
 
-        # [7] mode_confidence (from mode stats)
+            # [6] Liquidity (fallback)
+            try:
+                feats[6] = float(np.clip(float(liquidity_score), 0.0, 1.0))
+            except (TypeError, ValueError):
+                feats[6] = 0.5
+
+        # [7] Mode effectiveness combined with market confidence
         mode_stats = trading_mode_state.get("mode_stats", {})
         if isinstance(mode_stats, dict):
             mode_eff = mode_stats.get("mode_effectiveness", 0.5)
             try:
-                feats[7] = float(np.clip(float(mode_eff), 0.0, 1.0))
+                # Combine mode effectiveness with regime stability and accuracy
+                me = float(mode_eff)
+                rs = float(regime_stability)
+                ra = float(regime_accuracy)
+                # Weighted combination: 50% mode effectiveness, 25% regime stability, 25% accuracy
+                feats[7] = float(np.clip(me * 0.5 + rs * 0.25 + ra * 0.25, 0.0, 1.0))
             except (TypeError, ValueError):
                 feats[7] = 0.5
 
@@ -1162,7 +1113,6 @@ class PPOObservationBuilder:
     # ======================================================================
 
     def _fetch_market_data(self, bus: Any, module: str) -> Dict[str, Any]:
-        """Fetch market data from SmartInfoBus."""
         try:
             mtf = bus.get("multi_timeframe_data", module)
             if isinstance(mtf, dict):
@@ -1180,16 +1130,37 @@ class PPOObservationBuilder:
         return {}
 
     def _fetch_expert_signals(self, bus: Any, module: str) -> Dict[str, Any]:
-        """Fetch expert voting signals from SmartInfoBus."""
+        """
+        Fetch expert voting signals in the schema expected by _build_voting_features():
+        each expert has at least: direction, score, confidence.
+        """
         try:
             def _expert_block(vote_key: str, conf_key: str) -> Dict[str, Any]:
-                raw = bus.get(vote_key, module) or "flat"
+                proposal = bus.get(vote_key, module) or "flat"
                 conf_raw = bus.get(conf_key, module)
+
                 try:
-                    conf_val = float(conf_raw) if conf_raw is not None else 0.0
+                    conf = float(conf_raw) if conf_raw is not None else 0.0
                 except (TypeError, ValueError):
-                    conf_val = 0.0
-                return {"proposal": raw, "confidence": conf_val}
+                    conf = 0.0
+
+                d = self._extract_direction(proposal)  # -1,0,+1
+                if d > 0:
+                    direction = "bullish"
+                elif d < 0:
+                    direction = "bearish"
+                else:
+                    direction = "neutral"
+
+                # Use confidence as magnitude baseline; PPO learns correlations.
+                score = float(np.clip(conf, 0.0, 1.0))
+
+                return {
+                    "proposal": proposal,
+                    "direction": direction,
+                    "score": score,
+                    "confidence": score,
+                }
 
             experts = {
                 "trend": _expert_block("TrendExpert_voting_proposal", "TrendExpert_confidence"),
@@ -1208,7 +1179,6 @@ class PPOObservationBuilder:
             return {}
 
     def _fetch_committee_state(self, bus: Any, module: str) -> Dict[str, Any]:
-        """Fetch committee state from SmartInfoBus."""
         try:
             decision = bus.get("committee_decision", module) or {}
             if isinstance(decision, str):
@@ -1224,12 +1194,10 @@ class PPOObservationBuilder:
             return {}
 
     def _fetch_risk_state(self, bus: Any, module: str) -> Dict[str, Any]:
-        """Fetch risk state from SmartInfoBus."""
         try:
             risk_data = bus.get("risk_data", module) or {}
             portfolio_risk = bus.get("portfolio_risk", module) or {}
 
-            # Extract risk_budget from risk_data (PortfolioRiskSystem provides risk_budget_available)
             risk_budget = 1.0
             if isinstance(risk_data, dict):
                 if "risk_budget_available" in risk_data:
@@ -1246,7 +1214,6 @@ class PPOObservationBuilder:
             return {}
 
     def _fetch_memory_state(self, bus: Any, module: str) -> Dict[str, Any]:
-        """Fetch memory state from SmartInfoBus."""
         try:
             return {
                 "memory_gate": bus.get("memory_gate", module) or 1.0,
@@ -1256,7 +1223,6 @@ class PPOObservationBuilder:
             return {}
 
     def _fetch_account_state(self, bus: Any, module: str) -> Dict[str, Any]:
-        """Fetch account state from SmartInfoBus."""
         try:
             market_state = bus.get("market_state", module) or {}
             positions = bus.get("positions", module) or {}
@@ -1269,16 +1235,17 @@ class PPOObservationBuilder:
                 "current_drawdown": float(market_state.get("drawdown", 0.0)),
                 "current_step": int(market_state.get("step", 0)),
                 "max_steps": int(market_state.get("max_steps", 10000)),
-                # Optional performance stats (if available)
                 "win_rate": float(market_state.get("win_rate", 0.5)),
                 "pnl_trend": float(market_state.get("pnl_trend", 0.0)),
                 "trades_today": int(market_state.get("trades_today", 0)),
             }
 
-            # Optionally inject global position summary if present
             if isinstance(positions, dict) and "net" in positions and isinstance(positions["net"], dict):
                 net = positions["net"]
-                state.setdefault("position_direction", net.get("direction", 0))
+                raw_dir = net.get("direction", 0)
+                if isinstance(raw_dir, str):
+                    raw_dir = self._extract_direction(raw_dir)
+                state.setdefault("position_direction", raw_dir)
                 state.setdefault("position_size", net.get("size", 0.0))
                 state.setdefault("unrealized_pnl", net.get("unrealized_pnl", 0.0))
 
@@ -1287,14 +1254,12 @@ class PPOObservationBuilder:
             return {}
 
     def _fetch_world_model_state(self, bus: Any, module: str) -> Dict[str, Any]:
-        """Fetch world model state from SmartInfoBus (v4.0)."""
         try:
             market_predictions = bus.get("market_predictions", module) or {}
             prediction_confidence = bus.get("prediction_confidence", module) or {}
             scenario_generation = bus.get("scenario_generation", module) or {}
             world_model_analytics = bus.get("world_model_analytics", module) or {}
 
-            # Merge all world model outputs
             state: Dict[str, Any] = {
                 "market_predictions": market_predictions if isinstance(market_predictions, dict) else {},
                 "prediction_confidence": prediction_confidence if isinstance(prediction_confidence, dict) else {},
@@ -1302,7 +1267,6 @@ class PPOObservationBuilder:
                 "world_model_analytics": world_model_analytics if isinstance(world_model_analytics, dict) else {},
             }
 
-            # Extract key values for convenience
             if isinstance(market_predictions, dict):
                 state["is_trained"] = market_predictions.get("is_trained", False)
                 state["model_confidence"] = market_predictions.get("model_confidence", 0.0)
@@ -1322,7 +1286,6 @@ class PPOObservationBuilder:
             return {}
 
     def _fetch_trading_mode_state(self, bus: Any, module: str) -> Dict[str, Any]:
-        """Fetch global trading mode state from SmartInfoBus (v5.1 - with timing)."""
         try:
             trading_mode = bus.get("trading_mode", module)
             mode_config = bus.get("mode_config", module) or {}
@@ -1331,8 +1294,17 @@ class PPOObservationBuilder:
             mode_thresholds = bus.get("mode_thresholds", module) or {}
             decision_factors = bus.get("decision_factors", module) or {}
 
-            # NOTE: this gets the *global* entry_timing dict
             entry_timing = bus.get("entry_timing", module) or {}
+
+            # FIX: Fetch underutilized market context outputs for PPO observation
+            # These provide valuable market state information that was previously unused
+            market_context = bus.get("market_context", module) or {}
+            regime_stability = bus.get("regime_stability", module)
+            theme_transition = bus.get("theme_transition", module)
+            regime_accuracy = bus.get("regime_accuracy", module) or {}
+            risk_scaling_factor = bus.get("risk_scaling_factor", module)
+            liquidity_score = bus.get("liquidity_score", module)
+            theme_strength = bus.get("theme_strength", module)
 
             state: Dict[str, Any] = {
                 "trading_mode": trading_mode if isinstance(trading_mode, str) else "normal",
@@ -1341,31 +1313,22 @@ class PPOObservationBuilder:
                 "mode_stats": mode_stats if isinstance(mode_stats, dict) else {},
                 "mode_thresholds": mode_thresholds if isinstance(mode_thresholds, dict) else {},
                 "decision_factors": decision_factors if isinstance(decision_factors, dict) else {},
-                # For global build(), this may remain the full dict; for per-instrument we override.
                 "entry_timing": entry_timing if isinstance(entry_timing, dict) else {},
+                # NEW: Underutilized market context fields
+                "market_context": market_context if isinstance(market_context, dict) else {},
+                "regime_stability": float(regime_stability) if regime_stability is not None else 0.5,
+                "theme_transition": float(theme_transition) if theme_transition is not None else 0.0,
+                "regime_accuracy": float(regime_accuracy.get("value", 0.5)) if isinstance(regime_accuracy, dict) else 0.5,
+                "risk_scaling_factor": float(risk_scaling_factor) if risk_scaling_factor is not None else 1.0,
+                "liquidity_score": float(liquidity_score) if liquidity_score is not None else 0.5,
+                "theme_strength": float(theme_strength) if theme_strength is not None else 0.0,
             }
 
             return state
         except Exception:
             return {}
 
-    def _fetch_trading_mode_state_for_instrument(
-        self,
-        bus: Any,
-        module: str,
-        instrument: str,
-    ) -> Dict[str, Any]:
-        """
-        Fetch trading mode state and splice in *per-instrument* timing features.
-
-        - Global fields (mode, stats, thresholds) remain as in _fetch_trading_mode_state()
-        - entry_timing is replaced with the slice for the given instrument:
-
-              state["entry_timing"] = entry_timing_all[instrument]
-
-        so that _build_trading_mode_features() sees a flat timing dict with keys:
-        'entry_allowed', 'entry_quality_long', 'zone_type', etc.
-        """
+    def _fetch_trading_mode_state_for_instrument(self, bus: Any, module: str, instrument: str) -> Dict[str, Any]:
         base_state = self._fetch_trading_mode_state(bus, module)
         if not isinstance(base_state, dict):
             base_state = {}
@@ -1376,22 +1339,14 @@ class PPOObservationBuilder:
             entry_timing_all = {}
 
         inst_timing: Dict[str, Any] = {}
-
         if isinstance(entry_timing_all, dict):
-            # Direct key first
             raw = entry_timing_all.get(instrument)
-
-            # Fallback: normalized instrument name (XAUUSD vs XAU/USD)
             if not isinstance(raw, dict):
-                norm = instrument.replace("/", "").replace("_", "").upper()
+                target = self._norm_symbol(instrument)
                 for key, val in entry_timing_all.items():
-                    if not isinstance(key, str) or not isinstance(val, dict):
-                        continue
-                    key_norm = key.replace("/", "").replace("_", "").upper()
-                    if key_norm == norm:
+                    if isinstance(key, str) and isinstance(val, dict) and self._norm_symbol(key) == target:
                         raw = val
                         break
-
             if isinstance(raw, dict):
                 inst_timing = raw
 
@@ -1402,28 +1357,31 @@ class PPOObservationBuilder:
     # Helper Functions
     # ======================================================================
 
-    def _extract_timeframe_data(
-        self, market_data: Dict[str, Any], timeframe: str
-    ) -> Optional[Dict[str, Any]]:
-        """Extract OHLCV data for a specific timeframe with forming bar integration."""
+    def _extract_timeframe_data(self, market_data: Dict[str, Any], timeframe: str) -> Optional[Dict[str, Any]]:
+        """
+        Extract OHLCV data for a specific timeframe with forming bar integration.
+
+        IMPORTANT SAFETY:
+        - If market_data is a multi-symbol dict, do NOT silently pick the first symbol.
+          Only pick a nested symbol if there is exactly one candidate.
+        """
         if not market_data:
             return None
 
-        # Try direct timeframe key
         if timeframe in market_data and isinstance(market_data[timeframe], dict):
-            tf_data = market_data[timeframe]
-            return self._apply_forming_bar(tf_data)
+            return self._apply_forming_bar(market_data[timeframe])
 
-        # Try nested structure: market_data[symbol][timeframe]
+        candidates: list[Dict[str, Any]] = []
         for sym_data in market_data.values():
             if isinstance(sym_data, dict) and timeframe in sym_data and isinstance(sym_data[timeframe], dict):
-                tf_data = sym_data[timeframe]
-                return self._apply_forming_bar(tf_data)
+                candidates.append(sym_data[timeframe])
+
+        if len(candidates) == 1:
+            return self._apply_forming_bar(candidates[0])
 
         return None
 
     def _apply_forming_bar(self, tf_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Apply forming bar's current values to the last element of OHLCV arrays."""
         if not isinstance(tf_data, dict):
             return tf_data
 
@@ -1475,20 +1433,14 @@ class PPOObservationBuilder:
         return result
 
     def _extract_direction(self, proposal: Any) -> float:
-        """Extract direction from a proposal (string, dict, numeric, etc.)."""
         if isinstance(proposal, dict):
-            direction = (
-                proposal.get("direction")
-                or proposal.get("action")
-                or proposal.get("global_direction")
-            )
+            direction = proposal.get("direction") or proposal.get("action") or proposal.get("global_direction")
         elif isinstance(proposal, (int, float)):
             return float(np.clip(proposal, -1.0, 1.0))
         else:
             direction = proposal
 
         direction_str = str(direction or "flat").lower()
-
         if direction_str in ("long", "buy", "bullish", "up"):
             return 1.0
         if direction_str in ("short", "sell", "bearish", "down"):
@@ -1496,7 +1448,6 @@ class PPOObservationBuilder:
         return 0.0
 
     def _compute_rsi(self, close: np.ndarray, period: int = 14) -> float:
-        """Compute RSI."""
         if close.size < period + 1:
             return 50.0
 
@@ -1517,7 +1468,6 @@ class PPOObservationBuilder:
         return float(100.0 - (100.0 / (1.0 + rs)))
 
     def _compute_macd_histogram(self, close: np.ndarray) -> float:
-        """Compute MACD histogram (fast EMA - slow EMA)."""
         if close.size < 26:
             return 0.0
 
@@ -1532,13 +1482,9 @@ class PPOObservationBuilder:
 
         fast_ema = ema(close, 12)
         slow_ema = ema(close, 26)
-
         return float(fast_ema - slow_ema)
 
-    def _compute_atr(
-        self, high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int = 14
-    ) -> float:
-        """Compute Average True Range."""
+    def _compute_atr(self, high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int = 14) -> float:
         if close.size < 2:
             return 0.0
 
@@ -1557,38 +1503,26 @@ class PPOObservationBuilder:
         return float(np.mean(tr_list)) if tr_list else 0.0
 
     def _compute_slope(self, data: np.ndarray) -> float:
-        """Compute linear regression slope."""
         if data.size < 2:
             return 0.0
-
         x = np.arange(data.size, dtype=np.float64)
         coeffs = np.polyfit(x, data.astype(np.float64), 1)
         return float(coeffs[0])
 
     def _compute_trend_direction(self, close: np.ndarray) -> float:
-        """Compute trend direction as a value in [-1, 1]."""
         if close.size < 5:
             return 0.0
 
-        if close.size >= 20:
-            sma = float(np.mean(close[-20:]))
-        else:
-            sma = float(np.mean(close))
-
+        sma = float(np.mean(close[-20:])) if close.size >= 20 else float(np.mean(close))
         current = float(close[-1])
         diff = (current - sma) / max(abs(sma), self._eps)
         return float(np.clip(diff * 10.0, -1.0, 1.0))
 
 
-# ═══════════════════════════════════════════════════════════════════
-# Module-level convenience functions
-# ═══════════════════════════════════════════════════════════════════
-
 _default_builder: Optional[PPOObservationBuilder] = None
 
 
 def get_ppo_observation_builder() -> PPOObservationBuilder:
-    """Get the singleton PPO observation builder."""
     global _default_builder
     if _default_builder is None:
         _default_builder = PPOObservationBuilder()
@@ -1607,11 +1541,6 @@ def build_ppo_observation(
     smart_bus: Optional[Any] = None,
     module_name: str = "PPOObservationBuilder",
 ) -> np.ndarray:
-    """
-    Convenience function to build PPO observation.
-
-    Can be called from both training (ModernTradingEnv) and live (PPOAgent).
-    """
     builder = get_ppo_observation_builder()
     return builder.build(
         market_data=market_data,
@@ -1640,15 +1569,6 @@ def build_ppo_observation_for_instrument(
     smart_bus: Optional[Any] = None,
     module_name: str = "PPOObservationBuilder",
 ) -> np.ndarray:
-    """
-    Convenience function to build PPO observation for a specific instrument.
-
-    Args:
-        instrument: The instrument symbol (e.g., "XAUUSD", "EURUSD")
-
-    Returns:
-        np.ndarray of shape (obs_size,) with dtype float32
-    """
     builder = get_ppo_observation_builder()
     return builder.build_for_instrument(
         instrument=instrument,

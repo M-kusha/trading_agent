@@ -345,6 +345,8 @@ class ConfigurationManager:
         self.module_specs['PPOAgent'] = ModuleConfigSpec(
             name='PPOAgent',
             category='meta',
+            # PPOAgentShell is registered under the "PPOAgent" contract name.
+            # System config lives at modules.PPOAgent.config (MetaRLController is deprecated).
             config_section='modules.PPOAgent.config',
             default_config={
                 'learning_rate': 0.0003,
@@ -2054,4 +2056,3 @@ class ConfigurationManager:
             self.stop_monitoring()
         except Exception as e:
             self.logger.debug(f"Shutdown encountered a non-fatal issue: {e}")
-

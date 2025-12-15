@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -66,13 +67,13 @@ from .exit_engine import (
 class PositionManager(PositionManagerBase):
     """
     Decision layer for position entries and exits.
-    
+
     PPO-MASTER ARCHITECTURE:
       - PPO is ALWAYS the primary decision maker (ppo_weight=1.0)
       - Committee outputs are features/observations for PPO, not direct decisions
       - Memory and Risk gates can block trades (hard constraints)
       - Seasonality gate blocks trades outside configured hours (live only)
-    
+
     Responsibilities:
       - Opens positions only on adequate PPO signals
       - Scales and sizes via volatility / portfolio health / memory
@@ -95,7 +96,6 @@ class PositionManager(PositionManagerBase):
         """Get PPO trading configuration from system_config.yaml."""
         try:
             import yaml
-            from pathlib import Path
 
             config_path = Path("config/system_config.yaml")
             if config_path.exists():
@@ -116,6 +116,119 @@ class PositionManager(PositionManagerBase):
                 "fallback_to_committee": True,  # Use committee if PPO has no opinion
             },
         )
+
+    # ==========================================================
+    # risk_policy.yaml cache (avoid per-tick disk IO)
+    # ==========================================================
+
+    def _get_max_exposure_pct_cached(self, default: float = 0.05) -> float:
+        """
+        Read lot_sizing.max_exposure_pct from config/risk_policy.yaml with caching.
+        Hot-reloads when mtime changes. Never raises.
+        """
+        try:
+            cache = getattr(self, "_risk_policy_cache", None)
+            if not isinstance(cache, dict):
+                cache = {
+                    "mtime": 0.0,
+                    "last_check_ts": 0.0,
+                    "check_interval_sec": 3.0,
+                    "max_exposure_pct": float(default),
+                }
+                setattr(self, "_risk_policy_cache", cache)
+
+            now = time.time()
+            if (now - float(cache.get("last_check_ts", 0.0))) < float(
+                cache.get("check_interval_sec", 3.0)
+            ):
+                return float(cache.get("max_exposure_pct", default))
+            cache["last_check_ts"] = now
+
+            path = Path("config/risk_policy.yaml")
+            if not path.exists():
+                return float(cache.get("max_exposure_pct", default))
+
+            mtime = float(path.stat().st_mtime)
+            if mtime <= float(cache.get("mtime", 0.0)):
+                return float(cache.get("max_exposure_pct", default))
+
+            try:
+                import yaml
+            except Exception:
+                return float(cache.get("max_exposure_pct", default))
+
+            with open(path, "r", encoding="utf-8") as f:
+                policy = yaml.safe_load(f) or {}
+
+            lot_sizing = (
+                (policy.get("lot_sizing", {}) or {}) if isinstance(policy, dict) else {}
+            )
+            val = lot_sizing.get("max_exposure_pct", default)
+            pct = float(val) if val is not None else float(default)
+
+            # Clamp sanity: 0.1% .. 20%
+            pct = float(np.clip(pct, 0.001, 0.20))
+
+            cache["mtime"] = mtime
+            cache["max_exposure_pct"] = pct
+            return pct
+        except Exception:
+            return float(default)
+
+    def _resolve_contract_size(self, instrument: str) -> float:
+        """
+        Best-effort contract size resolution for converting units->lots.
+        Prefers any symbol metadata from SmartBus; otherwise uses safe heuristics.
+        """
+        inst_norm = self._normalize_instrument(instrument)
+
+        for key in ("symbol_info", "mt5_symbol_info", "instrument_meta", "symbol_specs"):
+            try:
+                blob = self.smart_bus.get(key, "PositionManager")
+                if isinstance(blob, dict):
+                    node = (
+                        blob.get(instrument)
+                        or blob.get(inst_norm)
+                        or blob.get(inst_norm.replace("/", ""))
+                    )
+                    if isinstance(node, dict):
+                        cs = (
+                            node.get("trade_contract_size")
+                            or node.get("contract_size")
+                            or node.get("contractSize")
+                        )
+                        if isinstance(cs, (int, float)) and float(cs) > 0:
+                            return float(cs)
+            except Exception:
+                continue
+
+        # Heuristic fallback
+        if "XAU" in inst_norm:
+            return 100.0
+        return 100_000.0
+
+    def _extract_lots(self, instrument: str, pos_data: Dict[str, Any]) -> float:
+        """
+        Robust lots extraction:
+          - Prefer explicit lots/volume
+          - If only 'units' exists, infer whether it's already lots or raw units
+        """
+        for k in ("lots", "volume"):
+            v = pos_data.get(k)
+            if isinstance(v, (int, float)) and float(v) != 0.0:
+                return abs(float(v))
+
+        units = pos_data.get("units")
+        if isinstance(units, (int, float)) and float(units) != 0.0:
+            u = abs(float(units))
+            # If small, it's likely already "lots"
+            if u <= 50.0:
+                return u
+            # Otherwise assume raw units and convert
+            cs = self._resolve_contract_size(instrument)
+            return max(u / max(cs, 1e-9), 0.0)
+
+        return 0.0
 
     # ==========================================================
     # Public pipeline hooks (called by PositionManagerBase)
@@ -202,10 +315,28 @@ class PositionManager(PositionManagerBase):
 
         has_position = self._has_position_for_instrument(instrument)
 
-        # If instrument is flat, clear any stale exit-engine peak.
+        # Detect external closes (broker SL/TP/manual) and apply the existing cooldown.
+        # Without this, a close that bypasses our CLOSE path can allow immediate re-entry.
+        try:
+            inst_norm_for_state = self._normalize_instrument(instrument)
+            prev_map = getattr(self, "_prev_has_position", None)
+            if not isinstance(prev_map, dict):
+                prev_map = {}
+                setattr(self, "_prev_has_position", prev_map)
+            prev_has = bool(prev_map.get(inst_norm_for_state, False))
+            if prev_has and not has_position:
+                self._record_trade_time(instrument)
+            prev_map[inst_norm_for_state] = bool(has_position)
+        except Exception:
+            pass
+
+        # If instrument is flat, clear stale peaks in BOTH trackers.
+        # This covers external closes (broker SL/TP) that bypass our CLOSE path.
         if not has_position:
             try:
                 exit_engine.reset_peak(instrument)
+                if hasattr(self, "_profit_tracker"):
+                    self._profit_tracker.reset(instrument)
             except Exception:
                 pass
 
@@ -236,7 +367,7 @@ class PositionManager(PositionManagerBase):
             if isinstance(instruments_map, dict):
                 # Normalize instrument name for lookup (handles EUR/USD vs EURUSD mismatch)
                 inst_norm = self._normalize_instrument(instrument)
-                
+
                 # Try direct match first
                 if instrument in instruments_map:
                     inst_decision_for_logging = instruments_map[instrument]
@@ -246,14 +377,12 @@ class PositionManager(PositionManagerBase):
                         if self._normalize_instrument(key) == inst_norm:
                             inst_decision_for_logging = val
                             break
-                
+
                 if isinstance(inst_decision_for_logging, dict):
-                    ppo_gate_passed = inst_decision_for_logging.get(
-                        "gate_passed", True
-                    )
-            
+                    ppo_gate_passed = inst_decision_for_logging.get("gate_passed", True)
+
             # REMOVED: Do NOT fall back to global ppo_gate_passed for non-primary instruments!
-            # The global ppo_gate_passed is for the PRIMARY instrument (XAUUSD) only.
+            # The global ppo_gate_passed is for the PRIMARY instrument only.
             # If we didn't find this instrument in ppo_multi_decision, default to True (allow).
 
         # If PPOAgent explicitly blocked the trade, respect that decision
@@ -320,8 +449,6 @@ class PositionManager(PositionManagerBase):
                 rationale["factors"].append("Emergency conditions detected")
 
                 # Reset BOTH peak trackers when position will be force-closed.
-                # CRITICAL: Both ExitEngine._profit_peaks and PositionManager._profit_tracker
-                # must be reset to prevent stale peaks affecting new positions.
                 try:
                     exit_engine.reset_peak(instrument)
                     if hasattr(self, "_profit_tracker"):
@@ -430,8 +557,9 @@ class PositionManager(PositionManagerBase):
                     positions = self.smart_bus.get("positions", "PositionManager") or {}
                     inst_norm = self._normalize_instrument(instrument)
                     for pos_key, p in positions.items():
-                        if self._normalize_instrument(str(pos_key)) == inst_norm and isinstance(
-                            p, dict
+                        if (
+                            self._normalize_instrument(str(pos_key)) == inst_norm
+                            and isinstance(p, dict)
                         ):
                             side_val = p.get("side", 0)
                             if isinstance(side_val, (int, float)) and side_val != 0:
@@ -442,8 +570,6 @@ class PositionManager(PositionManagerBase):
 
             # ================================================================
             # UNIFIED EXIT STRATEGY ENGINE
-            # Uses same logic as SmartPositionManager for consistency
-            # Strategies: hard_stop > soft_stop > time_decay > trailing > momentum > signal
             # ================================================================
             exit_decision = self._evaluate_exit_strategies(
                 instrument=instrument,
@@ -458,9 +584,7 @@ class PositionManager(PositionManagerBase):
                 confidence = exit_decision.confidence
                 rationale["stage"] = f"exit_{exit_decision.reason.name.lower()}"
                 rationale["factors"].append(
-                    exit_decision.details.get(
-                        "message", str(exit_decision.reason.name)
-                    )
+                    exit_decision.details.get("message", str(exit_decision.reason.name))
                 )
                 rationale["exit_details"] = exit_decision.to_dict()
                 close_notional = self._get_position_notional_eur(instrument)
@@ -487,10 +611,7 @@ class PositionManager(PositionManagerBase):
                     context,
                 )
 
-            # Otherwise HOLD – no exit or scale triggered
-            # NOTE: Position scaling is handled by SmartPositionManager in live trading.
-            # PPO learns scaling behavior through observations (position_size, unrealized_pnl)
-            # and the environment's reward signal. No need for explicit scaling logic here.
+            # Otherwise HOLD
             rationale["stage"] = "hold_existing"
             rationale["factors"].append(
                 f"Holding position; exit_check={exit_decision.reason.name}, "
@@ -509,19 +630,12 @@ class PositionManager(PositionManagerBase):
 
         # ======================================================
         # NO POSITION: evaluate entry signals
-        # NOTE: Signal threshold check is moved AFTER PPO direction extraction.
-        # When PPO is master, we use PPO confidence as signal strength, not
-        # the voting-derived market_intensity. This prevents blocking trades
-        # when PPO has a clear decision but voting system has low intensity.
         # ======================================================
 
         # ══════════════════════════════════════════════════════════════════
-        # COOLDOWN GATE: Prevent rapid re-entry after closing a position
-        # This is critical to avoid trading noise and give the market time
-        # to develop a new opportunity.
+        # COOLDOWN GATE
         # ══════════════════════════════════════════════════════════════════
         if not self._check_cooldown(instrument):
-            # Get cooldown details for logging
             last_trade_times = getattr(self, "_last_new_position_time", {})
             cooldown_seconds = getattr(self, "_trade_cooldown_seconds", 300.0)
             last_trade = last_trade_times.get(instrument, 0.0)
@@ -541,9 +655,9 @@ class PositionManager(PositionManagerBase):
             return self._finalize_decision(
                 instrument,
                 PositionDecision.HOLD,
-                0.0,  # intensity
-                0.0,  # size
-                0.3,  # low confidence hold
+                0.0,
+                0.0,
+                0.3,
                 rationale,
                 risk_factors,
                 context,
@@ -551,40 +665,25 @@ class PositionManager(PositionManagerBase):
 
         # ======================================================
         # DIRECTION RESOLUTION - PPO MASTER
-        # PPO is ALWAYS the primary decision maker.
-        # Committee is used as fallback only when PPO has no opinion.
         # ======================================================
-
-        # ------------------------------------------------------
-        # Extract PPO decision data (per-instrument if available)
-        # Uses normalized instrument names to handle EUR/USD vs EURUSD mismatch
-        # ------------------------------------------------------
         ppo_direction: Optional[int] = None
         ppo_conf = 0.0
         inst_norm = self._normalize_instrument(instrument)
 
-        # Choose the most specific PPO decision object for this instrument
         per_instrument_decision: Optional[Dict[str, Any]] = None
-        
-        def _find_instrument_decision(instruments_map: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-            """Helper to find instrument decision with normalized name lookup."""
+
+        def _find_instrument_decision(
+            instruments_map: Dict[str, Any],
+        ) -> Optional[Dict[str, Any]]:
             if not isinstance(instruments_map, dict):
                 return None
-            # Direct match
             if instrument in instruments_map:
                 return instruments_map[instrument]
-            # Normalized match (EUR/USD -> EURUSD)
             for key, val in instruments_map.items():
                 if self._normalize_instrument(key) == inst_norm:
                     return val
             return None
-        
-        # PRIORITY ORDER: Check ppo_multi_decision FIRST for per-instrument data,
-        # then fall back to ppo_final_decision only if no instrument-specific decision found.
-        # ppo_multi_decision.instruments has per-instrument decisions (XAUUSD, EURUSD)
-        # ppo_final_decision is the PRIMARY instrument's decision only (typically XAUUSD)
-        
-        # 1. Try ppo_multi_decision.instruments (per-instrument decisions)
+
         if isinstance(ppo_multi_decision, dict):
             maybe_instruments = ppo_multi_decision.get("instruments")
             if isinstance(maybe_instruments, dict):
@@ -593,10 +692,8 @@ class PositionManager(PositionManagerBase):
                     self.logger.debug(
                         f"[PPO_LOOKUP] {instrument}: Found in ppo_multi_decision.instruments"
                     )
-        
-        # 2. Fallback: if this IS the primary instrument, use ppo_final_decision
+
         if per_instrument_decision is None and isinstance(ppo_final_decision, dict):
-            # ppo_final_decision.instrument tells us which instrument this decision is for
             final_inst = ppo_final_decision.get("instrument", "")
             if self._normalize_instrument(final_inst) == inst_norm:
                 per_instrument_decision = ppo_final_decision
@@ -617,7 +714,6 @@ class PositionManager(PositionManagerBase):
             ppo_direction_raw = str(raw_dir).lower()
             ppo_conf = float(per_instrument_decision.get("confidence", 0.0) or 0.0)
         else:
-            # No per-instrument decision found - PPO has no opinion for this instrument
             ppo_direction_raw = ""
             self.logger.debug(
                 f"[PPO_LOOKUP] {instrument}: No PPO decision found (multi or final)"
@@ -630,7 +726,6 @@ class PositionManager(PositionManagerBase):
         elif ppo_direction_raw == "hold":
             ppo_direction = 0
 
-        # DEBUG: Log PPO decision extraction
         try:
             gate_flag = None
             if isinstance(per_instrument_decision, dict):
@@ -646,31 +741,32 @@ class PositionManager(PositionManagerBase):
             pass
 
         # ------------------------------------------------------
-        # Extract Committee decision data (FinalArbiter / trade_vote_v2)
+        # Extract Committee decision data
         # ------------------------------------------------------
         committee_direction: Optional[int] = None
         committee_conf = 0.0
 
-        # Try per-instrument signal first
-        instrument_signals = self.smart_bus.get(
-            "instrument_signals", "PositionManager"
-        ) or {}
-        
-        # DEBUG: Log what we receive
-        self.logger.info(
-            f"[COMM_DEBUG] {instrument}: instrument_signals keys={list(instrument_signals.keys()) if isinstance(instrument_signals, dict) else 'not_dict'}"
+        instrument_signals = (
+            self.smart_bus.get("instrument_signals", "PositionManager") or {}
         )
-        
+
+        self.logger.info(
+            f"[COMM_DEBUG] {instrument}: instrument_signals keys="
+            f"{list(instrument_signals.keys()) if isinstance(instrument_signals, dict) else 'not_dict'}"
+        )
+
         inst_signal: Any = None
         if isinstance(instrument_signals, dict):
             inst_signal = instrument_signals.get(instrument)
             if inst_signal is None:
-                inst_norm = self._normalize_instrument(instrument)
+                inst_norm2 = self._normalize_instrument(instrument)
                 for key, val in instrument_signals.items():
                     try:
-                        if self._normalize_instrument(str(key)) == inst_norm:
+                        if self._normalize_instrument(str(key)) == inst_norm2:
                             inst_signal = val
-                            self.logger.info(f"[COMM_DEBUG] {instrument}: Found normalized match key={key}")
+                            self.logger.info(
+                                f"[COMM_DEBUG] {instrument}: Found normalized match key={key}"
+                            )
                             break
                     except Exception:
                         continue
@@ -693,16 +789,13 @@ class PositionManager(PositionManagerBase):
             elif inst_action == "HOLD":
                 committee_direction = 0
 
-        # Fallback to global trade_vote_v2
         if committee_direction is None:
             trade_vote = self.smart_bus.get("trade_vote_v2", "PositionManager")
             if isinstance(trade_vote, dict):
                 raw_action = trade_vote.get("action") or trade_vote.get("direction")
                 if raw_action:
                     vote_action = str(raw_action).upper()
-                    committee_conf = float(
-                        trade_vote.get("confidence", 0.5) or 0.5
-                    )
+                    committee_conf = float(trade_vote.get("confidence", 0.5) or 0.5)
                     if vote_action in ("BUY", "LONG"):
                         committee_direction = 1
                     elif vote_action in ("SELL", "SHORT"):
@@ -710,26 +803,29 @@ class PositionManager(PositionManagerBase):
 
         # ======================================================
         # PPO-PRIMARY DIRECTION RESOLUTION
-        # PPO is ALWAYS the master. Committee is fallback only.
         # ======================================================
         safety_cfg = self._get_safety_config()
         ppo_min_conf = safety_cfg.get("min_confidence", 0.3)
-        
+
         voting_direction: Optional[int] = None
         voting_confidence = 0.0
         decision_source = "none"
 
-        # PPO is primary - use its decision if available
-        if ppo_direction is not None and ppo_direction != 0 and ppo_conf >= ppo_min_conf:
+        if (
+            ppo_direction is not None
+            and ppo_direction != 0
+            and ppo_conf >= ppo_min_conf
+        ):
             voting_direction = ppo_direction
             voting_confidence = ppo_conf
             decision_source = "ppo (primary)"
-            dir_label = {1: "LONG", -1: "SHORT", 0: "HOLD"}.get(ppo_direction, "UNKNOWN")
+            dir_label = {1: "LONG", -1: "SHORT", 0: "HOLD"}.get(
+                ppo_direction, "UNKNOWN"
+            )
             rationale["factors"].append(
                 f"PPO primary decision: {dir_label} (conf={ppo_conf:.2f})"
             )
 
-            # Attach size multiplier info for explainability
             try:
                 ppo_mult = self._get_ppo_size_multiplier(context.instrument)
                 if ppo_mult is not None:
@@ -737,7 +833,6 @@ class PositionManager(PositionManagerBase):
             except Exception:
                 pass
 
-        # Fallback to committee if PPO has no opinion and fallback is enabled
         elif (
             safety_cfg.get("fallback_to_committee", True)
             and committee_direction is not None
@@ -746,7 +841,9 @@ class PositionManager(PositionManagerBase):
             voting_direction = committee_direction
             voting_confidence = committee_conf
             decision_source = "committee (ppo fallback)"
-            dir_label = {1: "LONG", -1: "SHORT", 0: "HOLD"}.get(committee_direction, "UNKNOWN")
+            dir_label = {1: "LONG", -1: "SHORT", 0: "HOLD"}.get(
+                committee_direction, "UNKNOWN"
+            )
             rationale["factors"].append(
                 f"PPO had no signal, using committee fallback: {dir_label} (conf={committee_conf:.2f})"
             )
@@ -757,34 +854,24 @@ class PositionManager(PositionManagerBase):
         rationale["decision_source"] = decision_source
         rationale["decision_mode"] = "PPO_MASTER"
 
-        # ──────────────────────────────────────────────────────
-        # EFFECTIVE DIRECTION (simplified for PPO-Master)
-        # PPO always decides. If voting_direction is None (below threshold),
-        # we still trust PPO's raw direction.
-        # ──────────────────────────────────────────────────────
         if voting_direction is not None:
             effective_direction = voting_direction
         elif ppo_direction is not None and ppo_direction != 0:
-            # PPO has a direction but below confidence threshold - still trust it
             effective_direction = ppo_direction
             rationale["factors"].append(
                 f"Using PPO direction {ppo_direction} (below threshold but trusted)"
             )
         elif committee_direction is not None and committee_direction != 0:
-            # Fallback to committee
             effective_direction = committee_direction
             rationale["factors"].append(
                 f"No PPO signal, using committee direction {committee_direction}"
             )
         else:
-            # No direction available - hold
             effective_direction = 0
 
         if effective_direction == 0 or effective_direction is None:
             rationale["stage"] = "no_direction"
-            rationale["factors"].append(
-                "No reliable directional consensus; holding flat"
-            )
+            rationale["factors"].append("No reliable directional consensus; holding flat")
             return self._finalize_decision(
                 instrument,
                 decision,
@@ -798,18 +885,14 @@ class PositionManager(PositionManagerBase):
 
         # ======================================================
         # SIGNAL STRENGTH CHECK (PPO-AWARE)
-        # When PPO is master, use PPO confidence as signal strength.
-        # This ensures PPO decisions aren't blocked by low voting intensity.
         # ======================================================
-        effective_sig_strength = sig_strength  # Default: market_intensity from voting
-        
+        effective_sig_strength = sig_strength
         if decision_source == "ppo (primary)" and ppo_conf > 0:
-            # PPO is decision maker - use its confidence as signal strength
             effective_sig_strength = ppo_conf
             rationale["factors"].append(
                 f"Using PPO confidence {ppo_conf:.3f} as signal strength (override market_intensity {sig_strength:.3f})"
             )
-        
+
         if effective_sig_strength < min_sig:
             rationale["stage"] = "signal_filter"
             rationale["factors"].append(
@@ -827,11 +910,10 @@ class PositionManager(PositionManagerBase):
                 context,
             )
 
-        # Update sig_strength for downstream sizing calculations
         sig_strength = effective_sig_strength
 
         # ======================================================
-        # HEDGE PREVENTION: avoid long/short conflicts across instruments
+        # HEDGE PREVENTION
         # ======================================================
         portfolio_direction = self._get_portfolio_direction()
         if portfolio_direction != 0 and portfolio_direction != int(
@@ -867,13 +949,11 @@ class PositionManager(PositionManagerBase):
 
         size = self._calculate_position_size(context, intensity, confidence)
 
-        # Enforce min viable notional; otherwise hold
         min_size_pct = float(self.Cval("min_size_pct", 0.01))
         min_notional = context.balance * min_size_pct
 
         if abs(size) < min_notional:
             if sig_strength > (min_sig + 0.10):
-                # Strong signal but tiny size – force minimum notional in the signal direction
                 size = np.sign(size or effective_direction) * min_notional
             else:
                 rationale["stage"] = "sizing"
@@ -900,10 +980,9 @@ class PositionManager(PositionManagerBase):
             f"{direction_label} signal {sig_strength:.3f} for new position "
             f"(size≈{size:.2f} EUR)"
         )
-        
-        # Record trade time for cooldown tracking (prevents rapid cycling)
+
         self._record_trade_time(instrument)
-        
+
         return self._finalize_decision(
             instrument,
             decision,
@@ -930,7 +1009,6 @@ class PositionManager(PositionManagerBase):
         if not self.open_positions:
             return False
 
-        # Direct key match
         if instrument in self.open_positions:
             return True
 
@@ -946,7 +1024,6 @@ class PositionManager(PositionManagerBase):
         if not self.open_positions:
             return None
 
-        # Direct key match
         if instrument in self.open_positions:
             return self.open_positions[instrument]
 
@@ -962,11 +1039,6 @@ class PositionManager(PositionManagerBase):
         Get the net directional bias of all open positions.
 
         Uses notional-weighted sign of positions (based on 'side' or 'units').
-
-        Returns:
-            1  -> portfolio net LONG
-           -1  -> portfolio net SHORT
-            0  -> flat / hedged / no positions
         """
         if not self.open_positions:
             return 0
@@ -985,10 +1057,10 @@ class PositionManager(PositionManagerBase):
 
                 notional = float(pos_data.get("size", 0.0) or 0.0)
                 if notional <= 0.0:
-                    # Fallback: approximate from units * price
                     units_val = float(pos_data.get("units", 0.0) or 0.0)
                     price_open = float(
-                        pos_data.get("price_open", pos_data.get("entry_price", 0.0)) or 0.0
+                        pos_data.get("price_open", pos_data.get("entry_price", 0.0))
+                        or 0.0
                     )
                     notional = abs(units_val * price_open)
 
@@ -1023,7 +1095,6 @@ class PositionManager(PositionManagerBase):
             if units != 0.0 and price_open > 0.0:
                 return abs(units * price_open)
 
-            # Conservative fallback: cap by configured max_position_pct of balance
             balance, _ = self._read_balance_and_drawdown()
             return abs(balance * float(self.Cval("max_position_pct", 0.10)))
         except Exception:
@@ -1040,20 +1111,16 @@ class PositionManager(PositionManagerBase):
         risk_factors: Dict[str, float],
         context: SignalContext,
     ) -> PositionDecisionResult:
-        # Clip intensity/confidence
         intensity = float(np.clip(intensity, 0.0, 1.0))
         confidence = float(np.clip(confidence, 0.0, 1.0))
 
-        # Ensure risk_factors is populated
         if not risk_factors:
             risk_factors = self._assess_risk_factors(context)
 
-        # Calculate aggregate risk score for unified logging
         risk_score = (
             sum(risk_factors.values()) / max(len(risk_factors), 1) if risk_factors else 0.0
         )
 
-        # Get current price from context or market data
         current_price = 0.0
         try:
             if getattr(context, "current_price", 0.0):
@@ -1070,10 +1137,7 @@ class PositionManager(PositionManagerBase):
         except Exception:
             pass
 
-        # Unified logging for non-HOLD decisions
-        if self.debug and decision != PositionDecision.HOLD and hasattr(
-            self, "unified_logger"
-        ):
+        if self.debug and decision != PositionDecision.HOLD and hasattr(self, "unified_logger"):
             try:
                 voting_signals = self.unified_logger.get_voting_signals()
 
@@ -1104,7 +1168,6 @@ class PositionManager(PositionManagerBase):
 
                 self.unified_logger.log_decision_summary(log_entry)
 
-                # Optional: compact per-instrument statistics block
                 try:
                     pos_snapshot = self._get_position_for_instrument(instrument)
                 except Exception:
@@ -1127,7 +1190,6 @@ class PositionManager(PositionManagerBase):
                 self.unified_logger.log_instrument_stats(instrument, inst_stats)
 
             except Exception as e:
-                # Fallback to simple log if unified logger fails
                 self.logger.warning(f"Unified logger failed for {instrument}: {e}")
                 self.logger.info(
                     format_operator_message(
@@ -1139,7 +1201,6 @@ class PositionManager(PositionManagerBase):
                     )
                 )
 
-        # Debugger (CSV/JSON) – forensic only
         debug_ctx = {
             "volatility": context.volatility,
             "current_exposure": context.current_exposure,
@@ -1184,19 +1245,11 @@ class PositionManager(PositionManagerBase):
     ) -> SignalContext:
         inst_data = market_data.get(instrument, {}) or {}
 
-        # ------------------------------------------------------
-        # Signal extraction priority:
-        # 1. inst_data["intensity"] (from instrument_signals via SmartBus)
-        # 2. agent_action multi-instrument vector
-        # 3. Default to 0.0
-        # ------------------------------------------------------
         raw_intensity = 0.0
 
-        # Priority 1: pre-parsed intensity from instrument_signals (via position_base)
         if "intensity" in inst_data:
             raw_intensity = inst_data.get("intensity", 0.0)
 
-        # Priority 2: fallback to agent_action with multi-instrument parsing
         if abs(raw_intensity) < 1e-6:
             try:
                 agent_action = self.smart_bus.get("agent_action", "PositionManager")
@@ -1213,9 +1266,7 @@ class PositionManager(PositionManagerBase):
                         if action_arr.size >= 2 * n_instruments:
                             contiguous = action_arr[:n_instruments]
                             interleaved = action_arr[0 : 2 * n_instruments : 2]
-                            if np.mean(np.abs(contiguous)) >= np.mean(
-                                np.abs(interleaved)
-                            ):
+                            if np.mean(np.abs(contiguous)) >= np.mean(np.abs(interleaved)):
                                 raw_intensity = float(contiguous[inst_idx])
                             else:
                                 raw_intensity = float(interleaved[inst_idx])
@@ -1226,9 +1277,7 @@ class PositionManager(PositionManagerBase):
             except Exception:
                 pass
 
-        market_intensity = float(
-            raw_intensity if isinstance(raw_intensity, (int, float)) else 0.0
-        )
+        market_intensity = float(raw_intensity if isinstance(raw_intensity, (int, float)) else 0.0)
         market_direction = int(np.sign(market_intensity))
 
         vol_floor = float(self.Cval("min_volatility", 0.015))
@@ -1247,7 +1296,6 @@ class PositionManager(PositionManagerBase):
         market_conditions = self.smart_bus.get("market_conditions", "PositionManager") or {}
         session = inst_data.get("session") or market_conditions.get("session", "unknown")
 
-        # Correlation penalty (if available)
         correlation_penalty = 0.0
         correlation_data = self.smart_bus.get("correlation_matrix", "PositionManager")
         if isinstance(correlation_data, dict):
@@ -1260,22 +1308,18 @@ class PositionManager(PositionManagerBase):
             except Exception:
                 correlation_penalty = 0.0
 
-        # Liquidity
         liquidity_score = self._get_liquidity(instrument)
 
         balance_val = float(portfolio_health.get("balance", self.C.initial_balance))
         dd_val = float(portfolio_health.get("drawdown", 0.0))
         exposure_ratio = float(portfolio_health.get("exposure_ratio", 0.0))
 
-        # Get current price (for logging / context)
         current_price = 0.0
         try:
             price_data = self.smart_bus.get("price_data", "PositionManager") or {}
             inst_price = price_data.get(instrument, {})
             if isinstance(inst_price, dict):
-                current_price = float(
-                    inst_price.get("last", inst_price.get("close", 0.0))
-                )
+                current_price = float(inst_price.get("last", inst_price.get("close", 0.0)))
             elif isinstance(inst_price, (int, float)):
                 current_price = float(inst_price)
         except Exception:
@@ -1320,23 +1364,10 @@ class PositionManager(PositionManagerBase):
             decision_adj = 0.1
         elif decision == PositionDecision.SCALE_DOWN:
             decision_adj = 0.05
-        total = (
-            base_confidence
-            + signal_conf
-            + trend_conf
-            - vol_penalty
-            + health_boost
-            + decision_adj
-        )
+        total = base_confidence + signal_conf + trend_conf - vol_penalty + health_boost + decision_adj
         return float(np.clip(total, 0.1, 1.0))
 
     def _calculate_portfolio_health_score(self, context: SignalContext) -> float:
-        """
-        Lightweight per-context health score.
-
-        Combines the portfolio-wide health computed in the base class with
-        inexpensive, local penalties from the provided context.
-        """
         try:
             base_health = float(getattr(self, "_portfolio_health_score", 1.0))
 
@@ -1348,9 +1379,7 @@ class PositionManager(PositionManagerBase):
             score = (base_health * 0.7) + (dd_penalty * 0.15) + (conc_penalty * 0.15)
             return float(np.clip(score, 0.0, 1.0))
         except Exception:
-            return float(
-                np.clip(float(getattr(self, "_portfolio_health_score", 1.0)), 0.0, 1.0)
-            )
+            return float(np.clip(float(getattr(self, "_portfolio_health_score", 1.0)), 0.0, 1.0))
 
     def _assess_risk_factors(self, context: SignalContext) -> Dict[str, float]:
         rf: Dict[str, float] = {}
@@ -1377,9 +1406,7 @@ class PositionManager(PositionManagerBase):
     # ==========================================================
     # Sizing
     # ==========================================================
-    def _calculate_position_size(
-        self, context: SignalContext, intensity: float, confidence: float
-    ) -> float:
+    def _calculate_position_size(self, context: SignalContext, intensity: float, confidence: float) -> float:
         return self.calculate_size(
             volatility=context.volatility,
             intensity=float(np.clip(intensity, -1.0, 1.0)),
@@ -1391,34 +1418,21 @@ class PositionManager(PositionManagerBase):
         )
 
     def _get_ppo_size_multiplier(self, instrument: Optional[str] = None) -> Optional[float]:
-        """
-        Resolve PPO arbiter size multiplier for a given instrument.
-
-        Supports multiple layouts:
-        - Scalar float (same multiplier for all instruments)
-        - Dict[str, float] keyed by instrument (raw / normalized)
-        - Sequence aligned with self.instruments
-        """
         try:
-            ppo_position_size = self.smart_bus.get(
-                "ppo_position_size", "PositionManager"
-            )
+            ppo_position_size = self.smart_bus.get("ppo_position_size", "PositionManager")
         except Exception:
             return None
 
         if ppo_position_size is None:
             return None
 
-        # Simple scalar
         if isinstance(ppo_position_size, (int, float)):
             val = float(ppo_position_size)
             if val <= 0.0:
                 return None
             return float(np.clip(val, 0.0, 1.0))
 
-        # Dict keyed by instrument
         if isinstance(ppo_position_size, dict) and instrument is not None:
-            # Try direct key first
             val = ppo_position_size.get(instrument)
             if isinstance(val, (int, float)):
                 return float(np.clip(val, 0.0, 1.0))
@@ -1434,7 +1448,6 @@ class PositionManager(PositionManagerBase):
                     continue
             return None
 
-        # Sequence aligned with self.instruments
         if isinstance(ppo_position_size, (list, tuple, np.ndarray)) and instrument:
             try:
                 idx = self.instruments.index(instrument)
@@ -1464,46 +1477,14 @@ class PositionManager(PositionManagerBase):
         current_exposure: Optional[float] = None,
         instrument: Optional[str] = None,
     ) -> float:
-        """
-        Calculate a normalized position size signal (not final lots).
-
-        This provides a SIGNAL STRENGTH value that gets passed to UnifiedLotCalculator,
-        which is the SINGLE SOURCE OF TRUTH for final lot sizing.
-
-        DO NOT add penalties here that are already in UnifiedLotCalculator:
-        - Trading mode multiplier
-        - Drawdown scaling
-        - Volatility scaling
-        - Risk scale from DRC
-        - Memory risk multiplier
-
-        This function ONLY handles:
-        - Portfolio health (local state)
-        - Correlation penalty (position-specific)
-        - Loss streak brake (local state)
-        - PPO arbiter size multiplier (per instrument)
-        """
         vol_floor = float(self.Cval("min_volatility", 0.015))
         volatility = max(float(np.nan_to_num(volatility, nan=vol_floor)), vol_floor)
         intensity = float(np.nan_to_num(np.clip(intensity, -1.0, 1.0), nan=0.0))
         balance = max(float(balance), 100.0)
         drawdown = float(np.nan_to_num(drawdown, nan=0.0))
 
-        # Read max position % directly from risk_policy.yaml -> lot_sizing.max_exposure_pct
-        default_max_pct = 0.05  # 5% fallback
-        try:
-            from pathlib import Path
-            import yaml
-
-            risk_policy_path = Path("config/risk_policy.yaml")
-            if risk_policy_path.exists():
-                with open(risk_policy_path, "r", encoding="utf-8") as f:
-                    policy = yaml.safe_load(f) or {}
-                lot_sizing = policy.get("lot_sizing", {}) or {}
-                if lot_sizing.get("max_exposure_pct") is not None:
-                    default_max_pct = float(lot_sizing["max_exposure_pct"])
-        except Exception:
-            pass
+        # Cached risk_policy.yaml read
+        default_max_pct = self._get_max_exposure_pct_cached(default=0.05)
 
         risk_pct = max(
             float(
@@ -1514,18 +1495,15 @@ class PositionManager(PositionManagerBase):
             ),
             0.01,
         )
-        # Hard cap risk_pct to 20% max to prevent runaway sizing
         risk_pct = min(risk_pct, 0.20)
 
         risk_budget = balance * risk_pct
         vol_adjusted_budget = risk_budget / volatility
         base_size = intensity * vol_adjusted_budget
 
-        # Hard safety cap: never exceed 50% of balance as notional
         max_notional = balance * 0.50
         base_size = float(np.clip(base_size, -max_notional, max_notional))
 
-        # Portfolio health modifier (local state - not in LotCalculator)
         portfolio_health = self._portfolio_health_score
         adjusted_size = (
             base_size
@@ -1533,12 +1511,10 @@ class PositionManager(PositionManagerBase):
             * float(self._adaptive_params.get("risk_tolerance", 1.0))
         )
 
-        # Correlation penalty (position-specific - not in LotCalculator)
         if correlation is not None:
             corr_penalty = 1.0 - min(abs(float(correlation)) * 0.3, 0.5)
             adjusted_size *= corr_penalty
 
-        # Loss-streak brake (local state - not in LotCalculator)
         if self.consecutive_losses >= self.Cval("max_consecutive_losses", 5):
             streak_reduction = max(0.1, float(self.Cval("loss_reduction", 0.5)))
             adjusted_size *= streak_reduction
@@ -1552,24 +1528,6 @@ class PositionManager(PositionManagerBase):
                     )
                 )
 
-        # NOTE (v3.4.0): REMOVED ppo_position_size multiplier here!
-        # 
-        # REASON: Double-penalty bug. The ppo_position_size is already:
-        #   1. Factored into intensity (which IS PPO confidence = sig_strength)
-        #   2. Passed to Executor for final lot calculation
-        #
-        # Applying it AGAIN here was causing tiny positions:
-        #   base_size = intensity(0.88) × budget → €44k
-        #   then × ppo_mult(0.19) → €8k (WRONG - double penalty!)
-        #
-        # The Executor uses ppo_position_size for lot calculation, which is correct.
-        # PositionManager should NOT apply it again.
-        #
-        # OLD CODE (removed):
-        #   ppo_mult = self._get_ppo_size_multiplier(instrument)
-        #   if ppo_mult is not None:
-        #       adjusted_size *= ppo_mult  # THIS WAS THE BUG!
-
         abs_size = abs(adjusted_size)
         min_viable_size = balance * float(self.Cval("min_size_pct", 0.01))
 
@@ -1579,22 +1537,12 @@ class PositionManager(PositionManagerBase):
             adjusted_size = 0.0
 
         max_single_position = balance * risk_pct
-        final_size = float(
-            np.clip(adjusted_size, -max_single_position, max_single_position)
-        )
+        final_size = float(np.clip(adjusted_size, -max_single_position, max_single_position))
         return float(np.nan_to_num(final_size, nan=0.0, posinf=0.0, neginf=0.0))
 
     def _get_liquidity(self, instrument: str) -> float:
-        """
-        Fetch a normalized liquidity score [0.0, 1.0] for an instrument.
-
-        Tries several SmartBus keys commonly published by the Market module,
-        with graceful fallbacks.
-        """
         try:
-            liq_map = self.smart_bus.get(
-                "liquidity_score_by_instrument", "PositionManager"
-            )
+            liq_map = self.smart_bus.get("liquidity_score_by_instrument", "PositionManager")
             if isinstance(liq_map, dict):
                 v = liq_map.get(instrument)
                 if isinstance(v, (int, float)):
@@ -1625,15 +1573,6 @@ class PositionManager(PositionManagerBase):
     # Memory Intelligence Integration
     # ==========================================================
     def _get_memory_intelligence(self) -> Dict[str, Any]:
-        """
-        Gather actionable intelligence from the unified memory system.
-
-        Returns a consolidated dict with:
-        - Gate signals (veto, risk_multiplier)
-        - Danger zone detection
-        - Expected PnL from similar trades
-        - Avoidance signals and playbook insights.
-        """
         result: Dict[str, Any] = {
             "veto": False,
             "risk_multiplier": 1.0,
@@ -1651,30 +1590,21 @@ class PositionManager(PositionManagerBase):
         }
 
         try:
-            # 1) memory_gate - Primary gate signal (veto + size control)
             memory_gate = self.smart_bus.get("memory_gate", "PositionManager")
             if isinstance(memory_gate, dict):
                 result["veto"] = bool(memory_gate.get("veto", False))
                 result["risk_multiplier"] = float(memory_gate.get("risk_multiplier", 1.0))
                 result["veto_reasons"] = memory_gate.get("reasons", [])
-                result["danger_similarity"] = float(
-                    memory_gate.get("danger_similarity", 0.0)
-                )
+                result["danger_similarity"] = float(memory_gate.get("danger_similarity", 0.0))
                 result["loss_prob"] = float(memory_gate.get("loss_prob", 0.0))
 
-            # 2) memory_vote - Ensemble contribution
             memory_vote = self.smart_bus.get("memory_vote", "PositionManager")
             if isinstance(memory_vote, dict):
                 result["signed_bias"] = float(memory_vote.get("signed_bias", 0.0))
                 result["expected_pnl"] = float(memory_vote.get("expected_pnl", 0.0))
-                result["playbook_confidence"] = float(
-                    memory_vote.get("confidence", 0.5)
-                )
-                result["neural_risk_hint"] = float(
-                    memory_vote.get("neural_risk_hint", 0.5)
-                )
+                result["playbook_confidence"] = float(memory_vote.get("confidence", 0.5))
+                result["neural_risk_hint"] = float(memory_vote.get("neural_risk_hint", 0.5))
 
-            # 3) danger_zones - Direct danger zone check
             danger_zones = self.smart_bus.get("danger_zones", "PositionManager")
             if isinstance(danger_zones, dict):
                 zones = danger_zones.get("zones", [])
@@ -1684,56 +1614,31 @@ class PositionManager(PositionManagerBase):
                     max_sim = 0.0
                     for z in zones[:5]:
                         if isinstance(z, dict):
-                            max_sim = max(
-                                max_sim, float(z.get("similarity", 0.0))
-                            )
-                    result["danger_similarity"] = max(
-                        result["danger_similarity"], max_sim
-                    )
+                            max_sim = max(max_sim, float(z.get("similarity", 0.0)))
+                    result["danger_similarity"] = max(result["danger_similarity"], max_sim)
 
-            # 4) mistake_avoidance - Avoidance signal
-            mistake_avoidance = self.smart_bus.get(
-                "mistake_avoidance", "PositionManager"
-            )
+            mistake_avoidance = self.smart_bus.get("mistake_avoidance", "PositionManager")
             if isinstance(mistake_avoidance, dict):
-                result["avoidance_signal"] = float(
-                    mistake_avoidance.get("avoidance_signal", 0.0)
-                )
+                result["avoidance_signal"] = float(mistake_avoidance.get("avoidance_signal", 0.0))
                 if result["avoidance_signal"] > 0.6:
                     result["in_danger_zone"] = True
 
-            # 5) playbook_recall - Historical pattern insights
-            playbook_recall = self.smart_bus.get(
-                "playbook_recall", "PositionManager"
-            )
+            playbook_recall = self.smart_bus.get("playbook_recall", "PositionManager")
             if isinstance(playbook_recall, dict):
                 if result["expected_pnl"] == 0.0:
-                    result["expected_pnl"] = float(
-                        playbook_recall.get("expected_pnl", 0.0)
-                    )
+                    result["expected_pnl"] = float(playbook_recall.get("expected_pnl", 0.0))
                 if result["playbook_confidence"] == 0.5:
-                    result["playbook_confidence"] = float(
-                        playbook_recall.get("confidence", 0.5)
-                    )
+                    result["playbook_confidence"] = float(playbook_recall.get("confidence", 0.5))
 
-            # 6) intuition_vector - Compressed pattern intelligence
             intuition = self.smart_bus.get("intuition_vector", "PositionManager")
             if isinstance(intuition, dict):
                 strength = float(intuition.get("strength", 0.0))
                 if strength < -0.3:
-                    result["avoidance_signal"] = max(
-                        result["avoidance_signal"],
-                        abs(strength),
-                    )
+                    result["avoidance_signal"] = max(result["avoidance_signal"], abs(strength))
 
-            # 7) loss_prevention - Loss prevention metrics
-            loss_prevention = self.smart_bus.get(
-                "loss_prevention", "PositionManager"
-            )
+            loss_prevention = self.smart_bus.get("loss_prevention", "PositionManager")
             if isinstance(loss_prevention, dict):
-                effectiveness = float(
-                    loss_prevention.get("avoidance_effectiveness", 0.0)
-                )
+                effectiveness = float(loss_prevention.get("avoidance_effectiveness", 0.0))
                 if effectiveness > 0.5:
                     result["risk_multiplier"] *= (1.0 - effectiveness * 0.3)
 
@@ -1771,39 +1676,23 @@ class PositionManager(PositionManagerBase):
         position_side: int,
         context: SignalContext,
     ) -> ExitDecision:
-        """
-        Evaluate all exit strategies using the unified ExitStrategyEngine.
-
-        This ensures consistency with SmartPositionManager (live trading).
-        Both systems now use the same exit logic from risk_policy.yaml.
-        
-        NOTE: When PPO has a decision for this instrument, we use PPO confidence
-        as signal_strength rather than market_intensity (voting). This prevents
-        premature exits when voting intensity is low but PPO has clear conviction.
-        """
         exit_engine = get_exit_engine()
-        
-        # ========================================================
-        # PPO-AWARE SIGNAL STRENGTH for exits
-        # Same logic as entry: use PPO confidence when available
-        # ========================================================
+
         ppo_signal_strength = 0.0
         ppo_direction = 0
         inst_norm = self._normalize_instrument(instrument)
-        
-        # Try to get PPO decision for this instrument
+
         ppo_multi = self.smart_bus.get("ppo_multi_decision", "PositionManager", default={})
         if isinstance(ppo_multi, dict):
             instruments_map = ppo_multi.get("instruments", {})
             if isinstance(instruments_map, dict):
-                # Try direct match then normalized match
                 inst_decision = instruments_map.get(instrument)
                 if inst_decision is None:
                     for key, val in instruments_map.items():
                         if self._normalize_instrument(key) == inst_norm:
                             inst_decision = val
                             break
-                
+
                 if isinstance(inst_decision, dict):
                     ppo_signal_strength = float(inst_decision.get("confidence", 0.0) or 0.0)
                     raw_dir = str(inst_decision.get("direction", "")).lower()
@@ -1812,51 +1701,38 @@ class PositionManager(PositionManagerBase):
                     elif raw_dir in ("short", "sell"):
                         ppo_direction = -1
 
-        # Extract position data
         unrealized_pnl = 0.0
         entry_price = 0.0
-        open_time = time.time() - 3600  # Default to 1 hour ago
+        open_time = time.time() - 3600
         lots = 0.0
         position_id = ""
 
         if isinstance(pos_data, dict):
-            unrealized_pnl = float(
-                pos_data.get("unrealized_pnl", pos_data.get("pnl", 0.0)) or 0.0
-            )
-            entry_price = float(
-                pos_data.get("entry_price", pos_data.get("price_open", 0.0)) or 0.0
-            )
-            # Robust open_time parsing - handle various formats
+            unrealized_pnl = float(pos_data.get("unrealized_pnl", pos_data.get("pnl", 0.0)) or 0.0)
+            entry_price = float(pos_data.get("entry_price", pos_data.get("price_open", 0.0)) or 0.0)
+
             raw_open_time = pos_data.get("open_time", pos_data.get("time"))
             if raw_open_time is None:
-                open_time = time.time() - 3600  # Default 1 hour ago
+                open_time = time.time() - 3600
             elif isinstance(raw_open_time, (int, float)):
                 open_time = float(raw_open_time)
             elif isinstance(raw_open_time, str):
-                # Try parsing ISO format or numeric string
                 try:
                     open_time = float(raw_open_time)
                 except ValueError:
                     try:
                         import datetime
 
-                        # Handle ISO format like "2025-12-04T10:30:00"
-                        dt = datetime.datetime.fromisoformat(
-                            raw_open_time.replace("Z", "+00:00")
-                        )
+                        dt = datetime.datetime.fromisoformat(raw_open_time.replace("Z", "+00:00"))
                         open_time = dt.timestamp()
                     except Exception:
                         open_time = time.time() - 3600
             else:
                 open_time = time.time() - 3600
-            lots = float(
-                pos_data.get("lots", pos_data.get("volume", pos_data.get("units", 0.0)))
-                or 0.0
-            )
+
+            lots = float(self._extract_lots(instrument, pos_data) or 0.0)
             position_id = str(pos_data.get("ticket", ""))
 
-        # Get tracked peak from _profit_tracker for trailing profit logic
-        # This is the actual peak PnL seen since position opened
         tracked_peak = 0.0
         try:
             if hasattr(self, "_profit_tracker"):
@@ -1865,9 +1741,8 @@ class PositionManager(PositionManagerBase):
             tracked_peak = 0.0
 
         if tracked_peak <= 0.0:
-            tracked_peak = max(unrealized_pnl, 0.0)  # Fallback to current if no peak tracked
+            tracked_peak = max(unrealized_pnl, 0.0)
 
-        # Engine peak for logging comparison
         try:
             engine_peak = exit_engine.get_peak(instrument)
         except Exception:
@@ -1875,22 +1750,18 @@ class PositionManager(PositionManagerBase):
         if engine_peak is None or engine_peak == 0.0:
             engine_peak = tracked_peak
 
-        # Get current price
         current_price = context.current_price if hasattr(context, "current_price") else 0.0
         if current_price == 0.0:
             try:
                 price_data = self.smart_bus.get("price_data", "PositionManager") or {}
                 inst_price = price_data.get(instrument, {})
                 if isinstance(inst_price, dict):
-                    current_price = float(
-                        inst_price.get("last", inst_price.get("close", 0.0))
-                    )
+                    current_price = float(inst_price.get("last", inst_price.get("close", 0.0)))
                 elif isinstance(inst_price, (int, float)):
                     current_price = float(inst_price)
             except Exception:
                 pass
 
-        # Get ATR for dynamic trailing
         atr = None
         try:
             market_data = self.smart_bus.get("market_data", "PositionManager") or {}
@@ -1899,84 +1770,58 @@ class PositionManager(PositionManagerBase):
                 atr = inst_data.get("atr") or inst_data.get("ATR")
 
             if atr is None:
-                indicators = self.smart_bus.get(
-                    "technical_indicators", "PositionManager"
-                ) or {}
+                indicators = self.smart_bus.get("technical_indicators", "PositionManager") or {}
                 inst_ind = indicators.get(instrument, {})
                 if isinstance(inst_ind, dict):
                     atr = inst_ind.get("atr") or inst_ind.get("ATR")
         except Exception:
             pass
 
-        # Get market regime
         regime = context.regime if hasattr(context, "regime") else "normal"
         if not regime:
-            regime = (
-                self.smart_bus.get("market_regime", "PositionManager", default="normal")
-                or "normal"
-            )
+            regime = self.smart_bus.get("market_regime", "PositionManager", default="normal") or "normal"
 
-        # Get account-level context for EMERGENCY exits
         account_drawdown_pct = context.drawdown if hasattr(context, "drawdown") else None
         daily_loss_eur = None
         daily_loss_limit_eur = None
         total_open_risk_eur = None
         try:
-            # Daily P&L from bus
             daily_pnl = self.smart_bus.get("daily_pnl", "PositionManager")
             if daily_pnl is not None:
                 daily_loss_eur = float(daily_pnl)
 
-            # Daily loss limit
             risk_limits = self.smart_bus.get("risk_limits", "PositionManager") or {}
             if isinstance(risk_limits, dict):
                 daily_loss_limit_eur = risk_limits.get("daily_loss_limit_eur")
                 if daily_loss_limit_eur is not None:
                     daily_loss_limit_eur = float(daily_loss_limit_eur)
 
-            # Total open risk (sum of negative unrealized PnL)
             positions = self.smart_bus.get("positions", "PositionManager") or {}
             if isinstance(positions, dict):
                 total_open_risk_eur = sum(
                     abs(float(p.get("unrealized_pnl", 0) or 0))
                     for p in positions.values()
-                    if isinstance(p, dict)
-                    and float(p.get("unrealized_pnl", 0) or 0) < 0
+                    if isinstance(p, dict) and float(p.get("unrealized_pnl", 0) or 0) < 0
                 )
         except Exception:
             pass
 
-        # Consensus confidence from voting if available
         consensus_confidence = float(min(max(abs(context.market_intensity), 0.0), 1.0))
         try:
             trade_vote = self.smart_bus.get("trade_vote_v2", "PositionManager")
             if isinstance(trade_vote, dict):
-                conf = trade_vote.get("confidence") or trade_vote.get(
-                    "consensus_confidence"
-                )
+                conf = trade_vote.get("confidence") or trade_vote.get("consensus_confidence")
                 if conf is not None:
                     consensus_confidence = float(conf)
         except Exception:
             pass
 
-        # Build position context for exit engine.
-        # peak_pnl uses tracked peak from _profit_tracker for proper trailing profit logic
-        # 
-        # signal_valid: Skip signal-based exits during startup grace period.
-        # This prevents closing positions when signals haven't stabilized yet.
-        # Uses _is_signal_valid_for_exits() from base class.
         signal_valid = self._is_signal_valid_for_exits()
-        
-        # ========================================================
-        # PPO-AWARE SIGNAL STRENGTH - use PPO confidence when available
-        # This prevents premature "weak signal" exits when voting intensity
-        # is low but PPO has clear conviction for this position direction.
-        # ========================================================
+
         effective_signal_strength = abs(context.market_intensity)
         effective_signal_direction = context.market_direction
-        
+
         if ppo_signal_strength > 0:
-            # PPO has a decision - use its confidence
             effective_signal_strength = ppo_signal_strength
             effective_signal_direction = ppo_direction if ppo_direction != 0 else context.market_direction
             if self.debug:
@@ -1984,7 +1829,7 @@ class PositionManager(PositionManagerBase):
                     f"[EXIT_PPO] {instrument}: Using PPO confidence {ppo_signal_strength:.3f} "
                     f"(dir={ppo_direction}) instead of market_intensity {abs(context.market_intensity):.3f}"
                 )
-        
+
         pos_ctx = PositionContext(
             symbol=instrument,
             side=position_side,
@@ -2000,7 +1845,7 @@ class PositionManager(PositionManagerBase):
             regime=str(regime),
             signal_direction=effective_signal_direction,
             signal_strength=effective_signal_strength,
-            signal_valid=signal_valid,  # Skip signal exits on startup
+            signal_valid=signal_valid,
             consensus_confidence=consensus_confidence,
             account_drawdown_pct=account_drawdown_pct,
             daily_loss_eur=daily_loss_eur,
@@ -2008,10 +1853,8 @@ class PositionManager(PositionManagerBase):
             total_open_risk_eur=total_open_risk_eur,
         )
 
-        # Evaluate all exit strategies
         exit_decision = exit_engine.evaluate(pos_ctx)
 
-        # Log exit evaluation (non-HOLD only)
         if self.debug and exit_decision.should_exit:
             self.logger.info(
                 format_operator_message(
@@ -2033,58 +1876,26 @@ class PositionManager(PositionManagerBase):
     # Emergency conditions
     # ==========================================================
     def _check_emergency_conditions(self, context: SignalContext) -> bool:
-        """
-        Fast local emergency gate (per-tick).
-
-        PROP FIRM LOGIC: Only care about ACTUAL RISK (drawdown, loss streaks).
-        Notional exposure is IRRELEVANT for prop firms - they only care if you
-        lose money, not how much margin you use.
-
-        Emergency triggers:
-        - Drawdown approaching prop firm limits (5% daily, 10% total)
-        - Consecutive loss streaks (indicates system malfunction)
-        - Low liquidity (can't exit positions safely)
-
-        NOTE: Exposure-based emergency is optional and disabled by default for
-        prop-firm style operation.
-        """
-        # Prop-firm style defaults; will be overridden by risk_policy.yaml
-        drawdown_trigger = float(
-            self.Cval(
-                "emergency_drawdown_trigger",
-                0.035,  # 3.5% = emergency (daily limit is 5%)
-            )
-        )
+        drawdown_trigger = float(self.Cval("emergency_drawdown_trigger", 0.035))
         max_losses = int(self.Cval("max_consecutive_losses", 3))
         liquidity_floor = float(self.Cval("emergency_liquidity_threshold", 0.30))
 
-        # Exposure-based emergency (disabled by default – notional is not what prop firms care about)
         use_exposure_trigger = bool(self.Cval("enable_exposure_emergency", False))
-        emergency_exposure_threshold = float(
-            self.Cval(
-                "emergency_exposure_trigger",
-                1.0,  # Default 100% = effectively disabled
-            )
-        )
+        emergency_exposure_threshold = float(self.Cval("emergency_exposure_trigger", 1.0))
 
         triggers = {
             "drawdown": context.drawdown >= drawdown_trigger,
             "loss_streak": self.consecutive_losses >= max_losses,
-            "exposure": use_exposure_trigger
-            and context.current_exposure >= emergency_exposure_threshold,
+            "exposure": use_exposure_trigger and context.current_exposure >= emergency_exposure_threshold,
             "liquidity": context.liquidity_score <= liquidity_floor,
         }
 
         active = bool(
-            triggers["drawdown"]
-            or triggers["loss_streak"]
-            or triggers["exposure"]
-            or triggers["liquidity"]
+            triggers["drawdown"] or triggers["loss_streak"] or triggers["exposure"] or triggers["liquidity"]
         )
         if not active:
             return False
 
-        # Detect executor activity to prevent noisy emergencies when nothing can act
         executor_active = False
         try:
             md = getattr(self.smart_bus, "get_with_metadata", None)
@@ -2092,12 +1903,7 @@ class PositionManager(PositionManagerBase):
             for key in keys:
                 if md is not None:
                     rec = md(key, "PositionManager")
-                    if (
-                        rec
-                        and rec.value is not None
-                        and hasattr(rec, "age_seconds")
-                        and rec.age_seconds() < 10.0
-                    ):
+                    if rec and rec.value is not None and hasattr(rec, "age_seconds") and rec.age_seconds() < 10.0:
                         executor_active = True
                         break
                 else:
@@ -2108,11 +1914,8 @@ class PositionManager(PositionManagerBase):
         except Exception:
             pass
 
-        suppress = bool(
-            self.Cval("suppress_emergency_without_executor", True)
-        ) and not executor_active
+        suppress = bool(self.Cval("suppress_emergency_without_executor", True)) and not executor_active
 
-        # Log once per approximate-tick (based on timestamp)
         stamp = getattr(self, "_last_emergency_diag_stamp", None)
         current_stamp = context.timestamp or f"t_{int(time.time())}"
         if stamp != current_stamp:
@@ -2120,8 +1923,7 @@ class PositionManager(PositionManagerBase):
                 self.logger.warning(
                     format_operator_message(
                         icon="[ALERT]" if not suppress else "[INFO]",
-                        message="Emergency condition evaluated"
-                        + (" (SUPPRESSED)" if suppress else ""),
+                        message="Emergency condition evaluated" + (" (SUPPRESSED)" if suppress else ""),
                         drawdown=f"{context.drawdown:.4f}",
                         drawdown_trigger=drawdown_trigger,
                         consecutive_losses=self.consecutive_losses,

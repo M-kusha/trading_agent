@@ -19,6 +19,7 @@ Version: 3.1.0 (Multi-instrument architecture, position-focus aware)
 from __future__ import annotations
 import os
 
+import os
 import time
 import threading
 from dataclasses import dataclass, field
@@ -52,9 +53,17 @@ from modules.meta.ppo_types import (
 from modules.meta.ppo_observation_builder import (
     PPOObservationBuilder,
     get_ppo_observation_builder,
+    FEATURE_GROUPS,
 )
 
 from modules.meta.arbiter_logic import StrategyInfo, TradingModeInfo, WorldModelInfo
+
+from modules.timing.timing_features import TimingConfig, load_timing_config
+
+
+def _norm_symbol(sym: str) -> str:
+    """Canonical symbol normalization used across shell/arbiter."""
+    return "".join(ch for ch in str(sym or "").upper() if ch.isalnum())
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -68,6 +77,9 @@ class PPOShellConfig:
 
     # Core PPO configuration
     core_config: PPOCoreConfig = field(default_factory=PPOCoreConfig)
+    model_path: Optional[str] = None
+
+    # Optional model checkpoint to load on startup (SB3 .zip or PPOCore torch checkpoint)
     model_path: Optional[str] = None
 
     # Instruments: should be aligned with DEFAULT_INSTRUMENTS in ppo_types
@@ -97,7 +109,11 @@ class PPOShellConfig:
     warmup_enabled: bool = True  # Set to False to disable warmup (not recommended)
 
     # Debug
-    debug: bool = False
+    debug: bool = True
+
+    # Observation diagnostics (helps debug "same obs for all instruments" issues)
+    obs_diagnostics_enabled: bool = True
+    obs_diagnostics_every_n_cycles: int = 20
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -162,6 +178,9 @@ class PPOAgentShell(
         self._performance_metrics: Dict[str, Any] = {}
         self._monitoring_active: bool = False
         self._last_cooldown_state: Dict[str, bool] = {}
+
+        # Observation diagnostics state
+        self._obs_diag_prev: Dict[str, np.ndarray] = {}
         
         # ═══════════════════════════════════════════════════════════════════
         # WARMUP STATE (v3.2.0)
@@ -174,7 +193,8 @@ class PPOAgentShell(
         # Setup components
         self._setup_logging()
         self._setup_smart_bus()
-        self._setup_core_components(model_path or self._cfg.model_path)
+        self._setup_core_components(model_path or self._cfg.model_path or self._cfg.model_path)
+        self._setup_entry_timing_policy()
         self._setup_health_tracking()
 
         # Start monitoring
@@ -257,6 +277,38 @@ class PPOAgentShell(
         self._last_observations = {}
         self._last_decisions = {}
         self._last_multi_decision = None
+
+    def _setup_entry_timing_policy(self) -> None:
+        """Load timing policy once so PPO gating matches live timing controller."""
+        self._timing_config: Optional[TimingConfig] = None
+
+        # Default matches config/timing_policy.yaml (currently 0.55)
+        self._entry_timing_direction_quality_min_threshold: float = 0.55
+
+        try:
+            module_cfg = getattr(self, "config", None) or {}
+            timing_path = module_cfg.get("timing_config_path") or "config/timing_policy.yaml"
+            self._timing_config = load_timing_config(timing_path)
+
+            # Allow explicit override (rare). Otherwise match timing_policy.yaml threshold.
+            override = module_cfg.get("entry_timing_direction_quality_min_threshold")
+            if override is not None:
+                self._entry_timing_direction_quality_min_threshold = float(override)
+            else:
+                self._entry_timing_direction_quality_min_threshold = float(
+                    getattr(self._timing_config, "entry_quality_min_threshold", 0.55)
+                )
+
+            self.logger.info(
+                f"[PPO][TIMING] Loaded timing policy: {timing_path} | "
+                f"direction_quality_min={self._entry_timing_direction_quality_min_threshold:.2f}"
+            )
+        except Exception as e:  # noqa: BLE001
+            # Fail open-ish on config load; entry_timing itself still fail-closes per instrument.
+            self.logger.warning(
+                f"[PPO][TIMING] Failed to load timing policy; using default "
+                f"direction_quality_min={self._entry_timing_direction_quality_min_threshold:.2f} ({e})"
+            )
 
     def _setup_health_tracking(self) -> None:
         """Initialize health tracking state and circuit breaker."""
@@ -431,6 +483,13 @@ class PPOAgentShell(
 
             # 2) Build observations for each instrument
             observations = self._build_observations_for_instruments()
+            self._maybe_log_observation_diagnostics(observations)
+
+            # ALWAYS read raw position context for accurate arbiter semantics
+            position_ctx_raw = self._read_position_context_raw()
+            positions_by_instrument = self._build_positions_by_instrument(position_ctx_raw)
+            # Derive a quick "positions exist" flag for warmup/focus blocking logic
+            positions_exist = any(bool(v.get("has", False)) for v in positions_by_instrument.values() if isinstance(v, dict))
 
             # Brief processing log (only in debug mode or if not in position focus)
             if not in_position_focus_mode:
@@ -438,15 +497,6 @@ class PPOAgentShell(
                     f"[PPO] Processing: obs_dims={[len(v) for v in observations.values()]}, "
                     f"committee={bool(committee_data)}, risk={risk_info.portfolio_risk:.2f}"
                 )
-
-            # v5.2: Build positions_by_instrument map for per-instrument independence
-            positions_by_instrument: Dict[str, bool] = {}
-            if position_focus:
-                all_positions = position_focus.get("positions", {})
-                for inst in self._cfg.instruments:
-                    # Normalize instrument name for lookup
-                    inst_norm = inst.upper().replace('/', '').replace('_', '').replace('-', '')
-                    positions_by_instrument[inst] = inst_norm in all_positions or inst in all_positions
 
             # 3) Make multi-instrument decision (with full integration)
             multi_decision = self.arbiter.make_multi_instrument_decision(
@@ -458,14 +508,17 @@ class PPOAgentShell(
                 strategy_info=strategy_info,
                 trading_mode_info=trading_mode_info,
                 world_model_info=world_model_info,
-                positions_by_instrument=positions_by_instrument,  # v5.2
+                positions_by_instrument=positions_by_instrument,  # v5.6 side-aware
+                defer_stats_recording=True,  # record after warmup/focus post-processing
             )
 
             # 3.5) Apply position focus mode adjustments to decision
-            if in_position_focus_mode and position_focus is not None:
+            # v5.6: DO NOT destroy PPO exit semantics for instruments with positions.
+            # Only block other instruments if configured.
+            if positions_exist and self._cfg.position_focus_blocks_other_instruments:
                 multi_decision = self._apply_position_focus_to_decision(
                     multi_decision,
-                    position_focus,
+                    position_ctx_raw or {},
                 )
 
             # ═══════════════════════════════════════════════════════════════════
@@ -473,21 +526,149 @@ class PPOAgentShell(
             # ═══════════════════════════════════════════════════════════════════
             # During warmup, observe but don't generate entry signals.
             # Position management (if we already have positions) is still allowed.
-            all_positions_for_warmup = position_focus.get('positions', {}) if position_focus else {}
+            all_positions_for_warmup = (position_ctx_raw or {}).get("positions", {}) if isinstance(position_ctx_raw, dict) else {}
             
             if in_warmup:
                 for inst, decision in multi_decision.instruments.items():
-                    # Check if we have a position in this instrument
-                    pos_data = all_positions_for_warmup.get(inst, {})
-                    has_position = bool(pos_data and pos_data.get('side', 0) != 0)
-                    
+                    inst_norm = _norm_symbol(inst)
+                    pos_data = all_positions_for_warmup.get(inst) or all_positions_for_warmup.get(inst_norm) or {}
+                    has_position = bool(isinstance(pos_data, dict) and int(pos_data.get("side", 0)) != 0)
+
                     # Only block NEW entries, not position management
-                    if not has_position and decision.gate_passed:
+                    if not has_position and decision.direction in ("long", "short"):
+                        # Force a fully neutral signal for downstream safety
+                        decision.direction = "flat"
                         decision.gate_passed = False
                         decision.position_size = 0.0
-                        # Update reasoning
+
+                        # Add metadata + reasons (best-effort; do not assume shape)
+                        if decision.meta is None:
+                            decision.meta = {}
+                        decision.meta["warmup_blocked"] = True
+
+                        if hasattr(decision, "gate_reasons") and isinstance(decision.gate_reasons, list):
+                            decision.gate_reasons.append("WARMUP_BLOCKED")
+
                         original_reasoning = decision.reasoning or ""
-                        decision.reasoning = f"[WARMUP] {original_reasoning}"
+                        decision.reasoning = f"[WARMUP_BLOCKED] {original_reasoning}"
+
+            # ═══════════════════════════════════════════════════════════════════
+            # 3.7) ENTRY TIMING HARD BLOCK (existing infrastructure)
+            # ═══════════════════════════════════════════════════════════════════
+            # Uses EntryTimingController outputs from SmartInfoBus to prevent
+            # immediate re-entries / low-quality session entries.
+            # - Blocks NEW entries only (no position).
+            # - Does NOT block position management (close/reverse).
+            entry_timing_all = self.smart_bus.get(
+                "entry_timing",
+                "PPOAgentShell",
+                default={},
+            )
+            if not isinstance(entry_timing_all, dict):
+                entry_timing_all = {}
+
+            # Use the same position snapshot the logger later uses
+            all_positions_now = (position_ctx_raw or {}).get("positions", {}) if isinstance(position_ctx_raw, dict) else {}
+
+            for inst, decision in multi_decision.instruments.items():
+                try:
+                    inst_norm = _norm_symbol(inst)
+                    pos_data = all_positions_now.get(inst) or all_positions_now.get(inst_norm) or {}
+                    has_position = bool(isinstance(pos_data, dict) and int(pos_data.get("side", 0)) != 0)
+
+                    # Only gate NEW entries. Position management must remain actionable.
+                    if has_position:
+                        continue
+
+                    if decision.direction not in ("long", "short"):
+                        continue
+
+                    if not bool(getattr(decision, "gate_passed", False)):
+                        continue
+
+                    # If arbiter already labeled it as non-entry, don't touch it.
+                    action_intent = None
+                    if isinstance(getattr(decision, "meta", None), dict):
+                        action_intent = decision.meta.get("action_intent")
+                    if action_intent and not str(action_intent).startswith("open_"):
+                        continue
+
+                    inst_timing = (
+                        entry_timing_all.get(inst)
+                        or entry_timing_all.get(inst_norm)
+                        or entry_timing_all.get(str(inst).upper())
+                    )
+
+                    entry_allowed = True
+                    block_reasons: List[str] = []
+
+                    if isinstance(inst_timing, dict):
+                        entry_allowed = bool(inst_timing.get("entry_allowed", True))
+                        raw_reasons = inst_timing.get("block_reasons")
+                        if isinstance(raw_reasons, list):
+                            block_reasons = [str(r) for r in raw_reasons if r is not None]
+                        elif isinstance(raw_reasons, str) and raw_reasons:
+                            block_reasons = [raw_reasons]
+                        
+                        # ═══════════════════════════════════════════════════════════════
+                        # v5.7: DIRECTION-AWARE QUALITY GATE
+                        # ═══════════════════════════════════════════════════════════════
+                        # The base quality gate uses max(long_q, short_q), but we should
+                        # check quality for the ACTUAL direction PPO wants to trade.
+                        # This prevents: PPO wants LONG near highs (bad), but short_q=1.00
+                        # passes the gate because max(0.3, 1.0) = 1.0 > threshold.
+                        # ═══════════════════════════════════════════════════════════════
+                        # Use timing policy threshold so we can tighten in one place.
+                        DIRECTION_QUALITY_THRESHOLD = float(
+                            getattr(self, "_entry_timing_direction_quality_min_threshold", 0.55)
+                        )
+                        direction_quality = 0.5  # default neutral
+                        if decision.direction == "long":
+                            direction_quality = float(inst_timing.get("entry_quality_long", 0.5))
+                        elif decision.direction == "short":
+                            direction_quality = float(inst_timing.get("entry_quality_short", 0.5))
+                        
+                        if entry_allowed and direction_quality < DIRECTION_QUALITY_THRESHOLD:
+                            entry_allowed = False
+                            block_reasons.append(
+                                f"DIRECTION_QUALITY_{decision.direction.upper()}_{direction_quality:.2f}<{DIRECTION_QUALITY_THRESHOLD}"
+                            )
+                            self.logger.info(
+                                f"[QUALITY_GATE] {inst}: Blocked {decision.direction.upper()} entry | "
+                                f"quality={direction_quality:.2f} < {DIRECTION_QUALITY_THRESHOLD} threshold"
+                            )
+                    else:
+                        # Fail-closed for NEW entries if timing data is missing.
+                        entry_allowed = False
+                        block_reasons = ["TIMING_DATA_MISSING"]
+
+                    if entry_allowed:
+                        continue
+
+                    # Block by forcing the gate to fail (direction stays intact for observability).
+                    decision.gate_passed = False
+                    decision.position_size = 0.0
+
+                    if decision.meta is None:
+                        decision.meta = {}
+                    decision.meta["entry_timing_blocked"] = True
+                    decision.meta["entry_timing_reasons"] = block_reasons[:8]
+
+                    if hasattr(decision, "gate_reasons") and isinstance(decision.gate_reasons, list):
+                        reason_str = ",".join(block_reasons[:3]) if block_reasons else "blocked"
+                        decision.gate_reasons.append(f"ENTRY_TIMING_BLOCKED({reason_str})")
+
+                    original_reasoning = decision.reasoning or ""
+                    decision.reasoning = f"[ENTRY_TIMING_BLOCKED] {original_reasoning}".strip()
+
+                except Exception as e:  # noqa: BLE001
+                    # Timing gate must never break PPO processing.
+                    if self.debug:
+                        self.logger.debug(f"[PPO][TIMING_GATE] failed for {inst}: {e}")
+
+
+            # Record FINAL decisions to match what we publish/execute
+            self.arbiter.record_multi_decision(multi_decision)
 
             # Cache decisions
             self._last_multi_decision = multi_decision
@@ -500,42 +681,42 @@ class PPOAgentShell(
             autonomy_level = autonomy_meta.get("autonomy_level", 0.0)
             
             # ═══════════════════════════════════════════════════════════════════
-            # CLEAN LOGGING: Separate per-instrument, context-aware
+            # CLEAN LOGGING: Separate per-instrument, context-aware (v5.6)
             # ═══════════════════════════════════════════════════════════════════
-            all_positions = position_focus.get('positions', {}) if position_focus else {}
+            all_positions = (position_ctx_raw or {}).get("positions", {}) if isinstance(position_ctx_raw, dict) else {}
             
             for inst, decision in multi_decision.instruments.items():
-                pos_data = all_positions.get(inst, {})
-                has_position = bool(pos_data and pos_data.get('side', 0) != 0)
+                inst_norm = _norm_symbol(inst)
+                pos_data = all_positions.get(inst) or all_positions.get(inst_norm) or {}
+                has_position = bool(isinstance(pos_data, dict) and int(pos_data.get("side", 0)) != 0)
+                
+                # v5.6: Use action_intent from arbiter for clearer logging
+                action_intent = decision.meta.get("action_intent", "unknown") if decision.meta else "unknown"
+                thresholds = decision.meta.get("thresholds", {}) if decision.meta else {}
                 
                 if has_position:
                     # ─── POSITION MODE: Show position management info ───
-                    side = pos_data.get('side', 0)
+                    side = int(pos_data.get("side", 0))
                     # Direction emoji: 📈 = LONG (bullish), 📉 = SHORT (bearish)
                     side_emoji = "📈" if side > 0 else "📉" if side < 0 else "➖"
                     side_str = "LONG" if side > 0 else "SHORT" if side < 0 else "FLAT"
-                    pnl = float(pos_data.get('unrealized_pnl', 0))
+                    pnl = float(pos_data.get("unrealized_pnl", 0))
                     # P&L emoji: 🟢 = profit, 🔴 = loss, ⚪ = breakeven
                     pnl_emoji = "🟢" if pnl > 0 else "🔴" if pnl < 0 else "⚪"
-                    lots = float(pos_data.get('lots', 0))
-                    age_h = float(pos_data.get('age_hours', 0))
+                    lots = float(pos_data.get("lots", 0))
+                    age_h = float(pos_data.get("age_hours", 0))
                     
-                    # Decision context for open position
-                    # "flat" or "hold" = keep position, no action
-                    # Same direction as position = aligned, keep position
-                    # Opposite direction = actual reversal signal
-                    dir_lower = decision.direction.lower()
-                    pos_dir = "long" if side > 0 else "short"
-                    opposite_dir = "short" if side > 0 else "long"
-                    
-                    if dir_lower in ("flat", "hold"):
-                        action_str = "HOLD ✓"  # Neutral = keep position
-                    elif dir_lower == pos_dir:
-                        action_str = "HOLD ✓ (aligned)"  # Same direction = keep position
-                    elif dir_lower == opposite_dir:
-                        action_str = f"⚠️ REVERSAL→{decision.direction.upper()}"  # Actual reversal
+                    # v5.6: Use action_intent for cleaner logging
+                    if action_intent == "hold":
+                        action_str = "HOLD ✓"
+                    elif action_intent == "exit" or action_intent == "close":
+                        action_str = "⚠️ EXIT SIGNAL"
+                    elif action_intent == "reverse":
+                        action_str = f"⚠️ REVERSAL→{decision.direction.upper()}"
+                    elif action_intent == "scale":
+                        action_str = f"SCALE {decision.direction.upper()}"
                     else:
-                        action_str = f"HOLD ({decision.direction})"  # Unknown
+                        action_str = f"{action_intent.upper()} ({decision.direction})"
                     
                     self.logger.info(
                         f"[PPO] ═══ {inst} ═══ POSITION ACTIVE"
@@ -606,7 +787,7 @@ class PPOAgentShell(
                         short_th = float(getattr(self._cfg.core_config, "direction_short_threshold", -0.35))
                         min_conf = 0.50
                         self.logger.info(
-                             f"[PPO] │  Thresholds → Dir: {long_th:+.2f}/{short_th:+.2f} │ MinConf: {min_conf:.0%}"
+                            f"[PPO] │  Thresholds → Dir: ±0.70 │ Entry: 0.70 │ MinConf: 70%"
                         )
                         if in_focus_mode:
                             self.logger.info(
@@ -1060,6 +1241,47 @@ class PPOAgentShell(
 
         return ctx
 
+    def _read_position_context_raw(self) -> Optional[Dict[str, Any]]:
+        """
+        Read raw position context from bus regardless of focus_mode_active.
+        v5.6: We need real position data to build side-aware snapshots even when
+        focus_mode isn't explicitly enabled.
+        """
+        ctx = self.smart_bus.get(
+            "position_focus_context",
+            "PPOAgentShell",
+            default=None,
+        )
+        return ctx if isinstance(ctx, dict) else None
+
+    def _build_positions_by_instrument(self, position_ctx_raw: Optional[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        """
+        Build side-aware positions dict for arbiter.
+        v5.6: Returns dict of instrument -> {has, side, lots, age_hours, unrealized_pnl}
+        """
+        result: Dict[str, Dict[str, Any]] = {}
+        if not position_ctx_raw:
+            return result
+
+        all_positions = position_ctx_raw.get("positions", {})
+        if not isinstance(all_positions, dict):
+            return result
+
+        for inst in self._cfg.instruments:
+            inst_norm = _norm_symbol(inst)
+            pos_data = all_positions.get(inst) or all_positions.get(inst_norm) or {}
+            if isinstance(pos_data, dict) and int(pos_data.get("side", 0)) != 0:
+                result[inst] = {
+                    "has": True,
+                    "side": int(pos_data.get("side", 0)),
+                    "lots": float(pos_data.get("lots", 0.0)),
+                    "age_hours": float(pos_data.get("age_hours", 0.0)),
+                    "unrealized_pnl": float(pos_data.get("unrealized_pnl", 0.0)),
+                }
+            else:
+                result[inst] = {"has": False, "side": 0, "lots": 0.0, "age_hours": 0.0, "unrealized_pnl": 0.0}
+        return result
+
     def _log_instrument_cooldowns(self) -> None:
         """
         Log per-instrument cooldown state for transparency.
@@ -1192,26 +1414,26 @@ class PPOAgentShell(
     def _apply_position_focus_to_decision(
         self,
         multi_decision: ArbiterMultiDecision,
-        position_focus: Mapping[str, Any],
+        position_ctx: Mapping[str, Any],
     ) -> ArbiterMultiDecision:
         """
         Apply position focus mode constraints to the multi-instrument decision.
 
-        PRINCIPLES (v3.2.1 - Per-Instrument Independence):
-        - Each instrument with a position:
-            * Gets position management treatment (HOLD/EXIT evaluation)
-        - Each instrument WITHOUT a position:
-            * If position_focus_blocks_other_instruments=True: block new entries
-            * If position_focus_blocks_other_instruments=False: trade independently!
+        v5.6 PRINCIPLES:
+        - Instruments WITH positions: DO NOT overwrite PPO direction/intent.
+          The arbiter already produced exit/reverse decisions using real position
+          data. We only add metadata hints for downstream modules.
+        - Instruments WITHOUT positions:
+          * If position_focus_blocks_other_instruments=True: block new entries
+          * Otherwise: trade independently
 
-        We intentionally do NOT invent a new 'exit' direction here to keep
-        compatibility with PositionManager / SmartPositionManager, which expects
-        directions in {long, short, hold/flat}.
+        This prevents destroying PPO's exit/take-profit signals which are critical
+        for profitable position management.
         """
         # Get ALL positions, not just the primary
-        all_positions = position_focus.get("positions", {})
-        primary_inst = position_focus.get("primary_instrument")
-        
+        all_positions = position_ctx.get("positions", {})
+        primary_inst = position_ctx.get("primary_instrument")
+
         # Check if we should block other instruments (configurable)
         block_other_instruments = self._cfg.position_focus_blocks_other_instruments
 
@@ -1220,57 +1442,43 @@ class PPOAgentShell(
             if decision.meta is None:
                 decision.meta = {}
 
-            # Check if THIS instrument has a position (not just the primary!)
-            inst_position = all_positions.get(inst, {})
-            position_side = int(inst_position.get("side", 0))
-            position_pnl = float(inst_position.get("unrealized_pnl", 0.0))
-            
+            # Normalize instrument for lookup
+            inst_norm = _norm_symbol(inst)
+            inst_position = all_positions.get(inst) or all_positions.get(inst_norm) or {}
+            position_side = int(inst_position.get("side", 0)) if isinstance(inst_position, dict) else 0
+            position_pnl = float(inst_position.get("unrealized_pnl", 0.0)) if isinstance(inst_position, dict) else 0.0
+
             if position_side != 0:
-                # This instrument HAS a position: position management mode
+                # ──────────────────────────────────────────────────────────────
+                # v5.6: This instrument HAS a position.
+                # DO NOT overwrite direction/gate. PPO arbiter already made the
+                # correct decision using PositionSnapshot. We only add hints.
+                # ──────────────────────────────────────────────────────────────
                 ppo_direction = (decision.direction or "hold").lower()
+                action_intent = decision.meta.get("action_intent", "unknown")
 
                 if position_side > 0:  # LONG position
                     supports = ppo_direction in ("long", "buy", "hold", "flat")
                 else:  # SHORT position
                     supports = ppo_direction in ("short", "sell", "hold", "flat")
 
-                old_reasoning = decision.reasoning
-
-                # Map PPO view into position-management hints, not new entries
-                if supports:
-                    decision.reasoning = (
-                        f"POSITION_FOCUS(HOLD): PPO supports existing position | "
-                        f"{old_reasoning}"
-                    )
-                    # Do not scale by default in focus mode
-                    decision.direction = "hold"
-                    decision.position_size = 0.0
-                    decision.gate_passed = False
-                    decision.meta["position_focus_hint"] = "hold_or_scale_carefully"
-                else:
-                    # PPO wants opposite direction → interpret as exit pressure
-                    if position_pnl > 0:
-                        decision.reasoning = (
-                            "POSITION_FOCUS(TAKE_PROFIT_CANDIDATE): "
-                            f"PPO opposes profitable position | {old_reasoning}"
-                        )
-                        decision.meta["position_focus_hint"] = "take_profit_candidate"
-                    else:
-                        decision.reasoning = (
-                            "POSITION_FOCUS(CUT_LOSS_CANDIDATE): "
-                            f"PPO opposes losing position | {old_reasoning}"
-                        )
-                        decision.meta["position_focus_hint"] = "cut_loss_candidate"
-
-                    # In both cases we do NOT flip direction here; we just
-                    # collapse to hold and let exit engine / risk modules decide.
-                    decision.direction = "hold"
-                    decision.position_size = 0.0
-                    decision.gate_passed = False
-
+                # Add metadata hints for downstream modules (SmartPositionManager)
                 decision.meta["position_focus_mode"] = True
                 decision.meta["supports_position"] = supports
                 decision.meta["position_pnl"] = position_pnl
+                decision.meta["action_intent"] = action_intent
+
+                if supports:
+                    decision.meta["position_focus_hint"] = "hold_or_scale_carefully"
+                else:
+                    # PPO wants opposite direction → exit pressure
+                    if position_pnl > 0:
+                        decision.meta["position_focus_hint"] = "take_profit_candidate"
+                    else:
+                        decision.meta["position_focus_hint"] = "cut_loss_candidate"
+
+                # DO NOT modify: decision.direction, decision.gate_passed, decision.position_size
+                # The arbiter made the correct call with real position data.
 
             else:
                 # Instruments without existing position
@@ -1289,13 +1497,12 @@ class PPOAgentShell(
                         decision.meta["position_focus_mode"] = True
                 else:
                     # Allow independent decisions for other instruments
-                    # Just add metadata noting we're in position focus mode
-                    decision.meta["position_focus_mode"] = False  # Not in focus mode for this instrument
+                    decision.meta["position_focus_mode"] = False
                     decision.meta["blocked_by_position_focus"] = False
 
         # Update global metadata
-        primary_pnl = float(position_focus.get("primary_pnl", 0.0))
-        primary_side = int(position_focus.get("primary_side", 0))
+        primary_pnl = float(position_ctx.get("primary_pnl", 0.0))
+        primary_side = int(position_ctx.get("primary_side", 0))
         multi_decision.global_meta["position_focus"] = {
             "active": len(all_positions) > 0,
             "instrument": primary_inst,
@@ -1339,6 +1546,169 @@ class PPOAgentShell(
                 )
 
         return observations
+
+    def _maybe_log_observation_diagnostics(self, observations: Dict[str, np.ndarray]) -> None:
+        """
+        Log lightweight per-instrument observation summaries and detect when
+        multiple instruments are effectively getting the same observation.
+
+        This is intentionally throttled to avoid log spam.
+        """
+        try:
+            if not bool(getattr(self._cfg, "obs_diagnostics_enabled", True)):
+                return
+            if not observations:
+                return
+
+            cycle = int(getattr(self, "_session_cycle_count", 0) or 0)
+            every_n = int(getattr(self._cfg, "obs_diagnostics_every_n_cycles", 20) or 0)
+            periodic = (cycle == 1) or (self.debug and every_n > 0 and cycle % every_n == 0)
+
+            suspicious = False
+            summaries: Dict[str, Dict[str, Any]] = {}
+
+            for inst, obs in observations.items():
+                arr = np.asarray(obs, dtype=np.float32).reshape(-1)
+                if arr.size <= 0:
+                    continue
+
+                # Group summaries (mean abs) – these should differ across instruments if market data is correct.
+                def _g_abs(group: str) -> float:
+                    start, end = FEATURE_GROUPS[group]
+                    seg = arr[start:end]
+                    return float(np.mean(np.abs(seg))) if seg.size else 0.0
+
+                zero_pct = float(np.mean(arr == 0.0))
+                m15_abs = _g_abs("m15_price")
+                htf_abs = _g_abs("htf_context")
+                acct_abs = _g_abs("account")
+                mode_abs = _g_abs("trading_mode")
+
+                prev = self._obs_diag_prev.get(inst)
+                delta_abs = None
+                if isinstance(prev, np.ndarray) and prev.shape == arr.shape:
+                    delta_abs = float(np.mean(np.abs(arr - prev)))
+                self._obs_diag_prev[inst] = arr.copy()
+
+                summaries[inst] = {
+                    "zero_pct": zero_pct,
+                    "m15_abs": m15_abs,
+                    "htf_abs": htf_abs,
+                    "acct_abs": acct_abs,
+                    "mode_abs": mode_abs,
+                    "min": float(np.min(arr)),
+                    "max": float(np.max(arr)),
+                    "delta_abs": delta_abs,
+                }
+
+                # Heuristics: missing market data usually means price groups are all zeros.
+                if m15_abs < 1e-8 or htf_abs < 1e-8:
+                    suspicious = True
+                if zero_pct > 0.95:
+                    suspicious = True
+                if delta_abs is not None and delta_abs < 1e-10 and cycle > 10:
+                    suspicious = True
+
+            # Pairwise similarity (use config order for stable logs)
+            similarity: Optional[Dict[str, Any]] = None
+            insts = [i for i in self._cfg.instruments if i in observations]
+            if len(insts) >= 2:
+                a = np.asarray(observations[insts[0]], dtype=np.float32).reshape(-1)
+                b = np.asarray(observations[insts[1]], dtype=np.float32).reshape(-1)
+                if a.size == b.size and a.size > 0:
+                    mean_abs_diff = float(np.mean(np.abs(a - b)))
+                    denom = float(np.linalg.norm(a) * np.linalg.norm(b))
+                    cos = float(np.dot(a, b) / denom) if denom > 1e-12 else 0.0
+                    similarity = {
+                        "a": insts[0],
+                        "b": insts[1],
+                        "mean_abs_diff": mean_abs_diff,
+                        "cosine": cos,
+                    }
+                    if mean_abs_diff < 1e-6 or cos > 0.99999:
+                        suspicious = True
+
+            if not (periodic or suspicious):
+                return
+
+            # Lightweight market sanity: last prices per instrument.
+            price_data = None
+            try:
+                price_data = self.smart_bus.get_readonly_ref("price_data", "PPOAgentShell", default=None)
+            except Exception:
+                try:
+                    price_data = self.smart_bus.get("price_data", "PPOAgentShell", default=None)
+                except Exception:
+                    price_data = None
+
+            def _lookup_block(mapping: Any, instrument: str) -> Optional[Dict[str, Any]]:
+                if not isinstance(mapping, dict):
+                    return None
+                direct = mapping.get(instrument)
+                if isinstance(direct, dict):
+                    return direct
+                target = _norm_symbol(instrument)
+                best: Optional[Dict[str, Any]] = None
+                best_score: Optional[int] = None
+                for k, v in mapping.items():
+                    if not (isinstance(k, str) and isinstance(v, dict)):
+                        continue
+                    k_norm = _norm_symbol(k)
+                    if not k_norm:
+                        continue
+                    if k_norm == target:
+                        return v
+                    if k_norm.startswith(target) or target.startswith(k_norm):
+                        score = abs(len(k_norm) - len(target))
+                        if best_score is None or score < best_score:
+                            best = v
+                            best_score = score
+                return best
+
+            def _last_price(instrument: str) -> Optional[float]:
+                block = _lookup_block(price_data, instrument)
+                if not isinstance(block, dict):
+                    return None
+                for k in ("last", "price", "close", "bid", "ask"):
+                    v = block.get(k)
+                    try:
+                        if v is not None:
+                            return float(v)
+                    except Exception:
+                        continue
+                return None
+
+            level_fn = self.logger.warning if suspicious else self.logger.info
+            level_fn(
+                f"[PPO][OBS] cycle={cycle} instruments={list(observations.keys())} "
+                f"suspicious={suspicious}"
+            )
+
+            for inst in self._cfg.instruments:
+                s = summaries.get(inst)
+                if not s:
+                    continue
+                last = _last_price(inst)
+                delta_str = f"{s['delta_abs']:.3e}" if s["delta_abs"] is not None else "n/a"
+                level_fn(
+                    f"[PPO][OBS] {inst}: m15={s['m15_abs']:.3f} htf={s['htf_abs']:.3f} "
+                    f"acct={s['acct_abs']:.3f} mode={s['mode_abs']:.3f} "
+                    f"zero={s['zero_pct']:.0%} Δ={delta_str} "
+                    f"min={s['min']:.2f} max={s['max']:.2f} last={last}"
+                )
+
+            if similarity:
+                level_fn(
+                    f"[PPO][OBS] similarity {similarity['a']} vs {similarity['b']}: "
+                    f"mean|Δ|={similarity['mean_abs_diff']:.3e} cos={similarity['cosine']:.6f}"
+                )
+
+        except Exception as e:  # noqa: BLE001
+            # Diagnostics must never block trading.
+            try:
+                self.logger.debug(f"[PPO][OBS] diagnostics failed: {e}")
+            except Exception:
+                pass
 
     # ─────────────────────────────────────────────────────────────
     # Result Building

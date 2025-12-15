@@ -38,7 +38,7 @@ class ThemeDetectorComponent(BaseMarketComponent):
             'window': 100,                      # legacy: not directly used, but kept for compat
             'batch_size': 128,                 # minibatch for partial_fit
             'feature_lookback': 500,           # max history for features per timeframe
-            'instruments': ['XAU_USD', 'EUR_USD'],
+            'instruments': ['XAUUSD', 'EURUSD'],
             'max_iter': 100,                   # used on initial fit
             'convergence_threshold': 0.001,    # convergence tolerance on inertia
             'clustering_quality_threshold': 0.35,  # min combined quality to be "ready"
