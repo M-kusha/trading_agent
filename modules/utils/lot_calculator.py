@@ -920,9 +920,12 @@ class UnifiedLotCalculator:
         details["base_lots"] = base_lots
 
         # 7. Signal strength scaling
+        # M15 SCALPING v5.9: Raised from 0.5x-1.0x to 0.75x-1.25x
+        # Rationale: ExitManager closes trades early with tight TP, so we need
+        # larger initial lots to capture profit before closure
         if self.config.signal_strength_scaling:
             sig = max(0.1, min(1.0, float(signal_strength)))
-            signal_multiplier = 0.5 + (sig * 0.5)  # 0.5x–1.0x
+            signal_multiplier = 0.75 + (sig * 0.50)  # 0.75x–1.25x (was 0.5x–1.0x)
             base_lots *= signal_multiplier
             details["adjustments"].append(f"signal_strength={sig:.2f}→{signal_multiplier:.2f}x")
 
@@ -959,6 +962,20 @@ class UnifiedLotCalculator:
             details["adjustments"].append(f"trading_mode={mode_name}→{mode_multiplier:.2f}x")
         details["trading_mode"] = mode_name
         details["trading_mode_multiplier"] = mode_multiplier
+
+        # 11a. M15 SCALPING BOOST v5.9
+        # ExitManager closes trades early with tight TP (typically within 1-3 M15 bars).
+        # The short trade duration means risk exposure is limited, so we apply a
+        # scalping multiplier to increase lot sizes. This compensates for:
+        # 1. Expert FLAT penalties reducing confidence
+        # 2. Risk level caps being conservative for swing trades (not scalps)
+        # 3. Signal strength scaling already applied
+        #
+        # Boost factor: 2.0x (doubling lots) - combined with other changes targets ~3x
+        M15_SCALPING_BOOST = 2.0
+        base_lots *= M15_SCALPING_BOOST
+        details["adjustments"].append(f"m15_scalping_boost→{M15_SCALPING_BOOST:.2f}x")
+        details["m15_scalping_boost"] = M15_SCALPING_BOOST
 
         # 11b. Prime hours lot boost (best market quality window)
         prime_multiplier, in_prime = self.get_prime_hours_multiplier()
