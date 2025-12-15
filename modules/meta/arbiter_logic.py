@@ -1858,8 +1858,10 @@ class ArbiterLogic:
                 # the old 6% penalty (0.20 * 0.30) still left confidence at 0.94,
                 # easily passing the 0.50 gate.
                 if combined_expert_dir == "flat":
-                    # Experts have no opinion - apply moderate penalty
-                    disagreement_penalty = 0.10 * combined_expert_conf
+                    # M15 SCALPING v5.9: Reduced from 0.10 to 0.03
+                    # Experts saying FLAT shouldn't heavily penalize PPO since
+                    # M15 scalps are short-lived and experts track H1/H4/D1 trends
+                    disagreement_penalty = 0.03 * combined_expert_conf
                 else:
                     # Experts have opposite opinion - apply stronger penalty
                     disagreement_penalty = 0.40 * combined_expert_conf

@@ -749,16 +749,19 @@ class GatingResult:
         # Risk level based scaling
         # v5.2: Only apply confidence penalty to instruments WITH positions
         # This prevents positions in one instrument from blocking new entries in another
+        # M15 SCALPING v5.9: Raised caps - 0.30→0.50 (HIGH), 0.60→0.75 (ELEVATED)
+        # Rationale: M15 scalps exit quickly via ExitManager, so tighter risk caps
+        # are overly conservative for short-duration trades
         if risk.risk_level == "HIGH":
-            result.position_size_cap = min(result.position_size_cap, 0.3)
+            result.position_size_cap = min(result.position_size_cap, 0.50)  # was 0.30
             if has_existing_position:
-                result.confidence_multiplier *= 0.6
+                result.confidence_multiplier *= 0.7  # was 0.6
             result.soft_scaling_applied = True
             result.reasons.append("RISK_LEVEL_HIGH")
         elif risk.risk_level == "ELEVATED":
-            result.position_size_cap = min(result.position_size_cap, 0.6)
+            result.position_size_cap = min(result.position_size_cap, 0.75)  # was 0.60
             if has_existing_position:
-                result.confidence_multiplier *= 0.8
+                result.confidence_multiplier *= 0.85  # was 0.8
             result.soft_scaling_applied = True
             result.reasons.append("RISK_LEVEL_ELEVATED")
 
