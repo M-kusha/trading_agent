@@ -548,16 +548,33 @@ class UnifiedLotCalculator:
         1. prop_firm_state.initial_balance
         2. Config account_balance
         """
+        configured = float(self.config.account_balance)
+        live_balance = float(self.get_current_balance() or 0.0)
+
+        # Prefer prop_firm_state but reconcile against live MT5 equity/balance if mismatched.
         try:
             if self.bus:
                 pf_state = self.bus.get("prop_firm_state", "LotCalculator", default=None)
                 if isinstance(pf_state, dict):
                     base = pf_state.get("initial_balance")
                     if isinstance(base, (int, float)) and base > 0:
-                        return float(base)
+                        base_f = float(base)
+                        if base_f > 0 and live_balance > 0:
+                            ratio = base_f / live_balance
+                            if ratio > 1.5 or ratio < 0.67:
+                                return live_balance
+                        return base_f
         except Exception:
             pass
-        return float(self.config.account_balance)
+
+        # Fallback behavior (live-friendly): if the configured account balance
+        # is clearly mismatched with the live account balance/equity, use live.
+        if configured > 0 and live_balance > 0:
+            ratio = configured / live_balance
+            if ratio > 1.5 or ratio < 0.67:
+                return live_balance
+
+        return configured
 
     def get_daily_limit_base(self) -> float:
         """
