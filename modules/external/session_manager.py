@@ -617,6 +617,33 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
                     state["daily_limit_base_equity"] = float(account_size)
         except Exception:
             pass
+
+        # LIVE ADAPTATION: If we're connected to a live MT5 account, prefer its equity/balance
+        # as the baseline when it clearly differs from the configured prop account size.
+        # This avoids false DD spikes like 90% when config is 100k but demo is 10k.
+        try:
+            live_status = self.smart_bus.get("live_adapter_status", "SessionManager", default=None)
+            live_eq = None
+            if isinstance(live_status, dict):
+                for key in ("equity", "net_equity", "account_equity", "balance", "account_balance"):
+                    val = live_status.get(key)
+                    if isinstance(val, (int, float)) and val > 0:
+                        live_eq = float(val)
+                        break
+
+            if isinstance(live_eq, (int, float)) and live_eq > 0:
+                state["current_equity"] = float(live_eq)
+
+                configured_base = float(state.get("initial_balance") or 0.0)
+                if configured_base > 0:
+                    ratio = configured_base / float(live_eq)
+                    if ratio > 1.5 or ratio < 0.67:
+                        state["initial_balance"] = float(live_eq)
+                        state["start_of_day_equity"] = float(live_eq)
+                        state["yesterday_close_equity"] = float(live_eq)
+                        state["daily_limit_base_equity"] = float(live_eq)
+        except Exception:
+            pass
         # Try to get current equity from bus
         try:
             pm = self.smart_bus.get("portfolio_metrics", "SessionManager", default=None)

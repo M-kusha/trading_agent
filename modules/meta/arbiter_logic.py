@@ -1507,23 +1507,31 @@ class ArbiterLogic:
                         f"but experts say FLAT (conf={expert_confidence:.2f}, sat={saturated}) - blocking new entry"
                     )
 
-        # v5.8 FIX: EXTREME DIRECTION_SCORE GATE
+        # v5.8 FIX: EXTREME DIRECTION_SCORE HANDLING
         # If direction_score is at maximum extremes (>0.99 or <-0.99),
-        # this may indicate model saturation. Require expert alignment.
+        # this may indicate model saturation.
+        #
+        # IMPORTANT: In this system, PPO/M15 direction is the master signal.
+        # Expert/committee context is advisory and should only modify confidence/size,
+        # not hard-block the direction.
         EXTREME_SCORE_THRESHOLD = 0.99
         if abs(direction_score) > EXTREME_SCORE_THRESHOLD and not has_existing_position:
-            # Only veto when experts have a clear directional preference (long/short).
-            # If experts are "flat" or "mixed", we don't hard-block here; those cases are handled
-            # by the flat veto / confidence shaping logic.
+            # If experts have a clear directional preference (long/short) that conflicts with PPO,
+            # apply a soft penalty instead of vetoing the entry.
             if expert_consensus in ("long", "short") and direction != expert_consensus:
-                gating_result.gate_passed = False
-                gating_result.reasons.append(
-                    f"EXTREME_SCORE_VETO(|{direction_score:.2f}|>{EXTREME_SCORE_THRESHOLD:.2f})"
+                EXTREME_SCORE_CONF_PENALTY = 0.80
+                prev_conf = confidence
+                confidence = float(np.clip(confidence * EXTREME_SCORE_CONF_PENALTY, 0.0, 1.0))
+                gating_result.soft_scaling_applied = True
+                gating_result.position_size_cap = float(
+                    min(gating_result.position_size_cap, EXTREME_SCORE_CONF_PENALTY)
                 )
-                reasoning += f" | BLOCKED: Extreme PPO score but experts prefer {expert_consensus.upper()}"
+                gating_result.reasons.append(
+                    f"EXTREME_SCORE_PENALTY(|{direction_score:.2f}|>{EXTREME_SCORE_THRESHOLD:.2f})"
+                )
                 self.logger.info(
-                    f"[EXTREME_SCORE_VETO] {instrument}: direction_score={direction_score:.2f} "
-                    f"but experts prefer {expert_consensus.upper()} - blocking"
+                    f"[EXTREME_SCORE_PENALTY] {instrument}: direction_score={direction_score:.2f} "
+                    f"conflicts with experts={expert_consensus.upper()} - scaling conf {prev_conf:.2f}->{confidence:.2f}"
                 )
 
         # Base position size from size_score
