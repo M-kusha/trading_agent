@@ -974,12 +974,14 @@ class ArbiterLogic:
         - Direct constructor argument `hysteresis_config`
         """
         cfg: Dict[str, Any] = {
-            # BALANCED MODE v5.4 - Allow both LONG and SHORT signals properly
-            # Thresholds lowered to allow more trades through while still filtering noise.
+            # M15 SCALPING v5.9 - Let positions breathe more
+            # - Lower exit threshold: Don't exit on small conviction drops
+            # - Higher reversal threshold: Need stronger conviction to reverse
+            # - More hold bars: Give trades time to develop before allowing reversal
             "entry_threshold": 0.35,       # Need moderate conviction to enter
-            "reversal_threshold": 0.40,    # Slightly above entry for reversals
-            "exit_threshold": 0.20,        # Stay in position reasonably
-            "min_hold_before_reversal": 3, # Allow reversal after a few bars
+            "reversal_threshold": 0.55,    # Raised from 0.40 - need stronger conviction to reverse
+            "exit_threshold": 0.10,        # Lowered from 0.20 - stay in position longer
+            "min_hold_before_reversal": 6, # Raised from 3 - give trades 90min (6 x M15) to develop
         }
 
         # Optional SmartInfoBus overrides

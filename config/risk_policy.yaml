@@ -254,6 +254,7 @@ smart_position:
 # EMERGENCY WATCHDOG - BACKGROUND SAFETY NET (Independent Thread)
 # Runs independently of main orchestrator loop to catch missed exits.
 # This is a LAST RESORT - native MT5 SL is always faster!
+# M15 SCALPING v5.9 - Widened thresholds
 # ═══════════════════════════════════════════════════════════════
 watchdog:
   enabled: true                      # Enable background watchdog
@@ -261,8 +262,9 @@ watchdog:
   verbose: false                     # Set true for debug logging
 
   # Per-position thresholds (should loosely align with ExitEngine)
-  hard_stop_eur: 220.0               # Mirror exit_strategies.hard_stop_loss_eur
-  emergency_stop_eur: 350.0          # ~1.5x hard stop (true failsafe)
+  # M15 SCALPING v5.9 - Widened to match new exit_strategies
+  hard_stop_eur: 300.0               # Was 220 - mirror exit_strategies.hard_stop_loss_eur
+  emergency_stop_eur: 450.0          # ~1.5x hard stop (true failsafe)
   emergency_multiplier: 1.5          # Used if emergency_stop_eur not set
 
   # Daily account protection (5% daily limit)
@@ -276,40 +278,41 @@ watchdog:
 # ═══════════════════════════════════════════════════════════════
 # EXIT STRATEGIES - SINGLE SOURCE OF TRUTH FOR EXITS
 # Used by modules/position/exit_engine.py (ExitStrategyEngine)
+# M15 SCALPING v5.9 - Widened thresholds to let positions breathe
 # ═══════════════════════════════════════════════════════════════
 exit_strategies:
   # HARD STOP – absolute per-position loss (EUR)
-  # With 0.3% risk (~€300), this kills at ~70–75% of that.
-  hard_stop_loss_eur: 220.0
+  # Widened from 220 to 300 for M15 scalping with larger lots
+  hard_stop_loss_eur: 300.0
 
   # SOFT STOP – loss + strong opposing signal
-  soft_stop_loss_eur: 140.0
-  soft_stop_min_signal: 0.35        # Need some real conviction against us
+  # Widened from 140 to 200, raised signal threshold from 0.35 to 0.50
+  soft_stop_loss_eur: 200.0
+  soft_stop_min_signal: 0.50        # Need strong conviction against us
 
   # TIME DECAY – position too old + losing / stale profit
-  # NOTE: In training/simulation, time passes fast (1 step = 15min candle)
-  # 4 hours = 16 M15 bars → gives positions time to develop
-  time_decay_hours: 4.0             # After ~4h it's considered "old"
-  time_decay_stop_eur: 60.0         # Old AND losing more than 60 => cut
+  # Increased from 4h to 6h for M15 scalping to let trades develop
+  time_decay_hours: 6.0             # After ~6h it's considered "old"
+  time_decay_stop_eur: 80.0         # Old AND losing more than 80 => cut
 
   # TRAILING PROFIT – dynamic trailing around peak (ATR-aware)
-  trailing_activation_eur: 100.0    # Start trailing after +100 EUR
-  trailing_activation_atr: 2.0      # Or ~2x ATR in EUR
-  trailing_retrace_pct: 0.30        # Allow ~30% giveback from peak
-  trailing_retrace_atr: 1.5         # Or ~1.5x ATR retrace
+  # Raised activation from 100 to 150, widened retrace from 30% to 40%
+  trailing_activation_eur: 150.0    # Start trailing after +150 EUR
+  trailing_activation_atr: 2.5      # Or ~2.5x ATR in EUR
+  trailing_retrace_pct: 0.40        # Allow ~40% giveback from peak (was 30%)
+  trailing_retrace_atr: 2.0         # Or ~2x ATR retrace (was 1.5)
   trailing_use_atr: true
-  trailing_min_peak_eur: 50.0       # Ignore tiny peaks
+  trailing_min_peak_eur: 75.0       # Ignore peaks below 75
 
   # MOMENTUM EXIT – strong reversal while profitable
-  momentum_exit_profit_eur: 120.0
-  momentum_reversal_signal: 0.65    # Strong reversal threshold
+  # Raised thresholds to require stronger reversal
+  momentum_exit_profit_eur: 150.0   # Was 120
+  momentum_reversal_signal: 0.75    # Was 0.65 - need stronger reversal
 
   # SIGNAL EXIT – agent loses conviction / flips direction
-  # NOTE: This exit is DISABLED during training (training mode bypasses signal exits)
-  # so the agent learns consequences of direction flips through reward signals.
-  # Only active in live/production where capital protection matters.
-  signal_exit_threshold: 0.05       # Below 0.05 = "no conviction", exit
-  signal_direction_weight: 0.80     # Opposite direction with ≥0.80 strength => exit
+  # Lowered threshold to allow more signal variance
+  signal_exit_threshold: 0.03       # Was 0.05 - more tolerant of weak signals
+  signal_direction_weight: 0.85     # Was 0.80 - need stronger opposite signal
 
   # Regime scaling – volatility-aware tightening/loosening
   volatile_regime_tighten: 0.7      # Tighter in volatile regime (<1.0)
@@ -323,14 +326,15 @@ exit_strategies:
   emergency_max_open_risk_eur: 2000.0    # Failsafe on total open risk
 
   # Per-instrument exit overrides (merged over globals)
+  # M15 SCALPING v5.9 - Widened to let positions breathe
   per_instrument:
     XAUUSD:
-      hard_stop_loss_eur: 220
-      trailing_activation_eur: 120
-      trailing_retrace_pct: 0.22
+      hard_stop_loss_eur: 350        # Was 220 - gold is volatile
+      trailing_activation_eur: 180   # Was 120 - let profits run more
+      trailing_retrace_pct: 0.35     # Was 0.22 - wider retrace
     EURUSD:
       trailing_use_atr: true
-      trailing_retrace_pct: 0.25
+      trailing_retrace_pct: 0.35     # Was 0.25 - wider retrace
 
 
 # ═══════════════════════════════════════════════════════════════
