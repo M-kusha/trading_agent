@@ -315,6 +315,21 @@ class PositionManager(PositionManagerBase):
 
         has_position = self._has_position_for_instrument(instrument)
 
+        # Detect external closes (broker SL/TP/manual) and apply the existing cooldown.
+        # Without this, a close that bypasses our CLOSE path can allow immediate re-entry.
+        try:
+            inst_norm_for_state = self._normalize_instrument(instrument)
+            prev_map = getattr(self, "_prev_has_position", None)
+            if not isinstance(prev_map, dict):
+                prev_map = {}
+                setattr(self, "_prev_has_position", prev_map)
+            prev_has = bool(prev_map.get(inst_norm_for_state, False))
+            if prev_has and not has_position:
+                self._record_trade_time(instrument)
+            prev_map[inst_norm_for_state] = bool(has_position)
+        except Exception:
+            pass
+
         # If instrument is flat, clear stale peaks in BOTH trackers.
         # This covers external closes (broker SL/TP) that bypass our CLOSE path.
         if not has_position:

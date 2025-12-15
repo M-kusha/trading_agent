@@ -974,9 +974,24 @@ class Executor(BaseModule):
                     "buy",
                     "sell",
                     "scale_up",
+                    "reverse",
+                    "reverse_open",
                 ):
                     inst = intent.get("instrument", "")
                     action = intent.get("action", "")
+
+                    allowed, gate_reason, gate_blob = self._arbiter_gate_allows_entry(inst)
+                    if not allowed:
+                        rejected.append(
+                            {
+                                "reason": "ppo_arbiter_gate",
+                                "gate_reason": gate_reason,
+                                "intent": intent,
+                                "ppo_decision": gate_blob,
+                            }
+                        )
+                        continue
+
                     # First check memory or risk veto
                     if _is_instrument_vetoed(inst):
                         veto_reason, veto_reasons = _get_veto_reason()
@@ -1200,6 +1215,57 @@ class Executor(BaseModule):
             return out
         except Exception:
             return None
+
+    def _arbiter_gate_allows_entry(self, instrument: str) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+        """Hard-enforce Arbiter/PPO gate for new exposure.
+
+        Returns: (allowed, reason, decision_blob)
+
+        - Prefer per-instrument decision from ppo_multi_decision.instruments.
+        - Fallback to ppo_final_decision only when instrument matches.
+        - If no matching PPO decision exists, block entry (stay flat) until PPO publishes.
+        """
+
+        try:
+            inst_norm = self._normalize_symbol(instrument)
+
+            ppo_multi = self.bus.get("ppo_multi_decision", "Executor", default=None)
+            if isinstance(ppo_multi, dict):
+                instruments_map = ppo_multi.get("instruments")
+                if isinstance(instruments_map, dict):
+                    decision: Optional[Dict[str, Any]] = None
+
+                    direct = instruments_map.get(instrument)
+                    if isinstance(direct, dict):
+                        decision = direct
+                    else:
+                        for k, v in instruments_map.items():
+                            if isinstance(v, dict) and self._normalize_symbol(str(k)) == inst_norm:
+                                decision = v
+                                break
+
+                    if isinstance(decision, dict):
+                        gate = decision.get("gate_passed")
+                        if gate is True:
+                            return True, "ppo_gate_passed_true", decision
+                        if gate is False:
+                            return False, "ppo_gate_passed_false", decision
+                        return False, "ppo_gate_missing", decision
+
+            ppo_final = self.bus.get("ppo_final_decision", "Executor", default=None)
+            if isinstance(ppo_final, dict):
+                final_inst = ppo_final.get("instrument")
+                if self._normalize_symbol(str(final_inst)) == inst_norm:
+                    gate = ppo_final.get("gate_passed")
+                    if gate is True:
+                        return True, "ppo_gate_passed_true", ppo_final
+                    if gate is False:
+                        return False, "ppo_gate_passed_false", ppo_final
+                    return False, "ppo_gate_missing", ppo_final
+
+            return False, "ppo_decision_missing", None
+        except Exception:
+            return False, "ppo_gate_error", None
 
     def _passes_filters(self, intent: Dict[str, Any]) -> bool:
         act = str(intent.get("action", "")).lower()
@@ -1970,25 +2036,38 @@ class Executor(BaseModule):
             mt5_positions = []
 
         # ══════════════════════════════════════════════════════════════════
-        # v5.7 DIAGNOSTIC: Log PPO decisions for debugging buy-only issues
+        # v5.7 DIAGNOSTIC: Log PPO decisions (debug-only, intent-scoped)
         # ══════════════════════════════════════════════════════════════════
+        # Previously this logged even when no intents were executed, which
+        # looks like "trading again" in operator logs.
         try:
-            ppo_multi = self.bus.get("ppo_multi_decision", "Executor", default=None)
-            if isinstance(ppo_multi, dict):
-                instruments_data = ppo_multi.get("instruments", {})
-                for inst, dec in instruments_data.items():
-                    if isinstance(dec, dict):
+            if bool(getattr(self.cfg, "debug_enabled", False)) and intents:
+                intent_symbols = {
+                    str(i.get("instrument", "") or i.get("symbol", "") or "").upper()
+                    for i in intents
+                    if isinstance(i, dict)
+                }
+
+                ppo_multi = self.bus.get("ppo_multi_decision", "Executor", default=None)
+                if isinstance(ppo_multi, dict):
+                    instruments_data = ppo_multi.get("instruments", {})
+                    for inst, dec in instruments_data.items():
+                        if not isinstance(dec, dict):
+                            continue
+
+                        inst_u = str(inst).upper()
+                        if intent_symbols and inst_u not in intent_symbols:
+                            continue
+
                         direction = dec.get("direction", "flat")
-                        dir_score = dec.get("direction_score", 0.0)
-                        gate_passed = dec.get("gate_passed", False)
+                        dir_score = float(dec.get("direction_score", 0.0) or 0.0)
+                        gate_passed = bool(dec.get("gate_passed", False))
                         action_intent = (dec.get("meta") or {}).get("action_intent", "unknown")
-                        
-                        # Only log actionable decisions or shorts (for debugging)
-                        if gate_passed or direction == "short" or dir_score < -0.2:
-                            self.logger.info(
-                                f"[PPO→EXEC] {inst}: direction={direction} dir_score={dir_score:.3f} "
-                                f"gate_passed={gate_passed} action_intent={action_intent}"
-                            )
+
+                        self.logger.info(
+                            f"[PPO→EXEC] {inst}: direction={direction} dir_score={dir_score:.3f} "
+                            f"gate_passed={gate_passed} action_intent={action_intent}"
+                        )
         except Exception:
             pass
 

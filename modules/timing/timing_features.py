@@ -66,9 +66,16 @@ class TimingConfig:
     max_trades_per_session: int = 10
 
     # Zone classification thresholds (ATR multipliers)
-    hot_zone_atr_max: float = 0.3      # Within 0.3 ATR of key level = hot
-    good_zone_atr_max: float = 1.0     # Within 1.0 ATR = good
-    bad_zone_atr_min: float = 2.0      # Beyond 2.0 ATR = bad
+    hot_zone_atr_max: float = 0.5      # Within 0.5 ATR of key level = hot (v5.7: was 0.3)
+    good_zone_atr_max: float = 1.5     # Within 1.5 ATR = good (v5.7: was 1.0)
+    bad_zone_atr_min: float = 2.5      # Beyond 2.5 ATR = bad (v5.7: was 2.0)
+    zone_lookback_bars: int = 50       # v5.7: Bars to look back for S/R levels (was hardcoded 20)
+    
+    # v5.9: Instrument-specific zone threshold multipliers
+    # Commodities (gold, oil) move more ATR units than forex pairs when trending
+    # Apply multiplier to zone thresholds to prevent permanent "bad" zone classification
+    zone_multiplier_commodities: float = 3.0  # XAU/XAG/USOIL: multiply zone thresholds by 3x
+    zone_multiplier_forex: float = 1.0        # FX pairs: use base thresholds
 
     # Volatility classification thresholds (normalized ATR vs avg range)
     vol_low_threshold: float = 0.5     # Normalized vol < 0.5 = low
@@ -81,11 +88,22 @@ class TimingConfig:
 
     # Session control
     allow_weekend_trading: bool = False
+    # TEST MODE: if true, do not block entries based on trading hours windows.
+    # Spacing, volatility and other safety gates still apply.
+    allow_off_hours_trading: bool = False
     session_open_cooldown_minutes: float = 5.0   # Avoid entries in first N minutes after open
     min_minutes_to_close_for_entry: float = 15.0 # Avoid entries very close to session end
 
     # Volatility gating
     extreme_volatility_blocks_entries: bool = True
+
+    # ══════════════════════════════════════════════════════════════
+    # QUALITY GATE (v5.3) - Prevents low-quality entries
+    # ══════════════════════════════════════════════════════════════
+    # If True, entries are only allowed when entry_quality exceeds threshold.
+    # This is the KEY anti-overtrade mechanism.
+    entry_quality_gate_enabled: bool = True
+    entry_quality_min_threshold: float = 0.5  # Block entries with quality < 0.5
 
     @classmethod
     def from_dict(cls, d: Optional[Dict[str, Any]]) -> "TimingConfig":
@@ -226,14 +244,17 @@ def compute_timing_features(
     # ═══════════════════════════════════════════════════════════════════
 
     # Base trading window check
-    in_trading_window = config.trading_start_hour <= hour < config.trading_end_hour
+    in_trading_window = True if config.allow_off_hours_trading else (
+        config.trading_start_hour <= hour < config.trading_end_hour
+    )
 
     # No-trade hard windows
-    for start_h, end_h in config.no_trade_windows:
-        if start_h <= hour < end_h:
-            in_trading_window = False
-            features.block_reasons.append(f"NO_TRADE_WINDOW_{start_h}_{end_h}")
-            break
+    if not config.allow_off_hours_trading:
+        for start_h, end_h in config.no_trade_windows:
+            if start_h <= hour < end_h:
+                in_trading_window = False
+                features.block_reasons.append(f"NO_TRADE_WINDOW_{start_h}_{end_h}")
+                break
 
     # Weekend
     if weekday >= 5:  # Saturday or Sunday
@@ -253,13 +274,13 @@ def compute_timing_features(
     minutes_since_open = max(0.0, float((hour - config.trading_start_hour) * 60 + minute))
 
     # Session open cooldown
-    if minutes_since_open < config.session_open_cooldown_minutes:
+    if (not config.allow_off_hours_trading) and (minutes_since_open < config.session_open_cooldown_minutes):
         features.block_reasons.append(
             f"SESSION_OPEN_COOLDOWN_{minutes_since_open:.0f}min"
         )
 
     # Close proximity
-    if features.minutes_to_close < config.min_minutes_to_close_for_entry:
+    if (not config.allow_off_hours_trading) and (features.minutes_to_close < config.min_minutes_to_close_for_entry):
         features.block_reasons.append(
             f"NEAR_SESSION_CLOSE_{features.minutes_to_close:.0f}min"
         )
@@ -304,10 +325,11 @@ def compute_timing_features(
 
     current_close = float(closes[-1])
 
-    # Key levels: recent high/low over last ~20 bars
-    if len(highs) >= 20:
-        recent_high = float(np.max(highs[-20:]))
-        recent_low = float(np.min(lows[-20:]))
+    # v5.7: Use configurable lookback for key levels (default 50 bars = ~12h on M15)
+    lookback = min(config.zone_lookback_bars, len(highs))
+    if lookback >= 10:
+        recent_high = float(np.max(highs[-lookback:]))
+        recent_low = float(np.min(lows[-lookback:]))
     else:
         recent_high = float(np.max(highs))
         recent_low = float(np.min(lows))
@@ -317,12 +339,22 @@ def compute_timing_features(
     dist_to_low = abs(current_close - recent_low) / atr_scale
     features.zone_distance_norm = float(min(dist_to_high, dist_to_low))
 
-    # Zone classification (simple 3-bucket)
-    if features.zone_distance_norm < config.hot_zone_atr_max:
+    # v5.9: Apply instrument-specific zone threshold multiplier
+    # Commodities (XAU, XAG, OIL) naturally move more ATR units when trending
+    is_commodity = instrument.upper().startswith(("XAU", "XAG", "OIL", "USD/OIL", "USOIL", "WTI", "BRENT"))
+    zone_mult = config.zone_multiplier_commodities if is_commodity else config.zone_multiplier_forex
+    
+    # Compute effective zone thresholds for this instrument
+    hot_threshold = config.hot_zone_atr_max * zone_mult
+    good_threshold = config.good_zone_atr_max * zone_mult
+    bad_threshold = config.bad_zone_atr_min * zone_mult
+
+    # Zone classification (simple 3-bucket) with instrument-adjusted thresholds
+    if features.zone_distance_norm < hot_threshold:
         features.zone_type = "hot"
-    elif features.zone_distance_norm < config.good_zone_atr_max:
+    elif features.zone_distance_norm < good_threshold:
         features.zone_type = "good"
-    elif features.zone_distance_norm > config.bad_zone_atr_min:
+    elif features.zone_distance_norm > bad_threshold:
         features.zone_type = "bad"
     else:
         # Middle ground between "good" and "bad" is treated as "good" for now
@@ -413,9 +445,9 @@ def compute_timing_features(
 
     # Session open/close penalties (soft, applied to base quality)
     session_penalty = 1.0
-    if minutes_since_open < config.session_open_cooldown_minutes:
+    if (not config.allow_off_hours_trading) and (minutes_since_open < config.session_open_cooldown_minutes):
         session_penalty *= 0.7
-    if features.minutes_to_close < config.min_minutes_to_close_for_entry:
+    if (not config.allow_off_hours_trading) and (features.minutes_to_close < config.min_minutes_to_close_for_entry):
         session_penalty *= 0.6
 
     # Compute directional base quality
@@ -467,10 +499,31 @@ def compute_timing_features(
         allowed = False
 
     # Session open/close gating (hard)
-    if minutes_since_open < config.session_open_cooldown_minutes:
-        allowed = False
-    if features.minutes_to_close < config.min_minutes_to_close_for_entry:
-        allowed = False
+    if not config.allow_off_hours_trading:
+        if minutes_since_open < config.session_open_cooldown_minutes:
+            allowed = False
+        if features.minutes_to_close < config.min_minutes_to_close_for_entry:
+            allowed = False
+
+    # ═══════════════════════════════════════════════════════════════════
+    # QUALITY GATE (v5.3) - KEY ANTI-OVERTRADE MECHANISM
+    # ═══════════════════════════════════════════════════════════════════
+    # Block entries where quality < threshold. This is the MAIN gate that
+    # prevents nonstop trading. Quality already factors in:
+    #   - Zone proximity (hot/good/bad)
+    #   - Volatility state
+    #   - Prime hours bonus
+    #   - Session timing penalties
+    #   - Micro-trend alignment
+    #   - Rejection wick signals
+    # ═══════════════════════════════════════════════════════════════════
+    if config.entry_quality_gate_enabled and allowed:
+        best_quality = max(features.entry_quality_long, features.entry_quality_short)
+        if best_quality < config.entry_quality_min_threshold:
+            allowed = False
+            features.block_reasons.append(
+                f"LOW_QUALITY_{best_quality:.2f}<{config.entry_quality_min_threshold:.2f}"
+            )
 
     features.entry_allowed = bool(allowed)
 
@@ -520,6 +573,7 @@ def timing_features_to_array(features: TimingFeatures) -> np.ndarray:
 def load_timing_config(
     timing_path: str = "config/timing_policy.yaml",
     risk_path: str = "config/risk_policy.yaml",
+    system_path: str = "config/system_config.yaml",
 ) -> TimingConfig:
     """
     Load timing configuration by merging:
@@ -589,9 +643,13 @@ def load_timing_config(
                 "micro_trend_bars",
                 "rejection_wick_ratio",
                 "allow_weekend_trading",
+                "allow_off_hours_trading",
                 "session_open_cooldown_minutes",
                 "min_minutes_to_close_for_entry",
                 "extreme_volatility_blocks_entries",
+                # v5.3: Quality gate settings
+                "entry_quality_gate_enabled",
+                "entry_quality_min_threshold",
             }
 
             for key in timing_specific_keys:
@@ -599,5 +657,29 @@ def load_timing_config(
                     merged_data[key] = timing_data[key]
         except Exception:
             pass  # Fall back to defaults/risk_policy values
+
+    # ─────────────────────────────────────────────────────────────────
+    # STEP 3: Pull test-mode flags from system_config.yaml (if present)
+    # ─────────────────────────────────────────────────────────────────
+    # Canonical source for allow_off_hours_trading currently lives under
+    # modules.SeasonalityRiskExpert.config.allow_off_hours_trading.
+    # We mirror it here so EntryTimingController can respect the same test flag.
+    sys_file = Path(system_path)
+    if sys_file.exists():
+        try:
+            with open(sys_file, "r", encoding="utf-8") as f:
+                sys_data = yaml.safe_load(f) or {}
+
+            modules_cfg = sys_data.get("modules", {}) or {}
+            # Prefer explicit EntryTimingController override if present.
+            entry_timing_cfg = (((modules_cfg.get("EntryTimingController") or {}).get("config")) or {})
+            if "allow_off_hours_trading" in entry_timing_cfg:
+                merged_data["allow_off_hours_trading"] = bool(entry_timing_cfg["allow_off_hours_trading"])
+            else:
+                seasonality_cfg = (((modules_cfg.get("SeasonalityRiskExpert") or {}).get("config")) or {})
+                if "allow_off_hours_trading" in seasonality_cfg:
+                    merged_data["allow_off_hours_trading"] = bool(seasonality_cfg["allow_off_hours_trading"])
+        except Exception:
+            pass
 
     return TimingConfig.from_dict(merged_data)

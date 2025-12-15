@@ -57,6 +57,8 @@ from modules.meta.ppo_observation_builder import (
 
 from modules.meta.arbiter_logic import StrategyInfo, TradingModeInfo, WorldModelInfo
 
+from modules.timing.timing_features import TimingConfig, load_timing_config
+
 
 def _norm_symbol(sym: str) -> str:
     """Canonical symbol normalization used across shell/arbiter."""
@@ -105,7 +107,7 @@ class PPOShellConfig:
     warmup_enabled: bool = True  # Set to False to disable warmup (not recommended)
 
     # Debug
-    debug: bool = False
+    debug: bool = True
 
     # Observation diagnostics (helps debug "same obs for all instruments" issues)
     obs_diagnostics_enabled: bool = True
@@ -190,6 +192,7 @@ class PPOAgentShell(
         self._setup_logging()
         self._setup_smart_bus()
         self._setup_core_components(model_path or self._cfg.model_path)
+        self._setup_entry_timing_policy()
         self._setup_health_tracking()
 
         # Start monitoring
@@ -270,6 +273,38 @@ class PPOAgentShell(
         self._last_observations = {}
         self._last_decisions = {}
         self._last_multi_decision = None
+
+    def _setup_entry_timing_policy(self) -> None:
+        """Load timing policy once so PPO gating matches live timing controller."""
+        self._timing_config: Optional[TimingConfig] = None
+
+        # Default matches config/timing_policy.yaml (currently 0.55)
+        self._entry_timing_direction_quality_min_threshold: float = 0.55
+
+        try:
+            module_cfg = getattr(self, "config", None) or {}
+            timing_path = module_cfg.get("timing_config_path") or "config/timing_policy.yaml"
+            self._timing_config = load_timing_config(timing_path)
+
+            # Allow explicit override (rare). Otherwise match timing_policy.yaml threshold.
+            override = module_cfg.get("entry_timing_direction_quality_min_threshold")
+            if override is not None:
+                self._entry_timing_direction_quality_min_threshold = float(override)
+            else:
+                self._entry_timing_direction_quality_min_threshold = float(
+                    getattr(self._timing_config, "entry_quality_min_threshold", 0.55)
+                )
+
+            self.logger.info(
+                f"[PPO][TIMING] Loaded timing policy: {timing_path} | "
+                f"direction_quality_min={self._entry_timing_direction_quality_min_threshold:.2f}"
+            )
+        except Exception as e:  # noqa: BLE001
+            # Fail open-ish on config load; entry_timing itself still fail-closes per instrument.
+            self.logger.warning(
+                f"[PPO][TIMING] Failed to load timing policy; using default "
+                f"direction_quality_min={self._entry_timing_direction_quality_min_threshold:.2f} ({e})"
+            )
 
     def _setup_health_tracking(self) -> None:
         """Initialize health tracking state and circuit breaker."""
@@ -512,6 +547,120 @@ class PPOAgentShell(
 
                         original_reasoning = decision.reasoning or ""
                         decision.reasoning = f"[WARMUP_BLOCKED] {original_reasoning}"
+
+            # ═══════════════════════════════════════════════════════════════════
+            # 3.7) ENTRY TIMING HARD BLOCK (existing infrastructure)
+            # ═══════════════════════════════════════════════════════════════════
+            # Uses EntryTimingController outputs from SmartInfoBus to prevent
+            # immediate re-entries / low-quality session entries.
+            # - Blocks NEW entries only (no position).
+            # - Does NOT block position management (close/reverse).
+            entry_timing_all = self.smart_bus.get(
+                "entry_timing",
+                "PPOAgentShell",
+                default={},
+            )
+            if not isinstance(entry_timing_all, dict):
+                entry_timing_all = {}
+
+            # Use the same position snapshot the logger later uses
+            all_positions_now = (position_ctx_raw or {}).get("positions", {}) if isinstance(position_ctx_raw, dict) else {}
+
+            for inst, decision in multi_decision.instruments.items():
+                try:
+                    inst_norm = _norm_symbol(inst)
+                    pos_data = all_positions_now.get(inst) or all_positions_now.get(inst_norm) or {}
+                    has_position = bool(isinstance(pos_data, dict) and int(pos_data.get("side", 0)) != 0)
+
+                    # Only gate NEW entries. Position management must remain actionable.
+                    if has_position:
+                        continue
+
+                    if decision.direction not in ("long", "short"):
+                        continue
+
+                    if not bool(getattr(decision, "gate_passed", False)):
+                        continue
+
+                    # If arbiter already labeled it as non-entry, don't touch it.
+                    action_intent = None
+                    if isinstance(getattr(decision, "meta", None), dict):
+                        action_intent = decision.meta.get("action_intent")
+                    if action_intent and not str(action_intent).startswith("open_"):
+                        continue
+
+                    inst_timing = (
+                        entry_timing_all.get(inst)
+                        or entry_timing_all.get(inst_norm)
+                        or entry_timing_all.get(str(inst).upper())
+                    )
+
+                    entry_allowed = True
+                    block_reasons: List[str] = []
+
+                    if isinstance(inst_timing, dict):
+                        entry_allowed = bool(inst_timing.get("entry_allowed", True))
+                        raw_reasons = inst_timing.get("block_reasons")
+                        if isinstance(raw_reasons, list):
+                            block_reasons = [str(r) for r in raw_reasons if r is not None]
+                        elif isinstance(raw_reasons, str) and raw_reasons:
+                            block_reasons = [raw_reasons]
+                        
+                        # ═══════════════════════════════════════════════════════════════
+                        # v5.7: DIRECTION-AWARE QUALITY GATE
+                        # ═══════════════════════════════════════════════════════════════
+                        # The base quality gate uses max(long_q, short_q), but we should
+                        # check quality for the ACTUAL direction PPO wants to trade.
+                        # This prevents: PPO wants LONG near highs (bad), but short_q=1.00
+                        # passes the gate because max(0.3, 1.0) = 1.0 > threshold.
+                        # ═══════════════════════════════════════════════════════════════
+                        # Use timing policy threshold so we can tighten in one place.
+                        DIRECTION_QUALITY_THRESHOLD = float(
+                            getattr(self, "_entry_timing_direction_quality_min_threshold", 0.55)
+                        )
+                        direction_quality = 0.5  # default neutral
+                        if decision.direction == "long":
+                            direction_quality = float(inst_timing.get("entry_quality_long", 0.5))
+                        elif decision.direction == "short":
+                            direction_quality = float(inst_timing.get("entry_quality_short", 0.5))
+                        
+                        if entry_allowed and direction_quality < DIRECTION_QUALITY_THRESHOLD:
+                            entry_allowed = False
+                            block_reasons.append(
+                                f"DIRECTION_QUALITY_{decision.direction.upper()}_{direction_quality:.2f}<{DIRECTION_QUALITY_THRESHOLD}"
+                            )
+                            self.logger.info(
+                                f"[QUALITY_GATE] {inst}: Blocked {decision.direction.upper()} entry | "
+                                f"quality={direction_quality:.2f} < {DIRECTION_QUALITY_THRESHOLD} threshold"
+                            )
+                    else:
+                        # Fail-closed for NEW entries if timing data is missing.
+                        entry_allowed = False
+                        block_reasons = ["TIMING_DATA_MISSING"]
+
+                    if entry_allowed:
+                        continue
+
+                    # Block by forcing the gate to fail (direction stays intact for observability).
+                    decision.gate_passed = False
+                    decision.position_size = 0.0
+
+                    if decision.meta is None:
+                        decision.meta = {}
+                    decision.meta["entry_timing_blocked"] = True
+                    decision.meta["entry_timing_reasons"] = block_reasons[:8]
+
+                    if hasattr(decision, "gate_reasons") and isinstance(decision.gate_reasons, list):
+                        reason_str = ",".join(block_reasons[:3]) if block_reasons else "blocked"
+                        decision.gate_reasons.append(f"ENTRY_TIMING_BLOCKED({reason_str})")
+
+                    original_reasoning = decision.reasoning or ""
+                    decision.reasoning = f"[ENTRY_TIMING_BLOCKED] {original_reasoning}".strip()
+
+                except Exception as e:  # noqa: BLE001
+                    # Timing gate must never break PPO processing.
+                    if self.debug:
+                        self.logger.debug(f"[PPO][TIMING_GATE] failed for {inst}: {e}")
 
 
             # Record FINAL decisions to match what we publish/execute

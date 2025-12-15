@@ -27,6 +27,15 @@
 # timing_features.py reads these from risk_policy.yaml at runtime.
 # ═══════════════════════════════════════════════════════════════════
 
+# TEST MODE FLAG
+# If true, EntryTiming will NOT block entries based on trade windows.
+# This can also be controlled via config/system_config.yaml under:
+#   modules.SeasonalityRiskExpert.config.allow_off_hours_trading
+# or an explicit override:
+#   modules.EntryTimingController.config.allow_off_hours_trading
+#
+# allow_off_hours_trading: true
+
 # ─────────────────────────────────────────────────────────────────
 # TRADE SPACING RULES (timing-specific, not in other configs)
 # ─────────────────────────────────────────────────────────────────
@@ -43,10 +52,29 @@ max_trades_per_session: 10          # Maximum trades per trading session
 # "hot" zones are near support/resistance - high reversal probability.
 # "good" zones are normal trading conditions.
 # "bad" zones are extended from key levels - poor entry quality.
+#
+# v5.7: Made thresholds tighter to reduce false "hot" zones.
+# - hot: Very close to S/R (within 0.5 ATR) - rare, high quality
+# - good: Normal distance (0.5-1.5 ATR) - standard entries
+# - bad: Extended from levels (>2.5 ATR) - poor entries
 
-hot_zone_atr_max: 0.3      # Within 0.3 ATR of key level = "hot"
-good_zone_atr_max: 1.0     # Within 1.0 ATR = "good"
-bad_zone_atr_min: 2.0      # Beyond 2.0 ATR = "bad"
+hot_zone_atr_max: 0.5      # Within 0.5 ATR of key level = "hot" (was 0.3)
+good_zone_atr_max: 1.5     # Within 1.5 ATR = "good" (was 1.0)
+bad_zone_atr_min: 2.5      # Beyond 2.5 ATR = "bad" (was 2.0)
+
+# Number of bars to look back for key high/low levels
+# Larger = more meaningful S/R, smaller = more reactive
+zone_lookback_bars: 50     # v5.7: Increased from default 20
+
+# ─────────────────────────────────────────────────────────────────
+# v5.9: INSTRUMENT-SPECIFIC ZONE MULTIPLIERS
+# ─────────────────────────────────────────────────────────────────
+# Commodities (gold, oil, silver) naturally move more ATR units when trending.
+# Without adjustment, they would always classify as "bad" zone.
+# Multipliers scale the zone thresholds for different asset classes.
+
+zone_multiplier_commodities: 3.0  # XAU/XAG/OIL: 3x zone thresholds
+zone_multiplier_forex: 1.0        # FX pairs: standard thresholds
 
 # ─────────────────────────────────────────────────────────────────
 # VOLATILITY CLASSIFICATION
@@ -65,6 +93,25 @@ vol_extreme_threshold: 2.5 # Normalized vol > 2.5 = "extreme" (blocked)
 
 micro_trend_bars: 5        # Number of bars for micro-trend calculation
 rejection_wick_ratio: 2.0  # Wick > 2x body = rejection candle detected
+
+# ─────────────────────────────────────────────────────────────────
+# ENTRY QUALITY GATE (v5.3) - KEY ANTI-OVERTRADE MECHANISM
+# ─────────────────────────────────────────────────────────────────
+# This is the PRIMARY gate to prevent nonstop trading.
+# Entry quality is computed from zone proximity, volatility state,
+# prime hours, micro-trend alignment, and rejection signals.
+#
+# If entry_quality_gate_enabled=true, new entries are BLOCKED when:
+#   max(entry_quality_long, entry_quality_short) < entry_quality_min_threshold
+#
+# Recommended thresholds:
+#   0.40 = Loose (allows most entries, light filtering)
+#   0.50 = Moderate (blocks poor-quality entries) [DEFAULT]
+#   0.60 = Strict (only allows decent setups)
+#   0.70 = Very strict (only high-quality entries)
+
+entry_quality_gate_enabled: true      # Enable quality-based entry blocking
+entry_quality_min_threshold: 0.70     # Block entries with quality < this value
 
 # ─────────────────────────────────────────────────────────────────
 # INSTRUMENT-SPECIFIC OVERRIDES (optional)

@@ -165,6 +165,31 @@ class EntryTimingController(BaseModule):
 
                 if features.entry_allowed:
                     any_allowed = True
+                
+                # ═══════════════════════════════════════════════════════════════
+                # v5.7: Enhanced logging for quality gate debugging
+                # Shows direction-specific quality to help debug gating decisions
+                # ═══════════════════════════════════════════════════════════════
+                quality_long = features.entry_quality_long
+                quality_short = features.entry_quality_short
+                best_quality = max(quality_long, quality_short)
+                allowed_str = "✓ ALLOWED" if features.entry_allowed else "✗ BLOCKED"
+                reasons_str = ", ".join(features.block_reasons[:3]) if features.block_reasons else "-"
+                
+                # v5.7: Show zone distance for debugging
+                zone_dist_str = f"dist={features.zone_distance_norm:.2f}ATR"
+                
+                logger.info(
+                    "[TIMING] %s │ %s │ Quality: L=%.2f S=%.2f │ Zone: %s (%s) │ Vol: %s │ Reasons: %s",
+                    instrument,
+                    allowed_str,
+                    quality_long,
+                    quality_short,
+                    features.zone_type,
+                    zone_dist_str,
+                    features.vol_state,
+                    reasons_str,
+                )
 
             except Exception as e:
                 logger.warning(
@@ -178,16 +203,21 @@ class EntryTimingController(BaseModule):
                 results[instrument] = features.to_dict()
                 timing_arrays[instrument] = timing_features_to_array(features).tolist()
 
-        # Optional: small debug summary
+        # Summary log
         try:
             allowed_count = sum(
                 1 for inst in self.instruments
                 if results.get(inst, {}).get("entry_allowed", False)
             )
-            logger.debug(
-                "[EntryTimingController] cycle complete: %d/%d instruments entry_allowed=True",
+            logger.info(
+                "[TIMING] ══════════════════════════════════════════════════════"
+            )
+            logger.info(
+                "[TIMING] SUMMARY: %d/%d instruments entry_allowed=True │ Quality gate: %s (min=%.2f)",
                 allowed_count,
                 len(self.instruments),
+                "ON" if self.timing_config.entry_quality_gate_enabled else "OFF",
+                self.timing_config.entry_quality_min_threshold,
             )
         except Exception:
             # Logging errors should never break the module
@@ -290,9 +320,42 @@ class EntryTimingController(BaseModule):
         if not isinstance(instrument_position, dict):
             instrument_position = {}
 
+        # v5.3: Fall back to position_focus_context for position timing data
+        # This is crucial for live mode where position_state_summary isn't published
+        minutes_since_entry = instrument_position.get("minutes_since_entry", None)
+        side = instrument_position.get("side", 0)
+        
+        if minutes_since_entry is None:
+            # Try to derive from position_focus_context
+            try:
+                pos_focus = self.smart_bus.get("position_focus_context", "EntryTimingController", default={})
+                if isinstance(pos_focus, dict):
+                    pos_all = pos_focus.get("positions", {})
+                    if isinstance(pos_all, dict):
+                        inst_pos = pos_all.get(instrument) or pos_all.get(instrument.upper()) or {}
+                        if isinstance(inst_pos, dict) and int(inst_pos.get("side", 0)) != 0:
+                            # Position exists - use age_hours to derive minutes_since_entry
+                            age_hours = float(inst_pos.get("age_hours", 0.0))
+                            minutes_since_entry = age_hours * 60.0
+                            side = int(inst_pos.get("side", 0))
+                            logger.debug(
+                                "[TIMING] %s: derived position state from focus_context: side=%d, age_hours=%.2f",
+                                instrument, side, age_hours,
+                            )
+                        else:
+                            # No position - but check if we JUST closed (need spacing)
+                            # If position_focus doesn't have it, use large default
+                            minutes_since_entry = 999.0
+            except Exception as e:
+                logger.debug("[TIMING] Failed to read position_focus_context: %s", e)
+                minutes_since_entry = 999.0
+        
+        if minutes_since_entry is None:
+            minutes_since_entry = 999.0
+
         position_state: Dict[str, Any] = {
-            "side": instrument_position.get("side", 0),
-            "minutes_since_entry": instrument_position.get("minutes_since_entry", 999.0),
+            "side": side,
+            "minutes_since_entry": minutes_since_entry,
             "minutes_since_loss": instrument_position.get("minutes_since_loss", 999.0),
             "trades_this_session": instrument_position.get("trades_this_session", 0),
             "had_recent_loss": instrument_position.get("had_recent_loss", False),

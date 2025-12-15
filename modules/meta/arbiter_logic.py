@@ -1476,6 +1476,56 @@ class ArbiterLogic:
                 f"({confidence:.2f} < {MIN_TRADE_CONFIDENCE})"
             )
 
+        # ═══════════════════════════════════════════════════════════════════
+        # v5.8 FIX: EXPERT DISAGREEMENT GATE for NEW entries
+        # ═══════════════════════════════════════════════════════════════════
+        # When PPO wants to trade but experts say FLAT with any confidence,
+        # BLOCK the entry. This prevents a degenerate model that always
+        # outputs direction_score=1.00 from trading non-stop.
+        #
+        # KEY INSIGHT from logs:
+        # - PPO outputs direction_score=1.00 for every observation
+        # - Experts output consensus=flat with confidence ~0.30
+        # - Old logic only reduced confidence by ~6%, still passing gate
+        #
+        # This gate requires expert directional agreement for new entries.
+        EXPERT_AGREEMENT_REQUIRED = True
+        if EXPERT_AGREEMENT_REQUIRED and not has_existing_position:
+            if direction != "flat" and expert_consensus == "flat":
+                # Smarter veto: only hard-block when experts are explicitly FLAT with enough confidence,
+                # or when PPO appears saturated (extreme direction_score) and experts are non-directional.
+                FLAT_VETO_MIN_CONF = 0.60
+                saturated = abs(direction_score) > 0.99
+                if expert_confidence >= FLAT_VETO_MIN_CONF or saturated:
+                    gating_result.gate_passed = False
+                    gating_result.reasons.append(
+                        f"EXPERT_FLAT_VETO(expert_conf={expert_confidence:.2f},sat={int(saturated)})"
+                    )
+                    reasoning += f" | BLOCKED: Experts say FLAT, PPO wants {direction.upper()}"
+                    self.logger.info(
+                        f"[EXPERT_FLAT_VETO] {instrument}: PPO wants {direction.upper()} "
+                        f"but experts say FLAT (conf={expert_confidence:.2f}, sat={saturated}) - blocking new entry"
+                    )
+
+        # v5.8 FIX: EXTREME DIRECTION_SCORE GATE
+        # If direction_score is at maximum extremes (>0.99 or <-0.99),
+        # this may indicate model saturation. Require expert alignment.
+        EXTREME_SCORE_THRESHOLD = 0.99
+        if abs(direction_score) > EXTREME_SCORE_THRESHOLD and not has_existing_position:
+            # Only veto when experts have a clear directional preference (long/short).
+            # If experts are "flat" or "mixed", we don't hard-block here; those cases are handled
+            # by the flat veto / confidence shaping logic.
+            if expert_consensus in ("long", "short") and direction != expert_consensus:
+                gating_result.gate_passed = False
+                gating_result.reasons.append(
+                    f"EXTREME_SCORE_VETO(|{direction_score:.2f}|>{EXTREME_SCORE_THRESHOLD:.2f})"
+                )
+                reasoning += f" | BLOCKED: Extreme PPO score but experts prefer {expert_consensus.upper()}"
+                self.logger.info(
+                    f"[EXTREME_SCORE_VETO] {instrument}: direction_score={direction_score:.2f} "
+                    f"but experts prefer {expert_consensus.upper()} - blocking"
+                )
+
         # Base position size from size_score
         raw_size = (size_score + 1.0) / 2.0  # [-1,1] -> [0,1]
         position_size = float(
@@ -1792,16 +1842,19 @@ class ArbiterLogic:
                     f"(experts aligned, +{agreement_boost:.0%} conf)"
                 )
             else:
-                # Disagreement: only penalize if experts/committee have a NON-FLAT directional preference.
-                # "flat" means "no strong opinion" in most expert systems.
-                # v5.7.1 FIX (buy-only bias):
-                # Use multiplicative penalty instead of subtractive penalty.
-                # Subtractive penalties can wipe out moderate SHORT signals when
-                # experts are biased LONG, effectively preventing shorts.
+                # Disagreement: apply stronger penalty (v5.8)
+                # Old logic: 20% * expert_conf penalty (too weak for saturated models)
+                # New logic: 40% penalty for directional disagreement, 10% for flat
+                # 
+                # KEY INSIGHT: When PPO always outputs 1.00 and experts say FLAT,
+                # the old 6% penalty (0.20 * 0.30) still left confidence at 0.94,
+                # easily passing the 0.50 gate.
                 if combined_expert_dir == "flat":
-                    disagreement_penalty = 0.02 * combined_expert_conf
+                    # Experts have no opinion - apply moderate penalty
+                    disagreement_penalty = 0.10 * combined_expert_conf
                 else:
-                    disagreement_penalty = 0.20 * combined_expert_conf
+                    # Experts have opposite opinion - apply stronger penalty
+                    disagreement_penalty = 0.40 * combined_expert_conf
                 penalty_factor = max(0.0, 1.0 - disagreement_penalty)
                 confidence = max(0.1, ppo_conf * penalty_factor)
                 reasoning = (
@@ -1847,6 +1900,7 @@ class ArbiterLogic:
         """Compute consensus direction and confidence from expert signals."""
         long_score = 0.0
         short_score = 0.0
+        flat_score = 0.0
         total_weight = 0.0
 
         for expert_name, sig in experts.items():
@@ -1866,23 +1920,38 @@ class ArbiterLogic:
                 long_score += conf
             elif d in ("short", "sell", "bearish"):
                 short_score += conf
+            elif d in ("flat", "hold", "neutral", "none"):
+                flat_score += conf
 
             total_weight += max(conf, 0.0)
 
         if total_weight < 1e-6:
             return "flat", 0.0
 
-        if long_score > short_score + 0.2:
+        # Determine dominance. If experts are split (no clear winner), return "mixed"
+        # rather than "flat" to avoid hard vetoes on mere disagreement.
+        DOMINANCE_MARGIN = 0.20
+        FLAT_DOMINANCE_MARGIN = 0.10
+
+        if flat_score > max(long_score, short_score) + FLAT_DOMINANCE_MARGIN:
+            direction = "flat"
+            consensus_conf = flat_score / total_weight
+            return direction, float(np.clip(consensus_conf, 0.0, 1.0))
+
+        if long_score > short_score + DOMINANCE_MARGIN and long_score > flat_score + FLAT_DOMINANCE_MARGIN:
             direction = "long"
             consensus_conf = long_score / total_weight
-        elif short_score > long_score + 0.2:
+            return direction, float(np.clip(consensus_conf, 0.0, 1.0))
+
+        if short_score > long_score + DOMINANCE_MARGIN and short_score > flat_score + FLAT_DOMINANCE_MARGIN:
             direction = "short"
             consensus_conf = short_score / total_weight
-        else:
-            direction = "flat"
-            consensus_conf = 0.3
+            return direction, float(np.clip(consensus_conf, 0.0, 1.0))
 
-        return direction, float(np.clip(consensus_conf, 0.0, 1.0))
+        # Mixed: no clear directional consensus.
+        directional_total = max(long_score + short_score, 1e-6)
+        split_score = 1.0 - (abs(long_score - short_score) / directional_total)
+        return "mixed", float(np.clip(split_score, 0.0, 1.0))
 
     def _extract_instrument_committee(
         self,
