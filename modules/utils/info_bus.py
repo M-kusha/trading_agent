@@ -3349,7 +3349,7 @@ class InfoBusUpdater:
                 )
 
     @staticmethod
-    def add_alert(info_bus: Dict[str, Any], message: str, *, severity: str = "info", module: str = "InfoBusUpdater", code: Optional[str] = None) -> None:
+    def add_alert(info_bus: InfoBus, message: str, *, severity: str = "info", module: str = "InfoBusUpdater", code: Optional[str] = None) -> None:
         """Append an alert to the legacy InfoBus and mirror to SmartInfoBus if available."""
         alert = {
             'timestamp': now_utc(),
@@ -3383,7 +3383,7 @@ class InfoBusUpdater:
                 pass
 
     @staticmethod
-    def add_module_data(info_bus: Dict[str, Any], module_name: str, data: Dict[str, Any]) -> None:
+    def add_module_data(info_bus: InfoBus, module_name: str, data: Dict[str, Any]) -> None:
         """Record module-scoped data in legacy shape and mirror to SmartInfoBus."""
         md = info_bus.get('module_data')
         if not isinstance(md, dict):

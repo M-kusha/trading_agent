@@ -874,6 +874,11 @@ class ModuleOrchestrator:
             'consecutive_failures': 3,
             'health_score_threshold': 0.3
         }
+
+        if not getattr(self.config, 'emergency_mode_enabled', True):
+            self.logger.info("[OK] Emergency monitoring disabled by config")
+            return
+
         self.logger.info("[ALERT] Emergency monitoring systems initialized")
 
     def _restore_system_state(self) -> None:
@@ -3239,6 +3244,28 @@ class ModuleOrchestrator:
 
     def _apply_execution_configuration(self, execution_config: Dict[str, Any]):
         try:
+            # Emergency mode switches (optional)
+            # Accept both legacy flat keys and a nested `execution.emergency` object.
+            if 'emergency_mode_enabled' in execution_config:
+                try:
+                    self.config.emergency_mode_enabled = bool(execution_config.get('emergency_mode_enabled'))
+                except Exception:
+                    pass
+
+            emergency_cfg = execution_config.get('emergency') if isinstance(execution_config, dict) else None
+            if isinstance(emergency_cfg, dict):
+                if 'enabled' in emergency_cfg:
+                    try:
+                        self.config.emergency_mode_enabled = bool(emergency_cfg.get('enabled'))
+                    except Exception:
+                        pass
+                # Optional trigger overrides
+                if 'memory_critical' in emergency_cfg and hasattr(self, 'emergency_triggers'):
+                    try:
+                        self.emergency_triggers['memory_critical'] = float(emergency_cfg.get('memory_critical'))
+                    except Exception:
+                        pass
+
             if 'timeouts' in execution_config:
                 timeouts = execution_config['timeouts'] or {}
                 if 'default_ms' in timeouts:

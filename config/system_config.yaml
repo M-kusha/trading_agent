@@ -2,6 +2,11 @@ execution:
   max_workers: 4
   retry_attempts: 5
 
+  # Emergency mode (orchestrator)
+  # If disabled, the orchestrator will not enter emergency mode (no auto-disabling modules)
+  emergency:
+    enabled: false
+
   # Provider stability
   provider_switch_delay_ms: 1000
   provider_stability_threshold: 5

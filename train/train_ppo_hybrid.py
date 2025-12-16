@@ -33,6 +33,8 @@ import argparse
 from datetime import datetime
 from typing import Dict, Any, Optional, Protocol
 from pathlib import Path
+from threading import Thread
+from typing import Callable, cast
 
 import numpy as np
 import pandas as pd
@@ -126,9 +128,12 @@ try:
 except ImportError:
     DASHBOARD_AVAILABLE = False
     webbrowser = None
-    def start_dashboard_server(*args, **kwargs):
+    def start_dashboard_server(*args, **kwargs) -> Optional[Thread]:
         print("[WARN] Dashboard not available - traindashboard package not found")
         return None
+
+# Pylance: real start_dashboard_server returns Thread, fallback returns None
+start_dashboard_server = cast(Callable[..., Optional[Thread]], start_dashboard_server)
 
 # ───────────────────────────────────────────────────────────────────
 # Helpers
