@@ -27,8 +27,8 @@ rl:
   eval_freq: 0
 
 mt5:
-  account: 5043545649
-  password: "P*M1OhNy"
+  account: 100093080
+  password: "MzK*1qOi"
   server: "MetaQuotes-Demo"
 
 risk_overrides:

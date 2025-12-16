@@ -339,16 +339,33 @@ class EmergencyPositionWatchdog:
             try:
                 account_info = mt5.account_info()
                 if account_info:
-                    # Use starting balance from config
-                    starting_balance = self.config.starting_balance_eur
-                    
                     current_equity = float(account_info.equity)
+                    current_balance = float(account_info.balance)
+                    
+                    # LIVE ADAPTATION: Use actual MT5 balance as baseline when
+                    # config doesn't match (e.g., 100k config vs 10k demo account).
+                    # This prevents false "90% drawdown" alerts on demo accounts.
+                    configured_start = self.config.starting_balance_eur
+                    if configured_start > 0 and current_balance > 0:
+                        ratio = configured_start / current_balance
+                        if ratio > 1.5 or ratio < 0.67:
+                            # Mismatch detected - use live balance as baseline
+                            starting_balance = current_balance
+                            # Also scale max_loss_limit proportionally
+                            max_loss_limit = self.config.max_loss_limit_eur * (current_balance / configured_start)
+                        else:
+                            starting_balance = configured_start
+                            max_loss_limit = self.config.max_loss_limit_eur
+                    else:
+                        starting_balance = configured_start if configured_start > 0 else current_balance
+                        max_loss_limit = self.config.max_loss_limit_eur
+                    
                     total_drawdown = starting_balance - current_equity
                     
-                    if total_drawdown >= self.config.max_loss_limit_eur:
+                    if total_drawdown >= max_loss_limit:
                         self.logger.critical(
                             f"[Watchdog] 🚨🚨🚨 MAX DRAWDOWN BREACH! "
-                            f"Drawdown: €{total_drawdown:.2f} >= limit €{self.config.max_loss_limit_eur:.2f} "
+                            f"Drawdown: €{total_drawdown:.2f} >= limit €{max_loss_limit:.2f} "
                             f"(Starting: €{starting_balance:.2f}, Current Equity: €{current_equity:.2f})"
                         )
                         # CLOSE ALL POSITIONS IMMEDIATELY
