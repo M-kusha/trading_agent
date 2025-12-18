@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -140,7 +140,7 @@
     .status-bad { color: #fb7185; }
     .status-neutral { color: #93a4bf; }
 
-    /* no â€œballsâ€: status is a clean corner tag */
+    /* no "balls": status is a clean corner tag */
     .status-tag{
       display: inline-flex;
       align-items: center;
@@ -320,7 +320,7 @@
       gap: 2px;
     }
 
-    /* Learning cards (no bars, no â€œhigher barâ€ text) */
+    /* Learning cards (no bars, no "higher bar" text) */
     .diag-grid{
       display:grid;
       grid-template-columns: repeat(1, minmax(0, 1fr));
@@ -349,12 +349,25 @@
       text-overflow: ellipsis;
     }
 
-    /* Side panels for Learning tab - equal height */
+    /* Side panels for Overview/Learning tab - equal height */
     .side-panel {
       min-height: 200px;
     }
     .side-panel-runtime {
       min-height: 280px;
+    }
+
+    /* Small stat cards (Episodes, FPS, Trades, Updates) - uniform height */
+    .stat-card {
+      height: 80px;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+
+    /* Chart section cards - uniform height */
+    .chart-card {
+      min-height: 260px;
     }
 
     /* Exit Reasons: clean list rows */
@@ -414,21 +427,21 @@
   <script type="text/babel">
     const { useState, useEffect } = React;
 
-    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ─────────────────────────────────────────────────────────────────────────────
     // UTIL
-    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ─────────────────────────────────────────────────────────────────────────────
     const fmt = {
-      num: (x, digits = 2) => (x == null || isNaN(x)) ? "â€”" : Number(x).toFixed(digits),
-      pct: (x, digits = 1) => (x == null || isNaN(x)) ? "â€”%" : Number(x).toFixed(digits) + "%",
-      int: (x) => (x == null || isNaN(x)) ? "â€”" : Math.round(Number(x)).toLocaleString(),
+      num: (x, digits = 2) => (x == null || isNaN(x)) ? "—" : Number(x).toFixed(digits),
+      pct: (x, digits = 1) => (x == null || isNaN(x)) ? "—%" : Number(x).toFixed(digits) + "%",
+      int: (x) => (x == null || isNaN(x)) ? "—" : Math.round(Number(x)).toLocaleString(),
       currency: (x, digits = 0) => {
-        if (x == null || isNaN(x)) return "â‚¬â€”";
+        if (x == null || isNaN(x)) return "—";
         const v = Number(x);
         const sign = v >= 0 ? "+" : "";
-        return sign + "â‚¬" + v.toFixed(digits).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+        return sign + "€" + v.toFixed(digits).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
       },
       time: (seconds) => {
-        if (seconds == null || isNaN(seconds) || seconds < 0) return "â€”";
+        if (seconds == null || isNaN(seconds) || seconds < 0) return "—";
         const s0 = Math.floor(Number(seconds));
         const h = Math.floor(s0 / 3600);
         const m = Math.floor((s0 % 3600) / 60);
@@ -438,7 +451,7 @@
         return `${s}s`;
       },
       scientific: (x, digits = 2) => {
-        if (x == null || isNaN(x)) return "â€”";
+        if (x == null || isNaN(x)) return "—";
         const v = Number(x);
         if (Math.abs(v) < 0.0001 || Math.abs(v) > 10000) return v.toExponential(digits);
         return v.toFixed(digits);
@@ -473,7 +486,7 @@
     }
 
     function StatusTag({ status }) {
-      const text = (status || "â€”").toUpperCase();
+      const text = (status || "—").toUpperCase();
       return <span className={tagClass(status)}>{text}</span>;
     }
 
@@ -671,7 +684,7 @@
             <div>
               <div className="text-xs uppercase tracking-[0.16em] text-slate-500 font-black">Exit Distribution</div>
               <div className="text-xl font-black text-white mt-2">Why Trades End</div>
-              <div className="text-sm text-slate-500 mt-2">Clean list + proportional visual (no ugly badges).</div>
+              
             </div>
             <div className="text-right">
               <div className="text-xs text-slate-600">Total</div>
@@ -712,7 +725,7 @@
                   </div>
 
                   <div className="mono text-right text-sm font-black text-slate-200">
-                    Ã—{fmt.int(c)}
+                    {fmt.int(c)}
                   </div>
                 </div>
               );
@@ -722,18 +735,11 @@
       );
     }
 
-    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ─────────────────────────────────────────────────────────────────────────────
     // TABS
-    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ─────────────────────────────────────────────────────────────────────────────
     function OverviewTab({ data }) {
       const { progress, learning, trading, quality, exit_stats } = data;
-
-      const snapshots = [
-        { label: "Win Rate", value: fmt.pct(trading?.mean_win_rate, 1), status: trading?.mean_win_rate_status },
-        { label: "Max DD", value: fmt.pct(trading?.max_drawdown, 2), status: trading?.max_drawdown_status },
-        { label: "Profit Factor", value: fmt.num(quality?.mean_profit_factor, 2), status: quality?.mean_profit_factor_status },
-        { label: "Entry Quality", value: fmt.pct((quality?.mean_entry_quality || 0) * 100, 1), status: quality?.mean_entry_quality_status },
-      ];
 
       return (
         <div className="space-y-6 animate-fade-in">
@@ -741,58 +747,94 @@
           <section className="glass rounded-3xl p-6 md:p-7">
             <SectionHeader
               title="Training Command Center"
-              subtitle={`Episode ${fmt.int(progress?.total_episodes)} â€¢ Step ${fmt.int(progress?.timesteps)} â€¢ Live telemetry`}
-              icon="ðŸš€"
+              subtitle={`Episode ${fmt.int(progress?.total_episodes)} • Step ${fmt.int(progress?.timesteps)} • Live telemetry`}
+              icon="🚀"
             />
 
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+              {/* Main Progress Card */}
               <div className="lg:col-span-8 glass-card rounded-3xl p-6">
-                <div className="flex items-center justify-between gap-4">
-                  <div>
-                    <div className="text-xs uppercase tracking-[0.16em] text-slate-500 font-black">Progress</div>
-                    <div className="text-2xl md:text-3xl font-black text-white mt-2">
-                      {fmt.pct(progress?.progress_pct, 1)}
+                {/* Progress Header */}
+                <div className="flex items-start justify-between gap-6">
+                  <div className="flex-1">
+                    <div className="flex items-baseline gap-3">
+                      <div className="text-4xl md:text-5xl font-black bg-gradient-to-r from-indigo-400 via-purple-400 to-pink-400 bg-clip-text text-transparent">
+                        {fmt.pct(progress?.progress_pct, 1)}
+                      </div>
+                      <div className="text-sm text-slate-500 font-medium">complete</div>
                     </div>
-                    <div className="text-sm text-slate-500 mt-2">
+                    <div className="text-sm text-slate-400 mt-2">
                       {fmt.int(progress?.timesteps)} / {fmt.int(progress?.total_timesteps)} timesteps
                     </div>
                   </div>
-                  <div className="text-right">
-                    <div className="text-xs uppercase tracking-[0.16em] text-slate-500 font-black">ETA</div>
-                    <div className="mono text-xl font-black text-slate-200 mt-2">{fmt.time(progress?.eta_seconds)}</div>
-                    <div className="text-xs text-slate-600 mt-2">Estimated remaining time</div>
+                  <div className="text-right glass-card rounded-2xl px-5 py-3">
+                    <div className="text-[10px] uppercase tracking-[0.18em] text-slate-500 font-bold">ETA</div>
+                    <div className="mono text-2xl font-black text-white mt-1">{fmt.time(progress?.eta_seconds)}</div>
                   </div>
                 </div>
 
-                <div className="mt-6">
+                {/* Progress Bar */}
+                <div className="mt-5">
                   <ProgressBar
                     value={progress?.timesteps || 0}
                     max={progress?.total_timesteps || 1}
-                    label={`${fmt.int(progress?.timesteps)} / ${fmt.int(progress?.total_timesteps)}`}
+                    showPct={false}
                   />
                 </div>
 
-                <div className="mt-6 grid grid-cols-2 md:grid-cols-4 gap-4">
-                  <div className="glass-card rounded-2xl p-4">
-                    <div className="text-xs uppercase tracking-[0.16em] text-slate-500 font-black">Episodes</div>
-                    <div className="mono text-lg font-black text-slate-200 mt-2">{fmt.int(progress?.total_episodes)}</div>
+                {/* Runtime Stats Row */}
+                <div className="mt-5 flex items-center justify-between px-2">
+                  <div className="flex items-center gap-2">
+                    <div className="w-2 h-2 rounded-full bg-indigo-500"></div>
+                    <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold">Episodes</span>
+                    <span className="mono text-sm font-bold text-white">{fmt.int(progress?.total_episodes)}</span>
                   </div>
-                  <div className="glass-card rounded-2xl p-4">
-                    <div className="text-xs uppercase tracking-[0.16em] text-slate-500 font-black">FPS</div>
-                    <div className="mono text-lg font-black text-slate-200 mt-2">{fmt.int(learning?.fps)}</div>
+                  <div className="flex items-center gap-2">
+                    <div className="w-2 h-2 rounded-full bg-emerald-500"></div>
+                    <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold">FPS</span>
+                    <span className="mono text-sm font-bold text-white">{fmt.int(learning?.fps)}</span>
                   </div>
-                  <div className="glass-card rounded-2xl p-4">
-                    <div className="text-xs uppercase tracking-[0.16em] text-slate-500 font-black">Trades</div>
-                    <div className="mono text-lg font-black text-slate-200 mt-2">{fmt.int(trading?.total_trades)}</div>
+                  <div className="flex items-center gap-2">
+                    <div className="w-2 h-2 rounded-full bg-amber-500"></div>
+                    <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold">Trades</span>
+                    <span className="mono text-sm font-bold text-white">{fmt.int(trading?.total_trades)}</span>
                   </div>
-                  <div className="glass-card rounded-2xl p-4">
-                    <div className="text-xs uppercase tracking-[0.16em] text-slate-500 font-black">Updates</div>
-                    <div className="mono text-lg font-black text-slate-200 mt-2">{fmt.int(learning?.n_updates)}</div>
+                  <div className="flex items-center gap-2">
+                    <div className="w-2 h-2 rounded-full bg-pink-500"></div>
+                    <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold">Updates</span>
+                    <span className="mono text-sm font-bold text-white">{fmt.int(learning?.n_updates)}</span>
                   </div>
+                </div>
+
+                {/* Divider */}
+                <div className="my-5 h-px bg-gradient-to-r from-transparent via-white/10 to-transparent"></div>
+
+                {/* Key Metrics Grid */}
+                <div className="grid grid-cols-3 gap-3">
+                  {[
+                    { label: "Win Rate", value: fmt.pct(trading?.mean_win_rate, 1), status: trading?.mean_win_rate_status },
+                    { label: "Max DD", value: fmt.pct(trading?.max_drawdown, 2), status: trading?.max_drawdown_status },
+                    { label: "Profit Factor", value: fmt.num(quality?.mean_profit_factor, 2), status: quality?.mean_profit_factor_status },
+                    { label: "Mean Reward", value: fmt.num(learning?.mean_reward, 2), status: learning?.mean_reward_status },
+                    { label: "Total P&L", value: fmt.currency(learning?.total_pnl), status: learning?.total_pnl_status },
+                    { label: "Entry Quality", value: fmt.pct((quality?.mean_entry_quality || 0) * 100, 1), status: quality?.mean_entry_quality_status },
+                    { label: "Trades/Ep", value: fmt.num(trading?.mean_trades, 1), status: trading?.mean_trades_status },
+                    { label: "R-Multiple", value: fmt.num(quality?.mean_r_multiple, 2), status: quality?.mean_r_multiple_status },
+                    { label: "Total Trades", value: fmt.int(trading?.total_trades), status: "ok" },
+                  ].map((m, i) => (
+                    <div key={i} className="glass-card rounded-xl p-3 flex items-center justify-between gap-2">
+                      <span className="text-xs text-slate-400 font-medium">{m.label}</span>
+                      <div className="flex items-center gap-2">
+                        <span className={"mono text-sm font-bold " + statusClass(m.status)}>{m.value}</span>
+                        <div className={"w-2 h-2 rounded-full " + (m.status === "good" ? "bg-emerald-500" : m.status === "ok" ? "bg-amber-500" : "bg-rose-500")}></div>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
 
-              <div className="lg:col-span-4 space-y-5">
+              {/* Health Rings Side Panel */}
+              <div className="lg:col-span-4 space-y-4">
                 <HealthRing
                   title="System Quality"
                   statuses={[
@@ -804,106 +846,43 @@
                     quality?.mean_entry_quality_status
                   ].filter(Boolean)}
                 />
-
-                {/* Fill space under health: clean snapshot (matches layout) */}
-                <div className="glass-card rounded-3xl p-6">
-                  <div className="text-xs uppercase tracking-[0.16em] text-slate-500 font-black">Snapshot</div>
-                  <div className="text-xl font-black text-white mt-2">Risk & Quality</div>
-                  <div className="text-sm text-slate-500 mt-2">A compact â€œat-a-glanceâ€ panel aligned with Health.</div>
-
-                  <div className="mt-5 space-y-3">
-                    {snapshots.map((s, i) => (
-                      <div key={i} className="flex items-center justify-between gap-3">
-                        <div className="text-sm text-slate-400 font-semibold">{s.label}</div>
-                        <div className="flex items-center gap-3">
-                          <div className={"mono text-sm font-black " + statusClass(s.status)}>{s.value}</div>
-                          <StatusTag status={s.status} />
-                        </div>
-                      </div>
-                    ))}
+                
+                {/* Learning Stability Mini Ring */}
+                <div className="glass-card rounded-2xl p-4 flex items-center justify-between gap-4">
+                  <div>
+                    <div className="text-[10px] uppercase tracking-[0.16em] text-slate-500 font-bold">Learning</div>
+                    <div className="text-sm font-bold text-white mt-1">Stability</div>
                   </div>
+                  {(() => {
+                    const lStatuses = [
+                      learning?.approx_kl_status,
+                      learning?.clip_fraction_status,
+                      learning?.entropy_status,
+                      learning?.explained_variance_status,
+                      learning?.value_loss_status,
+                      learning?.policy_loss_status
+                    ].filter(Boolean);
+                    const avg = lStatuses.length ? lStatuses.map(scoreFromStatus).reduce((a,b)=>a+b,0) / lStatuses.length : 0.5;
+                    const pct = Math.round(avg * 100);
+                    const color = pct >= 70 ? "text-emerald-400" : pct >= 45 ? "text-amber-400" : "text-rose-400";
+                    return (
+                      <div className="flex items-center gap-3">
+                        <div className={"mono text-2xl font-black " + color}>{pct}</div>
+                        <div className={"w-2 h-2 rounded-full " + (pct >= 70 ? "bg-emerald-500" : pct >= 45 ? "bg-amber-500" : "bg-rose-500")}></div>
+                      </div>
+                    );
+                  })()}
                 </div>
               </div>
             </div>
           </section>
 
-          {/* KPI Grid (equal-sized tiles, no icon balls) */}
-          <section className="glass rounded-3xl p-6 md:p-7">
-            <SectionHeader
-              title="Key Performance Indicators"
-              subtitle="Equal-sized tiles, clean hierarchy, no visual collisions."
-              icon="ðŸ“Š"
-            />
-
-            <div className="kpi-grid">
-              <KPI
-                label="Mean Reward"
-                value={fmt.num(learning?.mean_reward, 3)}
-                status={learning?.mean_reward_status}
-                tooltip="Average reward per episode."
-                sub="Reward trend across recent episodes."
-                spark={<Sparkline data={data.recent_rewards || []} status={learning?.mean_reward_status} />}
-                accent="linear-gradient(135deg, rgba(99,102,241,0.18), rgba(34,211,238,0.10), transparent 60%)"
-              />
-
-              <KPI
-                label="Total P&L"
-                value={fmt.currency(learning?.total_pnl)}
-                status={learning?.total_pnl_status}
-                tooltip="Cumulative profit/loss across all episodes."
-                sub="Aggregated across the entire run."
-                spark={<Sparkline data={data.recent_pnls || []} status={learning?.total_pnl_status} />}
-                accent="linear-gradient(135deg, rgba(236,72,153,0.16), rgba(168,85,247,0.10), transparent 60%)"
-              />
-
-              <KPI
-                label="Mean P&L"
-                value={fmt.currency(learning?.mean_pnl)}
-                status={learning?.mean_pnl_status}
-                tooltip="Average profit/loss per episode."
-                sub="Stabilises as training progresses."
-                spark={<Sparkline data={data.recent_pnls || []} status={learning?.mean_pnl_status} />}
-                accent="linear-gradient(135deg, rgba(168,85,247,0.16), rgba(99,102,241,0.10), transparent 60%)"
-              />
-
-              <KPI
-                label="Win Rate"
-                value={fmt.pct(trading?.mean_win_rate, 1)}
-                status={trading?.mean_win_rate_status}
-                tooltip="Percentage of profitable trades."
-                sub="High is good; validate against drawdown + PF."
-                spark={<Sparkline data={data.recent_win_rates || []} status={trading?.mean_win_rate_status} />}
-                accent="linear-gradient(135deg, rgba(34,211,238,0.14), rgba(99,102,241,0.10), transparent 60%)"
-              />
-
-              <KPI
-                label="Max Drawdown"
-                value={fmt.pct(trading?.max_drawdown, 2)}
-                status={trading?.max_drawdown_status}
-                tooltip="Maximum peak-to-trough equity decline."
-                sub="Lower is better for prop constraints."
-                spark={<Sparkline data={data.recent_drawdowns || []} status={trading?.max_drawdown_status} />}
-                accent="linear-gradient(135deg, rgba(251,191,36,0.12), rgba(236,72,153,0.08), transparent 60%)"
-              />
-
-              <KPI
-                label="Profit Factor"
-                value={fmt.num(quality?.mean_profit_factor, 2)}
-                status={quality?.mean_profit_factor_status}
-                tooltip="Gross profits / gross losses."
-                sub=">1 baseline; >1.5 strong."
-                spark={null}
-                accent="linear-gradient(135deg, rgba(52,211,153,0.12), rgba(34,211,238,0.08), transparent 60%)"
-              />
-            </div>
-          </section>
-
-          {/* Exit reasons: upgraded */}
+          {/* Exit reasons */}
           <section className="glass rounded-3xl p-6 md:p-7">
             <SectionHeader
               title="Exit Reason Distribution"
-              subtitle="Clean list + proportional stack (replaces the â€œugly badgesâ€)."
-              icon="ðŸšª"
+              subtitle="How trades are being closed"
+              icon="🚪"
             />
             <ExitDistribution exit_stats={exit_stats} />
           </section>
@@ -976,116 +955,56 @@
           <section className="glass rounded-3xl p-6 md:p-7">
             <SectionHeader
               title="Learning Diagnostics"
-              subtitle={`${fmt.int(learning?.n_updates)} policy updates â€¢ Clean diagnostic cards (no bars, no clutter).`}
-              icon="ðŸ§ "
+              subtitle={`${fmt.int(learning?.n_updates)} policy updates`}
+              icon="🧠"
             />
 
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-              <div className="lg:col-span-8">
-                <div className="diag-grid">
-                  {rows.map(r => (
-                    <DiagCard
-                      key={r.key}
-                      label={r.label}
-                      value={r.value}
-                      status={r.status}
-                      ideal={r.ideal}
-                      tooltip={r.tooltip}
-                      accent={r.accent}
-                    />
-                  ))}
-                </div>
-              </div>
-
-              <div className="lg:col-span-4 space-y-5">
-                {/* Health panel - taller to match */}
-                <div className="glass-card rounded-3xl p-6 side-panel flex items-center justify-between gap-6 animate-slide-up">
-                  <div>
-                    <div className="text-xs uppercase tracking-[0.16em] text-slate-500 font-black">Health</div>
-                    <div className="text-xl font-black text-white mt-2">Learning Stability</div>
-                    <div className="text-sm text-slate-500 mt-2">Composite score from key statuses.</div>
-                  </div>
-                  {(() => {
-                    const statuses = rows.map(r => r.status).filter(Boolean);
-                    const avg = (statuses && statuses.length)
-                      ? statuses.map(scoreFromStatus).reduce((a,b)=>a+b,0) / statuses.length
-                      : 0.5;
-                    const pct = Math.round(avg * 100);
-                    const cut = 360 * (1 - avg);
-                    const ringBg =
-                      `radial-gradient(circle at 50% 50%, rgba(2,6,23,0.85) 58%, transparent 59%),
-                       conic-gradient(from 220deg,
-                         rgba(99,102,241,0.95) 0deg,
-                         rgba(168,85,247,0.90) ${Math.max(0, 360 - cut)}deg,
-                         rgba(255,255,255,0.08) ${Math.max(0, 360 - cut)}deg,
-                         rgba(255,255,255,0.08) 360deg)`;
-                    return (
-                      <div className="ring" style={{ background: ringBg }}>
-                        <div className="ring-inner">
-                          <div className="mono text-2xl font-black text-white">{pct}</div>
-                          <div className="text-[11px] uppercase tracking-[0.18em] text-slate-500 font-black">Score</div>
-                        </div>
+            {/* Diagnostics Grid - Clean 2-column layout */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {rows.map(r => (
+                <div key={r.key} className="glass-card rounded-2xl p-5 relative overflow-hidden group hover:border-indigo-500/20 transition-all">
+                  <div className="absolute inset-0 opacity-60" style={{ background: r.accent }}></div>
+                  <div className="relative">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-xs uppercase tracking-[0.14em] text-slate-400 font-bold">{r.label}</div>
+                        <div className={"mono text-2xl font-black mt-2 " + statusClass(r.status)}>{r.value}</div>
                       </div>
-                    );
-                  })()}
+                      <div className={"w-3 h-3 rounded-full mt-1 " + (r.status === "good" ? "bg-emerald-500" : r.status === "ok" ? "bg-amber-500" : "bg-rose-500")}></div>
+                    </div>
+                    <div className="mt-3 pt-3 border-t border-white/5">
+                      <div className="text-xs text-slate-500">Ideal: <span className="text-slate-400 font-medium">{r.ideal}</span></div>
+                    </div>
+                  </div>
                 </div>
+              ))}
+            </div>
 
-
-                {/* Runtime panel - taller to match */}
-                <div className="glass-card rounded-3xl p-6 side-panel-runtime">
-                  <div className="text-xs uppercase tracking-[0.16em] text-slate-500 font-black">Runtime</div>
-                  <div className="text-xl font-black text-white mt-2">Speed & Optimizer</div>
-
-                  <div className="mt-6 grid grid-cols-2 gap-4">
-                    <div className="glass-card rounded-2xl p-4">
-                      <div className="text-xs uppercase tracking-[0.16em] text-slate-500 font-black">FPS</div>
-                      <div className="mono text-lg font-black text-slate-200 mt-2">{fmt.int(learning?.fps)}</div>
-                    </div>
-                    <div className="glass-card rounded-2xl p-4">
-                      <div className="text-xs uppercase tracking-[0.16em] text-slate-500 font-black">LR</div>
-                      <div className="mono text-lg font-black text-slate-200 mt-2">{fmt.scientific(learning?.learning_rate, 2)}</div>
-                    </div>
-                    <div className="glass-card rounded-2xl p-4">
-                      <div className="text-xs uppercase tracking-[0.16em] text-slate-500 font-black">Clip</div>
-                      <div className="mono text-lg font-black text-slate-200 mt-2">{fmt.num(learning?.clip_range, 2)}</div>
-                    </div>
-                    <div className="glass-card rounded-2xl p-4">
-                      <div className="text-xs uppercase tracking-[0.16em] text-slate-500 font-black">Updates</div>
-                      <div className="mono text-lg font-black text-slate-200 mt-2">{fmt.int(learning?.n_updates)}</div>
-                    </div>
+            {/* Runtime Stats Bar */}
+            <div className="mt-6 glass-card rounded-2xl p-4">
+              <div className="flex flex-wrap items-center justify-between gap-6">
+                <div className="flex items-center gap-6">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold">FPS</span>
+                    <span className="mono text-lg font-bold text-white">{fmt.int(learning?.fps)}</span>
                   </div>
-
-                  <div className="text-xs text-slate-600 mt-5">
-                    This panel is intentionally quiet to keep attention on diagnostics.
+                  <div className="w-px h-6 bg-white/10"></div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold">Learning Rate</span>
+                    <span className="mono text-lg font-bold text-white">{fmt.scientific(learning?.learning_rate, 2)}</span>
                   </div>
+                  <div className="w-px h-6 bg-white/10"></div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold">Clip Range</span>
+                    <span className="mono text-lg font-bold text-white">{fmt.num(learning?.clip_range, 2)}</span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold">Updates</span>
+                  <span className="mono text-xl font-black bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent">{fmt.int(learning?.n_updates)}</span>
                 </div>
               </div>
             </div>
-          </section>
-        </div>
-      );
-    }
-
-    // Trading / Charts: keep simple + keep what you said you like
-    function TradingTab({ data }) {
-      const { trading, quality, exit_stats } = data;
-      return (
-        <div className="space-y-6 animate-fade-in">
-          <section className="glass rounded-3xl p-6 md:p-7">
-            <SectionHeader title="Trading Performance" subtitle={`${fmt.int(trading?.total_trades)} total trades`} icon="ðŸ’¹" />
-            <div className="kpi-grid">
-              <KPI label="Win Rate" value={fmt.pct(trading?.mean_win_rate, 1)} status={trading?.mean_win_rate_status} tooltip="Percentage of profitable trades." sub="Prop-style sanity check metric." />
-              <KPI label="Max Drawdown" value={fmt.pct(trading?.max_drawdown, 2)} status={trading?.max_drawdown_status} tooltip="Peak-to-trough decline." sub="Lower is better." />
-              <KPI label="Avg Trades/Episode" value={fmt.num(trading?.mean_trades, 1)} status={trading?.mean_trades_status} tooltip="Average trade count per episode." sub="Healthy range is typically 3â€“15." />
-              <KPI label="Total Trades" value={fmt.int(trading?.total_trades)} status="ok" tooltip="Cumulative trades so far." sub="Volume metric (context only)." />
-              <KPI label="R-Multiple" value={fmt.num(quality?.mean_r_multiple, 2)} status={quality?.mean_r_multiple_status} tooltip="Risk-adjusted return per trade." sub="Core quality signal." />
-              <KPI label="Entry Quality" value={fmt.pct((quality?.mean_entry_quality || 0) * 100, 1)} status={quality?.mean_entry_quality_status} tooltip="Mean entry score." sub="Should correlate with PF and drawdown." />
-            </div>
-          </section>
-
-          <section className="glass rounded-3xl p-6 md:p-7">
-            <SectionHeader title="Exit Reason Distribution" subtitle="Same clean component as overview." icon="ðŸšª" />
-            <ExitDistribution exit_stats={exit_stats} />
           </section>
         </div>
       );
@@ -1166,30 +1085,30 @@
       return (
         <div className="space-y-6 animate-fade-in">
           <section className="glass rounded-3xl p-6 md:p-7">
-            <SectionHeader title="Reward History" subtitle="Last 100 episodes" icon="ðŸ“ˆ" />
+            <SectionHeader title="Reward History" subtitle="Last 100 episodes" icon="📈" />
             <div className="h-56">
               <LargeChart data={rewards} colorPositive="#34d399" colorNegative="#fb7185" />
             </div>
           </section>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <section className="glass rounded-3xl p-6">
-              <SectionHeader title="P&L History" icon="ðŸ’µ" />
+            <section className="glass chart-card rounded-3xl p-6">
+              <SectionHeader title="P&L History" icon="💵" />
               <div className="h-44"><LargeChart data={pnls} /></div>
             </section>
 
-            <section className="glass rounded-3xl p-6">
-              <SectionHeader title="Win Rate Trend" icon="ðŸŽ¯" />
+            <section className="glass chart-card rounded-3xl p-6">
+              <SectionHeader title="Win Rate Trend" icon="🎯" />
               <div className="h-44"><LargeChart data={winRates} baseline={50} colorPositive="#a5b4fc" colorNegative="#fb7185" /></div>
             </section>
 
-            <section className="glass rounded-3xl p-6">
-              <SectionHeader title="Drawdown History" icon="ðŸ“‰" />
+            <section className="glass chart-card rounded-3xl p-6">
+              <SectionHeader title="Drawdown History" icon="📉" />
               <div className="h-44"><LargeChart data={drawdowns.map(d=>-Math.abs(d))} invertColors colorPositive="#fb7185" colorNegative="#fb7185" /></div>
             </section>
 
-            <section className="glass rounded-3xl p-6">
-              <SectionHeader title="R-Multiple Trend" icon="â­" />
+            <section className="glass chart-card rounded-3xl p-6">
+              <SectionHeader title="R-Multiple Trend" icon="⭐" />
               <div className="h-44"><LargeChart data={rMult} /></div>
             </section>
           </div>
@@ -1197,9 +1116,9 @@
       );
     }
 
-    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ─────────────────────────────────────────────────────────────────────────────
     // MAIN APP
-    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ─────────────────────────────────────────────────────────────────────────────
     function App() {
       const [data, setData] = useState(null);
       const [connected, setConnected] = useState(false);
@@ -1245,10 +1164,9 @@
       }, []);
 
       const tabs = [
-        { id: "overview", label: "Overview", icon: "ðŸ“Š" },
-        { id: "learning", label: "Learning", icon: "ðŸ§ " },
-        { id: "trading", label: "Trading", icon: "ðŸ’¹" },
-        { id: "charts", label: "Charts", icon: "ðŸ“ˆ" },
+        { id: "overview", label: "Overview", icon: "📊" },
+        { id: "learning", label: "Learning", icon: "🧠" },
+        { id: "charts", label: "Charts", icon: "📈" },
       ];
 
       return (
@@ -1258,14 +1176,14 @@
               <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-5">
                 <div className="flex items-center gap-4">
                   <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 flex items-center justify-center shadow-lg shadow-purple-500/25 animate-glow">
-                    <span className="text-2xl">ðŸ¤–</span>
+                    <span className="text-2xl">🤖</span>
                   </div>
                   <div className="min-w-0">
                     <h1 className="text-xl md:text-2xl font-black gradient-text tracking-tight">
                       PropFirm PPO Training Dashboard
                     </h1>
                     <p className="text-sm text-slate-500 mt-1">
-                      Real-time monitoring â€¢ Action masking â€¢ Walk-forward training
+                      Real-time monitoring • Action masking • Walk-forward training
                     </p>
                   </div>
                 </div>
@@ -1274,7 +1192,7 @@
                   <div className="px-3 py-2 rounded-2xl bg-black/20 border border-white/5 flex items-center gap-2">
                     <div className={"live-dot " + (connected ? "" : "disconnected")} />
                     <span className="text-sm text-slate-300 font-semibold">
-                      {connected ? "Live" : "Reconnectingâ€¦"}
+                      {connected ? "Live" : "Reconnecting…"}
                     </span>
                   </div>
 
@@ -1301,24 +1219,21 @@
                 </div>
               </div>
 
-              <div className="mt-5 flex items-center justify-between gap-4 flex-wrap">
-                <div className="tab-shell">
+              <div className="mt-5 flex items-center justify-center">
+                <div className="inline-flex items-center gap-1 p-1.5 rounded-2xl bg-black/30 border border-white/5 backdrop-blur-sm">
                   {tabs.map(tab => (
                     <button
                       key={tab.id}
                       onClick={() => setActiveTab(tab.id)}
-                      className={"tab-button flex items-center gap-2 whitespace-nowrap " + (activeTab === tab.id ? "active" : "")}
+                      className={"px-5 py-2.5 rounded-xl font-bold text-sm transition-all duration-200 flex items-center gap-2 " + 
+                        (activeTab === tab.id 
+                          ? "bg-gradient-to-r from-indigo-500/20 via-purple-500/20 to-pink-500/20 text-white border border-indigo-500/30 shadow-lg shadow-indigo-500/10" 
+                          : "text-slate-400 hover:text-white hover:bg-white/5")}
                     >
-                      <span>{tab.icon}</span>
+                      <span className="text-base">{tab.icon}</span>
                       <span>{tab.label}</span>
                     </button>
                   ))}
-                </div>
-
-                <div className="hidden md:flex items-center gap-2 text-xs text-slate-500">
-                  <span className="px-2 py-1 rounded-lg bg-black/20 border border-white/5">
-                    {data?.status || "idle"}
-                  </span>
                 </div>
               </div>
             </header>
@@ -1341,7 +1256,6 @@
                 <>
                   {activeTab === "overview" && <OverviewTab data={data} />}
                   {activeTab === "learning" && <LearningTab data={data} />}
-                  {activeTab === "trading" && <TradingTab data={data} />}
                   {activeTab === "charts" && <ChartsTab data={data} />}
                 </>
               )}
@@ -1349,9 +1263,9 @@
 
             <footer className="mt-8 text-center text-xs text-slate-600">
               <p>
-                PropFirm PPO Training System â€¢ Updates: <span className="mono">{updateCount}</span>
+                PropFirm PPO Training System • Updates: <span className="mono">{updateCount}</span>
                 {data?.progress && (
-                  <span> â€¢ {fmt.int(data.progress.timesteps)} / {fmt.int(data.progress.total_timesteps)} steps</span>
+                  <span> • {fmt.int(data.progress.timesteps)} / {fmt.int(data.progress.total_timesteps)} steps</span>
                 )}
               </p>
             </footer>

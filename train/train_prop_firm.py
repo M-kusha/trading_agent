@@ -992,8 +992,11 @@ class VecEpisodeTradingCallback(BaseCallback):
                 **self._diagnostics,
             }
             
-            with open(metrics_file, 'w', encoding='utf-8') as f:
+            # Atomic write: write to temp file then rename to avoid race condition
+            temp_file = metrics_file.with_suffix('.tmp')
+            with open(temp_file, 'w', encoding='utf-8') as f:
                 json.dump(metrics, f, indent=2)
+            temp_file.replace(metrics_file)  # Atomic on most systems
                 
             # Debug: confirm file was written
             if len(self._ep_rewards) <= 5:

@@ -242,8 +242,11 @@ class MetricsReader:
                 return processed
                 
             except json.JSONDecodeError as e:
-                logger.warning(f"JSON decode error: {e}")
-                return self._last_data if self._last_data else self._get_empty_metrics("Invalid JSON in metrics file")
+                # Race condition during file write - expected, use cached data
+                if self._last_data:
+                    return self._last_data
+                logger.debug(f"JSON decode error (file being written): {e}")
+                return self._get_empty_metrics("Reading metrics...")
             except Exception as e:
                 logger.warning(f"Error reading metrics: {e}")
                 return self._last_data if self._last_data else self._get_empty_metrics(str(e))
