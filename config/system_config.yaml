@@ -472,7 +472,8 @@ modules:
   PPOAgent:
     config:
       # Trained SB3 PPO model (used by PPOAgentShell via PPOCore.load)
-      model_path: "models/modern_ppo_final.zip"
+      # Use PropFirm MaskablePPO model trained with discrete actions
+      model_path: "models/propfirm/best/best_model.zip"
 
       # Instrument order must match the trading config/environment order
       instruments: ["EURUSD", "XAUUSD"]

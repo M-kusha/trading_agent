@@ -143,6 +143,19 @@ class UnifiedMemoryConfig:
     intervention_decay: float = 0.99  # Decay factor for intervention strength
     intervention_min_samples: int = 3  # Min samples before intervention activates
 
+    # Feature dimensions (centralized - single source of truth)
+    market_features_dim: int = 10
+    trade_features_dim: int = 10
+    observation_features_dim: int = 20
+    # LossRiskHead: embed(32) + action(2) + regime(4) + vol(1) + session(4) + instrument(2) + extra(3) = 48
+    # But feature_extractor total_dim = 40, so we pad/extend to 48
+    loss_head_input_dim: int = 48
+
+    @property
+    def total_feature_dim(self) -> int:
+        """Total feature dimension from extractor."""
+        return self.market_features_dim + self.trade_features_dim + self.observation_features_dim
+
 
 @module(**module_args(
     "UnifiedMemory",
@@ -501,16 +514,23 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
                 "loss_prob": 0.0,
                 "vetoed_instruments": [],  # Per-instrument veto list
                 "consecutive_losses_by_instrument": {},  # Per-instrument loss tracking
+                # P1 FIX: Include intervention multipliers for SL/TP
+                "sl_mult": 1.0,
+                "tp_mult": 1.0,
             }
             self.smart_bus.set("memory_gate", default_gate, module="UnifiedMemory",
                                thesis="Default memory gate (pre-initialization)")
 
-            # memory_vote: Neutral vote
+            # memory_vote: Neutral vote with intuition fields
             default_vote = {
                 "signed_bias": 0.0,
+                "raw_playbook_bias": 0.0,
+                "intuition_bias": 0.0,
+                "intuition_strength": 0.0,
                 "confidence": 0.5,
                 "expected_pnl": 0.0,
                 "weight": 0.0,
+                "neural_risk_hint": 0.5,
             }
             self.smart_bus.set("memory_vote", default_vote, module="UnifiedMemory",
                                thesis="Default memory vote (pre-initialization)")
@@ -615,6 +635,10 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
 
             # 1. Extract unified context
             context = await self._extract_unified_context(inputs)
+
+            # 1a. P0 FIX: Check for episode training data from training callback
+            # This enables online learning of memory components during training
+            await self._process_episode_training_data()
 
             # 2. Store new experiences (lightweight, do every step)
             await self._store_experiences(context)
@@ -948,6 +972,54 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
                     "metadata": sample_entry.get("metadata"),
                 })
 
+    async def _process_episode_training_data(self) -> None:
+        """
+        P0 FIX: Process episode training data published by training callback.
+        
+        This method checks for new episode_training_data on the SmartInfoBus
+        and calls update_from_episode() to train memory components.
+        """
+        try:
+            # Check for episode training data from callback
+            episode_data = self.smart_bus.get("episode_training_data", "UnifiedMemory")
+            
+            if not episode_data or not isinstance(episode_data, dict):
+                return
+            
+            # Check if we already processed this episode
+            episode_num = episode_data.get("episode_number", 0)
+            last_processed = getattr(self, '_last_processed_episode', -1)
+            
+            if episode_num <= last_processed:
+                return  # Already processed this episode
+            
+            # Mark as processed
+            self._last_processed_episode = episode_num
+            
+            # Extract data
+            trades = episode_data.get("trades", [])
+            episode_reward = safe_float(episode_data.get("episode_reward", 0.0), 0.0)
+            market_context = episode_data.get("market_context", {})
+            
+            if not trades:
+                return
+            
+            # Call update_from_episode to train components
+            stats = self.update_from_episode(
+                episode_trades=trades,
+                episode_reward=float(episode_reward),
+                market_context=market_context,
+            )
+            
+            if self.unified_config.debug and stats.get("trades_processed", 0) > 0:
+                self.debug_logger.info(
+                    f"Processed episode {episode_num} training data: {stats}",
+                    component="training",
+                )
+                
+        except Exception as e:
+            if self.unified_config.debug:
+                self.debug_logger.log_error("Episode training data processing failed", e)
 
     async def _run_parallel_components(self, context: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
         """Run components in parallel groups based on dependencies"""
@@ -1209,6 +1281,27 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
         intervention_type = intervention_rec.get("intervention", "none") if intervention_rec else "none"
         intervention_strength = safe_float(intervention_rec.get("strength", 0.0) if intervention_rec else 0.0, 0.0)
         intervention_veto = bool(intervention_rec.get("veto_recommended", False) if intervention_rec else False)
+        # P1 FIX: Surface intervention multipliers
+        intervention_size_mult = safe_float(intervention_rec.get("size_mult", 1.0) if intervention_rec else 1.0, 1.0)
+        intervention_sl_mult = safe_float(intervention_rec.get("sl_mult", 1.0) if intervention_rec else 1.0, 1.0)
+        intervention_tp_mult = safe_float(intervention_rec.get("tp_mult", 1.0) if intervention_rec else 1.0, 1.0)
+        
+        # P1 FIX: Get intuition_vector from compression for vote blending
+        compression_result = component_results.get("compression", {})
+        intuition_data = compression_result.get("intuition_vector", {})
+        if isinstance(intuition_data, dict):
+            intuition_strength = safe_float(intuition_data.get("strength", 0.0), 0.0)
+            intuition_vector = intuition_data.get("vector", [])
+        else:
+            intuition_strength = 0.0
+            intuition_vector = []
+        
+        # Get per-instrument intuition if available
+        instrument = context.get("market_context", {}).get("instrument", "UNKNOWN")
+        per_inst_intuition = compression_result.get("per_instrument_compression", {}).get(
+            str(instrument).upper().replace("/", "").replace("_", ""), {}
+        )
+        per_inst_intuition_strength = safe_float(per_inst_intuition.get("intuition_strength", 0.0), 0.0)
         
         # === Extract per-instrument veto info from gate_snippet ===
         vetoed_instruments = gate_snippet.get("vetoed_instruments", []) if gate_snippet else []
@@ -1221,9 +1314,13 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
         # === Compose memory_gate ===
         # Use gate_snippet if available, otherwise compute from signals
         if gate_snippet:
+            # P1 FIX: Apply intervention multipliers (take minimum of gate and intervention)
+            gate_risk_mult = safe_float(gate_snippet.get("risk_multiplier", 1.0), 1.0)
+            final_risk_mult = min(gate_risk_mult, intervention_size_mult)
+            
             memory_gate = {
                 "veto": gate_snippet.get("veto", False),
-                "risk_multiplier": gate_snippet.get("risk_multiplier", 1.0),
+                "risk_multiplier": round(final_risk_mult, 3),
                 "confidence": gate_snippet.get("confidence", 0.5),
                 "reasons": gate_snippet.get("reasons", []),
                 "risk_score": risk_score,
@@ -1231,6 +1328,9 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
                 "loss_prob": loss_prob,
                 "vetoed_instruments": vetoed_instruments,
                 "consecutive_losses_by_instrument": consecutive_losses_by_instrument,
+                # P1 FIX: Surface intervention multipliers for SL/TP adjustment
+                "sl_mult": round(intervention_sl_mult, 3),
+                "tp_mult": round(intervention_tp_mult, 3),
             }
         else:
             # Fallback: compute gate from raw signals
@@ -1269,6 +1369,11 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
                 if risk_score > 0.5:
                     risk_multiplier = min(risk_multiplier, 1.0 - risk_score * 0.5)
                     reasons.append(f"Risk score adjustment: {risk_score:.2f}")
+                
+                # P1 FIX: Also apply intervention size_mult
+                risk_multiplier = min(risk_multiplier, intervention_size_mult)
+                if intervention_size_mult < 1.0:
+                    reasons.append(f"Intervention size mult: {intervention_size_mult:.2f}")
             
             gate_confidence = max(danger_confidence, 1.0 - loss_uncertainty)
             
@@ -1282,6 +1387,9 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
                 "loss_prob": round(loss_prob, 3),
                 "vetoed_instruments": vetoed_instruments,
                 "consecutive_losses_by_instrument": consecutive_losses_by_instrument,
+                # P1 FIX: Surface intervention multipliers for SL/TP adjustment
+                "sl_mult": round(intervention_sl_mult, 3),
+                "tp_mult": round(intervention_tp_mult, 3),
             }
         
         # === Compose memory_vote ===
@@ -1291,9 +1399,30 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
         # Adjust vote by neural risk hint (reduce confidence if attention is diffuse)
         attention_weight = 1.0 - neural_risk_hint * 0.3  # Scale down by up to 30%
         
+        # P1 FIX: Blend intuition_vector into signed_bias
+        # intuition_vector's first component indicates direction preference
+        # Positive = profit-aligned (favor trade), Negative = loss-aligned (avoid)
+        intuition_bias = 0.0
+        if intuition_strength > 0.3:
+            if intuition_vector and len(intuition_vector) > 0:
+                # Use first principal component as direction signal
+                intuition_bias = safe_float(intuition_vector[0], 0.0)
+                # Normalize to [-1, 1] range
+                intuition_bias = float(np.clip(intuition_bias, -1.0, 1.0))
+            # Blend: 70% playbook, 30% intuition when intuition is strong
+            blended_bias = 0.7 * signed_bias + 0.3 * intuition_bias
+        elif per_inst_intuition_strength > 0.3:
+            # Use per-instrument intuition if global is weak
+            blended_bias = 0.8 * signed_bias + 0.2 * per_inst_intuition_strength * np.sign(signed_bias)
+        else:
+            blended_bias = signed_bias
+        
         memory_vote = {
-            "vote_value": round(vote_value * attention_weight, 3),
-            "signed_bias": round(signed_bias, 3),
+            "vote_value": round(float(blended_bias) * attention_weight, 3),
+            "signed_bias": round(float(blended_bias), 3),
+            "raw_playbook_bias": round(signed_bias, 3),  # Original for debugging
+            "intuition_bias": round(intuition_bias, 3),  # Intuition contribution
+            "intuition_strength": round(intuition_strength, 3),
             "confidence": round(playbook_confidence * attention_weight, 3),
             "expected_pnl": round(expected_pnl, 2),
             "neural_risk_hint": round(neural_risk_hint, 3),
@@ -1310,12 +1439,17 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
                 "danger_similarity": round(danger_similarity, 3),
                 "avoidance_signal": round(avoidance_signal, 3),
                 "loss_prob": round(loss_prob, 3),
-                "signed_bias": round(signed_bias, 3),
+                "signed_bias": round(float(blended_bias), 3),
+                "raw_playbook_bias": round(signed_bias, 3),
+                "intuition_bias": round(intuition_bias, 3),
+                "intuition_strength": round(intuition_strength, 3),
                 "neural_risk_hint": round(neural_risk_hint, 3),
             },
             "intervention": {
                 "type": intervention_type,
                 "strength": round(intervention_strength, 3),
+                "sl_mult": round(intervention_sl_mult, 3),
+                "tp_mult": round(intervention_tp_mult, 3),
             } if intervention_type != "none" else None,
             "verdict": "veto" if memory_gate["veto"] else (
                 "caution" if memory_gate["risk_multiplier"] < 0.7 else "proceed"
@@ -1857,6 +1991,114 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
         except Exception as e:
             self.logger.error(f"Memory pressure check failed: {e}")
 
+    def on_trade_closed(self, trade: Dict[str, Any], market_context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        Called when a trade is closed in LIVE TRADING to update memory components.
+        
+        NOTE: This is primarily for DIRECT integration when orchestrator is not running.
+        When orchestrator IS running, the InfoBus path (_store_experiences + component.process())
+        already handles learning. This method adds deduplication to prevent double-learning.
+        
+        Args:
+            trade: Closed trade dict with {pnl, instrument, entry_price, exit_price, ...}
+            market_context: Optional market context {regime, volatility, session}
+            
+        Returns:
+            Dict with update statistics
+        """
+        stats = {
+            "trade_processed": False,
+            "loss_head_updated": False,
+            "intervention_updated": False,
+            "skipped_duplicate": False,
+        }
+        
+        # Deduplication: Check if this trade was already processed via InfoBus path
+        trade_id = trade.get("id") or trade.get("trade_id") or trade.get("ticket")
+        if trade_id is None:
+            # Generate ID from properties
+            trade_id = f"{trade.get('instrument', trade.get('symbol', ''))}_{trade.get('close_time', trade.get('ts', ''))}_{trade.get('pnl', 0)}"
+        
+        if trade_id in self._processed_trade_ids:
+            stats["skipped_duplicate"] = True
+            return stats
+        
+        # Mark as processed (consistent with _store_experiences)
+        self._processed_trade_ids.add(trade_id)
+        if len(self._processed_trade_ids) > self._max_processed_ids:
+            self._processed_trade_ids = set(list(self._processed_trade_ids)[-500:])
+        
+        raw_pnl = trade.get("pnl")
+        if raw_pnl is None:
+            return stats
+        
+        pnl = safe_float(raw_pnl, 0.0)
+        market_ctx = market_context or {}
+        
+        # Get market context from bus if not provided
+        if not market_ctx:
+            try:
+                market_ctx = {
+                    "regime": self.smart_bus.get("market_regime", "UnifiedMemory") or "unknown",
+                    "volatility": safe_float(self.smart_bus.get("volatility", "UnifiedMemory"), 0.5),
+                    "session": self.smart_bus.get("trading_session", "UnifiedMemory") or "unknown",
+                }
+            except Exception:
+                market_ctx = {"regime": "unknown", "volatility": 0.5, "session": "unknown"}
+        
+        try:
+            # 1. Update LossRiskHead
+            if "loss_risk_head" in self.components:
+                loss_head = self.components["loss_risk_head"]
+                features = trade.get("features")
+                if features is None:
+                    features = self.feature_extractor.extract_trade_features(trade, market_ctx)
+                
+                input_vec = loss_head._build_input_vector(trade, market_ctx, features)
+                if input_vec is not None:
+                    threshold = getattr(loss_head, 'loss_threshold', 5.0)
+                    label = 1.0 if pnl < -threshold else 0.0
+                    soft_label = float(np.clip(-pnl / (threshold * 3), 0.0, 1.0)) if pnl < 0 else 0.0
+                    
+                    loss_head.training_buffer.append((input_vec, label, soft_label))
+                    stats["loss_head_updated"] = True
+                    
+                    # Train if enough samples
+                    min_samples = getattr(loss_head, '_MIN_SAMPLES_FOR_TRAINING', 20)
+                    if len(loss_head.training_buffer) >= min_samples:
+                        loss_head._train_step()
+            
+            # 2. Update Interventions (for losses)
+            if "interventions" in self.components and pnl < 0:
+                interventions = self.components["interventions"]
+                instrument = trade.get("instrument") or trade.get("symbol") or "UNKNOWN"
+                pattern_label = interventions._extract_pattern_label(trade, {"market_context": market_ctx})
+                regime = str(market_ctx.get("regime", "unknown")).lower()
+                
+                trade_record = {
+                    "pnl": float(pnl),
+                    "instrument": instrument,
+                    "pattern_label": pattern_label,
+                    "regime": regime,
+                    "size": safe_float(trade.get("size", 1.0), 1.0),
+                    "trade": trade,
+                }
+                interventions._update_intervention_stats(instrument, pattern_label, regime, trade_record)
+                stats["intervention_updated"] = True
+            
+            stats["trade_processed"] = True
+            
+            if self.unified_config.debug:
+                self.debug_logger.info(
+                    f"Live trade learning: pnl={pnl:.2f}, stats={stats}",
+                    component="live_learning",
+                )
+                
+        except Exception as e:
+            self.logger.error(f"on_trade_closed learning failed: {e}")
+        
+        return stats
+
     def on_episode_end(self, episode_info: Optional[Dict[str, Any]] = None) -> None:
         """
         Called at the end of each episode to update episode counter and optionally process episode data.
@@ -1870,6 +2112,238 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
                 component="lifecycle",
                 data={"episode_info": episode_info or {}}
             )
+
+    def update_from_episode(
+        self,
+        episode_trades: List[Dict[str, Any]],
+        episode_reward: float,
+        market_context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        P0 FIX: Called by training loop after each episode to update learned components.
+        
+        This method connects the training feedback loop to memory components:
+        1. Updates LossRiskHead with actual trade outcomes
+        2. Updates shared_encoder via contrastive learning (winners vs losers)
+        3. Updates intervention table with episode results
+        
+        Args:
+            episode_trades: List of trade dicts with at least {pnl, features, ...}
+            episode_reward: Total episode reward for weighting
+            market_context: Optional market context for feature extraction
+            
+        Returns:
+            Dict with update statistics
+        """
+        stats = {
+            "trades_processed": 0,
+            "loss_head_updates": 0,
+            "encoder_updates": 0,
+            "intervention_updates": 0,
+        }
+        
+        if not episode_trades:
+            return stats
+        
+        market_ctx = market_context or {}
+        
+        try:
+            # 1. Update LossRiskHead with actual outcomes
+            if "loss_risk_head" in self.components:
+                loss_head = self.components["loss_risk_head"]
+                for trade in episode_trades:
+                    raw_pnl = trade.get("pnl")
+                    if raw_pnl is None:
+                        continue
+                    pnl = safe_float(raw_pnl, 0.0)
+                    
+                    # Extract features for the trade
+                    features = trade.get("features")
+                    if features is None:
+                        features = self.feature_extractor.extract_trade_features(trade, market_ctx)
+                    
+                    # Build input vector for loss risk head
+                    input_vec = loss_head._build_input_vector(trade, market_ctx, features)
+                    if input_vec is None:
+                        continue
+                    
+                    # Binary label: 1 if loss > threshold
+                    threshold = getattr(loss_head, 'loss_threshold', 5.0)
+                    label = 1.0 if pnl < -threshold else 0.0
+                    
+                    # Soft label based on loss magnitude
+                    if pnl < 0:
+                        soft_label = float(np.clip(-pnl / (threshold * 3), 0.0, 1.0))
+                    else:
+                        soft_label = 0.0
+                    
+                    loss_head.training_buffer.append((input_vec, label, soft_label))
+                    stats["loss_head_updates"] += 1
+                
+                # Trigger training step if enough samples
+                min_samples = getattr(loss_head, '_MIN_SAMPLES_FOR_TRAINING', 20)
+                if len(loss_head.training_buffer) >= min_samples:
+                    loss_head._train_step()
+            
+            # 2. Update shared_encoder via contrastive learning (winners vs losers)
+            stats["encoder_updates"] = self._update_encoder_contrastive(episode_trades, market_ctx)
+            
+            # 3. Update interventions with episode outcomes
+            if "interventions" in self.components:
+                interventions = self.components["interventions"]
+                for trade in episode_trades:
+                    raw_pnl = trade.get("pnl")
+                    if raw_pnl is None:
+                        continue  # Skip trades with no pnl
+                    pnl = safe_float(raw_pnl, 0.0)
+                    if pnl >= 0:
+                        continue  # Only learn from losses
+                    
+                    # Extract instrument and pattern
+                    instrument = trade.get("instrument") or trade.get("symbol") or "UNKNOWN"
+                    pattern_label = interventions._extract_pattern_label(trade, {"market_context": market_ctx})
+                    regime = str(market_ctx.get("regime", "unknown")).lower()
+                    
+                    # Update intervention table
+                    trade_record = {
+                        "pnl": float(pnl),
+                        "instrument": instrument,
+                        "pattern_label": pattern_label,
+                        "regime": regime,
+                        "size": safe_float(trade.get("size", 1.0), 1.0),
+                        "trade": trade,
+                    }
+                    interventions._update_intervention_stats(instrument, pattern_label, regime, trade_record)
+                    stats["intervention_updates"] += 1
+            
+            stats["trades_processed"] = len(episode_trades)
+            
+            if self.unified_config.debug:
+                self.debug_logger.info(
+                    f"Episode training update: {stats}",
+                    component="training",
+                    data={"episode_reward": episode_reward}
+                )
+                
+        except Exception as e:
+            self.logger.error(f"update_from_episode failed: {e}")
+        
+        return stats
+    
+    def _update_encoder_contrastive(
+        self,
+        trades: List[Dict[str, Any]],
+        market_ctx: Dict[str, Any],
+    ) -> int:
+        """
+        Update shared_encoder using contrastive learning on winners vs losers.
+        
+        Goal: Winners should cluster together, losers should cluster together,
+        and the two clusters should be separated in embedding space.
+        
+        Returns number of encoder update steps performed.
+        """
+        if self.shared_encoder is None:
+            return 0
+        
+        # Collect winners and losers with features
+        winners: List[np.ndarray] = []
+        losers: List[np.ndarray] = []
+        
+        for trade in trades:
+            raw_pnl = trade.get("pnl")
+            if raw_pnl is None:
+                continue
+            pnl = safe_float(raw_pnl, 0.0)
+            
+            features = trade.get("features")
+            if features is None:
+                features = self.feature_extractor.extract_trade_features(trade, market_ctx)
+            
+            if features is None:
+                continue
+            
+            # Convert to numpy array
+            feat_arr = np.asarray(features, dtype=np.float32).reshape(-1)
+            
+            # Resize to encoder input size
+            embed_dim = int(getattr(self.unified_config, "embed_dim", 32))
+            if feat_arr.size != embed_dim:
+                if feat_arr.size > embed_dim:
+                    feat_arr = feat_arr[:embed_dim]
+                else:
+                    feat_arr = np.pad(feat_arr, (0, embed_dim - feat_arr.size), mode='constant')
+            
+            if pnl > 0:
+                winners.append(feat_arr)
+            else:
+                losers.append(feat_arr)
+        
+        # Need at least 2 of each for contrastive learning
+        if len(winners) < 2 or len(losers) < 2:
+            return 0
+        
+        try:
+            import torch.optim as optim
+            
+            # Create optimizer if not exists
+            if not hasattr(self, '_encoder_optimizer'):
+                self._encoder_optimizer = optim.Adam(self.shared_encoder.parameters(), lr=1e-4)
+            
+            # Convert to tensors
+            winner_tensor = torch.from_numpy(np.stack(winners)).float()
+            loser_tensor = torch.from_numpy(np.stack(losers)).float()
+            
+            # Move to encoder device
+            try:
+                params = list(self.shared_encoder.parameters())
+                if params:
+                    device = params[0].device
+                    winner_tensor = winner_tensor.to(device)
+                    loser_tensor = loser_tensor.to(device)
+            except Exception:
+                pass
+            
+            # Forward pass
+            self.shared_encoder.train()
+            winner_emb = self.shared_encoder(winner_tensor)  # [N_win, embed_dim]
+            loser_emb = self.shared_encoder(loser_tensor)    # [N_loss, embed_dim]
+            
+            # Contrastive loss: minimize intra-class distance, maximize inter-class distance
+            # Intra-class: mean distance within winners + within losers
+            winner_center = winner_emb.mean(dim=0, keepdim=True)
+            loser_center = loser_emb.mean(dim=0, keepdim=True)
+            
+            intra_winner = ((winner_emb - winner_center) ** 2).mean()
+            intra_loser = ((loser_emb - loser_center) ** 2).mean()
+            intra_loss = intra_winner + intra_loser
+            
+            # Inter-class: negative distance between centers (we want to maximize this)
+            inter_dist = ((winner_center - loser_center) ** 2).mean()
+            inter_loss = 1.0 / (inter_dist + 0.1)  # Inverse to maximize separation
+            
+            # Total loss
+            total_loss = intra_loss + inter_loss
+            
+            # Backward pass
+            self._encoder_optimizer.zero_grad()
+            total_loss.backward()
+            self._encoder_optimizer.step()
+            
+            self.shared_encoder.eval()
+            
+            if self.unified_config.debug:
+                self.debug_logger.debug(
+                    f"Encoder contrastive update: loss={float(total_loss):.4f}, "
+                    f"intra={float(intra_loss):.4f}, inter={float(inter_loss):.4f}",
+                    component="encoder",
+                )
+            
+            return 1
+            
+        except Exception as e:
+            self.logger.error(f"Encoder contrastive update failed: {e}")
+            return 0
 
     def increment_episode(self) -> int:
         """Increment and return the new episode count."""

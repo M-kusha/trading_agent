@@ -1,34 +1,35 @@
 # ─────────────────────────────────────────────────────────────
 # File: modules/core/module_base.py
-# SmartInfoBus Module Base (V1.2, "Navigator+ Startup")
-# - Single-source-of-truth circuit breaking (delegates via DI)
-# - Memory-safe deques (no list slicing leaks)
-# - Input sanitization + consistent errors + exception chaining
-# - Async lifecycle hooks + timeout cleanup
-# - Dependency Injection hooks (breaker, metrics, bus, orchestrator)
-# - No-op warmup/probe/self-test defaults for startup pipeline
-# - Tolerant state compatibility checks (major version gating)
-# - Rotating logger caching per (name:pid)
+# SmartInfoBus Module Base (V1.2, "Navigator+ Startup") — FIXED
+#
+# Key fixes vs your pasted version:
+# - Removed duplicated DI assignments (metrics/breaker/bus/orchestrator were set twice)
+# - Kept circuit breaker adapters ONLY in BaseModule (no duplicated/hidden variants)
+# - Made decorators safer (wraps, consistent missing-input handling, optional pinpointer hook)
+# - Reduced import-time coupling (decorator auto-registration is now explicitly gated)
+# - Tightened state/version compatibility checks while remaining tolerant
 # ─────────────────────────────────────────────────────────────
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import inspect
 import logging
 import os
 import re
 import time
-import inspect
-import hashlib
 from abc import ABC, abstractmethod
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, TYPE_CHECKING, cast, Callable
+from typing import Any, Callable, Dict, List, Optional, cast
+from functools import wraps
 
 try:
     import numpy as _np
+
     _HAVE_NP = True
-except Exception:  # numpy is optional
+except Exception:
     _HAVE_NP = False
     _np = None  # type: ignore
 
@@ -36,28 +37,53 @@ __all__ = [
     "ModuleMetadata",
     "module",
     "BaseModule",
+    "requires",
+    "provides",
+    "with_timeout",
+    "with_retry",
+    "with_confidence_threshold",
 ]
 
 # Module-level cache for rotating loggers (keyed by name:pid)
-# Accept either stdlib Logger or custom RotatingLogger; keep typing flexible.
 _ROTATING_LOGGER_CACHE: Dict[str, Any] = {}
 
 # ─────────────────────────────────────────────────────────────
-# Tunables / constants (no magic numbers)
+# Tunables / constants (avoid magic numbers)
 # ─────────────────────────────────────────────────────────────
-PERF_HISTORY_LIMIT = 100            # bounded history kept in state
-EXEC_TIMES_LIMIT = 100              # per-module execution window
-RECENT_SUCCESS_SAMPLE_SIZE = 20     # used for health trend
-RECENT_LATENCY_SAMPLE = 5           # quick perf sanity
+PERF_HISTORY_LIMIT = 100
+EXEC_TIMES_LIMIT = 100
+RECENT_SUCCESS_SAMPLE_SIZE = 20
+RECENT_LATENCY_SAMPLE = 5
 MAX_INPUT_KEY_LEN = 255
+
 VERSION_SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 NAME_VALID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 # ─────────────────────────────────────────────────────────────
+# Optional exception imports (best-effort, no hard coupling)
+# ─────────────────────────────────────────────────────────────
+def _InputsNotReady_exc() -> type[Exception]:
+    try:
+        from modules.core.exceptions import InputsNotReady  # type: ignore
+
+        return InputsNotReady  # type: ignore[return-value]
+    except Exception:
+        return ValueError
+
+
+def _ExecutionSkipped_exc() -> type[Exception]:
+    try:
+        from modules.core.exceptions import ExecutionSkipped  # type: ignore
+
+        return ExecutionSkipped  # type: ignore[return-value]
+    except Exception:
+        return RuntimeError
+
+
+# ─────────────────────────────────────────────────────────────
 # Module Metadata
 # ─────────────────────────────────────────────────────────────
-
 @dataclass
 class ModuleMetadata:
     name: str
@@ -79,17 +105,32 @@ class ModuleMetadata:
     health_monitoring: bool = False
     performance_tracking: bool = False
     error_handling: bool = False
-    # Optional role flags (used by some meta/voting modules; keep backwards compatible)
+    # Optional role flags
     is_final_arbiter: bool = False
-    readiness_grace_s: float | None = None  # Optional per-module micro grace
+    readiness_grace_s: float | None = None  # Optional per-module grace window
 
     VALID_CATEGORIES = [
-        'core', 'executor', 'external', 'features', 'market', 'memory', 'meta',
-        'models', 'monitoring', 'position', 'reward', 'risk',
-        'strategy', 'trading_modes', 'utils', 'visualization', 'voting', 'general'
+        "core",
+        "executor",
+        "external",
+        "features",
+        "market",
+        "memory",
+        "meta",
+        "models",
+        "monitoring",
+        "position",
+        "reward",
+        "risk",
+        "strategy",
+        "trading_modes",
+        "utils",
+        "visualization",
+        "voting",
+        "general",
     ]
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         errors: List[str] = []
 
         if not self.name or not isinstance(self.name, str):
@@ -116,25 +157,28 @@ class ModuleMetadata:
         self.requires = list(dict.fromkeys(self.requires))
         self.dependencies = list(dict.fromkeys(self.dependencies))
 
-        if not (1 <= self.timeout_ms <= 30000):
+        if not (1 <= int(self.timeout_ms) <= 30000):
             errors.append("timeout_ms must be between 1 and 30000")
 
-        if not (0.0 <= float(self.min_confidence) <= 1.0):
-            errors.append("min_confidence must be between 0 and 1")
+        try:
+            mc = float(self.min_confidence)
+            if not (0.0 <= mc <= 1.0):
+                errors.append("min_confidence must be between 0 and 1")
+        except Exception:
+            errors.append("min_confidence must be a number between 0 and 1")
 
         if self.category not in self.VALID_CATEGORIES:
             errors.append(f"category must be one of {self.VALID_CATEGORIES}")
 
-        if not VERSION_SEMVER_RE.match(self.version):
+        if not VERSION_SEMVER_RE.match(str(self.version)):
             errors.append(f"version must be semantic (e.g., 1.2.3), got {self.version!r}")
 
-        # Validate readiness_grace_s if set
-        rg = self.__dict__.get('readiness_grace_s', None)
-        if rg is not None:
+        if self.readiness_grace_s is not None:
             try:
-                rgv = float(rg)
-                if rgv < 0 or rgv > 30:
+                rg = float(self.readiness_grace_s)
+                if rg < 0 or rg > 30:
                     errors.append("readiness_grace_s must be within [0, 30] seconds if set")
+                self.readiness_grace_s = rg
             except Exception:
                 errors.append("readiness_grace_s must be a number if set")
 
@@ -152,96 +196,81 @@ class ModuleMetadata:
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            'name': self.name,
-            'provides': self.provides,
-            'requires': self.requires,
-            'version': self.version,
-            'category': self.category,
-            'description': self.description,
-            'is_voting_member': self.is_voting_member,
-            'hot_reload': self.hot_reload,
-            'explainable': self.explainable,
-            'timeout_ms': self.timeout_ms,
-            'priority': self.priority,
-            'min_confidence': self.min_confidence,
-            'max_retries': self.max_retries,
-            'critical': self.critical,
-            'dependencies': self.dependencies,
-            'thesis_required': self.thesis_required,
-            'health_monitoring': self.health_monitoring,
-            'performance_tracking': self.performance_tracking,
-            'error_handling': self.error_handling,
-            'readiness_grace_s': self.readiness_grace_s,
+            "name": self.name,
+            "provides": self.provides,
+            "requires": self.requires,
+            "version": self.version,
+            "category": self.category,
+            "description": self.description,
+            "is_voting_member": self.is_voting_member,
+            "hot_reload": self.hot_reload,
+            "explainable": self.explainable,
+            "timeout_ms": self.timeout_ms,
+            "priority": self.priority,
+            "min_confidence": self.min_confidence,
+            "max_retries": self.max_retries,
+            "critical": self.critical,
+            "dependencies": self.dependencies,
+            "thesis_required": self.thesis_required,
+            "health_monitoring": self.health_monitoring,
+            "performance_tracking": self.performance_tracking,
+            "error_handling": self.error_handling,
+            "readiness_grace_s": self.readiness_grace_s,
         }
 
 
 # ─────────────────────────────────────────────────────────────
-# Decorator
+# Decorator: @module(...)
 # ─────────────────────────────────────────────────────────────
-def module(**kwargs):
+def module(**kwargs: Any):
     """
     Decorator to mark a class as a SmartInfoBus module and attach metadata.
     Requires: provides=[...], requires=[...]
     """
-    def _decorator(cls):
+
+    def _decorator(cls: type):
         if not issubclass(cls, BaseModule):
             raise TypeError(f"Module {cls.__name__} must inherit from BaseModule")
 
-        meta_kwargs = kwargs.copy()
-        name = meta_kwargs.pop('name', cls.__name__)
-        if 'provides' not in meta_kwargs or 'requires' not in meta_kwargs:
+        meta_kwargs = dict(kwargs)
+        name = meta_kwargs.pop("name", cls.__name__)
+        if "provides" not in meta_kwargs or "requires" not in meta_kwargs:
             raise ValueError("@module requires 'provides' and 'requires' lists")
 
-        # build metadata
         metadata = ModuleMetadata(name=name, **meta_kwargs)
-        setattr(cls, '__module_metadata__', metadata)
-        setattr(cls, '__is_smartinfobus_module__', True)
+        setattr(cls, "__module_metadata__", metadata)
+        setattr(cls, "__is_smartinfobus_module__", True)
 
         # attach integrity signature (source hash)
         try:
             src = inspect.getsource(cls)
-            setattr(cls, '__module_signature__', hashlib.sha256(src.encode('utf-8')).hexdigest())
+            setattr(cls, "__module_signature__", hashlib.sha256(src.encode("utf-8")).hexdigest())
         except Exception:
-            setattr(cls, '__module_signature__', None)
+            setattr(cls, "__module_signature__", None)
 
-        # validate implementation (ensure no abstract leftovers)
         _validate_module_implementation(cls)
 
-        # auto-enhancements (only if missing)
-        _enhance_state_management(cls)
-        _enhance_validation_methods(cls)
-        if metadata.explainable:
-            _enhance_explanation_capability(cls)
+        # Optional import-time auto-registration is explicitly gated to avoid circular imports.
+        # Enable only if you truly want “import side effects”:
+        #   SMARTINFOBUS_DECORATOR_AUTOREGISTER=1
+        if os.getenv("SMARTINFOBUS_DECORATOR_AUTOREGISTER", "0").strip().lower() in {"1", "true", "yes", "on"}:
+            # Best-effort: register with InfoBus for discovery
+            try:
+                from modules.utils.info_bus import InfoBusManager  # type: ignore
 
-        # best-effort registration (no hard dependency)
-        try:
-            from modules.core.module_system import ModuleOrchestrator
-            # Some environments expose a register_class helper; ignore if absent.
-            if hasattr(ModuleOrchestrator, "register_class"):
-                ModuleOrchestrator.register_class(cls)  # type: ignore[attr-defined]
-        except (ImportError, AttributeError):
-            pass
-        except Exception:
-            # avoid killing import-time on unexpected envs
-            pass
-
-        # soft-register with InfoBus so discovery knows providers/consumers early
-        try:
-            from modules.utils.info_bus import InfoBusManager
-            bus = InfoBusManager.get_instance()
-            bus.register_capabilities(cls.__name__, provides=metadata.provides, requires=metadata.requires)
-            if metadata.name != cls.__name__:
-                bus.register_capabilities(metadata.name, provides=metadata.provides, requires=metadata.requires)
-        except (ImportError, AttributeError):
-            pass
-        except Exception:
-            pass
+                bus = InfoBusManager.get_instance()
+                bus.register_capabilities(cls.__name__, provides=metadata.provides, requires=metadata.requires)
+                if metadata.name != cls.__name__:
+                    bus.register_capabilities(metadata.name, provides=metadata.provides, requires=metadata.requires)
+            except Exception:
+                pass
 
         return cls
+
     return _decorator
 
 
-def _validate_module_implementation(cls, metadata: ModuleMetadata | None = None) -> None:
+def _validate_module_implementation(cls: type) -> None:
     abstract_methods: List[str] = []
     for name in dir(cls):
         try:
@@ -254,203 +283,129 @@ def _validate_module_implementation(cls, metadata: ModuleMetadata | None = None)
         raise TypeError(f"Module {cls.__name__} must implement abstract methods: {abstract_methods}")
 
 
-def _enhance_state_management(cls):
-    if not hasattr(cls, 'get_state'):
-        def get_state(self) -> Dict[str, Any]:
-            state = {
-                'class_name': self.__class__.__name__,
-                'module_path': self.__class__.__module__,
-                'version': self.__module_metadata__.version,
-                'step_count': getattr(self, '_step_count', 0),
-                'health_status': getattr(self, '_health_status', 'OK'),
-                'last_execution': getattr(self, '_last_execution', 0),
-                'error_count': getattr(self, '_error_count', 0),
-                'success_count': getattr(self, '_success_count', 0),
-                'failure_count': getattr(self, '_failure_count', 0),
-                'performance_history': list(getattr(self, '_performance_history', deque(maxlen=PERF_HISTORY_LIMIT))),
-                'execution_times': list(getattr(self, '_execution_times', deque(maxlen=EXEC_TIMES_LIMIT))),
-                'custom_state': {}
-            }
-            if hasattr(self, '_get_custom_state'):
-                state['custom_state'] = self._get_custom_state()
-            return state
-        cls.get_state = get_state  # type: ignore[attr-defined]
-
-    if not hasattr(cls, 'set_state'):
-        def set_state(self, state: Dict[str, Any]):
-            self._step_count = state.get('step_count', 0)
-            self._health_status = state.get('health_status', 'OK')
-            self._last_execution = state.get('last_execution', 0)
-            self._error_count = state.get('error_count', 0)
-            self._success_count = state.get('success_count', 0)
-            self._failure_count = state.get('failure_count', 0)
-
-            # bounded deques (no leak)
-            self._performance_history = deque(state.get('performance_history', []), maxlen=PERF_HISTORY_LIMIT)
-            self._execution_times = deque(state.get('execution_times', []), maxlen=EXEC_TIMES_LIMIT)
-
-            if 'custom_state' in state and hasattr(self, '_set_custom_state'):
-                self._set_custom_state(state['custom_state'])
-            if hasattr(self, 'logger'):
-                self.logger.info(f"📥 STATE RESTORED: {self.__class__.__name__} step {self._step_count}, health {self._health_status}")
-        cls.set_state = set_state  # type: ignore[attr-defined]
-
-
-def _enhance_validation_methods(cls):
-    if not hasattr(cls, 'validate_inputs'):
-        def validate_inputs(self, inputs: Dict[str, Any]) -> bool:
-            for k in inputs.keys():
-                if not isinstance(k, str) or len(k) > MAX_INPUT_KEY_LEN or k.startswith("__"):
-                    raise ValueError(f"invalid input key: {k!r}")
-            for req in self.metadata.requires:
-                if req not in inputs:
-                    raise ValueError(f"missing required input: {req}")
-                if inputs[req] is None:
-                    raise ValueError(f"required input {req} cannot be None")
-            return True
-        cls.validate_inputs = validate_inputs  # type: ignore[attr-defined]
-
-    if not hasattr(cls, 'validate_outputs'):
-        def validate_outputs(self, outputs: Dict[str, Any]) -> bool:
-            md = self.metadata
-            for prov in md.provides:
-                if prov not in outputs:
-                    raise ValueError(f"missing required output: {prov}")
-            if getattr(md, 'thesis_required', False) and '_thesis' not in outputs:
-                raise ValueError("explainable modules must provide '_thesis'")
-            if '_confidence' in outputs:
-                c = outputs['_confidence']
-                if not isinstance(c, (int, float)) or not 0 <= c <= 1:
-                    raise ValueError(f"invalid confidence value: {c!r}")
-            return True
-        cls.validate_outputs = validate_outputs  # type: ignore[attr-defined]
-
-
-def _enhance_explanation_capability(cls):
-    if not hasattr(cls, 'explain_decision'):
-        def explain_decision(self, decision: Any, context: Dict[str, Any]) -> str:
-            try:
-                from modules.utils.system_utilities import EnglishExplainer
-                explainer = EnglishExplainer()
-                return explainer.explain_module_decision(
-                    module_name=self.__class__.__name__,
-                    decision=decision,
-                    context=context,
-                    confidence=context.get('confidence', 0.5)
-                )
-            except Exception:
-                return "Explanation unavailable."
-        cls.explain_decision = explain_decision  # type: ignore[attr-defined]
-
-
 # ─────────────────────────────────────────────────────────────
 # Decorators: requires / provides / timeout / retry / confidence
 # ─────────────────────────────────────────────────────────────
+def _extract_context(args: tuple[Any, ...], kwargs: dict[str, Any]) -> Dict[str, Any]:
+    """
+    Best-effort extraction of the input context from either:
+    - process(inputs=...)
+    - process({..})
+    - process(**inputs)
+    """
+    if "inputs" in kwargs and isinstance(kwargs["inputs"], dict):
+        return cast(Dict[str, Any], kwargs["inputs"])
+    if args and isinstance(args[0], dict):
+        return cast(Dict[str, Any], args[0])
+    return cast(Dict[str, Any], kwargs)
+
+
 def requires(*fields: str):
     def deco(func: Callable):
-        async def _async(self, *args, **kwargs):
-            # normalize inputs without mutating call
-            if 'inputs' in kwargs and isinstance(kwargs['inputs'], dict):
-                ctx = kwargs['inputs']
-            elif args and isinstance(args[0], dict):
-                ctx = args[0]
-            else:
-                ctx = kwargs
-            missing = [f for f in fields if f not in ctx or ctx[f] is None]
-            if missing:
-                err = ValueError(f"missing required inputs: {missing}")
-                if getattr(self, 'error_pinpointer', None):
-                    try:
-                        self.error_pinpointer.analyze_error(err, self.__class__.__name__)
-                    except Exception:
-                        pass
-                raise err
-            return await func(self, *args, **kwargs)
+        if asyncio.iscoroutinefunction(func):
 
+            @wraps(func)
+            async def _async(self, *args, **kwargs):
+                ctx = _extract_context(args, kwargs)
+                missing = [f for f in fields if f not in ctx or ctx[f] is None]
+                if missing:
+                    Err = _InputsNotReady_exc()
+                    err = Err(f"missing required inputs: {missing}")
+                    _maybe_pinpoint(self, err)
+                    raise err
+                return await func(self, *args, **kwargs)
+
+            return _async
+
+        @wraps(func)
         def _sync(self, *args, **kwargs):
-            if 'inputs' in kwargs and isinstance(kwargs['inputs'], dict):
-                ctx = kwargs['inputs']
-            elif args and isinstance(args[0], dict):
-                ctx = args[0]
-            else:
-                ctx = kwargs
+            ctx = _extract_context(args, kwargs)
             missing = [f for f in fields if f not in ctx or ctx[f] is None]
             if missing:
-                err = ValueError(f"missing required inputs: {missing}")
-                if getattr(self, 'error_pinpointer', None):
-                    try:
-                        self.error_pinpointer.analyze_error(err, self.__class__.__name__)
-                    except Exception:
-                        pass
+                Err = _InputsNotReady_exc()
+                err = Err(f"missing required inputs: {missing}")
+                _maybe_pinpoint(self, err)
                 raise err
             return func(self, *args, **kwargs)
 
-        return _async if asyncio.iscoroutinefunction(func) else _sync
+        return _sync
+
     return deco
 
 
 def provides(*fields: str):
     def deco(func: Callable):
-        async def _async(self, *args, **kwargs):
-            try:
+        if asyncio.iscoroutinefunction(func):
+
+            @wraps(func)
+            async def _async(self, *args, **kwargs):
                 result = await func(self, *args, **kwargs)
-            except Exception as e:
-                raise e
-            if isinstance(result, dict):
-                missing = [f for f in fields if f not in result]
-                if missing:
-                    err = ValueError(f"missing required outputs: {missing}")
-                    if getattr(self, 'error_pinpointer', None):
-                        try:
-                            self.error_pinpointer.analyze_error(err, self.__class__.__name__)
-                        except Exception:
-                            pass
-                    raise err
-            return result
+                _validate_required_outputs(self, result, fields)
+                return result
 
+            return _async
+
+        @wraps(func)
         def _sync(self, *args, **kwargs):
-            try:
-                result = func(self, *args, **kwargs)
-            except Exception as e:
-                raise e
-            if isinstance(result, dict):
-                missing = [f for f in fields if f not in result]
-                if missing:
-                    err = ValueError(f"missing required outputs: {missing}")
-                    if getattr(self, 'error_pinpointer', None):
-                        try:
-                            self.error_pinpointer.analyze_error(err, self.__class__.__name__)
-                        except Exception:
-                            pass
-                    raise err
+            result = func(self, *args, **kwargs)
+            _validate_required_outputs(self, result, fields)
             return result
 
-        return _async if asyncio.iscoroutinefunction(func) else _sync
+        return _sync
+
     return deco
+
+
+def _validate_required_outputs(self: Any, result: Any, fields: tuple[str, ...]) -> None:
+    if not isinstance(result, dict):
+        return
+    missing = [f for f in fields if f not in result]
+    if missing:
+        err = ValueError(f"missing required outputs: {missing}")
+        _maybe_pinpoint(self, err)
+        raise err
+
+
+def _maybe_pinpoint(self: Any, err: BaseException) -> None:
+    pp = getattr(self, "error_pinpointer", None)
+    if not pp:
+        return
+    try:
+        pp.analyze_error(err, self.__class__.__name__)
+    except Exception:
+        return
 
 
 def with_timeout(timeout_ms: Optional[int] = None):
     def deco(func: Callable):
-        async def _async(self, *args, **kwargs):
-            to = (timeout_ms or self.metadata.timeout_ms) / 1000.0
-            try:
-                return await asyncio.wait_for(func(self, *args, **kwargs), timeout=to)
-            except asyncio.TimeoutError as e:
-                try:
-                    maybe = getattr(self, "cleanup_after_timeout", None)
-                    if maybe:
-                        if asyncio.iscoroutinefunction(maybe):
-                            await maybe()
-                        elif callable(maybe):
-                            maybe()
-                except Exception:
-                    pass
-                raise e
+        if asyncio.iscoroutinefunction(func):
 
+            @wraps(func)
+            async def _async(self, *args, **kwargs):
+                to = float((timeout_ms or self.metadata.timeout_ms)) / 1000.0
+                try:
+                    return await asyncio.wait_for(func(self, *args, **kwargs), timeout=to)
+                except asyncio.TimeoutError:
+                    # optional cleanup hook
+                    try:
+                        maybe = getattr(self, "cleanup_after_timeout", None)
+                        if maybe:
+                            if asyncio.iscoroutinefunction(maybe):
+                                await maybe()
+                            elif callable(maybe):
+                                maybe()
+                    except Exception:
+                        pass
+                    raise
+
+            return _async
+
+        @wraps(func)
         def _sync(self, *args, **kwargs):
-            # Enforce hard timeout in sync path too
-            to_sec = float(timeout_ms or self.metadata.timeout_ms) / 1000.0
+            # Portable “best-effort” hard timeout using a worker thread.
             import concurrent.futures as _f
+
+            to_sec = float((timeout_ms or self.metadata.timeout_ms)) / 1000.0
             with _f.ThreadPoolExecutor(max_workers=1) as ex:
                 fut = ex.submit(lambda: func(self, *args, **kwargs))
                 try:
@@ -464,90 +419,97 @@ def with_timeout(timeout_ms: Optional[int] = None):
                         pass
                     raise TimeoutError(f"Timeout after {to_sec:.2f}s")
 
-        return _async if asyncio.iscoroutinefunction(func) else _sync
+        return _sync
+
     return deco
 
 
 def with_confidence_threshold(min_confidence: Optional[float] = None):
     def deco(func: Callable):
-        async def _async(self, *args, **kwargs):
-            thr = float(min_confidence or getattr(self.metadata, 'min_confidence', 0.0))
-            if 'inputs' in kwargs and isinstance(kwargs['inputs'], dict):
-                ctx = kwargs['inputs']
-            elif args and isinstance(args[0], dict):
-                ctx = args[0]
-            else:
-                ctx = kwargs
-            conf = float(ctx.get('confidence', 1.0))
-            if conf < thr:
-                from modules.core.exceptions import ExecutionSkipped
-                raise ExecutionSkipped(f'confidence {conf:.2f} below threshold {thr:.2f}')
-            return await func(self, *args, **kwargs)
+        if asyncio.iscoroutinefunction(func):
 
+            @wraps(func)
+            async def _async(self, *args, **kwargs):
+                thr = float(min_confidence if min_confidence is not None else self.metadata.min_confidence)
+                ctx = _extract_context(args, kwargs)
+                conf = float(ctx.get("confidence", 1.0))
+                if conf < thr:
+                    Err = _ExecutionSkipped_exc()
+                    raise Err(f"confidence {conf:.2f} below threshold {thr:.2f}")
+                return await func(self, *args, **kwargs)
+
+            return _async
+
+        @wraps(func)
         def _sync(self, *args, **kwargs):
-            thr = float(min_confidence or getattr(self.metadata, 'min_confidence', 0.0))
-            if 'inputs' in kwargs and isinstance(kwargs['inputs'], dict):
-                ctx = kwargs['inputs']
-            elif args and isinstance(args[0], dict):
-                ctx = args[0]
-            else:
-                ctx = kwargs
-            conf = float(ctx.get('confidence', 1.0))
+            thr = float(min_confidence if min_confidence is not None else self.metadata.min_confidence)
+            ctx = _extract_context(args, kwargs)
+            conf = float(ctx.get("confidence", 1.0))
             if conf < thr:
-                from modules.core.exceptions import ExecutionSkipped
-                raise ExecutionSkipped(f'confidence {conf:.2f} below threshold {thr:.2f}')
+                Err = _ExecutionSkipped_exc()
+                raise Err(f"confidence {conf:.2f} below threshold {thr:.2f}")
             return func(self, *args, **kwargs)
 
-        return _async if asyncio.iscoroutinefunction(func) else _sync
+        return _sync
+
     return deco
 
 
 def with_retry(max_retries: Optional[int] = None):
     def deco(func: Callable):
-        async def _async(self, *args, **kwargs):
-            retries = int(max_retries or self.__module_metadata__.max_retries)
-            last_exc: Optional[BaseException] = None
-            for attempt in range(retries + 1):
-                try:
-                    return await func(self, *args, **kwargs)
-                except Exception as e:  # normal exception chain
-                    last_exc = e
-                    if attempt < retries:
-                        if getattr(self, 'logger', None):
-                            self.logger.warning(f"Retry {attempt + 1}/{retries} for {self.__class__.__name__}.{func.__name__}")
-                        await asyncio.sleep(0.1 * (2 ** attempt))
-                    else:
-                        if getattr(self, 'error_pinpointer', None):
-                            try:
-                                self.error_pinpointer.analyze_error(e, self.__class__.__name__)
-                            except Exception:
-                                pass
-                        raise last_exc
-            # should never reach
-            raise RuntimeError("unreachable")
+        if asyncio.iscoroutinefunction(func):
 
+            @wraps(func)
+            async def _async(self, *args, **kwargs):
+                retries = int(max_retries if max_retries is not None else self.metadata.max_retries)
+                last_exc: Optional[BaseException] = None
+
+                for attempt in range(retries + 1):
+                    try:
+                        return await func(self, *args, **kwargs)
+                    except Exception as e:
+                        last_exc = e
+                        if attempt < retries:
+                            _log_retry(self, attempt + 1, retries, func.__name__)
+                            await asyncio.sleep(0.1 * (2**attempt))
+                        else:
+                            _maybe_pinpoint(self, e)
+                            raise
+                raise RuntimeError("unreachable") from last_exc
+
+            return _async
+
+        @wraps(func)
         def _sync(self, *args, **kwargs):
-            retries = int(max_retries or self.__module_metadata__.max_retries)
+            retries = int(max_retries if max_retries is not None else self.metadata.max_retries)
             last_exc: Optional[BaseException] = None
+
             for attempt in range(retries + 1):
                 try:
                     return func(self, *args, **kwargs)
                 except Exception as e:
                     last_exc = e
                     if attempt < retries:
-                        if getattr(self, 'logger', None):
-                            self.logger.warning(f"Retry {attempt + 1}/{retries} for {self.__class__.__name__}.{func.__name__}")
-                        time.sleep(0.1 * (2 ** attempt))
+                        _log_retry(self, attempt + 1, retries, func.__name__)
+                        time.sleep(0.1 * (2**attempt))
                     else:
-                        if getattr(self, 'error_pinpointer', None):
-                            try:
-                                self.error_pinpointer.analyze_error(e, self.__class__.__name__)
-                            except Exception:
-                                pass
-                        raise last_exc
-            raise RuntimeError("unreachable")
-        return _async if asyncio.iscoroutinefunction(func) else _sync
+                        _maybe_pinpoint(self, e)
+                        raise
+            raise RuntimeError("unreachable") from last_exc
+
+        return _sync
+
     return deco
+
+
+def _log_retry(self: Any, attempt: int, retries: int, fn_name: str) -> None:
+    lg = getattr(self, "logger", None)
+    if not lg:
+        return
+    try:
+        lg.warning(f"Retry {attempt}/{retries} for {self.__class__.__name__}.{fn_name}")
+    except Exception:
+        return
 
 
 # ─────────────────────────────────────────────────────────────
@@ -556,35 +518,31 @@ def with_retry(max_retries: Optional[int] = None):
 class BaseModule(ABC):
     """
     SmartInfoBus Base Module:
-    - No local circuit breaker; delegates to injected breaker (DI) to avoid duplication.
+    - Delegates to injected breaker (DI) to avoid duplication.
     - Safe, bounded state (deques) + explicit sanitization/validation.
-    - Async lifecycle hooks (__aenter__/__aexit__) and timeout cleanup.
+    - Async lifecycle hooks (__aenter__/__aexit__) and timeout cleanup hooks.
     - Pluggable dependencies: {"circuit_breaker": <obj>, "metrics": <obj>, "bus": <bus>, "orchestrator": <obj>}
-    - Startup pipeline friendly: warmup(), probe(), self_test() provided as fast no-ops by default.
+    - Startup-friendly: warmup(), probe(), self_test() are no-ops by default.
     """
 
     def __init__(self, config: Optional[Dict[str, Any]] = None, dependencies: Optional[Dict[str, Any]] = None):
-        if not hasattr(self.__class__, '__module_metadata__'):
+        if not hasattr(self.__class__, "__module_metadata__"):
             raise TypeError(f"{self.__class__.__name__} must be decorated with @module")
 
-        self.metadata: ModuleMetadata = getattr(self.__class__, '__module_metadata__')
+        self.metadata: ModuleMetadata = getattr(self.__class__, "__module_metadata__")
         self.config: Dict[str, Any] = dict(config or {})
         self.dependencies: Dict[str, Any] = dict(dependencies or {})
 
         # logging
         self.logger = self._setup_logger()
 
-        # observability helpers (optional DI)
-        self.metrics: Any = self.dependencies.get("metrics")  # e.g., Prometheus/OpenTelemetry registry
-        self.breaker: Any = self.dependencies.get("circuit_breaker")  # central breaker instance (optional)
+        # DI (set exactly once)
+        self.metrics: Any = self.dependencies.get("metrics")
+        self.breaker: Any = self.dependencies.get("circuit_breaker")
         self.bus: Any = self.dependencies.get("bus")
         self.orchestrator: Any = self.dependencies.get("orchestrator")
-        self.metrics: Any = self.dependencies.get("metrics")
-        self.breaker: Any = self.dependencies.get("circuit_breaker")  # <-- annotate as Any
-        self.bus: Any = self.dependencies.get("bus")  # <-- annotate as Any
-        self.orchestrator: Any = self.dependencies.get("orchestrator")  # <-- annotate as Any
 
-        # compute helpers (cache numpy vs pure python)
+        # compute helpers
         self._mean: Callable[[List[float]], float]
         self._percentile: Callable[[List[float], float], float]
         if _HAVE_NP:
@@ -592,11 +550,14 @@ class BaseModule(ABC):
             self._percentile = lambda xs, p: float(_np.percentile(xs, p)) if xs else 0.0  # type: ignore
         else:
             self._mean = lambda xs: (sum(xs) / len(xs)) if xs else 0.0
+
             def _p(xs: List[float], pct: float) -> float:
-                if not xs: return 0.0
+                if not xs:
+                    return 0.0
                 s = sorted(xs)
-                idx = min(max(int(round((pct/100.0)* (len(s)-1))), 0), len(s)-1)
+                idx = min(max(int(round((pct / 100.0) * (len(s) - 1))), 0), len(s) - 1)
                 return float(s[idx])
+
             self._percentile = _p
 
         # state
@@ -610,29 +571,26 @@ class BaseModule(ABC):
         self._performance_history: deque = deque(maxlen=PERF_HISTORY_LIMIT)
         self._execution_times: deque = deque(maxlen=EXEC_TIMES_LIMIT)
 
-        # explainability
+        # explainability helper (optional)
+        self.explainer: Any = None
         if self.metadata.explainable:
             try:
-                from modules.utils.system_utilities import EnglishExplainer
+                from modules.utils.system_utilities import EnglishExplainer  # type: ignore
+
                 self.explainer = EnglishExplainer()
             except Exception:
                 self.explainer = None
-        else:
-            self.explainer = None
 
         # pinpointer (optional)
-        self.error_pinpointer = None
+        self.error_pinpointer: Any = None
         try:
-            from modules.core.error_pinpointer import ErrorPinpointer
-            # Prefer orchestrator-aware pinpointer if available
-            if self.orchestrator is not None:
-                self.error_pinpointer = ErrorPinpointer(self.orchestrator)
-            else:
-                self.error_pinpointer = ErrorPinpointer()
-        except Exception:
-            pass
+            from modules.core.error_pinpointer import ErrorPinpointer  # type: ignore
 
-        # resolve optional deps (no hard coupling)
+            self.error_pinpointer = ErrorPinpointer(self.orchestrator) if self.orchestrator else ErrorPinpointer()
+        except Exception:
+            self.error_pinpointer = None
+
+        # best-effort autowiring (optional)
         self._resolve_dependencies()
 
         # module-specific init
@@ -640,7 +598,7 @@ class BaseModule(ABC):
 
         self.logger.info(f"[OK] MODULE INITIALIZED: {self.__class__.__name__} v{self.metadata.version} ({self.metadata.category})")
 
-    # ───── lifecycle (async context) ─────
+    # ───── async lifecycle ─────
     async def __aenter__(self):
         await self.initialize_async_resources()
         return self
@@ -648,52 +606,68 @@ class BaseModule(ABC):
     async def __aexit__(self, exc_type, exc, tb):
         await self.cleanup_async_resources()
 
-    async def initialize_async_resources(self):
-        """Override if module opens async resources (sockets, pools)."""
+    async def initialize_async_resources(self) -> None:
         return None
 
-    async def cleanup_async_resources(self):
-        """Override to cleanup async resources."""
+    async def cleanup_async_resources(self) -> None:
         return None
 
-    def cleanup_after_timeout(self):
-        """Optional: called by with_timeout() when async task times out."""
+    def cleanup_after_timeout(self) -> None:
         return None
 
     def _cleanup(self) -> None:
-        """Optional finalizer hook for subclasses. Called from __del__."""
         return None
 
     def __del__(self):
-        """Best-effort finalizer; cannot rely on ordering at interpreter shutdown."""
         try:
             self._cleanup()
         except Exception:
             pass
 
-    # ───── DI breaker adapters (no local breaker) ─────
+    # ───── DI breaker adapters (supports multiple breaker API shapes) ─────
     def breaker_allow(self) -> bool:
+        b = self.breaker
+        if not b:
+            return True
         try:
-            return bool(self.breaker.allow()) if self.breaker else True
+            if hasattr(b, "allow") and callable(b.allow):
+                return bool(b.allow())
+            if hasattr(b, "should_allow_request") and callable(b.should_allow_request):
+                return bool(b.should_allow_request())
         except Exception:
             return True
+        return True
 
     def breaker_on_success(self) -> None:
+        b = self.breaker
+        if not b:
+            return
         try:
-            if self.breaker:
-                self.breaker.on_success()
+            if hasattr(b, "on_success") and callable(b.on_success):
+                b.on_success()
+                return
+            if hasattr(b, "record_success") and callable(b.record_success):
+                b.record_success()
+                return
         except Exception:
-            pass
+            return
 
     def breaker_on_failure(self) -> None:
+        b = self.breaker
+        if not b:
+            return
         try:
-            if self.breaker:
-                self.breaker.on_failure()
+            if hasattr(b, "on_failure") and callable(b.on_failure):
+                b.on_failure()
+                return
+            if hasattr(b, "record_failure") and callable(b.record_failure):
+                b.record_failure()
+                return
         except Exception:
-            pass
+            return
 
     # ───── config helpers ─────
-    def set_config(self, config: Dict[str, Any]):
+    def set_config(self, config: Dict[str, Any]) -> None:
         self.config.update(config)
         self.logger.info(f"Configuration updated for {self.__class__.__name__}")
 
@@ -702,10 +676,6 @@ class BaseModule(ABC):
 
     # ───── logger ─────
     def _setup_logger(self) -> logging.Logger:
-        """
-        Use a process-scoped cached RotatingLogger so repeated instantiations
-        of the same module don't start new log sessions / banners.
-        """
         try:
             return cast(logging.Logger, BaseModule._get_rotating_logger_cached(self.__class__.__name__))
         except Exception:
@@ -714,7 +684,7 @@ class BaseModule(ABC):
             if not logger.handlers:
                 handler = logging.StreamHandler()
                 handler.setLevel(logging.INFO)
-                formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s')
+                formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
                 handler.setFormatter(formatter)
                 logger.addHandler(handler)
             logger.propagate = False
@@ -722,31 +692,22 @@ class BaseModule(ABC):
 
     @staticmethod
     def _get_rotating_logger_cached(name: str) -> Any:
-        """
-        Return a cached RotatingLogger (or stdlib logger fallback) so we don't
-        re-initialize the same log session repeatedly. Keyed by (name, pid).
-        """
         try:
             from modules.utils.audit_utils import RotatingLogger  # type: ignore
         except Exception:
-            import logging, os
             logger = logging.getLogger(f"{name}:{os.getpid()}")
             logger.setLevel(logging.INFO)
             if not logger.handlers:
                 h = logging.StreamHandler()
-                h.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s'))
+                h.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
                 logger.addHandler(h)
             logger.propagate = False
             return logger
 
-        import os
         cache_key = f"{name}:{os.getpid()}"
-        cache = _ROTATING_LOGGER_CACHE
-
-        if cache_key not in cache:
-            # Handle both RotatingLogger signatures (log_path vs log_dir)
+        if cache_key not in _ROTATING_LOGGER_CACHE:
             try:
-                cache[cache_key] = RotatingLogger(
+                _ROTATING_LOGGER_CACHE[cache_key] = RotatingLogger(
                     name=name,
                     log_path=f"logs/modules/{name}.log",
                     max_lines=5000,
@@ -754,33 +715,25 @@ class BaseModule(ABC):
                     plain_english=True,
                 )
             except TypeError:
-                cache[cache_key] = RotatingLogger(
+                _ROTATING_LOGGER_CACHE[cache_key] = RotatingLogger(
                     name=name,
                     log_dir="logs/modules",
                     max_lines=5000,
                     operator_mode=True,
                     plain_english=True,
                 )
-        return cache[cache_key]
+        return _ROTATING_LOGGER_CACHE[cache_key]
 
     # ───── abstract API ─────
     @abstractmethod
-    def _initialize(self):
-        """Set up internal data structures, configuration, external connections."""
+    def _initialize(self) -> None:
         raise NotImplementedError
 
     @abstractmethod
     async def process(self, **inputs) -> Dict[str, Any]:
-        """
-        Must:
-          1) self.validate_inputs(inputs)
-          2) compute outputs matching metadata.provides
-          3) include '_thesis' if explainable/thesis_required
-          4) self.validate_outputs(outputs)
-        """
         raise NotImplementedError
 
-    # ───── validation (base implementations kept for clarity + custom overrides) ─────
+    # ───── validation ─────
     def validate_inputs(self, inputs: Dict[str, Any]) -> bool:
         for k in inputs.keys():
             if not isinstance(k, str) or len(k) > MAX_INPUT_KEY_LEN or k.startswith("__"):
@@ -796,15 +749,15 @@ class BaseModule(ABC):
         for prov in self.metadata.provides:
             if prov not in outputs:
                 raise ValueError(f"missing required output: {prov}")
-        if getattr(self.metadata, 'thesis_required', False) and '_thesis' not in outputs:
+        if getattr(self.metadata, "thesis_required", False) and "_thesis" not in outputs:
             raise ValueError("explainable modules must provide '_thesis'")
-        if '_confidence' in outputs:
-            c = outputs['_confidence']
+        if "_confidence" in outputs:
+            c = outputs["_confidence"]
             if not isinstance(c, (int, float)) or not 0 <= c <= 1:
                 raise ValueError(f"invalid confidence value: {c!r}")
         return True
 
-    # ───── optional capabilities (no-op defaults) ─────
+    # ───── optional capabilities ─────
     async def propose_action(self, **inputs) -> Optional[Dict[str, Any]]:
         return None
 
@@ -819,119 +772,88 @@ class BaseModule(ABC):
                 module_name=self.__class__.__name__,
                 decision=decision,
                 context=context,
-                confidence=context.get('confidence', 0.5)
+                confidence=context.get("confidence", 0.5),
             )
         except Exception:
             return "Explanation unavailable."
 
-    # Startup pipeline hooks (warmup/autotune probe/self-test) — safe no-ops by default
+    # Startup hooks
     async def warmup(self) -> None:
-        """Optionally override to pre-load models, prime caches, or open resources."""
         return None
 
     async def probe(self) -> None:
-        """Optionally override to perform a quick representative operation for autotune."""
         return None
 
     async def self_test(self) -> None:
-        """Optionally override to validate critical invariants; should be fast (<1s)."""
         return None
 
-    # Back-compat alias some modules may implement
     async def run_self_test(self) -> None:
         return await self.self_test()
 
     # ───── state persistence ─────
     def get_state(self) -> Dict[str, Any]:
-        state = {
-            'class_name': self.__class__.__name__,
-            'module_path': self.__class__.__module__,
-            'version': self.metadata.version,
-            'step_count': self._step_count,
-            'health_status': self._health_status,
-            'last_error': self._last_error,
-            'last_execution': self._last_execution,
-            'error_count': self._error_count,
-            'success_count': self._success_count,
-            'failure_count': self._failure_count,
-            'performance_history': list(self._performance_history),
-            'execution_times': list(self._execution_times),
-            'custom_state': {}
+        return {
+            "class_name": self.__class__.__name__,
+            "module_path": self.__class__.__module__,
+            "version": self.metadata.version,
+            "step_count": self._step_count,
+            "health_status": self._health_status,
+            "last_error": self._last_error,
+            "last_execution": self._last_execution,
+            "error_count": self._error_count,
+            "success_count": self._success_count,
+            "failure_count": self._failure_count,
+            "performance_history": list(self._performance_history),
+            "execution_times": list(self._execution_times),
+            "custom_state": self._get_custom_state(),
         }
-        if hasattr(self, '_get_custom_state'):
-            state['custom_state'] = self._get_custom_state()
-        return state
 
-    def set_state(self, state: Dict[str, Any]):
-        self._step_count = state.get('step_count', 0)
-        self._health_status = state.get('health_status', 'OK')
-        self._last_error = state.get('last_error')
-        self._last_execution = state.get('last_execution', 0.0)
-        self._error_count = state.get('error_count', 0)
-        self._success_count = state.get('success_count', 0)
-        self._failure_count = state.get('failure_count', 0)
-        self._performance_history = deque(state.get('performance_history', []), maxlen=PERF_HISTORY_LIMIT)
-        self._execution_times = deque(state.get('execution_times', []), maxlen=EXEC_TIMES_LIMIT)
-        if 'custom_state' in state and hasattr(self, '_set_custom_state'):
-            self._set_custom_state(state['custom_state'])
-        self.logger.info(f"📥 STATE RESTORED: {self.__class__.__name__} step {self._step_count}, health {self._health_status}")
+    def set_state(self, state: Dict[str, Any]) -> None:
+        self._step_count = int(state.get("step_count", 0))
+        self._health_status = str(state.get("health_status", "OK"))
+        self._last_error = state.get("last_error")
+        self._last_execution = float(state.get("last_execution", 0.0))
+        self._error_count = int(state.get("error_count", 0))
+        self._success_count = int(state.get("success_count", 0))
+        self._failure_count = int(state.get("failure_count", 0))
+        self._performance_history = deque(state.get("performance_history", []), maxlen=PERF_HISTORY_LIMIT)
+        self._execution_times = deque(state.get("execution_times", []), maxlen=EXEC_TIMES_LIMIT)
 
-    def validate_state(self, state: Dict[str, Any]) -> bool:
-        if not isinstance(state, dict):
-            return False
-        # If the state follows the canonical BaseModule envelope, validate strictly.
-        if ('class_name' in state) and ('version' in state):
-            try:
-                saved_major = int(str(state.get('version', '1.0.0')).split('.')[0])
-                current_major = int(self.metadata.version.split('.')[0])
-                return saved_major == current_major
-            except Exception:
-                return True
-        # Otherwise tolerate custom module snapshots to avoid dropping state.
-        # Apply a best-effort major version check using an optional 'version' key if present.
-        try:
-            saved_major = int(str(state.get('version', self.metadata.version)).split('.')[0])
-            current_major = int(self.metadata.version.split('.')[0])
-            return saved_major == current_major
-        except Exception:
-            return True
+        cs = state.get("custom_state")
+        if isinstance(cs, dict):
+            self._set_custom_state(cs)
+
+        self.logger.info(f"STATE RESTORED: {self.__class__.__name__} step={self._step_count} health={self._health_status}")
 
     def validate_state_compatibility(self, state: Dict[str, Any]) -> bool:
         """
-        Best-effort compatibility check for restored state.
-
-        Many modules override get_state() and may not include a top-level
-        'version' key (e.g., they store it under 'module_info'). Be tolerant
-        to avoid false negatives on restore and let the Persistence layer's
-        envelope/version checks gate true incompatibilities.
+        Best-effort compatibility check:
+        - If a version exists, enforce MAJOR match.
+        - If no version exists, allow (outer persistence layer may enforce).
         """
         try:
             version_value: Optional[str] = None
             if isinstance(state, dict):
-                # Primary: explicit version on the state snapshot
-                v = state.get('version')
+                v = state.get("version")
                 if isinstance(v, (str, int)):
                     version_value = str(v)
                 else:
-                    # Secondary: nested metadata commonly used by modules
-                    mi = state.get('module_info')
+                    mi = state.get("module_info")
                     if isinstance(mi, dict):
-                        mv = mi.get('version')
+                        mv = mi.get("version")
                         if isinstance(mv, (str, int)):
                             version_value = str(mv)
 
-            # If no version could be determined, tolerate (let outer checks decide)
             if not version_value:
                 return True
 
-            saved_major = int(str(version_value).split('.')[0])
-            current_major = int(self.metadata.version.split('.')[0])
+            saved_major = int(version_value.split(".")[0])
+            current_major = int(self.metadata.version.split(".")[0])
             return saved_major == current_major
         except Exception:
-            # On any parsing issue, default to permissive to avoid dropping state
             return True
 
-    def reset(self):
+    def reset(self) -> None:
         self._step_count = 0
         self._health_status = "OK"
         self._last_error = None
@@ -942,21 +864,22 @@ class BaseModule(ABC):
         self._performance_history = deque(maxlen=PERF_HISTORY_LIMIT)
         self._execution_times = deque(maxlen=EXEC_TIMES_LIMIT)
         self._initialize()
-        self.logger.info(f"[RELOAD] MODULE RESET: {self.__class__.__name__}")
+        self.logger.info(f"MODULE RESET: {self.__class__.__name__}")
 
     # hooks for custom state
     def _get_custom_state(self) -> Dict[str, Any]:
         return {}
 
-    def _set_custom_state(self, state: Dict[str, Any]):
+    def _set_custom_state(self, state: Dict[str, Any]) -> None:
         return None
 
     # ───── health & metrics ─────
     @property
     def is_healthy(self) -> bool:
-        is_status_ok = (self._health_status == "OK")
+        is_status_ok = self._health_status == "OK"
         total_execs = self._success_count + self._failure_count
-        error_rate_ok = (self._error_count < 10)
+        error_rate_ok = self._error_count < 10
+
         failure_rate_ok = True
         if total_execs > 0:
             failure_rate_ok = (self._failure_count / total_execs) < 0.10
@@ -967,53 +890,55 @@ class BaseModule(ABC):
             avg_recent = self._mean(recent)
             perf_ok = avg_recent < (self.metadata.timeout_ms * 0.8)
 
-        return all([is_status_ok, error_rate_ok, failure_rate_ok, perf_ok])
+        return bool(is_status_ok and error_rate_ok and failure_rate_ok and perf_ok)
 
     def get_health_status(self) -> Dict[str, Any]:
         avg_time = self._mean(list(self._execution_times))
         total = self._success_count + self._failure_count
         error_rate = (self._failure_count / total) if total else 0.0
+
         return {
-            'status': self._health_status,
-            'module': self.__class__.__name__,
-            'version': self.metadata.version,
-            'step_count': self._step_count,
-            'error_count': self._error_count,
-            'last_error': self._last_error,
-            'last_execution': self._last_execution,
-            'performance': {
-                'avg_time_ms': avg_time,
-                'max_time_ms': max(self._execution_times) if self._execution_times else 0.0,
-                'min_time_ms': min(self._execution_times) if self._execution_times else 0.0,
-                'error_rate': error_rate,
-                'total_executions': total,
-                'success_rate': 1 - error_rate if total else 1.0
+            "status": self._health_status,
+            "module": self.__class__.__name__,
+            "version": self.metadata.version,
+            "step_count": self._step_count,
+            "error_count": self._error_count,
+            "last_error": self._last_error,
+            "last_execution": self._last_execution,
+            "performance": {
+                "avg_time_ms": avg_time,
+                "max_time_ms": max(self._execution_times) if self._execution_times else 0.0,
+                "min_time_ms": min(self._execution_times) if self._execution_times else 0.0,
+                "error_rate": error_rate,
+                "total_executions": total,
+                "success_rate": (1.0 - error_rate) if total else 1.0,
             },
-            'is_healthy': self.is_healthy
+            "is_healthy": self.is_healthy,
         }
 
-    def record_execution(self, duration_ms: float, success: bool, error: Optional[str] = None):
+    def record_execution(self, duration_ms: float, success: bool, error: Optional[str] = None) -> None:
         self._step_count += 1
         self._last_execution = time.time()
         self._execution_times.append(float(duration_ms))
-        self._performance_history.append({
-            'step': self._step_count,
-            'duration_ms': float(duration_ms),
-            'success': bool(success),
-            'error': error,
-            'timestamp': self._last_execution
-        })
+        self._performance_history.append(
+            {
+                "step": self._step_count,
+                "duration_ms": float(duration_ms),
+                "success": bool(success),
+                "error": error,
+                "timestamp": self._last_execution,
+            }
+        )
 
         if success:
             self._success_count += 1
             if self._health_status == "DEGRADED":
-                # quick recovery heuristic
                 recent = list(self._performance_history)[-RECENT_SUCCESS_SAMPLE_SIZE:]
                 if recent:
-                    succ = sum(1 for r in recent if r['success'])
-                    if succ / len(recent) > 0.8:
+                    succ = sum(1 for r in recent if r.get("success"))
+                    if (succ / len(recent)) > 0.8:
                         self._health_status = "OK"
-                        self.logger.info(f"[OK] Module health recovered: {self.__class__.__name__}")
+                        self.logger.info(f"Module health recovered: {self.__class__.__name__}")
             self.breaker_on_success()
         else:
             self._failure_count += 1
@@ -1021,58 +946,65 @@ class BaseModule(ABC):
             self._last_error = error
             recent = list(self._performance_history)[-RECENT_SUCCESS_SAMPLE_SIZE:]
             if recent:
-                succ = sum(1 for r in recent if r['success'])
-                if succ / len(recent) < 0.5:
+                succ = sum(1 for r in recent if r.get("success"))
+                if (succ / len(recent)) < 0.5:
                     self._health_status = "DEGRADED"
-                    self.logger.warning(f"[WARN] Module health degraded: {self.__class__.__name__}")
+                    self.logger.warning(f"Module health degraded: {self.__class__.__name__}")
             self.breaker_on_failure()
 
-    # ───── load shedding (override in heavy modules) ─────
-    def reduce_load(self, factor: float = 0.5):
+    # ───── load shedding ─────
+    def reduce_load(self, factor: float = 0.5) -> None:
         self.logger.info(f"Load reduction requested for {self.__class__.__name__} (factor={factor})")
 
-    # ───── DI resolution (best-effort, no hard coupling) ─────
-    def _resolve_dependencies(self):
+    # ─────────────────────────────────────────────────────────
+    # Dependency resolution (best-effort, no hard coupling)
+    # ─────────────────────────────────────────────────────────
+    def _resolve_dependencies(self) -> None:
         """
-        Light-touch autowiring:
+        Light-touch autowiring (optional):
          - bus: modules.utils.info_bus.InfoBusManager instance (if available)
          - orchestrator: modules.core.module_system.ModuleOrchestrator.get_instance() (if available)
-         - circuit_breaker: if orchestrator is available, try to adopt central breaker for this module
-         - error pinpointer: prefer orchestrator-aware instance
+         - circuit_breaker: if orchestrator has a registry, adopt breaker for this module
+         - error_pinpointer: prefer orchestrator-aware instance
         """
         if os.getenv("SMARTINFOBUS_AUTOWIRE", "1").strip().lower() in {"0", "false", "no", "off"}:
             return
 
         # Bus
-        if not getattr(self, 'bus', None):
+        if self.bus is None:
             try:
-                from modules.utils.info_bus import InfoBusManager
+                from modules.utils.info_bus import InfoBusManager  # type: ignore
+
                 self.bus = InfoBusManager.get_instance()
             except Exception:
                 self.bus = None
 
         # Orchestrator
-        if not getattr(self, 'orchestrator', None):
+        if self.orchestrator is None:
             try:
-                from modules.core.module_system import ModuleOrchestrator
+                from modules.core.module_system import ModuleOrchestrator  # type: ignore
+
                 self.orchestrator = ModuleOrchestrator.get_instance()
             except Exception:
                 self.orchestrator = None
 
-        # Circuit breaker from orchestrator registry
-        if not getattr(self, 'breaker', None) and self.orchestrator is not None:
+        # Circuit breaker from orchestrator registry (if exposed)
+        if self.breaker is None and self.orchestrator is not None:
             try:
                 name = self.__class__.__name__
-                cb = self.orchestrator.circuit_breakers.get(name)
-                if cb:
-                    self.breaker = cb
+                reg = getattr(self.orchestrator, "circuit_breakers", None)
+                if isinstance(reg, dict):
+                    cb = reg.get(name)
+                    if cb is not None:
+                        self.breaker = cb
             except Exception:
                 pass
 
         # Error pinpointer with orchestrator context if possible
         if self.error_pinpointer is None:
             try:
-                from modules.core.error_pinpointer import ErrorPinpointer
+                from modules.core.error_pinpointer import ErrorPinpointer  # type: ignore
+
                 self.error_pinpointer = ErrorPinpointer(self.orchestrator) if self.orchestrator else ErrorPinpointer()
             except Exception:
                 self.error_pinpointer = None

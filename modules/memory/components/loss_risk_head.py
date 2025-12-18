@@ -143,14 +143,20 @@ class LossRiskHeadComponent(MemoryComponent):
         self.embed_dim: int = int(getattr(cfg, "embed_dim", 32))
         self.loss_threshold: float = float(getattr(cfg, "loss_risk_threshold", self._LOSS_THRESHOLD))
         
+        # P1 FIX: Use centralized config dimension if available, otherwise use class default
+        input_dim = int(getattr(cfg, "loss_head_input_dim", self._INPUT_DIM))
+        
         # Device detection
         self._device = self._infer_device()
         
-        # Neural model
+        # Neural model - use configured input_dim
         self.risk_head = LossRiskHead(
-            input_dim=self._INPUT_DIM,
+            input_dim=input_dim,
             hidden_dim=64
         ).to(self._device)
+        
+        # Store actual input dim for feature building
+        self._actual_input_dim = input_dim
         
         # Optimizer
         self.optimizer = torch.optim.Adam(self.risk_head.parameters(), lr=1e-3)
@@ -323,9 +329,10 @@ class LossRiskHeadComponent(MemoryComponent):
             parts.append(size / 10.0)
             parts.append(duration / 100.0)
             
-            # Pad/trim to input dim
+            # Pad/trim to input dim - P1 FIX: use actual configured input dim
+            target_dim = getattr(self, '_actual_input_dim', self._INPUT_DIM)
             arr = np.asarray(parts, dtype=np.float32)
-            arr = self._pad_or_trim(arr, self._INPUT_DIM)
+            arr = self._pad_or_trim(arr, target_dim)
             arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
             
             return arr

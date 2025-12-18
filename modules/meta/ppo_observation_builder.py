@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # ─────────────────────────────────────────────────────────────
 # File: modules/meta/ppo_observation_builder.py
-# Unified PPO Observation Builder (v5.0 - Master/Advisor Architecture)
+# Unified PPO Observation Builder (v5.2 - Master/Advisor Architecture)
 #
 # Single source of truth for PPO observation construction.
 # Used identically in TRAINING (ModernTradingEnv) and LIVE (PPOAgent).
@@ -10,6 +10,11 @@
 # - Prevent cross-symbol leakage when instrument key mismatches (XAUUSD vs XAU/USD, etc.)
 # - Make expert signals schema match _build_voting_features() (direction + score/strength)
 # - Normalize position direction parsing (string -> signed float)
+# - FIX: forming-bar update tolerance uses relative/absolute epsilon (no XAUUSD 0.0001 mismatch)
+# - FIX: MACD histogram is real histogram (MACD line - signal EMA9)
+# - FIX: regime_accuracy fetch preserves float values (no accidental dict coercion)
+# - FIX: Added use_forming_bar flag (default False) to ensure train/live parity
+#        Training uses closed bars; live should too unless explicitly configured otherwise.
 # ─────────────────────────────────────────────────────────────
 
 from __future__ import annotations
@@ -40,7 +45,7 @@ except ImportError:
 
 
 # ═══════════════════════════════════════════════════════════════════
-# OBSERVATION SCHEMA (v5.0) - Master/Advisor Architecture
+# OBSERVATION SCHEMA (v5.1) - Master/Advisor Architecture
 # ═══════════════════════════════════════════════════════════════════
 #
 # Total: 64 dimensions
@@ -55,7 +60,7 @@ except ImportError:
 # [56-63] Trading Mode State (incl. timing features) - 8 dims
 # ═══════════════════════════════════════════════════════════════════
 
-PPO_OBS_VERSION = "5.0"  # Master/Advisor Architecture
+PPO_OBS_VERSION = "5.2"
 PPO_OBS_SIZE = 64
 
 FEATURE_GROUPS: Dict[str, tuple[int, int]] = {
@@ -92,6 +97,19 @@ class PPOObservationConfig:
     # World model parameters (v4.0)
     prediction_confidence_threshold: float = 0.5
     scenario_confidence_threshold: float = 0.5  # reserved for future use
+
+    # Forming bar tolerance (relative/absolute)
+    # - relative: scaled by current price (works across instruments)
+    # - absolute: protects near-zero / tiny prices
+    forming_bar_rtol: float = 1e-7
+    forming_bar_atol: float = 1e-6
+    
+    # CRITICAL: Train/Live parity flag
+    # - False (default): Ignore forming bars, use only closed candles (RECOMMENDED)
+    #   This ensures training and live see identical observation distributions.
+    # - True: Merge forming bar into last candle (live-only use case)
+    #   Only set True if you explicitly want live to see incomplete candles.
+    use_forming_bar: bool = False
 
 
 class PPOObservationBuilder:
@@ -213,9 +231,6 @@ class PPOObservationBuilder:
         """Normalize symbol keys (XAU/USD, XAUUSD, xau_usd, EURUSDm -> XAUUSD/EURUSD)."""
         if not isinstance(s, str):
             return ""
-        # Keep alphanumerics only:
-        # - Handles broker suffixes/prefixes like "EURUSDm", "EURUSD.m", "XAUUSD#"
-        # - Avoids cross-symbol leakage from separator differences
         return "".join(ch for ch in s.strip().upper() if ch.isalnum())
 
     def _lookup_symbol_block(self, mapping: Any, instrument: str) -> Optional[Dict[str, Any]]:
@@ -238,9 +253,7 @@ class PPOObservationBuilder:
             if self._norm_symbol(k) == target:
                 return val
 
-        # 2) Loose match for common broker suffixes / aliasing:
-        #    - EURUSD vs EURUSDm / EURUSD.i / EURUSD#
-        #    - US30 vs US30CASH
+        # 2) Loose match for broker suffixes / aliasing
         candidates: list[tuple[int, Dict[str, Any]]] = []
         for k, val in mapping.items():
             if not (isinstance(k, str) and isinstance(val, dict)):
@@ -252,7 +265,6 @@ class PPOObservationBuilder:
                 candidates.append((abs(len(k_norm) - len(target)), val))
 
         if candidates:
-            # Prefer the closest-length match to reduce accidental collisions.
             candidates.sort(key=lambda t: t[0])
             return candidates[0][1]
 
@@ -294,7 +306,6 @@ class PPOObservationBuilder:
         except Exception:
             pass
 
-        # IMPORTANT: return empty rather than returning a multi-symbol dict that might pick the wrong symbol
         return {}
 
     def _fetch_expert_signals_for_instrument(self, bus: Any, module: str, instrument: str) -> Dict[str, Any]:
@@ -305,12 +316,20 @@ class PPOObservationBuilder:
         if not isinstance(experts, dict):
             return global_signals
 
+        target = self._norm_symbol(instrument)
+
         for expert_name, sig in list(experts.items()):
             if isinstance(sig, dict) and "instruments" in sig:
                 instruments_map = sig.get("instruments", {})
                 if isinstance(instruments_map, dict):
-                    inst_sig = instruments_map.get(instrument, sig)
-                    experts[expert_name] = inst_sig
+                    inst_sig = instruments_map.get(instrument)
+                    if not isinstance(inst_sig, dict) and target:
+                        for k, v in instruments_map.items():
+                            if isinstance(k, str) and isinstance(v, dict) and self._norm_symbol(k) == target:
+                                inst_sig = v
+                                break
+                    if isinstance(inst_sig, dict):
+                        experts[expert_name] = inst_sig
 
         global_signals["experts"] = experts
         return global_signals
@@ -322,7 +341,13 @@ class PPOObservationBuilder:
         portfolio_risk = risk.get("portfolio_risk", {})
         if isinstance(portfolio_risk, dict) and "instruments" in portfolio_risk:
             inst_risk = portfolio_risk["instruments"].get(instrument, {})
-            risk["instrument_risk"] = inst_risk
+            if not isinstance(inst_risk, dict):
+                target = self._norm_symbol(instrument)
+                for k, v in portfolio_risk["instruments"].items():
+                    if isinstance(k, str) and isinstance(v, dict) and self._norm_symbol(k) == target:
+                        inst_risk = v
+                        break
+            risk["instrument_risk"] = inst_risk if isinstance(inst_risk, dict) else {}
 
         return risk
 
@@ -334,7 +359,6 @@ class PPOObservationBuilder:
         if isinstance(positions, dict):
             inst_pos = positions.get(instrument)
             if not isinstance(inst_pos, dict):
-                # normalized key fallback
                 target = self._norm_symbol(instrument)
                 for k, v in positions.items():
                     if isinstance(k, str) and isinstance(v, dict) and self._norm_symbol(k) == target:
@@ -398,7 +422,7 @@ class PPOObservationBuilder:
 
     def _build_voting_features_for_instrument(self, expert_signals: Optional[Dict[str, Any]], instrument: str) -> np.ndarray:
         """Build voting features for a specific instrument."""
-        _ = instrument  # symmetry / future use
+        _ = instrument
         return self._build_voting_features(expert_signals)
 
     def _build_m15_features(self, market_data: Optional[Dict[str, Any]]) -> np.ndarray:
@@ -447,6 +471,7 @@ class PPOObservationBuilder:
         rsi = self._compute_rsi(close_arr, self.config.rsi_period)
         feats[4] = float((rsi - 50.0) / 50.0)
 
+        # FIX: real MACD histogram (MACD line - signal)
         macd_hist = self._compute_macd_histogram(close_arr)
         denom = max(abs(c) * 0.01, self._eps)
         feats[5] = float(np.clip(macd_hist / denom, -1.0, 1.0))
@@ -467,7 +492,8 @@ class PPOObservationBuilder:
         if close_arr.size >= 20:
             prev = close_arr[-20:-1]
             curr = close_arr[-19:]
-            returns = (curr - prev) / prev
+            denom_prev = np.maximum(np.abs(prev), self._eps)
+            returns = (curr - prev) / denom_prev
             vol = float(np.std(returns))
             feats[9] = float(np.clip(vol * 100.0, 0.0, 1.0))
 
@@ -946,45 +972,30 @@ class PPOObservationBuilder:
         return feats
 
     # ======================================================================
-    # Trading Mode Features (v5.1) - 8 dims (with timing integration)
+    # Trading Mode Features - 8 dims (with timing integration)
     # ======================================================================
 
     def _build_trading_mode_features(self, trading_mode_state: Optional[Dict[str, Any]]) -> np.ndarray:
-        """
-        Build trading mode features (8 dims) with enhanced market context.
-
-        Feature layout (v5.2 - includes underutilized market context):
-        [0] = Trading mode intensity (safe/normal/aggressive/extreme)
-        [1] = Entry allowed (gated by timing)
-        [2] = Entry quality / regime stability composite
-        [3] = Theme awareness (theme_strength + theme_transition)
-        [4] = Zone type / regime accuracy composite
-        [5] = Volatility state / risk scaling composite
-        [6] = Liquidity awareness
-        [7] = Mode effectiveness / combined market confidence
-        """
         feats = np.zeros(8, dtype=np.float32)
 
         # Defaults
-        feats[0] = 0.5  # Trading mode intensity
-        feats[1] = 1.0  # Entry allowed
-        feats[2] = 0.5  # Entry quality / regime stability
-        feats[3] = 0.5  # Theme awareness
-        feats[4] = 0.5  # Zone type / regime accuracy
-        feats[5] = 0.33  # Volatility / risk scaling
-        feats[6] = 0.5  # Liquidity
-        feats[7] = 0.5  # Mode effectiveness
+        feats[0] = 0.5
+        feats[1] = 1.0
+        feats[2] = 0.5
+        feats[3] = 0.5
+        feats[4] = 0.5
+        feats[5] = 0.33
+        feats[6] = 0.5
+        feats[7] = 0.5
 
         if not trading_mode_state or not isinstance(trading_mode_state, dict):
             return feats
 
-        # [0] Trading mode intensity
         mode = trading_mode_state.get("trading_mode", trading_mode_state.get("current_mode", "normal"))
         mode_map = {"safe": 0.25, "normal": 0.5, "aggressive": 0.75, "extreme": 1.0}
         if isinstance(mode, str):
             feats[0] = mode_map.get(mode.lower(), 0.5)
 
-        # Get new market context values (FIX: use underutilized outputs)
         regime_stability = trading_mode_state.get("regime_stability", 0.5)
         theme_transition = trading_mode_state.get("theme_transition", 0.0)
         theme_strength = trading_mode_state.get("theme_strength", 0.0)
@@ -994,64 +1005,50 @@ class PPOObservationBuilder:
 
         timing = trading_mode_state.get("entry_timing", {})
         if isinstance(timing, dict) and timing:
-            # [1] Entry allowed
             feats[1] = 1.0 if timing.get("entry_allowed", True) else 0.0
 
-            # [2] Entry quality weighted by regime stability
-            # High regime stability = more confidence in entry quality
             eql = timing.get("entry_quality_long", 0.5)
             eqs = timing.get("entry_quality_short", 0.5)
             try:
                 avg_quality = (float(eql) + float(eqs)) / 2.0
                 stability_weight = float(regime_stability)
-                # Composite: quality adjusted by regime stability
                 feats[2] = float(np.clip(avg_quality * (0.5 + 0.5 * stability_weight), 0.0, 1.0))
             except (TypeError, ValueError):
                 feats[2] = 0.5
 
-            # [3] Theme awareness: high theme_strength with low transition = stable theme
-            # Low theme_strength or high transition = uncertain/choppy
             try:
                 ts = float(theme_strength)
                 tt = float(theme_transition)
-                # Theme stability = theme_strength penalized by transition rate
                 theme_stability = ts * (1.0 - min(tt, 1.0))
                 feats[3] = float(np.clip(theme_stability, 0.0, 1.0))
             except (TypeError, ValueError):
                 feats[3] = 0.5
 
-            # [4] Zone type weighted by regime accuracy
             zone_type = timing.get("zone_type", "good")
             zone_map = {"hot": 0.9, "good": 0.5, "bad": 0.1}
             base_zone = zone_map.get(zone_type, 0.5) if isinstance(zone_type, str) else 0.5
             try:
                 acc = float(regime_accuracy)
-                # If regime accuracy is high, trust the zone more
                 feats[4] = float(np.clip(base_zone * (0.5 + 0.5 * acc), 0.0, 1.0))
             except (TypeError, ValueError):
                 feats[4] = base_zone
 
-            # [5] Volatility state weighted by risk scaling factor
             vol_state = timing.get("vol_state", "normal")
             vol_map = {"low": 0.0, "normal": 0.33, "high": 0.66, "extreme": 1.0}
             base_vol = vol_map.get(vol_state, 0.33) if isinstance(vol_state, str) else 0.33
             try:
                 rsf = float(risk_scaling_factor)
-                # Normalize risk_scaling_factor (typically 0.5-2.0) to 0-1
                 rsf_norm = float(np.clip((rsf - 0.5) / 1.5, 0.0, 1.0))
-                # Composite: volatility state weighted by risk scaling
                 feats[5] = float(np.clip((base_vol + rsf_norm) / 2.0, 0.0, 1.0))
             except (TypeError, ValueError):
                 feats[5] = base_vol
 
-            # [6] Liquidity awareness
             try:
                 feats[6] = float(np.clip(float(liquidity_score), 0.0, 1.0))
             except (TypeError, ValueError):
                 feats[6] = 0.5
 
         else:
-            # Fallback when no entry_timing available
             mode_config = trading_mode_state.get("mode_config", {})
             if isinstance(mode_config, dict):
                 max_exp = mode_config.get("max_exposure", 0.6)
@@ -1060,7 +1057,6 @@ class PPOObservationBuilder:
                 except (TypeError, ValueError):
                     feats[2] = 0.5
 
-            # [3] Theme awareness (fallback)
             try:
                 ts = float(theme_strength)
                 tt = float(theme_transition)
@@ -1070,14 +1066,12 @@ class PPOObservationBuilder:
 
             decision_factors = trading_mode_state.get("decision_factors", {})
             if isinstance(decision_factors, dict):
-                # [4] Performance score weighted by regime accuracy
                 perf_score = decision_factors.get("performance_score", 0.5)
                 try:
                     feats[4] = float(np.clip(float(perf_score) * (0.5 + 0.5 * float(regime_accuracy)), 0.0, 1.0))
                 except (TypeError, ValueError):
                     feats[4] = 0.5
 
-                # [5] Stability score weighted by risk scaling
                 stab_score = decision_factors.get("stability_score", 0.5)
                 try:
                     rsf = float(risk_scaling_factor)
@@ -1086,23 +1080,24 @@ class PPOObservationBuilder:
                 except (TypeError, ValueError):
                     feats[5] = 0.5
 
-            # [6] Liquidity (fallback)
             try:
                 feats[6] = float(np.clip(float(liquidity_score), 0.0, 1.0))
             except (TypeError, ValueError):
                 feats[6] = 0.5
 
-        # [7] Mode effectiveness combined with market confidence
         mode_stats = trading_mode_state.get("mode_stats", {})
         if isinstance(mode_stats, dict):
             mode_eff = mode_stats.get("mode_effectiveness", 0.5)
             try:
-                # Combine mode effectiveness with regime stability and accuracy
                 me = float(mode_eff)
                 rs = float(regime_stability)
-                ra = float(regime_accuracy)
-                # Weighted combination: 50% mode effectiveness, 25% regime stability, 25% accuracy
-                feats[7] = float(np.clip(me * 0.5 + rs * 0.25 + ra * 0.25, 0.0, 1.0))
+                # Add time-of-day awareness: use prime window + hour info
+                timing = trading_mode_state.get("entry_timing", {})
+                prime_bonus = 0.0 if not isinstance(timing, dict) else float(timing.get("in_prime_window", 0.0) or 0.0)
+                hour_norm = 0.5 if not isinstance(timing, dict) else float(timing.get("hour_normalized", 0.5) or 0.5)
+                # Combine: mode effectiveness, regime stability, and time quality
+                time_quality = 0.5 + 0.3 * prime_bonus  # Prime window adds 0.3
+                feats[7] = float(np.clip(me * 0.35 + rs * 0.25 + time_quality * 0.40, 0.0, 1.0))
             except (TypeError, ValueError):
                 feats[7] = 0.5
 
@@ -1144,7 +1139,7 @@ class PPOObservationBuilder:
                 except (TypeError, ValueError):
                     conf = 0.0
 
-                d = self._extract_direction(proposal)  # -1,0,+1
+                d = self._extract_direction(proposal)
                 if d > 0:
                     direction = "bullish"
                 elif d < 0:
@@ -1152,7 +1147,6 @@ class PPOObservationBuilder:
                 else:
                     direction = "neutral"
 
-                # Use confidence as magnitude baseline; PPO learns correlations.
                 score = float(np.clip(conf, 0.0, 1.0))
 
                 return {
@@ -1293,18 +1287,26 @@ class PPOObservationBuilder:
             mode_stats = bus.get("mode_stats", module) or {}
             mode_thresholds = bus.get("mode_thresholds", module) or {}
             decision_factors = bus.get("decision_factors", module) or {}
-
             entry_timing = bus.get("entry_timing", module) or {}
 
-            # FIX: Fetch underutilized market context outputs for PPO observation
-            # These provide valuable market state information that was previously unused
             market_context = bus.get("market_context", module) or {}
+
             regime_stability = bus.get("regime_stability", module)
             theme_transition = bus.get("theme_transition", module)
-            regime_accuracy = bus.get("regime_accuracy", module) or {}
+
+            # FIX: preserve float values; do not coerce with `or {}`
+            regime_accuracy_raw = bus.get("regime_accuracy", module)
             risk_scaling_factor = bus.get("risk_scaling_factor", module)
             liquidity_score = bus.get("liquidity_score", module)
             theme_strength = bus.get("theme_strength", module)
+
+            if isinstance(regime_accuracy_raw, dict):
+                regime_accuracy = float(regime_accuracy_raw.get("value", 0.5))
+            else:
+                try:
+                    regime_accuracy = float(regime_accuracy_raw) if regime_accuracy_raw is not None else 0.5
+                except (TypeError, ValueError):
+                    regime_accuracy = 0.5
 
             state: Dict[str, Any] = {
                 "trading_mode": trading_mode if isinstance(trading_mode, str) else "normal",
@@ -1314,11 +1316,10 @@ class PPOObservationBuilder:
                 "mode_thresholds": mode_thresholds if isinstance(mode_thresholds, dict) else {},
                 "decision_factors": decision_factors if isinstance(decision_factors, dict) else {},
                 "entry_timing": entry_timing if isinstance(entry_timing, dict) else {},
-                # NEW: Underutilized market context fields
                 "market_context": market_context if isinstance(market_context, dict) else {},
                 "regime_stability": float(regime_stability) if regime_stability is not None else 0.5,
                 "theme_transition": float(theme_transition) if theme_transition is not None else 0.0,
-                "regime_accuracy": float(regime_accuracy.get("value", 0.5)) if isinstance(regime_accuracy, dict) else 0.5,
+                "regime_accuracy": regime_accuracy,
                 "risk_scaling_factor": float(risk_scaling_factor) if risk_scaling_factor is not None else 1.0,
                 "liquidity_score": float(liquidity_score) if liquidity_score is not None else 0.5,
                 "theme_strength": float(theme_strength) if theme_strength is not None else 0.0,
@@ -1382,7 +1383,21 @@ class PPOObservationBuilder:
         return None
 
     def _apply_forming_bar(self, tf_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Merge a forming/current bar into the last bar without float-noise issues.
+
+        IMPORTANT: Controlled by config.use_forming_bar flag.
+        - False (default): Return data unchanged (training parity - closed bars only)
+        - True: Merge forming bar into last candle (live-only advanced use)
+        
+        The previous implementation used a hard-coded absolute tolerance (0.0001),
+        which is not instrument-agnostic (especially wrong for XAUUSD).
+        """
         if not isinstance(tf_data, dict):
+            return tf_data
+
+        # CRITICAL: Skip forming bar processing unless explicitly enabled
+        if not self.config.use_forming_bar:
             return tf_data
 
         cur_bar = tf_data.get("current_bar")
@@ -1401,32 +1416,49 @@ class PPOObservationBuilder:
 
         try:
             close = result.get("close")
-            if close is not None and len(close) > 0:
-                close_list = list(close)
-                if abs(float(forming_close) - float(close_list[-1])) > 0.0001:
-                    close_list[-1] = float(forming_close)
-                    result["close"] = close_list
+            if close is None:
+                return tf_data
 
-                    if forming_high is not None:
-                        high = result.get("high")
-                        if high is not None and len(high) > 0:
-                            high_list = list(high)
-                            high_list[-1] = float(forming_high)
-                            result["high"] = high_list
+            close_list = list(close)
+            if len(close_list) == 0:
+                return tf_data
 
-                    if forming_low is not None:
-                        low = result.get("low")
-                        if low is not None and len(low) > 0:
-                            low_list = list(low)
-                            low_list[-1] = float(forming_low)
-                            result["low"] = low_list
+            last_close = float(close_list[-1])
+            f_close = float(forming_close)
 
-                    if forming_volume is not None:
-                        vol = result.get("volume")
-                        if vol is not None and len(vol) > 0:
-                            vol_list = list(vol)
-                            vol_list[-1] = float(forming_volume)
-                            result["volume"] = vol_list
+            tol = max(
+                self.config.forming_bar_atol,
+                abs(last_close) * self.config.forming_bar_rtol,
+            )
+
+            # Update only if meaningfully different (not float noise)
+            if abs(f_close - last_close) <= tol:
+                return tf_data
+
+            close_list[-1] = f_close
+            result["close"] = close_list
+
+            if forming_high is not None:
+                high = result.get("high")
+                if high is not None and len(high) > 0:
+                    high_list = list(high)
+                    high_list[-1] = float(forming_high)
+                    result["high"] = high_list
+
+            if forming_low is not None:
+                low = result.get("low")
+                if low is not None and len(low) > 0:
+                    low_list = list(low)
+                    low_list[-1] = float(forming_low)
+                    result["low"] = low_list
+
+            if forming_volume is not None:
+                vol = result.get("volume")
+                if vol is not None and len(vol) > 0:
+                    vol_list = list(vol)
+                    vol_list[-1] = float(forming_volume)
+                    result["volume"] = vol_list
+
         except Exception:
             return tf_data
 
@@ -1467,22 +1499,35 @@ class PPOObservationBuilder:
         rs = avg_gain / avg_loss
         return float(100.0 - (100.0 / (1.0 + rs)))
 
+    def _ema_series(self, data: np.ndarray, period: int) -> np.ndarray:
+        """Simple EMA series (stable, fast enough for typical OHLC windows)."""
+        if data.size == 0:
+            return np.asarray([], dtype=np.float64)
+        alpha = 2.0 / (period + 1.0)
+        ema = np.empty_like(data, dtype=np.float64)
+        ema[0] = float(data[0])
+        for i in range(1, data.size):
+            ema[i] = alpha * float(data[i]) + (1.0 - alpha) * float(ema[i - 1])
+        return ema
+
     def _compute_macd_histogram(self, close: np.ndarray) -> float:
-        if close.size < 26:
+        """
+        True MACD histogram:
+          MACD line = EMA(12) - EMA(26)
+          Signal    = EMA(9) of MACD line
+          Hist      = MACD line - Signal
+
+        If you want MACD LINE instead, replace the return with: float(macd_line[-1])
+        """
+        if close.size < 35:
             return 0.0
 
-        def ema(data: np.ndarray, period: int) -> float:
-            if data.size < period:
-                return float(data[-1]) if data.size > 0 else 0.0
-            alpha = 2.0 / (period + 1)
-            result = float(data[-period])
-            for i in range(-period + 1, 0):
-                result = alpha * float(data[i]) + (1.0 - alpha) * result
-            return result
-
-        fast_ema = ema(close, 12)
-        slow_ema = ema(close, 26)
-        return float(fast_ema - slow_ema)
+        ema12 = self._ema_series(close, 12)
+        ema26 = self._ema_series(close, 26)
+        macd_line = ema12 - ema26
+        signal = self._ema_series(macd_line, 9)
+        hist = macd_line - signal
+        return float(hist[-1]) if hist.size > 0 else 0.0
 
     def _compute_atr(self, high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int = 14) -> float:
         if close.size < 2:

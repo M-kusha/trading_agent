@@ -9,24 +9,34 @@ completely decoupled from SmartInfoBus, voting, and instrument logic.
 Responsibilities:
 - EnhancedPPONetwork: Neural network architecture
 - PPOCore: Experience buffer, GAE, PPO update, action selection
+- MaskablePPO discrete action support for live trading
 
 Input: obs: np.ndarray
 Output: actions: np.ndarray, value: float, log_prob: float
 
-Version: 3.1.0 (Mini-batch PPO, fixed episode stats, rich training stats)
+Version: 3.2.0 (MaskablePPO discrete action support for training/live parity)
 """
 
 from __future__ import annotations
 
+import logging
 from collections import deque
-from dataclasses import dataclass
-from typing import Any, Deque, Dict, List, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+
+# MaskablePPO support
+try:
+    from sb3_contrib import MaskablePPO
+    MASKABLE_PPO_AVAILABLE = True
+except ImportError:
+    MaskablePPO = None  # type: ignore
+    MASKABLE_PPO_AVAILABLE = False
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -90,8 +100,95 @@ class PPOCoreConfig:
     direction_long_threshold: float = 0.3   # score > this = LONG
     direction_short_threshold: float = -0.3  # score < this = SHORT
 
+    # ═══════════════════════════════════════════════════════════════
+    # DISCRETE ACTION SPACE (MaskablePPO training/live parity)
+    # ═══════════════════════════════════════════════════════════════
+    # These MUST match prop_firm_env.py for training/live consistency!
+    # Action layout: [HOLD, LONG×K, SHORT×K, CLOSE] = 2K+2 actions
+    size_buckets: Tuple[float, ...] = (0.35, 0.60, 0.85, 1.10)  # K=4
+    
+    # Computed from size_buckets (do not set manually)
+    @property
+    def n_discrete_actions(self) -> int:
+        """Total discrete actions: HOLD + LONG×K + SHORT×K + CLOSE = 2K+2"""
+        return 2 * len(self.size_buckets) + 2
+
     # Debug
     debug: bool = False
+
+
+# ═══════════════════════════════════════════════════════════════════
+# DISCRETE ACTION DECODER (for MaskablePPO parity)
+# ═══════════════════════════════════════════════════════════════════
+
+@dataclass
+class DiscreteActionDecoded:
+    """Decoded discrete action from MaskablePPO."""
+    intent: str  # "hold", "long", "short", "close"
+    size_mult: float  # Position size multiplier (0.0 for hold/close)
+    action_id: int  # Original action ID
+    
+    def to_continuous(self) -> Tuple[float, float]:
+        """
+        Convert to continuous (direction_score, size_score) for arbiter compatibility.
+        
+        Maps discrete intent to direction_score:
+        - hold → 0.0 (flat)
+        - long → +0.7 (strong long)
+        - short → -0.7 (strong short)
+        - close → 0.0 (flat/exit)
+        
+        Maps size_mult to size_score:
+        - size_mult in [0.35, 1.10] → size_score in [-1, 1]
+        """
+        if self.intent == "long":
+            direction_score = 0.7
+        elif self.intent == "short":
+            direction_score = -0.7
+        else:
+            direction_score = 0.0
+        
+        # Map size_mult [0.35, 1.10] → size_score [-1, 1]
+        if self.size_mult > 0:
+            # Linear mapping: 0.35→-1, 0.725→0, 1.10→1
+            size_score = (self.size_mult - 0.725) / 0.375
+            size_score = float(np.clip(size_score, -1.0, 1.0))
+        else:
+            size_score = 0.0
+        
+        return direction_score, size_score
+
+
+def decode_discrete_action(action_id: int, size_buckets: Tuple[float, ...]) -> DiscreteActionDecoded:
+    """
+    Decode a discrete action ID to intent and size.
+    
+    Action layout (matching prop_firm_env.py):
+    - 0: HOLD
+    - 1 to K: LONG with size_buckets[i-1]
+    - K+1 to 2K: SHORT with size_buckets[i-K-1]
+    - 2K+1: CLOSE
+    """
+    K = len(size_buckets)
+    ACTION_HOLD = 0
+    ACTION_LONG_START = 1
+    ACTION_SHORT_START = 1 + K
+    ACTION_CLOSE = 1 + 2 * K
+    
+    a = int(action_id)
+    
+    if a == ACTION_HOLD:
+        return DiscreteActionDecoded("hold", 0.0, a)
+    elif a == ACTION_CLOSE:
+        return DiscreteActionDecoded("close", 0.0, a)
+    elif ACTION_LONG_START <= a < ACTION_SHORT_START:
+        idx = a - ACTION_LONG_START
+        return DiscreteActionDecoded("long", float(size_buckets[idx]), a)
+    elif ACTION_SHORT_START <= a < ACTION_CLOSE:
+        idx = a - ACTION_SHORT_START
+        return DiscreteActionDecoded("short", float(size_buckets[idx]), a)
+    else:
+        return DiscreteActionDecoded("hold", 0.0, a)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -310,6 +407,11 @@ class PPOCore:
         self._sb3_model: Optional[Any] = None
         self._sb3_model_path: Optional[str] = None
         self._sb3_instruments: List[str] = []
+        
+        # MaskablePPO specific state
+        self._is_maskable_ppo: bool = False
+        self._action_mask_fn: Optional[Callable[[], np.ndarray]] = None
+        self._last_discrete_action: Optional[DiscreteActionDecoded] = None
 
     @staticmethod
     def _norm_symbol(sym: Any) -> str:
@@ -341,60 +443,144 @@ class PPOCore:
             arr = new_obs
         return arr
 
+    def _action_name(self, action_id: int) -> str:
+        """Get human-readable name for action ID."""
+        names = ["HOLD", "L35%", "L60%", "L85%", "L110%", "S35%", "S60%", "S85%", "S110%", "CLOSE"]
+        if 0 <= action_id < len(names):
+            return names[action_id]
+        return f"A{action_id}"
+
     def select_action(
         self,
         obs: np.ndarray,
         deterministic: bool = False,
         instrument: Optional[str] = None,
+        action_mask: Optional[np.ndarray] = None,
     ) -> Tuple[np.ndarray, float, float]:
         """
         Select action given observation.
         
-        ACTION SEMANTICS (v4.1 - Autonomous PPO):
-        =========================================
-        Returns action array of shape (2,) with values in [-1, 1]:
+        ACTION SEMANTICS (v4.2 - MaskablePPO Discrete + Continuous support):
+        =====================================================================
         
-        action[0] = direction_score:
-            - > +0.3 ⇒ LONG signal
-            - < -0.3 ⇒ SHORT signal
-            - |score| ≤ 0.3 ⇒ FLAT
-            
-        action[1] = size_score:
-            - Raw position size signal in [-1, 1]
-            - Mapped to [0, 1] by caller: (size_score + 1) / 2
-            - Then scaled by risk/memory/mode gates
+        For MaskablePPO (discrete actions):
+            Returns action array converted from discrete to continuous format:
+            - Discrete action ID → (direction_score, size_score) in [-1, 1]
+            - Use self.last_discrete_action for the decoded action details
+        
+        For PPO (continuous actions):
+            Returns action array of shape (2,) with values in [-1, 1]:
+            action[0] = direction_score: > +0.3 ⇒ LONG, < -0.3 ⇒ SHORT, else FLAT
+            action[1] = size_score: mapped to [0,1] by caller
 
         Args:
             obs: Observation array of shape (obs_size,) or compatible
             deterministic: If True, use mean action instead of sampling
+            instrument: Optional instrument name for multi-instrument models
+            action_mask: Optional action mask for MaskablePPO (bool array)
 
         Returns:
             action: Action array of shape (act_size,) with values in [-1, 1]
             log_prob: Log probability of the action
             value: State value estimate
         """
+        self._last_discrete_action = None
+        
         # SB3 backend (inference-only)
-        # IMPORTANT: normalize to the SB3 model's observation_space size (not PPOCoreConfig.obs_size),
-        # otherwise misconfigured configs can silently truncate/pad and skew inference or crash predict().
         if self._sb3_model is not None:
             try:
                 obs_arr = np.asarray(obs, dtype=np.float32).reshape(-1)
+                
+                # Check model's expected observation size
                 try:
                     shape = getattr(self._sb3_model.observation_space, "shape", None)
                     expected = int(shape[0]) if shape and len(shape) == 1 else None
                 except Exception:
                     expected = None
 
+                # Handle observation size mismatch
                 if expected is not None and obs_arr.shape[0] != expected:
+                    # Log warning - this shouldn't happen with proper frame stacking
+                    logging.warning(
+                        f"[PPOCore] Obs size mismatch: got {obs_arr.shape[0]}, "
+                        f"expected {expected}. Padding/truncating (may affect predictions!)"
+                    )
                     fixed = np.zeros(expected, dtype=np.float32)
                     copy_size = min(obs_arr.shape[0], expected)
                     fixed[:copy_size] = obs_arr[:copy_size]
                     obs_arr = fixed
 
-                action_full, _ = self._sb3_model.predict(obs_arr, deterministic=deterministic)
-                action_full_arr = np.asarray(action_full, dtype=np.float32).reshape(-1)
-                action_np = self._slice_sb3_action(action_full_arr, instrument=instrument)
-                action_np = np.clip(action_np, -1.0, 1.0).astype(np.float32)
+                # ═══════════════════════════════════════════════════════════════
+                # MaskablePPO: Discrete action with masking
+                # ═══════════════════════════════════════════════════════════════
+                if self._is_maskable_ppo:
+                    # Get action mask
+                    mask = action_mask
+                    if mask is None and self._action_mask_fn is not None:
+                        try:
+                            mask = self._action_mask_fn()
+                        except Exception as e:
+                            logging.debug(f"[PPOCore] Action mask function failed: {e}")
+                            mask = None
+                    
+                    # Predict with mask (MaskablePPO signature)
+                    if mask is not None:
+                        action_id, _ = self._sb3_model.predict(
+                            obs_arr, 
+                            deterministic=deterministic,
+                            action_masks=mask.reshape(1, -1) if mask.ndim == 1 else mask
+                        )
+                    else:
+                        # No mask provided - all actions allowed
+                        action_id, _ = self._sb3_model.predict(obs_arr, deterministic=deterministic)
+                    
+                    # Get action probabilities for diagnostics (every 50 steps)
+                    self._inference_count = getattr(self, '_inference_count', 0) + 1
+                    if self._inference_count % 50 == 1:
+                        try:
+                            # Get raw action probabilities from the policy
+                            obs_tensor = self._sb3_model.policy.obs_to_tensor(obs_arr.reshape(1, -1))[0]
+                            with torch.no_grad():
+                                dist = self._sb3_model.policy.get_distribution(obs_tensor)
+                                probs = dist.distribution.probs.cpu().numpy().flatten()
+                                # Log top 3 actions by probability
+                                top_indices = probs.argsort()[-3:][::-1]
+                                prob_str = ", ".join([
+                                    f"{self._action_name(i)}:{probs[i]:.1%}" 
+                                    for i in top_indices
+                                ])
+                                logging.info(f"[PPO] 🧠 Model thinking: {prob_str}")
+                        except Exception as e:
+                            logging.debug(f"[PPO] Couldn't get action probs: {e}")
+                    
+                    # Decode discrete action
+                    action_id_int = int(action_id.item() if hasattr(action_id, 'item') else action_id)
+                    decoded = decode_discrete_action(action_id_int, self.config.size_buckets)
+                    self._last_discrete_action = decoded
+                    
+                    # Convert to continuous format for arbiter compatibility
+                    direction_score, size_score = decoded.to_continuous()
+                    action_np = np.array([direction_score, size_score], dtype=np.float32)
+                    
+                    # Log ALL model outputs (not just non-HOLD) so user can see decisions
+                    if decoded.intent == "hold":
+                        logging.debug(
+                            f"[PPO] {instrument or 'MULTI'}: HOLD (waiting for better setup)"
+                        )
+                    else:
+                        logging.info(
+                            f"[PPO] 🎯 {instrument or 'MULTI'}: {decoded.intent.upper()} "
+                            f"(size={decoded.size_mult:.0%}) → action_id={action_id_int}"
+                        )
+                
+                # ═══════════════════════════════════════════════════════════════
+                # Standard PPO: Continuous action
+                # ═══════════════════════════════════════════════════════════════
+                else:
+                    action_full, _ = self._sb3_model.predict(obs_arr, deterministic=deterministic)
+                    action_full_arr = np.asarray(action_full, dtype=np.float32).reshape(-1)
+                    action_np = self._slice_sb3_action(action_full_arr, instrument=instrument)
+                    action_np = np.clip(action_np, -1.0, 1.0).astype(np.float32)
 
                 # SB3 predict() doesn't expose log_prob/value; keep placeholders.
                 log_prob_np = 0.0
@@ -404,10 +590,15 @@ class PPOCore:
                 self._last_log_prob = log_prob_np
                 self._last_value = value_np
                 return action_np, log_prob_np, value_np
-            except Exception:
+                
+            except Exception as e:
+                logging.warning(f"[PPOCore] SB3 predict failed: {e}, falling back to torch network")
                 # Fall back to the internal torch policy if SB3 predict fails.
                 pass
 
+        # ═══════════════════════════════════════════════════════════════
+        # Native PyTorch network (continuous only)
+        # ═══════════════════════════════════════════════════════════════
         obs_arr = self._normalize_obs(obs)
 
         obs_tensor = torch.from_numpy(obs_arr).to(self.device).unsqueeze(0)
@@ -428,10 +619,6 @@ class PPOCore:
             action_np = action_tensor.squeeze(0).cpu().numpy().astype(np.float32)
             
             # CRITICAL: Clip actions to [-1, 1] range
-            # The Gaussian policy can output values outside this range, but:
-            # - direction_score must be in [-1, 1] for threshold logic to work
-            # - Scores > 1.0 would always trigger LONG, scores < -1.0 always SHORT
-            # - This ensures proper balance between LONG/SHORT/FLAT decisions
             action_np = np.clip(action_np, -1.0, 1.0)
             
             log_prob_np = float(log_prob_tensor.item())
@@ -872,17 +1059,73 @@ class PPOCore:
         torch.save(self.get_state(), path)
 
     def load(self, path: str) -> None:
-        """Load model from file."""
+        """
+        Load model from file.
+        
+        Supports:
+        - .zip files: SB3 PPO or MaskablePPO models
+        - .pt/.pth files: Native PyTorch PPOCore checkpoints
+        """
         if str(path).lower().endswith(".zip"):
-            # SB3 model (ModernTradingEnv training output)
+            # Try MaskablePPO first (training uses this), fall back to PPO
+            self._is_maskable_ppo = False
+            
+            if MASKABLE_PPO_AVAILABLE:
+                try:
+                    self._sb3_model = MaskablePPO.load(path, device="cpu")
+                    self._sb3_model_path = str(path)
+                    self._is_maskable_ppo = True
+                    
+                    # Check if it's actually a discrete action space
+                    action_space = getattr(self._sb3_model, "action_space", None)
+                    if action_space is not None:
+                        space_type = type(action_space).__name__
+                        if "Discrete" in space_type:
+                            n_actions = int(getattr(action_space, "n", 0))
+                            logging.info(
+                                f"[PPOCore] Loaded MaskablePPO (Discrete, {n_actions} actions) from {path}"
+                            )
+                        else:
+                            logging.info(
+                                f"[PPOCore] Loaded MaskablePPO ({space_type}) from {path}"
+                            )
+                    return
+                except Exception as e:
+                    logging.debug(f"[PPOCore] MaskablePPO.load failed: {e}, trying PPO.load")
+            
+            # Fall back to standard PPO
             from stable_baselines3 import PPO as SB3PPO  # type: ignore[import-not-found]
-
             self._sb3_model = SB3PPO.load(path, device="cpu")
             self._sb3_model_path = str(path)
+            self._is_maskable_ppo = False
+            logging.info(f"[PPOCore] Loaded PPO (continuous) from {path}")
             return
 
         # Native torch PPOCore checkpoint
         self._sb3_model = None
         self._sb3_model_path = None
+        self._is_maskable_ppo = False
         state = torch.load(path, map_location=self.device)
         self.set_state(state)
+        logging.info(f"[PPOCore] Loaded native PyTorch checkpoint from {path}")
+    
+    def set_action_mask_fn(self, fn: Callable[[], np.ndarray]) -> None:
+        """
+        Set a callback function that returns action masks for MaskablePPO.
+        
+        The function should return a boolean numpy array of shape (n_actions,)
+        where True = action allowed, False = action masked.
+        
+        This enables live trading to use the same masking logic as training.
+        """
+        self._action_mask_fn = fn
+    
+    @property
+    def is_discrete_action_space(self) -> bool:
+        """Check if the loaded model uses discrete actions (MaskablePPO)."""
+        return self._is_maskable_ppo
+    
+    @property
+    def last_discrete_action(self) -> Optional[DiscreteActionDecoded]:
+        """Get the last decoded discrete action (only valid for MaskablePPO)."""
+        return self._last_discrete_action

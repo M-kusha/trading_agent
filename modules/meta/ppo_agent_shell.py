@@ -38,7 +38,7 @@ from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
 from modules.utils.audit_utils import RotatingLogger
 from modules.utils.info_bus import InfoBusManager, SmartInfoBus
 
-from modules.meta.ppo_core import PPOCore, PPOCoreConfig
+from modules.meta.ppo_core import PPOCore, PPOCoreConfig, DiscreteActionDecoded
 from modules.meta.arbiter_logic import ArbiterLogic
 from modules.meta.ppo_types import (
     InstrumentDecision,
@@ -56,6 +56,9 @@ from modules.meta.ppo_observation_builder import (
 )
 
 from modules.meta.arbiter_logic import StrategyInfo, TradingModeInfo, WorldModelInfo
+
+# Live action masking for MaskablePPO parity
+from modules.meta.live_action_mask import LiveActionMaskBuilder, LiveMaskConfig
 
 
 def _norm_symbol(sym: str) -> str:
@@ -179,6 +182,17 @@ class PPOAgentShell(
         self._obs_diag_prev: Dict[str, np.ndarray] = {}
         
         # ═══════════════════════════════════════════════════════════════════
+        # FRAME STACKING (DISABLED - v3.4.0)
+        # ═══════════════════════════════════════════════════════════════════
+        # Frame stacking is NOT needed because the 64-dim observation already
+        # contains extensive temporal indicators:
+        # - RSI-14 (14 bars history), MACD (26 bars), ATR-14, 20-bar slope,
+        # - 10-bar momentum/ROC, 20-bar return volatility, 50-bar mean baselines
+        # Frame stacking would just duplicate this temporal information.
+        self._frame_stack_size: int = 1  # 1 = disabled (no stacking)
+        self._obs_frame_buffer: Dict[str, List[np.ndarray]] = {}  # Per-instrument frame buffers
+        
+        # ═══════════════════════════════════════════════════════════════════
         # WARMUP STATE (v3.2.0)
         # ═══════════════════════════════════════════════════════════════════
         # Track session cycles to implement warmup period
@@ -199,10 +213,13 @@ class PPOAgentShell(
         if self._cfg.warmup_enabled:
             warmup_info = f" | warmup={self._cfg.warmup_cycles} cycles"
         
+        # Observation size info
+        obs_size = self._cfg.core_config.obs_size
+        
         self.logger.info(
-            "[PPOAgentShell] Initialized v3.2.0 | "
+            "[PPOAgentShell] Initialized v3.4.0 (No Frame Stack) | "
             f"instruments={self._cfg.instruments} | "
-            f"obs_size={self._cfg.core_config.obs_size}{warmup_info}"
+            f"obs_size={obs_size}{warmup_info}"
         )
 
     # ─────────────────────────────────────────────────────────────
@@ -234,16 +251,25 @@ class PPOAgentShell(
             pass
 
         # Resolve model path (explicit > config > auto-discovery)
+        # FIX: Use absolute paths to handle different working directories
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        
         resolved_model_path = model_path
         if not resolved_model_path:
+            # Prioritize propfirm models (trained for prop firm rules)
             candidates = [
+                "models/propfirm/best/best_model.zip",  # PropFirm MaskablePPO (primary)
+                "models/propfirm/propfirm_ppo_final.zip",  # PropFirm final checkpoint
+                "models/best/best_model.zip",  # Generic training output
                 "models/ppo_trading_model.zip",
                 "models/ppo_final_model.zip",
                 "models/modern_ppo_final.zip",
             ]
             for cand in candidates:
-                if os.path.exists(cand):
-                    resolved_model_path = cand
+                abs_cand = os.path.join(project_root, cand)
+                if os.path.exists(abs_cand):
+                    resolved_model_path = abs_cand
+                    self.logger.info(f"[PPO] Auto-discovered model: {cand}")
                     break
 
         # Load model if available
@@ -251,10 +277,26 @@ class PPOAgentShell(
             try:
                 self.ppo_core.load(resolved_model_path)
                 self.logger.info(f"[PPO] Loaded model: {resolved_model_path}")
+                
+                # Log if MaskablePPO (discrete) model detected
+                if self.ppo_core.is_discrete_action_space:
+                    self.logger.info(
+                        f"[PPO] ═══ MaskablePPO DISCRETE MODE ═══ "
+                        f"Actions: {self.ppo_core.config.n_discrete_actions}, "
+                        f"Size buckets: {self.ppo_core.config.size_buckets}"
+                    )
             except Exception as e:  # noqa: BLE001
                 self.logger.error(f"[PPO] Failed to load model '{resolved_model_path}': {e}")
         else:
             self.logger.warning("[PPO] No model_path provided; using untrained PPOCore weights")
+
+        # Live action mask builder (for MaskablePPO parity)
+        self._live_mask_builder = LiveActionMaskBuilder(LiveMaskConfig(
+            size_buckets=self._cfg.core_config.size_buckets,
+        ))
+        
+        # Register action mask callback with PPOCore
+        self.ppo_core.set_action_mask_fn(self._get_live_action_mask)
 
         # Arbiter logic
         self.arbiter = ArbiterLogic(
@@ -451,13 +493,6 @@ class PPOAgentShell(
             positions_by_instrument = self._build_positions_by_instrument(position_ctx_raw)
             # Derive a quick "positions exist" flag for warmup/focus blocking logic
             positions_exist = any(bool(v.get("has", False)) for v in positions_by_instrument.values() if isinstance(v, dict))
-
-            # Brief processing log (only in debug mode or if not in position focus)
-            if not in_position_focus_mode:
-                self.logger.debug(
-                    f"[PPO] Processing: obs_dims={[len(v) for v in observations.values()]}, "
-                    f"committee={bool(committee_data)}, risk={risk_info.portfolio_risk:.2f}"
-                )
 
             # 3) Make multi-instrument decision (with full integration)
             multi_decision = self.arbiter.make_multi_instrument_decision(
@@ -670,11 +705,6 @@ class PPOAgentShell(
             processing_time = (time.time() - start_time) * 1000.0
             self._record_success(processing_time)
 
-            if self.debug:
-                self.logger.debug(
-                    f"[PPOAgentShell] process() completed in {processing_time:.2f}ms"
-                )
-
             return result
 
         except Exception as e:  # noqa: BLE001
@@ -746,9 +776,15 @@ class PPOAgentShell(
                     "confidence": inst_conf,
                     "consensus_score": inst_cons,
                 }
-                self.logger.debug(
-                    f"Per-instrument committee: {inst} -> {inst_action} (conf={inst_conf:.2f})"
-                )
+                # Log all committee signals (not just non-flat) so user can see what modules are thinking
+                if inst_action != "flat":
+                    self.logger.info(
+                        f"[COMMITTEE] {inst}: {inst_action.upper()} signal (conf={inst_conf:.0%})"
+                    )
+                else:
+                    self.logger.debug(
+                        f"[COMMITTEE] {inst}: FLAT/NEUTRAL (conf={inst_conf:.0%})"
+                    )
 
         return result
 
@@ -859,6 +895,94 @@ class PPOAgentShell(
             "risk": risk_signals,
             "memory": memory_signals,
         }
+
+    def _get_live_action_mask(self) -> np.ndarray:
+        """
+        Build action mask for MaskablePPO from live trading state.
+        
+        This is called by PPOCore.select_action() when using a MaskablePPO model.
+        Implements the same masking logic as prop_firm_env.action_masks() for parity.
+        """
+        try:
+            # Get current position state from SmartInfoBus
+            position_ctx = self._read_position_context_raw() or {}
+            positions = position_ctx.get("positions", {})
+            
+            # Check if any position exists (any instrument)
+            has_position = False
+            for inst_data in positions.values():
+                if isinstance(inst_data, dict) and int(inst_data.get("side", 0)) != 0:
+                    has_position = True
+                    break
+            
+            # Get account state
+            account_state = self.smart_bus.get("account_state", "PPOAgentShell", default={})
+            if isinstance(account_state, dict):
+                balance = float(account_state.get("balance", 100000))
+                equity = float(account_state.get("equity", balance))
+                day_start_balance = float(account_state.get("day_start_balance", balance))
+                peak_balance = float(account_state.get("peak_balance", balance))
+            else:
+                balance = 100000.0
+                equity = balance
+                day_start_balance = balance
+                peak_balance = balance
+            
+            # Compute drawdowns
+            current_dd = max(0.0, (peak_balance - equity) / max(peak_balance, 1.0))
+            daily_dd = max(0.0, (day_start_balance - equity) / max(day_start_balance, 1.0))
+            
+            # Get trade counts from SmartInfoBus
+            trade_stats = self.smart_bus.get("trade_statistics", "PPOAgentShell", default={})
+            if isinstance(trade_stats, dict):
+                daily_trades = int(trade_stats.get("daily_trades", 0))
+                session_trades = int(trade_stats.get("session_trades", 0))
+                consecutive_losses = int(trade_stats.get("consecutive_losses", 0))
+            else:
+                daily_trades = 0
+                session_trades = 0
+                consecutive_losses = 0
+            
+            # Get timing info
+            timing_state = self.smart_bus.get("timing_state", "PPOAgentShell", default={})
+            last_entry_time = None
+            last_loss_time = None
+            if isinstance(timing_state, dict):
+                last_entry_str = timing_state.get("last_entry_time")
+                last_loss_str = timing_state.get("last_loss_time")
+                if last_entry_str:
+                    try:
+                        last_entry_time = datetime.fromisoformat(last_entry_str)
+                    except Exception:
+                        pass
+                if last_loss_str:
+                    try:
+                        last_loss_time = datetime.fromisoformat(last_loss_str)
+                    except Exception:
+                        pass
+            
+            # Build mask
+            mask = self._live_mask_builder.get_action_mask(
+                has_position=has_position,
+                has_pending_entry=False,  # Not tracked in live (fill is instant)
+                has_pending_exit=False,
+                current_dd=current_dd,
+                daily_dd=daily_dd,
+                daily_trades=daily_trades,
+                session_trades=session_trades,
+                consecutive_losses=consecutive_losses,
+                last_entry_time=last_entry_time,
+                last_loss_time=last_loss_time,
+                current_time=datetime.now(),
+            )
+            
+            return mask
+            
+        except Exception as e:
+            # On error, return all-allowed mask (safe fallback)
+            self.logger.warning(f"[PPO] Action mask error: {e}, allowing all actions")
+            n_actions = self._live_mask_builder.config.n_actions
+            return np.ones(n_actions, dtype=np.bool_)
 
     def _gather_memory_info(self, expert_signals: Dict[str, Any]) -> MemoryGateInfo:
         """Extract normalized MemoryGateInfo from aggregated signals."""
@@ -1362,37 +1486,84 @@ class PPOAgentShell(
         return multi_decision
 
     # ─────────────────────────────────────────────────────────────
-    # Observation Building (v3.0+)
+    # Observation Building (v3.0+ with Frame Stacking v3.3.0)
     # ─────────────────────────────────────────────────────────────
 
     def _build_observations_for_instruments(self) -> Dict[str, np.ndarray]:
         """
-        Build observation vectors for each instrument.
+        Build observation vectors for each instrument WITH FRAME STACKING.
 
         Uses the v3.0 observation builder which supports per-instrument
-        observations. If per-instrument data is unavailable, falls back to
-        zero vectors with the configured obs_size.
+        observations. Then applies frame stacking to match VecFrameStack
+        training (n_stack=4 → 64×4=256 features).
+        
+        If per-instrument data is unavailable, falls back to zero vectors.
         """
         observations: Dict[str, np.ndarray] = {}
+        base_obs_size = self._cfg.core_config.obs_size  # 64
 
         for instrument in self._cfg.instruments:
             try:
-                obs = self.obs_builder.build_for_instrument(
+                # Build base observation (64 features)
+                base_obs = self.obs_builder.build_for_instrument(
                     instrument=instrument,
                     smart_bus=self.smart_bus,
                     module_name="PPOAgentShell",
                 )
-                observations[instrument] = obs
+                base_obs = np.asarray(base_obs, dtype=np.float32).reshape(-1)
+                
+                # Ensure correct size
+                if base_obs.shape[0] != base_obs_size:
+                    fixed = np.zeros(base_obs_size, dtype=np.float32)
+                    copy_len = min(base_obs.shape[0], base_obs_size)
+                    fixed[:copy_len] = base_obs[:copy_len]
+                    base_obs = fixed
+                
+                # Apply frame stacking if enabled (disabled by default)
+                if self._frame_stack_size > 1:
+                    stacked_obs = self._apply_frame_stack(instrument, base_obs)
+                    observations[instrument] = stacked_obs
+                else:
+                    observations[instrument] = base_obs
+                
             except Exception as e:  # noqa: BLE001
                 self.logger.warning(
                     f"Failed to build observation for {instrument}: {e}"
                 )
-                observations[instrument] = np.zeros(
-                    self._cfg.core_config.obs_size,
-                    dtype=np.float32,
-                )
+                # Return zeros (64 features, or stacked if enabled)
+                obs_dim = base_obs_size * self._frame_stack_size if self._frame_stack_size > 1 else base_obs_size
+                observations[instrument] = np.zeros(obs_dim, dtype=np.float32)
 
         return observations
+    
+    def _apply_frame_stack(self, instrument: str, new_obs: np.ndarray) -> np.ndarray:
+        """
+        Apply frame stacking for an instrument.
+        
+        Maintains a buffer of the last N observations and stacks them
+        to create a larger observation vector (matching VecFrameStack).
+        
+        Frame order: [oldest, ..., newest] concatenated
+        E.g., with n_stack=4 and obs_size=64: output is 256 features
+        """
+        # Initialize buffer if needed
+        if instrument not in self._obs_frame_buffer:
+            # Initialize with copies of first observation (avoid zeros at start)
+            self._obs_frame_buffer[instrument] = [
+                new_obs.copy() for _ in range(self._frame_stack_size)
+            ]
+        
+        # Get buffer
+        buffer = self._obs_frame_buffer[instrument]
+        
+        # Shift buffer (remove oldest, add newest)
+        buffer.pop(0)
+        buffer.append(new_obs.copy())
+        
+        # Stack all frames: [oldest, ..., newest]
+        stacked = np.concatenate(buffer, axis=0)
+        
+        return stacked.astype(np.float32)
 
     def _maybe_log_observation_diagnostics(self, observations: Dict[str, np.ndarray]) -> None:
         """

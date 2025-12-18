@@ -68,7 +68,7 @@ def normalize_instrument(symbol: str) -> str:
 # Default Instruments
 # ═══════════════════════════════════════════════════════════════════
 
-DEFAULT_INSTRUMENTS: List[str] = ["XAUUSD", "EURUSD"]
+DEFAULT_INSTRUMENTS: List[str] = ["XAUUSD"]
 
 
 # ═══════════════════════════════════════════════════════════════════

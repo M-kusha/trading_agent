@@ -1,0 +1,1368 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PropFirm PPO Training Dashboard</title>
+
+  <!-- Fonts -->
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <!-- Tailwind -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { display: ['Outfit', 'sans-serif'], mono: ['JetBrains Mono', 'monospace'] },
+          animation: {
+            'fade-in': 'fadeIn 0.22s ease-out',
+            'slide-up': 'slideUp 0.55s cubic-bezier(0.22, 1, 0.36, 1)',
+            'float': 'float 8s ease-in-out infinite',
+            'glow': 'glow 2.4s ease-in-out infinite alternate',
+          },
+          keyframes: {
+            fadeIn: { '0%': { opacity: '0' }, '100%': { opacity: '1' } },
+            slideUp: { '0%': { transform: 'translateY(14px)', opacity: '0' }, '100%': { transform: 'translateY(0)', opacity: '1' } },
+            float: { '0%, 100%': { transform: 'translateY(0px)' }, '50%': { transform: 'translateY(-10px)' } },
+            glow: {
+              '0%': { boxShadow: '0 0 18px rgba(99,102,241,0.25)' },
+              '100%': { boxShadow: '0 0 60px rgba(236,72,153,0.18), 0 0 38px rgba(168,85,247,0.22)' },
+            },
+          },
+        },
+      },
+    };
+  </script>
+
+  <!-- React -->
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <style>
+    :root{
+      --bg0:#020617;
+      --bg1:#070b1b;
+      --ink:#e2e8f0;
+      --muted:#94a3b8;
+      --border:rgba(255,255,255,0.08);
+    }
+
+    * { font-family: 'Outfit', sans-serif; -webkit-font-smoothing: antialiased; text-rendering: geometricPrecision; }
+    .mono { font-family: 'JetBrains Mono', monospace; }
+
+    body{
+      color: var(--ink);
+      min-height: 100vh;
+      background:
+        radial-gradient(1200px 900px at 12% 10%, rgba(99,102,241,0.22), transparent 60%),
+        radial-gradient(1000px 800px at 85% 15%, rgba(236,72,153,0.16), transparent 55%),
+        radial-gradient(900px 900px at 70% 85%, rgba(34,211,238,0.12), transparent 60%),
+        linear-gradient(135deg, var(--bg0) 0%, #0f172a 60%, #11103a 100%);
+      overflow-x: hidden;
+    }
+
+    /* subtle grid overlay */
+    body::before{
+      content:"";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background-image:
+        linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
+      background-size: 44px 44px;
+      opacity: 0.35;
+      mask-image: radial-gradient(circle at 30% 20%, black 0%, transparent 60%);
+    }
+
+    /* subtle noise */
+    body::after{
+      content:"";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background:
+        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='220' height='220' filter='url(%23n)' opacity='.22'/%3E%3C/svg%3E");
+      opacity: .06;
+      mix-blend-mode: overlay;
+    }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-track { background: rgba(2, 6, 23, 0.6); border-radius: 999px; }
+    ::-webkit-scrollbar-thumb {
+      background: linear-gradient(180deg, rgba(99,102,241,0.55), rgba(168,85,247,0.45));
+      border-radius: 999px;
+      border: 2px solid rgba(2, 6, 23, 0.8);
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: linear-gradient(180deg, rgba(99,102,241,0.75), rgba(236,72,153,0.55));
+    }
+
+    /* Glass */
+    .glass{
+      background: linear-gradient(135deg,
+        rgba(15,23,42,0.72) 0%,
+        rgba(2,6,23,0.55) 55%,
+        rgba(15,23,42,0.62) 100%);
+      backdrop-filter: blur(18px);
+      -webkit-backdrop-filter: blur(18px);
+      border: 1px solid var(--border);
+      box-shadow: 0 25px 55px -18px rgba(0,0,0,0.65), inset 0 1px 0 rgba(255,255,255,0.06);
+    }
+
+    .glass-card{
+      position: relative;
+      background:
+        linear-gradient(145deg, rgba(15,23,42,0.72), rgba(2,6,23,0.78)) padding-box,
+        linear-gradient(135deg, rgba(99,102,241,0.28), rgba(168,85,247,0.18), rgba(34,211,238,0.12), rgba(236,72,153,0.10)) border-box;
+      border: 1px solid transparent;
+      box-shadow: 0 14px 50px -18px rgba(0,0,0,0.72), inset 0 1px 0 rgba(255,255,255,0.05);
+      transition: transform 0.25s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.25s cubic-bezier(0.22, 1, 0.36, 1);
+      will-change: transform;
+    }
+    .glass-card:hover{
+      transform: translateY(-3px);
+      box-shadow: 0 18px 70px -22px rgba(0,0,0,0.78), 0 0 0 1px rgba(99,102,241,0.12), inset 0 1px 0 rgba(255,255,255,0.06);
+    }
+
+    .gradient-text{
+      background: linear-gradient(135deg, #a5b4fc 0%, #c4b5fd 40%, #f0abfc 75%, #fda4af 100%);
+      background-clip: text;
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .status-good { color: #34d399; }
+    .status-ok { color: #fbbf24; }
+    .status-bad { color: #fb7185; }
+    .status-neutral { color: #93a4bf; }
+
+    /* no â€œballsâ€: status is a clean corner tag */
+    .status-tag{
+      display: inline-flex;
+      align-items: center;
+      padding: 6px 10px;
+      border-radius: 10px;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(2,6,23,0.55);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.05);
+      font-weight: 900;
+      letter-spacing: 0.18em;
+      font-size: 10px;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .tag-good { color: rgba(52,211,153,0.95); border-color: rgba(52,211,153,0.22); background: rgba(52,211,153,0.10); }
+    .tag-ok   { color: rgba(251,191,36,0.95); border-color: rgba(251,191,36,0.22); background: rgba(251,191,36,0.10); }
+    .tag-bad  { color: rgba(251,113,133,0.95); border-color: rgba(251,113,133,0.22); background: rgba(251,113,133,0.10); }
+
+    /* Live */
+    .live-dot{
+      width: 10px; height: 10px; border-radius: 999px;
+      background: #34d399;
+      animation: pulse 2s infinite;
+      box-shadow: 0 0 0 4px rgba(52,211,153,0.12), 0 0 18px rgba(52,211,153,0.45);
+    }
+    .live-dot.disconnected{
+      background: #fb7185;
+      box-shadow: 0 0 0 4px rgba(251,113,133,0.12), 0 0 18px rgba(251,113,133,0.35);
+      animation: none;
+    }
+
+    /* Tooltip */
+    .tooltip{ position: relative; display: inline-flex; width: 100%; }
+    .tooltip-content{
+      position: absolute;
+      bottom: calc(100% + 10px);
+      left: 50%;
+      transform: translateX(-50%) translateY(8px);
+      padding: 10px 12px;
+      background: rgba(2,6,23,0.92);
+      border: 1px solid rgba(99,102,241,0.24);
+      border-radius: 12px;
+      font-size: 0.75rem;
+      line-height: 1.25rem;
+      opacity: 0;
+      visibility: hidden;
+      transition: all 0.18s ease;
+      z-index: 100;
+      width: min(360px, 80vw);
+      box-shadow: 0 18px 45px rgba(0, 0, 0, 0.65);
+      pointer-events: none;
+    }
+    .tooltip:hover .tooltip-content{
+      opacity: 1;
+      visibility: visible;
+      transform: translateX(-50%) translateY(0px);
+    }
+
+    /* Tabs */
+    .tab-shell{
+      background: rgba(2,6,23,0.55);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 999px;
+      padding: 6px;
+      display: inline-flex;
+      gap: 6px;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+    }
+    .tab-button{
+      padding: 10px 14px;
+      font-weight: 800;
+      border-radius: 999px;
+      transition: all 0.18s ease;
+      border: 1px solid transparent;
+      color: rgba(226,232,240,0.80);
+      letter-spacing: 0.01em;
+    }
+    .tab-button.active{
+      background: linear-gradient(135deg, rgba(99,102,241,0.22), rgba(168,85,247,0.18), rgba(236,72,153,0.14));
+      border-color: rgba(99,102,241,0.32);
+      color: #c7d2fe;
+      box-shadow: 0 10px 25px -14px rgba(99,102,241,0.55);
+    }
+    .tab-button:not(.active):hover{
+      background: rgba(99,102,241,0.10);
+      color: rgba(226,232,240,0.92);
+    }
+
+    /* Progress */
+    .progress-bar{
+      height: 10px;
+      border-radius: 999px;
+      background: rgba(2, 6, 23, 0.65);
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,0.06);
+    }
+    .progress-fill{
+      height: 100%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #6366f1 0%, #8b5cf6 45%, #ec4899 100%);
+      box-shadow: 0 0 18px rgba(168,85,247,0.25);
+      transition: width 0.45s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    /* KPI grid: equal-size tiles */
+    .kpi-grid{
+      display: grid;
+      grid-template-columns: repeat(1, minmax(0, 1fr));
+      gap: 16px;
+      align-items: stretch;
+    }
+    @media (min-width: 768px){
+      .kpi-grid{ grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (min-width: 1280px){
+      .kpi-grid{ grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    }
+    .kpi-tile{
+      height: 180px; /* enforce same height */
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 20px;
+      border-radius: 22px;
+    }
+    .kpi-label{
+      font-size: 11px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: rgba(148,163,184,0.70);
+      font-weight: 900;
+    }
+    .kpi-sub{
+      font-size: 12px;
+      color: rgba(148,163,184,0.55);
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      min-height: 32px; /* equalize */
+    }
+    .kpi-value{
+      font-size: 36px;
+      line-height: 1.02;
+      letter-spacing: -0.03em;
+      font-weight: 950;
+    }
+    .kpi-accent{
+      position:absolute;
+      inset: 0;
+      border-radius: 22px;
+      pointer-events: none;
+      opacity: 0.9;
+      mask-image: radial-gradient(circle at 10% 10%, black 0%, transparent 55%);
+    }
+
+    /* Sparkline */
+    .sparkline{ display:flex; align-items:flex-end; gap:2px; height: 28px; }
+    .sparkline-bar{ flex:1; min-width:3px; border-radius: 999px; transition: height 0.25s ease; }
+
+    /* Health ring */
+    .ring{
+      width: 108px; height: 108px; border-radius: 999px;
+      display:flex; align-items:center; justify-content:center;
+      box-shadow: 0 18px 55px -22px rgba(0,0,0,0.75), inset 0 1px 0 rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.08);
+      position: relative;
+      overflow: hidden;
+    }
+    .ring-inner{
+      width: 78px; height: 78px; border-radius: 999px;
+      background: rgba(2,6,23,0.78);
+      border: 1px solid rgba(255,255,255,0.06);
+      display:flex; flex-direction:column; align-items:center; justify-content:center;
+      gap: 2px;
+    }
+
+    /* Learning cards (no bars, no â€œhigher barâ€ text) */
+    .diag-grid{
+      display:grid;
+      grid-template-columns: repeat(1, minmax(0, 1fr));
+      gap: 16px;
+    }
+    @media (min-width: 768px){
+      .diag-grid{ grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (min-width: 1280px){
+      .diag-grid{ grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    }
+    .diag-card{
+      height: 180px;
+      padding: 20px;
+      border-radius: 22px;
+      display:flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .diag-ideal{
+      font-size: 12px;
+      color: rgba(148,163,184,0.60);
+      white-space: nowrap;
+      overflow:hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* Side panels for Learning tab - equal height */
+    .side-panel {
+      min-height: 200px;
+    }
+    .side-panel-runtime {
+      min-height: 280px;
+    }
+
+    /* Exit Reasons: clean list rows */
+    .exit-row{
+      display:grid;
+      grid-template-columns: 1.4fr 0.9fr 70px;
+      gap: 12px;
+      align-items:center;
+      padding: 12px 14px;
+      border-radius: 16px;
+      border: 1px solid rgba(255,255,255,0.06);
+      background: rgba(2,6,23,0.38);
+    }
+    .exit-row:hover{
+      border-color: rgba(99,102,241,0.18);
+      background: rgba(2,6,23,0.48);
+    }
+    @media (max-width: 900px){
+      .exit-row{ grid-template-columns: 1fr; gap: 8px; }
+    }
+    .mini-bar{
+      height: 10px;
+      border-radius: 999px;
+      background: rgba(2,6,23,0.60);
+      border: 1px solid rgba(255,255,255,0.06);
+      overflow:hidden;
+    }
+    .mini-fill{
+      height: 100%;
+      border-radius: 999px;
+      transition: width 0.35s ease;
+      background: linear-gradient(90deg, rgba(99,102,241,0.85), rgba(236,72,153,0.55));
+    }
+
+    /* Exit summary segments */
+    .exit-stack{
+      height: 14px;
+      border-radius: 999px;
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,0.06);
+      background: rgba(2,6,23,0.55);
+      display:flex;
+    }
+    .seg-good{ background: linear-gradient(90deg, rgba(52,211,153,0.85), rgba(52,211,153,0.45)); }
+    .seg-neutral{ background: rgba(148,163,184,0.22); }
+    .seg-bad{ background: linear-gradient(90deg, rgba(251,113,133,0.75), rgba(251,113,133,0.35)); }
+
+    @media (prefers-reduced-motion: reduce){
+      *{ animation: none !important; transition: none !important; }
+    }
+  </style>
+</head>
+
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // UTIL
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    const fmt = {
+      num: (x, digits = 2) => (x == null || isNaN(x)) ? "â€”" : Number(x).toFixed(digits),
+      pct: (x, digits = 1) => (x == null || isNaN(x)) ? "â€”%" : Number(x).toFixed(digits) + "%",
+      int: (x) => (x == null || isNaN(x)) ? "â€”" : Math.round(Number(x)).toLocaleString(),
+      currency: (x, digits = 0) => {
+        if (x == null || isNaN(x)) return "â‚¬â€”";
+        const v = Number(x);
+        const sign = v >= 0 ? "+" : "";
+        return sign + "â‚¬" + v.toFixed(digits).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+      },
+      time: (seconds) => {
+        if (seconds == null || isNaN(seconds) || seconds < 0) return "â€”";
+        const s0 = Math.floor(Number(seconds));
+        const h = Math.floor(s0 / 3600);
+        const m = Math.floor((s0 % 3600) / 60);
+        const s = Math.floor(s0 % 60);
+        if (h > 0) return `${h}h ${m}m`;
+        if (m > 0) return `${m}m ${s}s`;
+        return `${s}s`;
+      },
+      scientific: (x, digits = 2) => {
+        if (x == null || isNaN(x)) return "â€”";
+        const v = Number(x);
+        if (Math.abs(v) < 0.0001 || Math.abs(v) > 10000) return v.toExponential(digits);
+        return v.toFixed(digits);
+      },
+    };
+
+    const statusClass = (status) => {
+      switch (status) {
+        case "good": return "status-good";
+        case "ok": return "status-ok";
+        case "bad": return "status-bad";
+        default: return "status-neutral";
+      }
+    };
+
+    const tagClass = (status) => {
+      switch (status) {
+        case "good": return "status-tag tag-good";
+        case "ok": return "status-tag tag-ok";
+        case "bad": return "status-tag tag-bad";
+        default: return "status-tag";
+      }
+    };
+
+    function Tooltip({ children, content }) {
+      return (
+        <div className="tooltip">
+          {children}
+          <div className="tooltip-content">{content}</div>
+        </div>
+      );
+    }
+
+    function StatusTag({ status }) {
+      const text = (status || "â€”").toUpperCase();
+      return <span className={tagClass(status)}>{text}</span>;
+    }
+
+    function Sparkline({ data, status = "good", height = 28 }) {
+      if (!data || data.length === 0) return null;
+      const slice = data.slice(-30).map(v => (typeof v === "number" ? v : 0));
+      const max = Math.max(...slice.map(v => Math.abs(v)), 0.001);
+      const colors = { good: "#34d399", ok: "#fbbf24", bad: "#fb7185" };
+      const color = colors[status] || "#a5b4fc";
+      return (
+        <div className="sparkline" style={{ height }}>
+          {slice.map((val, i) => {
+            const h = Math.max(5, (Math.abs(val) / max) * height);
+            const isNeg = val < 0;
+            return (
+              <div
+                key={i}
+                className="sparkline-bar"
+                style={{
+                  height: h,
+                  backgroundColor: isNeg ? "#fb7185" : color,
+                  opacity: 0.35 + (i / slice.length) * 0.55,
+                }}
+              />
+            );
+          })}
+        </div>
+      );
+    }
+
+    function SectionHeader({ title, subtitle, icon }) {
+      return (
+        <div className="flex items-start gap-3 mb-5">
+          <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-indigo-500/30 via-purple-500/25 to-pink-500/20 border border-white/10 flex items-center justify-center shadow-lg shadow-indigo-500/15">
+            <span className="text-xl">{icon}</span>
+          </div>
+          <div className="min-w-0 flex-1">
+            <h2 className="text-lg md:text-xl font-black text-white tracking-tight">{title}</h2>
+            {subtitle && <p className="text-xs md:text-sm text-slate-500 mt-1">{subtitle}</p>}
+            <div className="h-px mt-4 bg-gradient-to-r from-indigo-400/35 via-purple-400/20 to-transparent" />
+          </div>
+        </div>
+      );
+    }
+
+    function ProgressBar({ value, max = 100, label, showPct = true }) {
+      const pct = max > 0 ? (value / max) * 100 : 0;
+      return (
+        <div className="w-full">
+          {label && (
+            <div className="flex justify-between text-xs text-slate-500 mb-2">
+              <span>{label}</span>
+              {showPct && <span className="mono">{fmt.pct(pct, 1)}</span>}
+            </div>
+          )}
+          <div className="progress-bar">
+            <div className="progress-fill" style={{ width: `${Math.min(pct, 100)}%` }} />
+          </div>
+        </div>
+      );
+    }
+
+    function scoreFromStatus(s) {
+      if (s === "good") return 1.0;
+      if (s === "ok") return 0.65;
+      if (s === "bad") return 0.25;
+      return 0.5;
+    }
+
+    function HealthRing({ title, statuses }) {
+      const avg = (statuses && statuses.length)
+        ? statuses.map(scoreFromStatus).reduce((a,b)=>a+b,0) / statuses.length
+        : 0.5;
+      const pct = Math.round(avg * 100);
+      const cut = 360 * (1 - avg);
+
+      const ringBg =
+        `radial-gradient(circle at 50% 50%, rgba(2,6,23,0.85) 58%, transparent 59%),
+         conic-gradient(from 220deg,
+           rgba(99,102,241,0.95) 0deg,
+           rgba(168,85,247,0.90) ${Math.max(0, 360 - cut)}deg,
+           rgba(255,255,255,0.08) ${Math.max(0, 360 - cut)}deg,
+           rgba(255,255,255,0.08) 360deg)`;
+
+      return (
+        <div className="glass-card rounded-3xl p-6 flex items-center justify-between gap-6 animate-slide-up">
+          <div>
+            <div className="text-xs uppercase tracking-[0.16em] text-slate-500 font-black">Health</div>
+            <div className="text-xl font-black text-white mt-2">{title}</div>
+            <div className="text-sm text-slate-500 mt-2">
+              Composite score derived from key statuses (no theatrics).
+            </div>
+          </div>
+
+          <div className="ring" style={{ background: ringBg }}>
+            <div className="ring-inner">
+              <div className="mono text-2xl font-black text-white">{pct}</div>
+              <div className="text-[11px] uppercase tracking-[0.18em] text-slate-500 font-black">Score</div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // KPI tile (equal height)
+    function KPI({ label, value, status, tooltip, sub = "", spark = null, accent = "" }) {
+      const accentStyle = accent || "linear-gradient(135deg, rgba(99,102,241,0.18), rgba(236,72,153,0.10), transparent 60%)";
+      return (
+        <Tooltip content={tooltip}>
+          <div className="glass-card kpi-tile relative animate-slide-up">
+            <div className="kpi-accent" style={{ background: accentStyle }}></div>
+
+            <div className="flex items-start justify-between gap-3 relative">
+              <div className="min-w-0">
+                <div className="kpi-label truncate">{label}</div>
+                <div className="kpi-sub mt-2">{sub}</div>
+              </div>
+              <StatusTag status={status} />
+            </div>
+
+            <div className={"mono kpi-value relative " + statusClass(status)}>
+              {value}
+            </div>
+
+            <div className="relative">
+              {spark}
+            </div>
+          </div>
+        </Tooltip>
+      );
+    }
+
+    // Learning diagnostic card (equal height, clean)
+    function DiagCard({ label, value, status, ideal, tooltip, accent = "" }) {
+      const accentStyle = accent || "linear-gradient(135deg, rgba(34,211,238,0.14), rgba(99,102,241,0.12), transparent 60%)";
+      return (
+        <Tooltip content={tooltip}>
+          <div className="glass-card diag-card relative animate-slide-up">
+            <div className="kpi-accent" style={{ background: accentStyle, borderRadius: "22px" }}></div>
+
+            <div className="flex items-start justify-between gap-3 relative">
+              <div className="min-w-0">
+                <div className="kpi-label truncate">{label}</div>
+                <div className="diag-ideal mt-2">Ideal: <span className="mono text-slate-400 font-semibold">{ideal}</span></div>
+              </div>
+              <StatusTag status={status} />
+            </div>
+
+            <div className={"mono text-4xl font-black tracking-tight relative " + statusClass(status)}>
+              {value}
+            </div>
+
+            <div className="text-xs text-slate-600 relative">
+              Live PPO diagnostics (compact, readable, no clutter).
+            </div>
+          </div>
+        </Tooltip>
+      );
+    }
+
+    // Exit distribution: summary + rows
+    function ExitDistribution({ exit_stats }) {
+      const dist = exit_stats?.distribution || {};
+      const entries = Object.entries(dist).sort(([,a],[,b]) => b - a);
+      const total = entries.reduce((s, [,c]) => s + (Number(c) || 0), 0) || 1;
+
+      const good = new Set(["trailing_stop", "agent_close"]);
+      const bad = new Set(["hard_stop", "emergency_close", "risk_liquidation"]);
+
+      const goodCount = entries.reduce((s,[k,c]) => s + (good.has(k) ? (Number(c)||0) : 0), 0);
+      const badCount  = entries.reduce((s,[k,c]) => s + (bad.has(k) ? (Number(c)||0) : 0), 0);
+      const neuCount  = Math.max(0, total - goodCount - badCount);
+
+      const goodPct = (goodCount / total) * 100;
+      const badPct  = (badCount / total) * 100;
+      const neuPct  = 100 - goodPct - badPct;
+
+      const labels = {
+        trailing_stop: "Trailing Stop",
+        agent_close: "Agent Close",
+        time_decay: "Time Decay",
+        hard_close: "Hard Close",
+        weekend_flatten: "Weekend Flatten",
+        hard_stop: "Hard Stop",
+        emergency_close: "Emergency Close",
+        risk_liquidation: "Risk Liquidation",
+        episode_truncate_flatten: "Episode Truncate Flatten",
+        daily_limit_safety: "Daily Limit Safety",
+        "term:episode_length": "Term: Episode Length",
+      };
+
+      return (
+        <div className="glass-card rounded-3xl p-6">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <div className="text-xs uppercase tracking-[0.16em] text-slate-500 font-black">Exit Distribution</div>
+              <div className="text-xl font-black text-white mt-2">Why Trades End</div>
+              <div className="text-sm text-slate-500 mt-2">Clean list + proportional visual (no ugly badges).</div>
+            </div>
+            <div className="text-right">
+              <div className="text-xs text-slate-600">Total</div>
+              <div className="mono text-xl font-black text-slate-200">{fmt.int(total)}</div>
+            </div>
+          </div>
+
+          <div className="mt-5">
+            <div className="exit-stack" title="Good / Neutral / Bad">
+              <div className="seg-good" style={{ width: `${Math.max(0, goodPct)}%` }}></div>
+              <div className="seg-neutral" style={{ width: `${Math.max(0, neuPct)}%` }}></div>
+              <div className="seg-bad" style={{ width: `${Math.max(0, badPct)}%` }}></div>
+            </div>
+            <div className="flex justify-between text-xs text-slate-500 mt-2">
+              <span className="text-emerald-300 font-semibold">Good {fmt.pct(goodPct, 1)}</span>
+              <span className="text-slate-400 font-semibold">Neutral {fmt.pct(neuPct, 1)}</span>
+              <span className="text-rose-300 font-semibold">Bad {fmt.pct(badPct, 1)}</span>
+            </div>
+          </div>
+
+          <div className="mt-5 space-y-2">
+            {entries.length === 0 ? (
+              <div className="text-slate-500 text-sm">No exit data yet.</div>
+            ) : entries.map(([reason, count]) => {
+              const c = Number(count) || 0;
+              const pct = (c / total) * 100;
+              return (
+                <div key={reason} className="exit-row">
+                  <div className="min-w-0">
+                    <div className="text-sm font-bold text-white truncate">{labels[reason] || reason}</div>
+                    <div className="text-xs text-slate-600 mt-1">{fmt.pct(pct, 1)} of exits</div>
+                  </div>
+
+                  <div>
+                    <div className="mini-bar">
+                      <div className="mini-fill" style={{ width: `${Math.min(100, pct)}%` }}></div>
+                    </div>
+                  </div>
+
+                  <div className="mono text-right text-sm font-black text-slate-200">
+                    Ã—{fmt.int(c)}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      );
+    }
+
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // TABS
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    function OverviewTab({ data }) {
+      const { progress, learning, trading, quality, exit_stats } = data;
+
+      const snapshots = [
+        { label: "Win Rate", value: fmt.pct(trading?.mean_win_rate, 1), status: trading?.mean_win_rate_status },
+        { label: "Max DD", value: fmt.pct(trading?.max_drawdown, 2), status: trading?.max_drawdown_status },
+        { label: "Profit Factor", value: fmt.num(quality?.mean_profit_factor, 2), status: quality?.mean_profit_factor_status },
+        { label: "Entry Quality", value: fmt.pct((quality?.mean_entry_quality || 0) * 100, 1), status: quality?.mean_entry_quality_status },
+      ];
+
+      return (
+        <div className="space-y-6 animate-fade-in">
+          {/* Command Center */}
+          <section className="glass rounded-3xl p-6 md:p-7">
+            <SectionHeader
+              title="Training Command Center"
+              subtitle={`Episode ${fmt.int(progress?.total_episodes)} â€¢ Step ${fmt.int(progress?.timesteps)} â€¢ Live telemetry`}
+              icon="ðŸš€"
+            />
+
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+              <div className="lg:col-span-8 glass-card rounded-3xl p-6">
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <div className="text-xs uppercase tracking-[0.16em] text-slate-500 font-black">Progress</div>
+                    <div className="text-2xl md:text-3xl font-black text-white mt-2">
+                      {fmt.pct(progress?.progress_pct, 1)}
+                    </div>
+                    <div className="text-sm text-slate-500 mt-2">
+                      {fmt.int(progress?.timesteps)} / {fmt.int(progress?.total_timesteps)} timesteps
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-xs uppercase tracking-[0.16em] text-slate-500 font-black">ETA</div>
+                    <div className="mono text-xl font-black text-slate-200 mt-2">{fmt.time(progress?.eta_seconds)}</div>
+                    <div className="text-xs text-slate-600 mt-2">Estimated remaining time</div>
+                  </div>
+                </div>
+
+                <div className="mt-6">
+                  <ProgressBar
+                    value={progress?.timesteps || 0}
+                    max={progress?.total_timesteps || 1}
+                    label={`${fmt.int(progress?.timesteps)} / ${fmt.int(progress?.total_timesteps)}`}
+                  />
+                </div>
+
+                <div className="mt-6 grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <div className="glass-card rounded-2xl p-4">
+                    <div className="text-xs uppercase tracking-[0.16em] text-slate-500 font-black">Episodes</div>
+                    <div className="mono text-lg font-black text-slate-200 mt-2">{fmt.int(progress?.total_episodes)}</div>
+                  </div>
+                  <div className="glass-card rounded-2xl p-4">
+                    <div className="text-xs uppercase tracking-[0.16em] text-slate-500 font-black">FPS</div>
+                    <div className="mono text-lg font-black text-slate-200 mt-2">{fmt.int(learning?.fps)}</div>
+                  </div>
+                  <div className="glass-card rounded-2xl p-4">
+                    <div className="text-xs uppercase tracking-[0.16em] text-slate-500 font-black">Trades</div>
+                    <div className="mono text-lg font-black text-slate-200 mt-2">{fmt.int(trading?.total_trades)}</div>
+                  </div>
+                  <div className="glass-card rounded-2xl p-4">
+                    <div className="text-xs uppercase tracking-[0.16em] text-slate-500 font-black">Updates</div>
+                    <div className="mono text-lg font-black text-slate-200 mt-2">{fmt.int(learning?.n_updates)}</div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="lg:col-span-4 space-y-5">
+                <HealthRing
+                  title="System Quality"
+                  statuses={[
+                    learning?.mean_reward_status,
+                    learning?.total_pnl_status,
+                    trading?.mean_win_rate_status,
+                    trading?.max_drawdown_status,
+                    quality?.mean_profit_factor_status,
+                    quality?.mean_entry_quality_status
+                  ].filter(Boolean)}
+                />
+
+                {/* Fill space under health: clean snapshot (matches layout) */}
+                <div className="glass-card rounded-3xl p-6">
+                  <div className="text-xs uppercase tracking-[0.16em] text-slate-500 font-black">Snapshot</div>
+                  <div className="text-xl font-black text-white mt-2">Risk & Quality</div>
+                  <div className="text-sm text-slate-500 mt-2">A compact â€œat-a-glanceâ€ panel aligned with Health.</div>
+
+                  <div className="mt-5 space-y-3">
+                    {snapshots.map((s, i) => (
+                      <div key={i} className="flex items-center justify-between gap-3">
+                        <div className="text-sm text-slate-400 font-semibold">{s.label}</div>
+                        <div className="flex items-center gap-3">
+                          <div className={"mono text-sm font-black " + statusClass(s.status)}>{s.value}</div>
+                          <StatusTag status={s.status} />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          {/* KPI Grid (equal-sized tiles, no icon balls) */}
+          <section className="glass rounded-3xl p-6 md:p-7">
+            <SectionHeader
+              title="Key Performance Indicators"
+              subtitle="Equal-sized tiles, clean hierarchy, no visual collisions."
+              icon="ðŸ“Š"
+            />
+
+            <div className="kpi-grid">
+              <KPI
+                label="Mean Reward"
+                value={fmt.num(learning?.mean_reward, 3)}
+                status={learning?.mean_reward_status}
+                tooltip="Average reward per episode."
+                sub="Reward trend across recent episodes."
+                spark={<Sparkline data={data.recent_rewards || []} status={learning?.mean_reward_status} />}
+                accent="linear-gradient(135deg, rgba(99,102,241,0.18), rgba(34,211,238,0.10), transparent 60%)"
+              />
+
+              <KPI
+                label="Total P&L"
+                value={fmt.currency(learning?.total_pnl)}
+                status={learning?.total_pnl_status}
+                tooltip="Cumulative profit/loss across all episodes."
+                sub="Aggregated across the entire run."
+                spark={<Sparkline data={data.recent_pnls || []} status={learning?.total_pnl_status} />}
+                accent="linear-gradient(135deg, rgba(236,72,153,0.16), rgba(168,85,247,0.10), transparent 60%)"
+              />
+
+              <KPI
+                label="Mean P&L"
+                value={fmt.currency(learning?.mean_pnl)}
+                status={learning?.mean_pnl_status}
+                tooltip="Average profit/loss per episode."
+                sub="Stabilises as training progresses."
+                spark={<Sparkline data={data.recent_pnls || []} status={learning?.mean_pnl_status} />}
+                accent="linear-gradient(135deg, rgba(168,85,247,0.16), rgba(99,102,241,0.10), transparent 60%)"
+              />
+
+              <KPI
+                label="Win Rate"
+                value={fmt.pct(trading?.mean_win_rate, 1)}
+                status={trading?.mean_win_rate_status}
+                tooltip="Percentage of profitable trades."
+                sub="High is good; validate against drawdown + PF."
+                spark={<Sparkline data={data.recent_win_rates || []} status={trading?.mean_win_rate_status} />}
+                accent="linear-gradient(135deg, rgba(34,211,238,0.14), rgba(99,102,241,0.10), transparent 60%)"
+              />
+
+              <KPI
+                label="Max Drawdown"
+                value={fmt.pct(trading?.max_drawdown, 2)}
+                status={trading?.max_drawdown_status}
+                tooltip="Maximum peak-to-trough equity decline."
+                sub="Lower is better for prop constraints."
+                spark={<Sparkline data={data.recent_drawdowns || []} status={trading?.max_drawdown_status} />}
+                accent="linear-gradient(135deg, rgba(251,191,36,0.12), rgba(236,72,153,0.08), transparent 60%)"
+              />
+
+              <KPI
+                label="Profit Factor"
+                value={fmt.num(quality?.mean_profit_factor, 2)}
+                status={quality?.mean_profit_factor_status}
+                tooltip="Gross profits / gross losses."
+                sub=">1 baseline; >1.5 strong."
+                spark={null}
+                accent="linear-gradient(135deg, rgba(52,211,153,0.12), rgba(34,211,238,0.08), transparent 60%)"
+              />
+            </div>
+          </section>
+
+          {/* Exit reasons: upgraded */}
+          <section className="glass rounded-3xl p-6 md:p-7">
+            <SectionHeader
+              title="Exit Reason Distribution"
+              subtitle="Clean list + proportional stack (replaces the â€œugly badgesâ€)."
+              icon="ðŸšª"
+            />
+            <ExitDistribution exit_stats={exit_stats} />
+          </section>
+        </div>
+      );
+    }
+
+    function LearningTab({ data }) {
+      const { learning } = data;
+
+      const rows = [
+        {
+          label: "Policy Loss",
+          key: "policy_loss",
+          value: fmt.scientific(learning?.policy_loss, 4),
+          status: learning?.policy_loss_status,
+          ideal: "< 0 (negative)",
+          tooltip: "PPO policy gradient loss. Negative is commonly healthy; large positive can mean instability.",
+          accent: "linear-gradient(135deg, rgba(99,102,241,0.18), rgba(168,85,247,0.10), transparent 60%)"
+        },
+        {
+          label: "Value Loss",
+          key: "value_loss",
+          value: fmt.scientific(learning?.value_loss, 4),
+          status: learning?.value_loss_status,
+          ideal: "< 0.1",
+          tooltip: "Value function regression loss. Lower generally indicates better return prediction.",
+          accent: "linear-gradient(135deg, rgba(52,211,153,0.14), rgba(34,211,238,0.08), transparent 60%)"
+        },
+        {
+          label: "Entropy",
+          key: "entropy",
+          value: fmt.num(learning?.entropy, 2),
+          status: learning?.entropy_status,
+          ideal: "-9 to -5",
+          tooltip: "Exploration measure. Too low can mean collapse; too high can mean randomness.",
+          accent: "linear-gradient(135deg, rgba(251,191,36,0.14), rgba(236,72,153,0.08), transparent 60%)"
+        },
+        {
+          label: "KL Divergence",
+          key: "approx_kl",
+          value: fmt.scientific(learning?.approx_kl, 5),
+          status: learning?.approx_kl_status,
+          ideal: "< 0.015",
+          tooltip: "Magnitude of policy updates. Larger KL often implies overly aggressive updates.",
+          accent: "linear-gradient(135deg, rgba(34,211,238,0.14), rgba(99,102,241,0.10), transparent 60%)"
+        },
+        {
+          label: "Clip Fraction",
+          key: "clip_fraction",
+          value: fmt.num(learning?.clip_fraction, 3),
+          status: learning?.clip_fraction_status,
+          ideal: "0.05 â€“ 0.20",
+          tooltip: "Fraction of samples clipped. Too low can mean weak learning; too high can mean unstable updates.",
+          accent: "linear-gradient(135deg, rgba(168,85,247,0.14), rgba(236,72,153,0.08), transparent 60%)"
+        },
+        {
+          label: "Explained Variance",
+          key: "explained_variance",
+          value: fmt.num(learning?.explained_variance, 3),
+          status: learning?.explained_variance_status,
+          ideal: "> 0.5",
+          tooltip: "How well the value function explains returns. Higher is better; negative can indicate severe mismatch.",
+          accent: "linear-gradient(135deg, rgba(236,72,153,0.14), rgba(99,102,241,0.08), transparent 60%)"
+        },
+      ];
+
+      return (
+        <div className="space-y-6 animate-fade-in">
+          <section className="glass rounded-3xl p-6 md:p-7">
+            <SectionHeader
+              title="Learning Diagnostics"
+              subtitle={`${fmt.int(learning?.n_updates)} policy updates â€¢ Clean diagnostic cards (no bars, no clutter).`}
+              icon="ðŸ§ "
+            />
+
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+              <div className="lg:col-span-8">
+                <div className="diag-grid">
+                  {rows.map(r => (
+                    <DiagCard
+                      key={r.key}
+                      label={r.label}
+                      value={r.value}
+                      status={r.status}
+                      ideal={r.ideal}
+                      tooltip={r.tooltip}
+                      accent={r.accent}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              <div className="lg:col-span-4 space-y-5">
+                {/* Health panel - taller to match */}
+                <div className="glass-card rounded-3xl p-6 side-panel flex items-center justify-between gap-6 animate-slide-up">
+                  <div>
+                    <div className="text-xs uppercase tracking-[0.16em] text-slate-500 font-black">Health</div>
+                    <div className="text-xl font-black text-white mt-2">Learning Stability</div>
+                    <div className="text-sm text-slate-500 mt-2">Composite score from key statuses.</div>
+                  </div>
+                  {(() => {
+                    const statuses = rows.map(r => r.status).filter(Boolean);
+                    const avg = (statuses && statuses.length)
+                      ? statuses.map(scoreFromStatus).reduce((a,b)=>a+b,0) / statuses.length
+                      : 0.5;
+                    const pct = Math.round(avg * 100);
+                    const cut = 360 * (1 - avg);
+                    const ringBg =
+                      `radial-gradient(circle at 50% 50%, rgba(2,6,23,0.85) 58%, transparent 59%),
+                       conic-gradient(from 220deg,
+                         rgba(99,102,241,0.95) 0deg,
+                         rgba(168,85,247,0.90) ${Math.max(0, 360 - cut)}deg,
+                         rgba(255,255,255,0.08) ${Math.max(0, 360 - cut)}deg,
+                         rgba(255,255,255,0.08) 360deg)`;
+                    return (
+                      <div className="ring" style={{ background: ringBg }}>
+                        <div className="ring-inner">
+                          <div className="mono text-2xl font-black text-white">{pct}</div>
+                          <div className="text-[11px] uppercase tracking-[0.18em] text-slate-500 font-black">Score</div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+
+
+                {/* Runtime panel - taller to match */}
+                <div className="glass-card rounded-3xl p-6 side-panel-runtime">
+                  <div className="text-xs uppercase tracking-[0.16em] text-slate-500 font-black">Runtime</div>
+                  <div className="text-xl font-black text-white mt-2">Speed & Optimizer</div>
+
+                  <div className="mt-6 grid grid-cols-2 gap-4">
+                    <div className="glass-card rounded-2xl p-4">
+                      <div className="text-xs uppercase tracking-[0.16em] text-slate-500 font-black">FPS</div>
+                      <div className="mono text-lg font-black text-slate-200 mt-2">{fmt.int(learning?.fps)}</div>
+                    </div>
+                    <div className="glass-card rounded-2xl p-4">
+                      <div className="text-xs uppercase tracking-[0.16em] text-slate-500 font-black">LR</div>
+                      <div className="mono text-lg font-black text-slate-200 mt-2">{fmt.scientific(learning?.learning_rate, 2)}</div>
+                    </div>
+                    <div className="glass-card rounded-2xl p-4">
+                      <div className="text-xs uppercase tracking-[0.16em] text-slate-500 font-black">Clip</div>
+                      <div className="mono text-lg font-black text-slate-200 mt-2">{fmt.num(learning?.clip_range, 2)}</div>
+                    </div>
+                    <div className="glass-card rounded-2xl p-4">
+                      <div className="text-xs uppercase tracking-[0.16em] text-slate-500 font-black">Updates</div>
+                      <div className="mono text-lg font-black text-slate-200 mt-2">{fmt.int(learning?.n_updates)}</div>
+                    </div>
+                  </div>
+
+                  <div className="text-xs text-slate-600 mt-5">
+                    This panel is intentionally quiet to keep attention on diagnostics.
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+      );
+    }
+
+    // Trading / Charts: keep simple + keep what you said you like
+    function TradingTab({ data }) {
+      const { trading, quality, exit_stats } = data;
+      return (
+        <div className="space-y-6 animate-fade-in">
+          <section className="glass rounded-3xl p-6 md:p-7">
+            <SectionHeader title="Trading Performance" subtitle={`${fmt.int(trading?.total_trades)} total trades`} icon="ðŸ’¹" />
+            <div className="kpi-grid">
+              <KPI label="Win Rate" value={fmt.pct(trading?.mean_win_rate, 1)} status={trading?.mean_win_rate_status} tooltip="Percentage of profitable trades." sub="Prop-style sanity check metric." />
+              <KPI label="Max Drawdown" value={fmt.pct(trading?.max_drawdown, 2)} status={trading?.max_drawdown_status} tooltip="Peak-to-trough decline." sub="Lower is better." />
+              <KPI label="Avg Trades/Episode" value={fmt.num(trading?.mean_trades, 1)} status={trading?.mean_trades_status} tooltip="Average trade count per episode." sub="Healthy range is typically 3â€“15." />
+              <KPI label="Total Trades" value={fmt.int(trading?.total_trades)} status="ok" tooltip="Cumulative trades so far." sub="Volume metric (context only)." />
+              <KPI label="R-Multiple" value={fmt.num(quality?.mean_r_multiple, 2)} status={quality?.mean_r_multiple_status} tooltip="Risk-adjusted return per trade." sub="Core quality signal." />
+              <KPI label="Entry Quality" value={fmt.pct((quality?.mean_entry_quality || 0) * 100, 1)} status={quality?.mean_entry_quality_status} tooltip="Mean entry score." sub="Should correlate with PF and drawdown." />
+            </div>
+          </section>
+
+          <section className="glass rounded-3xl p-6 md:p-7">
+            <SectionHeader title="Exit Reason Distribution" subtitle="Same clean component as overview." icon="ðŸšª" />
+            <ExitDistribution exit_stats={exit_stats} />
+          </section>
+        </div>
+      );
+    }
+
+    function smoothPath(points) {
+      if (points.length < 3) return points.map((p,i)=>`${i===0?'M':'L'} ${p.x} ${p.y}`).join(" ");
+      const d = [];
+      d.push(`M ${points[0].x} ${points[0].y}`);
+      for (let i=0;i<points.length-1;i++){
+        const p0 = points[i-1] || points[i];
+        const p1 = points[i];
+        const p2 = points[i+1];
+        const p3 = points[i+2] || p2;
+        const cp1x = p1.x + (p2.x - p0.x) / 6;
+        const cp1y = p1.y + (p2.y - p0.y) / 6;
+        const cp2x = p2.x - (p3.x - p1.x) / 6;
+        const cp2y = p2.y - (p3.y - p1.y) / 6;
+        d.push(`C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${p2.x} ${p2.y}`);
+      }
+      return d.join(" ");
+    }
+
+    function LargeChart({ data, baseline = 0, colorPositive = "#34d399", colorNegative = "#fb7185", invertColors = false }) {
+      if (!data || data.length === 0) return <div className="h-full flex items-center justify-center text-slate-500">No data available</div>;
+
+      const values = data.map(v => typeof v === "number" ? v : 0);
+      const min = Math.min(...values, baseline);
+      const max = Math.max(...values, baseline);
+      const range = max - min || 1;
+
+      const points = values.map((v,i)=>({
+        x: (i / (values.length - 1 || 1)) * 100,
+        y: 100 - ((v - min) / range) * 100,
+      }));
+      const baselineY = 100 - ((baseline - min) / range) * 100;
+
+      const pathD = smoothPath(points);
+      const areaD = `${pathD} L ${points[points.length-1]?.x || 0} 100 L 0 100 Z`;
+
+      const last = values[values.length-1] || 0;
+      const isPos = invertColors ? last <= baseline : last >= baseline;
+      const lineColor = isPos ? colorPositive : colorNegative;
+
+      return (
+        <div className="h-full w-full relative">
+          <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="w-full h-full">
+            <defs>
+              <linearGradient id="chartFill" x1="0" y1="0" x2="1" y2="0">
+                <stop offset="0%" stopColor={lineColor} stopOpacity="0.20" />
+                <stop offset="55%" stopColor={lineColor} stopOpacity="0.10" />
+                <stop offset="100%" stopColor={lineColor} stopOpacity="0.18" />
+              </linearGradient>
+            </defs>
+
+            <line x1="0" y1={baselineY} x2="100" y2={baselineY} stroke="rgba(255,255,255,0.10)" strokeWidth="0.5" />
+            <line x1="0" y1="25" x2="100" y2="25" stroke="rgba(255,255,255,0.06)" strokeWidth="0.35" />
+            <line x1="0" y1="75" x2="100" y2="75" stroke="rgba(255,255,255,0.06)" strokeWidth="0.35" />
+
+            <path d={areaD} fill="url(#chartFill)" />
+            <path d={pathD} fill="none" stroke={lineColor} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+          </svg>
+
+          <div className={"absolute right-2 top-2 mono text-sm font-black " + (isPos ? "text-emerald-300" : "text-rose-300")}>
+            {fmt.num(last, 2)}
+          </div>
+        </div>
+      );
+    }
+
+    function ChartsTab({ data }) {
+      const rewards = data.recent_rewards || [];
+      const pnls = data.recent_pnls || [];
+      const winRates = data.recent_win_rates || [];
+      const drawdowns = data.recent_drawdowns || [];
+      const rMult = data.recent_r_multiples || [];
+
+      return (
+        <div className="space-y-6 animate-fade-in">
+          <section className="glass rounded-3xl p-6 md:p-7">
+            <SectionHeader title="Reward History" subtitle="Last 100 episodes" icon="ðŸ“ˆ" />
+            <div className="h-56">
+              <LargeChart data={rewards} colorPositive="#34d399" colorNegative="#fb7185" />
+            </div>
+          </section>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <section className="glass rounded-3xl p-6">
+              <SectionHeader title="P&L History" icon="ðŸ’µ" />
+              <div className="h-44"><LargeChart data={pnls} /></div>
+            </section>
+
+            <section className="glass rounded-3xl p-6">
+              <SectionHeader title="Win Rate Trend" icon="ðŸŽ¯" />
+              <div className="h-44"><LargeChart data={winRates} baseline={50} colorPositive="#a5b4fc" colorNegative="#fb7185" /></div>
+            </section>
+
+            <section className="glass rounded-3xl p-6">
+              <SectionHeader title="Drawdown History" icon="ðŸ“‰" />
+              <div className="h-44"><LargeChart data={drawdowns.map(d=>-Math.abs(d))} invertColors colorPositive="#fb7185" colorNegative="#fb7185" /></div>
+            </section>
+
+            <section className="glass rounded-3xl p-6">
+              <SectionHeader title="R-Multiple Trend" icon="â­" />
+              <div className="h-44"><LargeChart data={rMult} /></div>
+            </section>
+          </div>
+        </div>
+      );
+    }
+
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // MAIN APP
+    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    function App() {
+      const [data, setData] = useState(null);
+      const [connected, setConnected] = useState(false);
+      const [activeTab, setActiveTab] = useState("overview");
+      const [lastUpdate, setLastUpdate] = useState(null);
+      const [updateCount, setUpdateCount] = useState(0);
+
+      useEffect(() => {
+        let ws;
+        let reconnectTimeout;
+
+        const connect = () => {
+          const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+          const url = `${protocol}://${window.location.host}/ws`;
+          ws = new WebSocket(url);
+
+          ws.onopen = () => setConnected(true);
+
+          ws.onmessage = (event) => {
+            try {
+              const payload = JSON.parse(event.data);
+              setData(payload);
+              setLastUpdate(new Date());
+              setUpdateCount(c => c + 1);
+            } catch (e) {
+              console.error("Parse error:", e);
+            }
+          };
+
+          ws.onclose = () => {
+            setConnected(false);
+            reconnectTimeout = setTimeout(connect, 2000);
+          };
+
+          ws.onerror = (err) => console.error("WebSocket error:", err);
+        };
+
+        connect();
+        return () => {
+          if (ws) ws.close();
+          if (reconnectTimeout) clearTimeout(reconnectTimeout);
+        };
+      }, []);
+
+      const tabs = [
+        { id: "overview", label: "Overview", icon: "ðŸ“Š" },
+        { id: "learning", label: "Learning", icon: "ðŸ§ " },
+        { id: "trading", label: "Trading", icon: "ðŸ’¹" },
+        { id: "charts", label: "Charts", icon: "ðŸ“ˆ" },
+      ];
+
+      return (
+        <div className="min-h-screen px-4 py-5 md:px-7 md:py-7">
+          <div className="max-w-[1500px] mx-auto">
+            <header className="glass rounded-3xl p-5 md:p-6 mb-6 sticky top-3 z-20">
+              <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-5">
+                <div className="flex items-center gap-4">
+                  <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 flex items-center justify-center shadow-lg shadow-purple-500/25 animate-glow">
+                    <span className="text-2xl">ðŸ¤–</span>
+                  </div>
+                  <div className="min-w-0">
+                    <h1 className="text-xl md:text-2xl font-black gradient-text tracking-tight">
+                      PropFirm PPO Training Dashboard
+                    </h1>
+                    <p className="text-sm text-slate-500 mt-1">
+                      Real-time monitoring â€¢ Action masking â€¢ Walk-forward training
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-3">
+                  <div className="px-3 py-2 rounded-2xl bg-black/20 border border-white/5 flex items-center gap-2">
+                    <div className={"live-dot " + (connected ? "" : "disconnected")} />
+                    <span className="text-sm text-slate-300 font-semibold">
+                      {connected ? "Live" : "Reconnectingâ€¦"}
+                    </span>
+                  </div>
+
+                  {lastUpdate && (
+                    <div className="px-3 py-2 rounded-2xl bg-black/20 border border-white/5">
+                      <span className="text-xs text-slate-500 font-black uppercase tracking-[0.14em]">Updated</span>
+                      <span className="mono text-sm text-slate-200 font-black ml-2">{lastUpdate.toLocaleTimeString()}</span>
+                    </div>
+                  )}
+
+                  <div className="px-3 py-2 rounded-2xl bg-black/20 border border-white/5">
+                    <span className="text-xs text-slate-500 font-black uppercase tracking-[0.14em]">Updates</span>
+                    <span className="mono text-sm text-slate-200 font-black ml-2">{updateCount}</span>
+                  </div>
+
+                  {data?.progress && (
+                    <div className="px-3 py-2 rounded-2xl bg-black/20 border border-white/5">
+                      <span className="text-xs text-slate-500 font-black uppercase tracking-[0.14em]">Steps</span>
+                      <span className="mono text-sm text-slate-200 font-black ml-2">
+                        {fmt.int(data.progress.timesteps)} / {fmt.int(data.progress.total_timesteps)}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="mt-5 flex items-center justify-between gap-4 flex-wrap">
+                <div className="tab-shell">
+                  {tabs.map(tab => (
+                    <button
+                      key={tab.id}
+                      onClick={() => setActiveTab(tab.id)}
+                      className={"tab-button flex items-center gap-2 whitespace-nowrap " + (activeTab === tab.id ? "active" : "")}
+                    >
+                      <span>{tab.icon}</span>
+                      <span>{tab.label}</span>
+                    </button>
+                  ))}
+                </div>
+
+                <div className="hidden md:flex items-center gap-2 text-xs text-slate-500">
+                  <span className="px-2 py-1 rounded-lg bg-black/20 border border-white/5">
+                    {data?.status || "idle"}
+                  </span>
+                </div>
+              </div>
+            </header>
+
+            <main>
+              {!data || data.status === "waiting" ? (
+                <div className="glass rounded-3xl p-10 md:p-12 text-center animate-slide-up">
+                  <div className="w-20 h-20 mx-auto mb-6 rounded-3xl bg-gradient-to-br from-indigo-500/20 to-pink-500/15 border border-white/10 flex items-center justify-center animate-float">
+                    <span className="text-4xl">â³</span>
+                  </div>
+                  <h2 className="text-xl font-black text-white mb-2 tracking-tight">Waiting for Training Data</h2>
+                  <p className="text-slate-500 max-w-md mx-auto">
+                    {data?.message || "Start training to see live metrics. The dashboard updates automatically once data is available."}
+                  </p>
+                  <div className="mt-6 text-xs text-slate-600">
+                    Listening on <span className="mono text-slate-400">/ws</span>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  {activeTab === "overview" && <OverviewTab data={data} />}
+                  {activeTab === "learning" && <LearningTab data={data} />}
+                  {activeTab === "trading" && <TradingTab data={data} />}
+                  {activeTab === "charts" && <ChartsTab data={data} />}
+                </>
+              )}
+            </main>
+
+            <footer className="mt-8 text-center text-xs text-slate-600">
+              <p>
+                PropFirm PPO Training System â€¢ Updates: <span className="mono">{updateCount}</span>
+                {data?.progress && (
+                  <span> â€¢ {fmt.int(data.progress.timesteps)} / {fmt.int(data.progress.total_timesteps)} steps</span>
+                )}
+              </p>
+            </footer>
+          </div>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<App />);
+  </script>
+</body>
+</html>
+

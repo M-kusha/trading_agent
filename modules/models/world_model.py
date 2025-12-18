@@ -108,6 +108,11 @@ class WorldModelConfig:
     performance_window: int = 100
     confidence_threshold: float = 0.5
 
+    # Live vs training mode controls
+    live_mode: bool = False                    # True = live trading, False = backtest/training
+    enable_online_training: bool = True        # Allow training during operation
+    enable_scenario_generation: bool = True    # Allow scenario generation
+
     # Persistence
     save_dir: str = "artifacts/models/world_model"
 
@@ -301,7 +306,8 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
         }
 
         # Analytics and insights
-        self.feature_importance = {}
+        self.feature_importance = {}       # Context-dependent weights (regime/session/volatility)
+        self.feature_stats = {}            # Per-feature variance/history statistics
         self.attention_patterns = deque(maxlen=50)
         self.scenario_cache = {}
         self.prediction_analytics = defaultdict(list)
@@ -756,7 +762,8 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
                     'market_history_size': len(self.market_history),
                     'prediction_history_size': len(self.prediction_history),
                     'training_sessions': len(self.training_history),
-                    'feature_importance_count': len(self.feature_importance)
+                    'feature_importance_count': len(self.feature_importance),
+                    'feature_stats_count': len(self.feature_stats)
                 },
                 'training_curves': {
                     name: list(data)[-20:]
@@ -1097,20 +1104,20 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             ]
             
             for i, (name, value) in enumerate(zip(feature_names[:len(features)], features)):
-                if name not in self.feature_importance:
-                    self.feature_importance[name] = {
+                if name not in self.feature_stats:
+                    self.feature_stats[name] = {
                         'values': deque(maxlen=100),
                         'variance': 0.0,
                         'importance_score': 0.0
                     }
                 
-                self.feature_importance[name]['values'].append(value)
+                self.feature_stats[name]['values'].append(value)
                 
                 # Update variance
-                values = list(self.feature_importance[name]['values'])
+                values = list(self.feature_stats[name]['values'])
                 if len(values) > 1:
-                    self.feature_importance[name]['variance'] = np.var(values)
-                    self.feature_importance[name]['importance_score'] = min(1.0, self.feature_importance[name]['variance'] * 10)
+                    self.feature_stats[name]['variance'] = np.var(values)
+                    self.feature_stats[name]['importance_score'] = min(1.0, self.feature_stats[name]['variance'] * 10)
             
         except Exception as e:
             self.logger.warning(f"Feature statistics update failed: {e}")
@@ -1206,8 +1213,9 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
                         'confidence_level': await self._classify_confidence_level_async(combined_confidence)
                     }
                 
-                # Store prediction
+                # Store prediction and confidence history
                 self.prediction_history.append(predictions.copy())
+                self.confidence_history.append(combined_confidence)  # FIX: was never updated
                 
                 # Track prediction performance
                 await self._track_prediction_performance_async(predictions, market_data)
@@ -1410,8 +1418,15 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
         PERFORMANCE FIX: Reduced training frequency to prevent blocking pipeline
         - Was: every 200 samples (too frequent, causing 3-16 second delays)
         - Now: every 1000 samples or when quality drops significantly
+        
+        LIVE MODE: Training disabled by default in live trading to prevent
+        unexpected model changes during real trades.
         """
         try:
+            # LIVE MODE GUARD: Respect enable_online_training config
+            if self.wm_config.live_mode and not self.wm_config.enable_online_training:
+                return False
+            
             # Check if we have enough data
             if len(self.market_history) < self.wm_config.min_training_samples:
                 return False
@@ -1745,8 +1760,16 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             return float('inf')
 
     async def _should_generate_scenarios_async(self) -> bool:
-        """Determine if scenarios should be generated"""
+        """Determine if scenarios should be generated
+        
+        LIVE MODE: Scenario generation disabled by default in live trading
+        to reduce computational overhead during real trades.
+        """
         try:
+            # LIVE MODE GUARD: Respect enable_scenario_generation config
+            if self.wm_config.live_mode and not self.wm_config.enable_scenario_generation:
+                return False
+            
             # Generate scenarios periodically
             if not hasattr(self, '_last_scenario_time'):
                 self._last_scenario_time = datetime.datetime.now()
@@ -2209,16 +2232,14 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
                 
                 current_lr = self.optimizer.param_groups[0]['lr']
                 
-                if val_loss_trend > 0:  # Loss increasing
-                    new_lr = current_lr
-                    if val_loss_trend > 0:  # Loss increasing
-                        new_lr = current_lr * 0.95
-                        for param_group in self.optimizer.param_groups:
-                            param_group['lr'] = max(new_lr, 1e-6)
-                    elif val_loss_trend < -0.01:  # Loss decreasing significantly
-                        new_lr = current_lr * 1.02
-                        for param_group in self.optimizer.param_groups:
-                            param_group['lr'] = min(new_lr, 1e-2)
+                if val_loss_trend > 0:  # Loss increasing - reduce LR
+                    new_lr = current_lr * 0.95
+                    for param_group in self.optimizer.param_groups:
+                        param_group['lr'] = max(new_lr, 1e-6)
+                elif val_loss_trend < -0.01:  # Loss decreasing significantly - increase LR
+                    new_lr = current_lr * 1.02
+                    for param_group in self.optimizer.param_groups:
+                        param_group['lr'] = min(new_lr, 1e-2)
             
         except Exception as e:
             self.logger.warning(f"Model parameter adaptation failed: {e}")
@@ -2667,10 +2688,10 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             if self.prediction_history:
                 latest_confidence = self.prediction_history[-1].get('confidence', 0.0)
             
-            # Feature importance diversity
+            # Feature importance diversity (use feature_stats for per-feature statistics)
             feature_diversity = 0.0
-            if self.feature_importance:
-                variances = [info.get('variance', 0.0) for info in self.feature_importance.values() if isinstance(info, dict) and 'variance' in info]
+            if self.feature_stats:
+                variances = [info.get('variance', 0.0) for info in self.feature_stats.values() if isinstance(info, dict) and 'variance' in info]
                 feature_diversity = np.mean(variances) if variances else 0.0
             
             # Circuit breaker status
@@ -2903,28 +2924,40 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             return 0.3
 
     def _calculate_prediction_alignment(self, action: Dict[str, Any], predictions: Dict[str, Any]) -> float:
-        """Calculate how well an action aligns with model predictions"""
+        """Calculate how well an action aligns with model predictions.
+        
+        NOTE: Simplified implementation. The original checked for 'price_direction' 
+        and 'volatility_prediction' keys which don't exist in the actual prediction 
+        structure. Now uses 'latest_predictions' sub-dict with actual keys.
+        """
         try:
             alignment_score = 0.5  # Neutral baseline
             
-            # Check price direction alignment
-            if 'direction' in action and 'price_direction' in predictions:
-                action_direction = action['direction']
-                predicted_direction = predictions['price_direction']
-                if action_direction == predicted_direction:
+            # Get latest predictions from nested structure if available
+            latest_preds = predictions.get('latest_predictions', predictions)
+            
+            # Check price change alignment (use predicted price_changes mean as direction proxy)
+            price_changes = latest_preds.get('price_changes')
+            if price_changes is not None and 'direction' in action:
+                # Mean of price_changes indicates predicted direction
+                predicted_direction = np.sign(np.mean(price_changes)) if hasattr(price_changes, '__iter__') else 0
+                action_direction = action.get('direction', 0)
+                
+                # Convert string directions to numeric if needed
+                if isinstance(action_direction, str):
+                    action_direction = 1.0 if action_direction.lower() in ('long', 'buy') else (-1.0 if action_direction.lower() in ('short', 'sell') else 0.0)
+                
+                if predicted_direction == action_direction and predicted_direction != 0:
                     alignment_score += 0.3
-                elif abs(action_direction - predicted_direction) < 0.1:
+                elif abs(predicted_direction - action_direction) < 0.5:
                     alignment_score += 0.1
             
-            # Check volatility alignment
-            if 'volatility_expectation' in action and 'volatility_prediction' in predictions:
-                vol_diff = abs(action['volatility_expectation'] - predictions['volatility_prediction'])
-                if vol_diff < 0.1:
-                    alignment_score += 0.2
-                elif vol_diff < 0.2:
-                    alignment_score += 0.1
+            # Check confidence alignment
+            pred_confidence = latest_preds.get('confidence', 0.5)
+            if pred_confidence > 0.7:
+                alignment_score += 0.1  # Boost when model is confident
             
-            return np.clip(alignment_score, 0.0, 1.0)
+            return float(np.clip(alignment_score, 0.0, 1.0))
             
         except Exception:
             return 0.5
@@ -2940,10 +2973,10 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
                 data_sufficiency = min(1.0, len(self.market_history) / self.wm_config.history_size)
                 familiarity += data_sufficiency * 0.3
             
-            # Check volatility familiarity
-            if 'volatility' in market_data and self.feature_importance.get('volatility_level'):
+            # Check volatility familiarity (use feature_stats for per-feature data)
+            if 'volatility' in market_data and self.feature_stats.get('volatility_level'):
                 current_vol = market_data['volatility']
-                vol_history = self.feature_importance['volatility_level']['values']
+                vol_history = self.feature_stats['volatility_level']['values']
                 if vol_history and len(vol_history) > 5:
                     vol_mean = np.mean(vol_history)
                     vol_std = np.std(vol_history)
@@ -3240,8 +3273,9 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
         for curve in self.training_curves.values():
             curve.clear()
         
-        # Reset feature importance
+        # Reset feature importance and stats
         self.feature_importance.clear()
+        self.feature_stats.clear()
         
         # Reset circuit breaker
         self.circuit_breaker['failures'] = 0

@@ -1,538 +1,326 @@
 #!/usr/bin/env python3
 """
-Live Trading Launcher for MT5
--------------------------------
-Comprehensive script to start live trading with:
-- MT5 connection management
-- Backend orchestrator initialization
-- Health monitoring
-- Auto-recovery
-- Graceful shutdown
-- Real-time status updates
+Live Trading Script - Orchestrator Mode
+========================================
+The ModuleOrchestrator handles EVERYTHING including PPO model predictions.
+PPOAgentShell module loads the model and makes all trading decisions.
+This script just starts the orchestrator and feeds it market data.
 """
 
 import os
 import sys
 import time
 import signal
-import argparse
-import subprocess
-import requests
-import json
+import asyncio
 import logging
-from typing import Optional, Any, Dict
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Dict, Optional, TYPE_CHECKING
 
-from config import TradingAgentConfig, get_logger, load_app_config, setup_logging
+if TYPE_CHECKING:
+    import MetaTrader5 as mt5
+    from modules.utils.info_bus import SmartInfoBus
+    from modules.core.module_system import ModuleOrchestrator as OrchestratorType
+    from live.live_connector import LiveDataConnector as ConnectorType
 
-# Add project root to path
-project_root = Path(__file__).parent
-sys.path.insert(0, str(project_root))
+# Ensure directories exist BEFORE logging setup
+Path("logs").mkdir(exist_ok=True)
+Path("state").mkdir(exist_ok=True)
+
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler("logs/live_orchestrated.log", encoding="utf-8"),
+    ],
+)
+logger = logging.getLogger("LiveTrading")
+
+# Global flag for graceful shutdown
+running = True
+
+def signal_handler(signum, frame):
+    global running
+    logger.info(f"\nReceived signal {signum}, shutting down gracefully...")
+    running = False
+
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
 
 
-class LiveTradingLauncher:
-    """Main launcher for live trading system"""
-
-    def __init__(
-        self,
-        logger: logging.Logger,
-        app_config: TradingAgentConfig,
-        instruments: Optional[list] = None,
-        backend_port: int = 8000,
-    ):
-        self.logger = logger
-        self.app_config = app_config
-        self.running = False
-        self.backend_process: Optional[Any] = None
-        self.backend_url = f"http://localhost:{backend_port}"
-        self.backend_port = backend_port
-        self.emergency_watchdog = None  # Emergency position watchdog
-        self.instruments = instruments or app_config.environment.instruments
-        self.timeframes = app_config.environment.timeframes
-        self.update_interval = app_config.environment.update_interval
-        self.min_trade_interval = app_config.environment.min_trade_interval
-        self.use_trailing_stop = app_config.environment.use_trailing_stop
-        self.risk_policy = dict(app_config.risk.policy or {})
-
-        # Setup signal handlers for graceful shutdown
-        signal.signal(signal.SIGINT, self._signal_handler)
-        signal.signal(signal.SIGTERM, self._signal_handler)
-
-    def _signal_handler(self, signum, frame):
-        """Handle shutdown signals gracefully"""
-        self.logger.info(f"\nReceived signal {signum}, initiating graceful shutdown...")
-        self.shutdown()
-        sys.exit(0)
-
-    def check_prerequisites(self) -> bool:
-        """Check if all prerequisites are met"""
-        self.logger.info("Checking prerequisites...")
-
-        # Check MT5 installation
-        try:
-            import MetaTrader5 as mt5
-            self.logger.info("[OK] MetaTrader5 module found")
-        except ImportError:
-            self.logger.error("[FAIL] MetaTrader5 module not installed")
-            self.logger.error("  Install with: pip install MetaTrader5")
-            return False
-
-        # Check credentials
-        try:
-            from live.mt5_credentials import MT5Credentials
-            if MT5Credentials.ACCOUNT is None or MT5Credentials.PASSWORD is None:
-                self.logger.error("[FAIL] MT5 credentials missing - set MT5_ACCOUNT/MT5_PASSWORD or config.mt5")
-                return False
-            self.logger.info(f"[OK] Credentials loaded (Account: {MT5Credentials.ACCOUNT})")
-        except Exception as e:
-            self.logger.error(f"[FAIL] Failed to load credentials: {e}")
-            return False
-
-        # Check required files
-        required_files = [
-            "backend/main.py",
-            "modules/executor/executor.py",
-            "config/module_registry.yaml",
-        ]
-
-        for file_path in required_files:
-            full_path = project_root / file_path
-            if not full_path.exists():
-                self.logger.error(f"[FAIL] Required file not found: {file_path}")
-                return False
-
-        self.logger.info("[OK] All required files found")
-        self.logger.info("[OK] All prerequisites met")
-        return True
-
-    def setup_environment(self) -> bool:
-        """Setup environment variables for live mode"""
-        self.logger.info("Configuring live trading environment...")
-
-        # Set execution mode to live
+class LiveTradingOrchestrated:
+    """
+    Live trading - Orchestrator handles ALL decisions.
+    
+    Architecture:
+        run_live_simple.py (this file)
+            → ModuleOrchestrator.execute_step()
+                → PPOAgentShell.process()  ← Loads model, makes predictions
+                → ArbiterLogic             ← Final decision making
+                → Executor                 ← Executes trades via MT5
+    """
+    
+    def __init__(self):
+        self.mt5: Any = None
+        self.connector: Any = None
+        self.orchestrator: Any = None
+        self.info_bus: Any = None
+        self.account_info: Any = None
+        self.instruments = ["EURUSD", "XAUUSD"]
+        self.timeframes = ["M15", "H1", "H4", "D1"]
+        
+    def initialize(self) -> bool:
+        """Initialize all components."""
+        logger.info("=" * 70)
+        logger.info("LIVE TRADING - Orchestrator Mode")
+        logger.info("PPOAgentShell handles all model predictions")
+        logger.info("=" * 70)
+        
+        # 1. Set trading mode
         os.environ["EXECUTION_MODE"] = "live"
         os.environ["TRADING_MODE"] = "live"
-        os.environ["TRADING_AGENT_MODE"] = self.app_config.mode.name
-
-        self.logger.info("[OK] Environment configured for live trading")
-        return True
-
-    def start_backend(self) -> bool:
-        """Start the backend server using uvicorn"""
-        self.logger.info("Starting backend server...")
-
+        
         try:
-            # Start backend using uvicorn
-            log_level = str(self.app_config.logging.effective_level).lower()
-            cmd = [
-                sys.executable, "-m", "uvicorn",
-                "backend.main:app",
-                "--host", "0.0.0.0",
-                "--port", str(self.backend_port),
-                "--log-level", log_level
-            ]
-
-            # Set environment variables
-            env = os.environ.copy()
-            env["PYTHONPATH"] = str(project_root)
-            env["PYTHONUNBUFFERED"] = "1"
-            env["EXECUTION_MODE"] = "live"
-            env["TRADING_AGENT_MODE"] = self.app_config.mode.name
-            env["TRADING_AGENT_LOG_LEVEL"] = str(self.app_config.logging.effective_level)
-
-            # Start backend as subprocess
-            # Inherit stdio so we don't block on pipe buffers
-            self.backend_process = subprocess.Popen(
-                cmd,
-                env=env,
-                stdout=None,
-                stderr=None,
-            )
-
-            # Wait for backend to be ready
-            self.logger.info("Waiting for backend to be ready...")
-            health_url = f"{self.backend_url}/health"
-            start_time = time.time()
-            timeout = 60
-
-            while time.time() - start_time < timeout:
-                if self.backend_process.poll() is not None:
-                    self.logger.error("[FAIL] Backend process exited early")
-                    return False
-
-                try:
-                    response = requests.get(health_url, timeout=2)
-                    if response.status_code == 200:
-                        self.logger.info("[OK] Backend server is ready")
-                        time.sleep(2)  # Give it a moment to fully initialize
-                        return True
-                except:
-                    pass
-
-                time.sleep(1)
-
-            self.logger.error(f"[FAIL] Backend failed to become ready within {timeout}s")
-            return False
-
+            from modules.core.trading_mode import TradingModeManager
+            TradingModeManager.set_mode("LIVE")
+            logger.info("[OK] TradingModeManager set to LIVE")
         except Exception as e:
-            self.logger.error(f"[FAIL] Failed to start backend: {e}")
-            import traceback
-            self.logger.debug(traceback.format_exc())
+            logger.warning(f"[WARN] Could not set TradingModeManager: {e}")
+        
+        # 2. Initialize InfoBus
+        try:
+            from modules.utils.info_bus import InfoBusManager
+            self.info_bus = InfoBusManager.get_instance()
+            
+            # Set initial config
+            env_config = {
+                "instruments": [f"{i[:3]}/{i[3:]}" if len(i) == 6 else i for i in self.instruments],
+                "initial_balance": 100000.0,
+                "mode": "live",
+                "max_steps": 100000,
+                "bus_data_active": True,
+            }
+            self.info_bus.set("environment_config", env_config, module="LiveTrading", thesis="live trading startup")
+            self.info_bus.set("execution_mode", "live", module="LiveTrading", thesis="live mode active")
+            logger.info("[OK] InfoBus initialized")
+        except Exception as e:
+            logger.error(f"[FAIL] InfoBus initialization failed: {e}")
             return False
-
-    def connect_mt5(self) -> bool:
-        """Connect to MT5 via backend API (login endpoint)"""
-        self.logger.info("Connecting to MT5 via backend...")
-
+        
+        # 3. Load credentials and connect MT5
         try:
             from live.mt5_credentials import MT5Credentials
-
-            # Correct backend endpoint is /api/login
-            url = f"{self.backend_url}/api/login"
-            payload = {
-                "login": MT5Credentials.ACCOUNT,
-                "password": MT5Credentials.PASSWORD,
-                "server": MT5Credentials.SERVER,
-            }
-
-            response = requests.post(url, json=payload, timeout=60)
-
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("success"):
-                    acct = data.get("account", {})
-                    self.logger.info("[OK] Connected to MT5 successfully")
-                    self.logger.info(f"  Account: {acct.get('login')}")
-                    bal = acct.get('balance')
-                    if isinstance(bal, (int, float)):
-                        self.logger.info(f"  Balance: {bal:.2f}")
-                    return True
-                else:
-                    self.logger.error(f"[FAIL] MT5 connection failed: {data.get('error') or data.get('detail') or 'Unknown error'}")
-                    return False
-            else:
-                detail = None
-                try:
-                    body = response.json()
-                    detail = body.get('error') or body.get('detail')
-                except Exception:
-                    pass
-                self.logger.error(f"[FAIL] MT5 login request failed: {response.status_code}{' - ' + str(detail) if detail else ''}")
-                try:
-                    if not detail:
-                        self.logger.error(f"  Response: {response.text}")
-                except Exception:
-                    pass
+            import MetaTrader5 as mt5  # type: ignore[import]
+            self.mt5 = mt5
+            
+            if not mt5.initialize():  # type: ignore[attr-defined]  # type: ignore[attr-defined]
+                logger.error(f"[FAIL] MT5 initialization failed: {mt5.last_error()}")  # type: ignore[attr-defined]
                 return False
-
-        except Exception as e:
-            self.logger.error(f"[FAIL] Failed to connect to MT5: {e}")
-            import traceback
-            self.logger.debug(traceback.format_exc())
-            return False
-
-    def start_trading(self) -> bool:
-        """Start live trading (initializes orchestrator)"""
-        self.logger.info("Starting live trading system...")
-
-        try:
-            risk_policy = self.risk_policy or {}
-            risk_overrides = self.app_config.risk.overrides or {}
-            prop_firm = risk_policy.get("prop_firm", {})
-            limits = risk_policy.get("limits", {})
-
-            # Get proper prop firm limits
-            daily_dd_limit = float(prop_firm.get("daily_drawdown_limit", risk_overrides.get("max_drawdown", 0.10)))
-            max_dd_limit = float(prop_firm.get("max_drawdown_limit", risk_overrides.get("max_drawdown", 0.10)))
-            daily_buffer = float(prop_firm.get("daily_dd_safety_buffer", 0.008))
-            max_buffer = float(prop_firm.get("max_dd_safety_buffer", 0.015))
-
-            # Use buffered limits for emergency (stop BEFORE hitting actual limit)
-            emergency_default = risk_overrides.get("emergency_drawdown_trigger", max_dd_limit)
-            emergency_dd = min(daily_dd_limit - daily_buffer, max_dd_limit - max_buffer, float(emergency_default))
-
-            # Position limits from YAML / overrides
-            max_pos_size = float(limits.get("max_position_size", risk_overrides.get("max_position_pct", 0.05)))
-            max_exposure = float(limits.get("max_exposure_pct", risk_overrides.get("max_total_exposure", 0.30)))
-
-            self.logger.info(f"Prop firm limits: Daily={daily_dd_limit:.1%}, Max={max_dd_limit:.1%}, Emergency={emergency_dd:.1%}")
-
-            # Call start trading endpoint
-            url = f"{self.backend_url}/api/trading/start"
-            payload = {
-                "instruments": self.instruments,
-                "timeframes": self.timeframes,
-                "update_interval": self.update_interval,
-                "max_position_size": max_pos_size,
-                "max_total_exposure": max_exposure,
-                "min_trade_interval": self.min_trade_interval,
-                "use_trailing_stop": self.use_trailing_stop,
-                "emergency_drawdown_limit": emergency_dd,
-                "debug": self.app_config.logging.debug,
-            }
-
-            self.logger.info(f"Trading instruments: {', '.join(self.instruments)}")
-            response = requests.post(url, json=payload, timeout=30)
-
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("success"):
-                    self.logger.info("[OK] Live trading started successfully")
-                    self.logger.info("  Orchestrator initialized")
-                    self.logger.info("  All modules loaded")
-                    return True
-                else:
-                    self.logger.error(f"[FAIL] Failed to start trading: {data.get('message', 'Unknown error')}")
-                    return False
-            else:
-                error_detail = response.json().get("detail", "Unknown error") if response.headers.get('content-type', '').startswith('application/json') else response.text
-                self.logger.error(f"[FAIL] Start trading request failed: {error_detail}")
+            
+            if not mt5.login(MT5Credentials.ACCOUNT, password=MT5Credentials.PASSWORD, server=MT5Credentials.SERVER):  # type: ignore[attr-defined]
+                logger.error(f"[FAIL] MT5 login failed: {mt5.last_error()}")  # type: ignore[attr-defined]
+                mt5.shutdown()  # type: ignore[attr-defined]
                 return False
-
+            
+            self.account_info = mt5.account_info()  # type: ignore[attr-defined]
+            logger.info(f"[OK] Connected to MT5 - Account: {MT5Credentials.ACCOUNT}, Balance: ${self.account_info.balance:.2f}")
+            
+            # Update InfoBus with real balance
+            env_config["initial_balance"] = self.account_info.balance
+            self.info_bus.set("environment_config", env_config, module="LiveTrading", thesis="updated with real balance")
+            self.info_bus.set("account_balance", self.account_info.balance, module="LiveTrading", thesis="MT5 balance")
+            
         except Exception as e:
-            self.logger.error(f"[FAIL] Failed to start trading: {e}")
-            import traceback
-            self.logger.debug(traceback.format_exc())
+            logger.error(f"[FAIL] MT5 connection failed: {e}")
             return False
-
-    def print_status(self) -> None:
-        """Print current system status from backend"""
+        
+        # 4. Setup data connector (provides market data to orchestrator)
         try:
-            # Get system state
-            response = requests.get(f"{self.backend_url}/api/system/state", timeout=5)
-            if response.status_code != 200:
-                return
-
-            state = response.json()
-
-            self.logger.info("\n" + "="*60)
-            self.logger.info("LIVE TRADING STATUS")
-            self.logger.info("="*60)
-            self.logger.info(f"System Status:      {state.get('status', 'UNKNOWN')}")
-            self.logger.info(f"MT5 Connected:      {'YES' if state.get('mt5_connected') else 'NO'}")
-
-            metrics = state.get('performance_metrics', {})
-            self.logger.info(f"Balance:            {metrics.get('current_balance', 0):.2f}")
-            self.logger.info(f"Total P&L:          {metrics.get('total_pnl', 0):.2f}")
-            self.logger.info(f"Total Trades:       {metrics.get('total_trades', 0)}")
-            self.logger.info(f"Win Rate:           {metrics.get('win_rate', 0)*100:.1f}%")
-
-            self.logger.info("="*60 + "\n")
-
+            from live.live_connector import LiveDataConnector
+            
+            self.connector = LiveDataConnector(instruments=self.instruments, timeframes=self.timeframes)
+            self.connector.connect()
+            
+            # Fetch initial historical data
+            hist_data = self.connector.get_historical_data(n_bars=1000)
+            if not hist_data:
+                logger.error("[FAIL] Could not get historical data")
+                return False
+            
+            logger.info(f"[OK] LiveDataConnector initialized with {len(hist_data)} instruments")
+            
+            # Publish market data to InfoBus for modules to use
+            self.info_bus.set("market_data", hist_data, module="LiveTrading", thesis="historical data")
+            
         except Exception as e:
-            self.logger.debug(f"Could not fetch status: {e}")
-
-    def run(self) -> None:
-        """Main run loop"""
-        self.running = True
-
-        self.logger.info("\n" + "="*60)
-        self.logger.info("LIVE TRADING SYSTEM STARTING")
-        self.logger.info("="*60 + "\n")
-
-        # Check prerequisites
-        if not self.check_prerequisites():
-            self.logger.error("Prerequisites check failed. Exiting.")
-            return
-
-        # Setup environment
-        if not self.setup_environment():
-            self.logger.error("Environment setup failed. Exiting.")
-            return
-
-        # Start backend
-        if not self.start_backend():
-            self.logger.error("Backend startup failed. Exiting.")
-            return
-
-        # Explicitly connect MT5 before starting trading
-        if not self.connect_mt5():
-            self.logger.error("Failed to connect to MT5. Exiting.")
-            return
-
-        # Start trading (initializes orchestrator)
-        if not self.start_trading():
-            self.logger.error("Failed to start trading. Exiting.")
-            return
-
-        # Start emergency position watchdog
-        self._start_emergency_watchdog()
-
-        self.logger.info("\n" + "="*60)
-        self.logger.info("LIVE TRADING SYSTEM RUNNING")
-        self.logger.info("="*60)
-        self.logger.info(f"Dashboard: {self.backend_url}")
-        self.logger.info(f"API Docs:  {self.backend_url}/docs")
-        self.logger.info("Press Ctrl+C to stop gracefully")
-        self.logger.info("="*60 + "\n")
-
-        # Main monitoring loop
-        status_interval = 60  # Print status every 60 seconds
-        last_status_time = time.time()
-
-        try:
-            while self.running:
-                # Check if backend is still running
-                if self.backend_process and self.backend_process.poll() is not None:
-                    self.logger.error("Backend process died unexpectedly!")
-                    break
-
-                # Print status periodically
-                if time.time() - last_status_time >= status_interval:
-                    self.print_status()
-                    last_status_time = time.time()
-
-                # Sleep for a bit
-                time.sleep(5)
-
-        except KeyboardInterrupt:
-            self.logger.info("\nReceived keyboard interrupt...")
-        except Exception as e:
-            self.logger.error(f"Error in main loop: {e}")
+            logger.error(f"[FAIL] Data connector setup failed: {e}")
             import traceback
-            self.logger.debug(traceback.format_exc())
-        finally:
-            self.shutdown()
-
-    def _start_emergency_watchdog(self) -> None:
-        """Start the emergency position watchdog (independent safety net)."""
+            traceback.print_exc()
+            return False
+        
+        # 5. Initialize ModuleOrchestrator (this loads PPOAgentShell which loads the model!)
         try:
-            from modules.position.emergency_watchdog import EmergencyPositionWatchdog, load_watchdog_config
+            from modules.core.module_system import ModuleOrchestrator
+            self.orchestrator = ModuleOrchestrator.get_instance()
+            self.orchestrator.initialize()
+            logger.info(f"[OK] ModuleOrchestrator initialized - {len(self.orchestrator.modules)} modules loaded")
             
-            config = load_watchdog_config()
+            # Verify critical modules are loaded
+            critical_modules = ["PPOAgentShell", "ArbiterLogic", "Executor", "PositionManager"]
+            for name in critical_modules:
+                if name in self.orchestrator.modules:
+                    logger.info(f"     ✓ {name}")
+                else:
+                    logger.warning(f"     ✗ {name} NOT LOADED - trading may not work!")
             
-            def on_emergency_close(symbol: str, profit: float, reason: str):
-                self.logger.critical(
-                    f"🚨 EMERGENCY CLOSE by watchdog: {symbol} | "
-                    f"P&L: €{profit:.2f} | Reason: {reason}"
-                )
-            
-            self.emergency_watchdog = EmergencyPositionWatchdog(
-                config=config,
-                on_emergency_close=on_emergency_close
-            )
-            
-            if self.emergency_watchdog.start():
-                self.logger.info("[OK] Emergency watchdog started")
-                self.logger.info(f"     Hard stop: €{config.hard_stop_eur}")
-                self.logger.info(f"     Check interval: {config.check_interval_s}s")
-            else:
-                self.logger.warning("[WARN] Emergency watchdog failed to start")
+            other_count = len(self.orchestrator.modules) - len([m for m in critical_modules if m in self.orchestrator.modules])
+            if other_count > 0:
+                logger.info(f"     + {other_count} additional modules")
+                
         except Exception as e:
-            self.logger.warning(f"[WARN] Could not start emergency watchdog: {e}")
-            self.emergency_watchdog = None
-
-    def _stop_emergency_watchdog(self) -> None:
-        """Stop the emergency position watchdog."""
-        if self.emergency_watchdog:
+            logger.error(f"[FAIL] ModuleOrchestrator initialization failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+        
+        logger.info("=" * 70)
+        logger.info("[OK] All systems initialized!")
+        logger.info("     → PPOAgentShell will handle all trading decisions")
+        logger.info("     → Executor will execute trades via MT5")
+        logger.info("=" * 70)
+        return True
+    
+    async def run_async(self):
+        """Main trading loop - orchestrator handles all decisions."""
+        global running
+        
+        logger.info("Starting trading loop... Press Ctrl+C to stop")
+        logger.info("-" * 70)
+        
+        step = 0
+        start_balance = self.account_info.balance
+        last_status_log = time.time()
+        
+        while running:
+            step += 1
+            loop_start = time.time()
+            
             try:
-                self.emergency_watchdog.stop()
-                self.logger.info("[OK] Emergency watchdog stopped")
+                # Get fresh market data
+                market_data = self.connector.get_historical_data(n_bars=100) or {}
+                
+                # Update market data in InfoBus
+                if market_data:
+                    self.info_bus.set("market_data", market_data, module="LiveTrading", thesis="market data update")
+                
+                # Execute orchestrator step - THIS RUNS EVERYTHING:
+                #   - PPOAgentShell builds observations and runs model.predict()
+                #   - ArbiterLogic makes final decisions
+                #   - Executor executes trades via MT5
+                await self.orchestrator.execute_step(market_data)
+                
+                # Log decisions from InfoBus (published by PPOAgentShell)
+                try:
+                    ppo_decision = self.info_bus.get("ppo_decision", module="LiveTrading", default=None)
+                    if ppo_decision and step % 30 == 0:  # Log every 30 steps
+                        logger.info(f"[PPO] Decision: {ppo_decision}")
+                except Exception:
+                    pass  # InfoBus get can fail, ignore
+                
+                # Periodic status (every 60 seconds)
+                if time.time() - last_status_log > 60:
+                    acc = self.mt5.account_info()
+                    if acc:
+                        pnl = acc.balance - start_balance
+                        pnl_pct = (pnl / start_balance) * 100
+                        emoji = "📈" if pnl >= 0 else "📉"
+                        logger.info(f"[Status] Step {step} | {emoji} Balance: ${acc.balance:.2f} | P&L: ${pnl:+.2f} ({pnl_pct:+.2f}%)")
+                        
+                        # Update InfoBus
+                        self.info_bus.set("account_balance", acc.balance, module="LiveTrading", thesis="balance update")
+                        self.info_bus.set("account_equity", acc.equity, module="LiveTrading", thesis="equity update")
+                        
+                        # Check positions
+                        positions = self.mt5.positions_get()
+                        if positions:
+                            logger.info(f"         📊 Open positions: {len(positions)}")
+                            for pos in positions:
+                                side = "LONG" if pos.type == 0 else "SHORT"
+                                logger.info(f"            {pos.symbol} {side} {pos.volume} lots | P&L: ${pos.profit:+.2f}")
+                    
+                    last_status_log = time.time()
+                
+                # Maintain ~2 second loop time
+                loop_time = time.time() - loop_start
+                sleep_time = max(0, 2.0 - loop_time)
+                await asyncio.sleep(sleep_time)
+                
             except Exception as e:
-                self.logger.warning(f"Error stopping watchdog: {e}")
-
-    def shutdown(self) -> None:
-        """Graceful shutdown"""
-        if not self.running:
-            return
-
-        self.logger.info("\n" + "="*60)
-        self.logger.info("SHUTTING DOWN LIVE TRADING SYSTEM")
-        self.logger.info("="*60)
-
-        self.running = False
-
-        # Stop emergency watchdog first
-        self._stop_emergency_watchdog()
-
-        # Save PPO autonomy state before shutdown
-        try:
-            self.logger.info("Saving PPO autonomy state...")
-            from modules.utils.info_bus import InfoBusManager
-            bus = InfoBusManager.get_instance()
-            # Try to save via PPOAgent's arbiter
-            ppo_agent = bus.get("ppo_agent_instance", "LiveTrading")
-            if ppo_agent and hasattr(ppo_agent, 'arbiter') and hasattr(ppo_agent.arbiter, 'save_autonomy_state'):
-                if ppo_agent.arbiter.save_autonomy_state():
-                    self.logger.info("[OK] PPO autonomy state saved")
-                else:
-                    self.logger.warning("Failed to save PPO autonomy state")
-        except Exception as e:
-            self.logger.warning(f"Could not save autonomy state: {e}")
-
-        # Stop trading via API
-        try:
-            self.logger.info("Stopping trading system...")
-            response = requests.post(f"{self.backend_url}/api/trading/stop", timeout=10)
-            if response.status_code == 200:
-                self.logger.info("[OK] Trading stopped")
-        except:
-            self.logger.warning("Could not stop trading via API")
-
-        # Stop backend
-        if self.backend_process:
-            self.logger.info("Stopping backend server...")
+                logger.error(f"Trading loop error: {e}")
+                import traceback
+                traceback.print_exc()
+                await asyncio.sleep(2)
+        
+        # Final stats
+        logger.info("=" * 70)
+        logger.info("TRADING SESSION ENDED")
+        logger.info("=" * 70)
+        logger.info(f"Total steps: {step}")
+        
+        acc = self.mt5.account_info()  # type: ignore[union-attr]
+        if acc:
+            pnl = acc.balance - start_balance
+            pnl_pct = (pnl / start_balance) * 100
+            logger.info(f"Final Balance: ${acc.balance:.2f}")
+            logger.info(f"Session P&L: ${pnl:+.2f} ({pnl_pct:+.2f}%)")
+    
+    def shutdown(self):
+        """Clean shutdown."""
+        logger.info("Shutting down...")
+        
+        # Save orchestrator state
+        if self.orchestrator:
             try:
-                self.backend_process.terminate()
-                self.backend_process.wait(timeout=10)
-                self.logger.info("[OK] Backend stopped")
+                if hasattr(self.orchestrator, 'state_manager'):
+                    results = self.orchestrator.state_manager.save_all_module_states(self.orchestrator)
+                    saved = sum(1 for ok in results.values() if ok)
+                    logger.info(f"[OK] Saved {saved}/{len(results)} module states")
+            except Exception as e:
+                logger.warning(f"[WARN] Could not save module states: {e}")
+        
+        # Disconnect
+        if self.connector:
+            try:
+                self.connector.disconnect()
             except:
-                self.logger.warning("Force killing backend...")
-                self.backend_process.kill()
-
-        self.logger.info("[OK] Shutdown complete\n")
+                pass
+        
+        if self.mt5:
+            try:
+                self.mt5.shutdown()  # type: ignore[union-attr]
+                logger.info("[OK] MT5 disconnected")
+            except:
+                pass
 
 
 def main():
-    """Main entry point"""
-    parser = argparse.ArgumentParser(
-        description="Launch live trading system with MT5"
-    )
-    parser.add_argument(
-        "--log-level",
-        default=None,
-        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        help="Logging level override (default from config)"
-    )
-    parser.add_argument(
-        "--instruments",
-        nargs="+",
-        default=None,
-        help="Trading instruments (default from config)"
-    )
-    parser.add_argument(
-        "--port",
-        type=int,
-        default=8000,
-        help="Backend server port (default: 8000)"
-    )
-
-    args = parser.parse_args()
-
-    app_config = load_app_config(mode="live")
-    if args.log_level:
-        app_config.logging.level = args.log_level
-        app_config.logging.debug = app_config.logging.debug or args.log_level.upper() == "DEBUG"
-    if args.instruments:
-        app_config.environment.instruments = args.instruments
-
-    setup_logging(app_config.logging)
-    logger = get_logger("LiveTrading")
-
-    logger.info("="*60)
-    logger.info("MT5 LIVE TRADING LAUNCHER")
-    logger.info("="*60)
-    logger.info(f"Python: {sys.version.split()[0]}")
-    logger.info(f"Project: {project_root}")
-    logger.info(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    logger.info(f"Mode: {app_config.mode.name} (debug={app_config.logging.debug})")
-    logger.info("="*60 + "\n")
-
-    # Create and run launcher
-    launcher = LiveTradingLauncher(logger, app_config, instruments=app_config.environment.instruments, backend_port=args.port)
-    launcher.run()
+    trader = LiveTradingOrchestrated()
+    
+    if not trader.initialize():
+        logger.error("Initialization failed. Exiting.")
+        return 1
+    
+    try:
+        asyncio.run(trader.run_async())
+    except KeyboardInterrupt:
+        logger.info("\nInterrupted by user")
+    finally:
+        trader.shutdown()
+    
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

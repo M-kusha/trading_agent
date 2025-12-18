@@ -62,6 +62,7 @@ class SystemIntegritySuiteProto(Protocol):
     def attach_live_taps(self) -> None: ...
     def start_heartbeat(self, interval_s: float = 30.0) -> None: ...
 
+
 # ─────────────────────────────────────────────────────────────
 # Helpers: math fallbacks + latency predictors
 # ─────────────────────────────────────────────────────────────
@@ -97,7 +98,7 @@ def _percentile_ms(samples: List[float], q: float) -> float:
 
 def _predict_timeout_ms(perf: Dict[str, Any], default_ms: float, cfg: 'ModuleConfig') -> int:
     """Adaptive timeout = EWMA(pctl(recent)), clamped to [floor, ceiling].
-    
+
     IMPORTANT: The explicit default_ms (from config) is treated as a MINIMUM floor
     to prevent adaptive tuning from reducing timeouts below configured values.
     """
@@ -142,7 +143,6 @@ class CircuitBreakerState:
             'validation': 0,
             'dependency': 0
         }
-        
 
     def record_success(self):
         with self._lock:
@@ -157,7 +157,6 @@ class CircuitBreakerState:
                 # Gentle decay to avoid sticky trips on long runs
                 if self.failure_count > 0:
                     self.failure_count = max(0, self.failure_count - 1)
-
 
     def record_failure(self, failure_type: str = 'crash'):
         with self._lock:
@@ -177,89 +176,6 @@ class CircuitBreakerState:
             # Trip breaker if threshold exceeded (only for crash/validation, not timeout)
             if failure_type != 'timeout' and self.failure_count >= self.failure_threshold:
                 self.state = "OPEN"
-
-
-# Replace these three methods in BaseModule
-
-    def breaker_allow(self) -> bool:
-        """
-        Adapter over different breaker shapes:
-        - CircuitBreakerState: should_allow_request(recovery_time, single_probe)
-        - Legacy/custom:       allow()
-        Falls back to True if no breaker is wired.
-        """
-        try:
-            b = getattr(self, "breaker", None)
-            if not b:
-                return True
-
-            # Preferred: CircuitBreakerState-style
-            should_allow = getattr(b, "should_allow_request", None)
-            if callable(should_allow):
-                # Pull settings from orchestrator config if available; else use sane defaults.
-                recovery = 60.0
-                single_probe = True
-                try:
-                    if getattr(self, "orchestrator", None) is not None:
-                        cfg = self.orchestrator.config  # type: ignore[attr-defined]
-                        recovery = float(getattr(cfg, "recovery_time_s", 60.0))
-                        single_probe = bool(getattr(cfg, "half_open_single_probe", True))
-                except Exception:
-                    pass
-                return bool(should_allow(recovery_time=recovery, single_probe=single_probe))
-
-            # Legacy/custom breaker shape
-            allow_fn = getattr(b, "allow", None)
-            if callable(allow_fn):
-                return bool(allow_fn())
-
-            # Unknown breaker shape; be permissive
-            return True
-        except Exception:
-            return True
-
-
-    def breaker_on_success(self) -> None:
-        """
-        Adapter over breaker success hook:
-        - CircuitBreakerState: record_success()
-        - Legacy/custom:       on_success()
-        """
-        try:
-            b = getattr(self, "breaker", None)
-            if not b:
-                return
-            rec = getattr(b, "record_success", None)
-            if callable(rec):
-                rec()
-                return
-            legacy = getattr(b, "on_success", None)
-            if callable(legacy):
-                legacy()
-        except Exception:
-            pass
-
-
-    def breaker_on_failure(self) -> None:
-        """
-        Adapter over breaker failure hook:
-        - CircuitBreakerState: record_failure()
-        - Legacy/custom:       on_failure()
-        """
-        try:
-            b = getattr(self, "breaker", None)
-            if not b:
-                return
-            rec = getattr(b, "record_failure", None)
-            if callable(rec):
-                rec()
-                return
-            legacy = getattr(b, "on_failure", None)
-            if callable(legacy):
-                legacy()
-        except Exception:
-            pass
-
 
     def should_allow_request(self, recovery_time: float, single_probe: bool = True) -> bool:
         with self._lock:
@@ -494,7 +410,6 @@ class ModuleConfig:
             errors.append("queue_concurrency must be positive")
         if errors:
             raise ValueError(f"Configuration validation failed: {errors}")
-
 
     def update_config(self, updates: Dict[str, Any], notify: bool = True):
         with self._lock:
@@ -949,6 +864,7 @@ class ModuleOrchestrator:
             if perf["total_executions"] > 10000:
                 perf["total_executions"] = len(perf["recent_times"])
                 perf["total_time_ms"] = sum(perf["recent_times"])
+
     # ───── Failure bookkeeping ─────
     def _handle_module_failure(
         self,
@@ -987,7 +903,10 @@ class ModuleOrchestrator:
 
         # Only trip breaker if threshold exceeded (crash/validation only)
         if cb.state == "OPEN":
-            self.logger.error(f"[FAST] Circuit breaker TRIPPED for {module_name} (failures={cb.failure_count}, threshold={cb.failure_threshold}, type={failure_type})")
+            self.logger.error(
+                f"[FAST] Circuit breaker TRIPPED for {module_name} "
+                f"(failures={cb.failure_count}, threshold={cb.failure_threshold}, type={failure_type})"
+            )
 
         with self._perf_lock:
             perf = self.module_performance.setdefault(
@@ -1075,7 +994,7 @@ class ModuleOrchestrator:
 
     def _enter_emergency_mode(self, reason: str):
         """Handle high resource usage - WARNING ONLY, no module shutdown.
-        
+
         v5.4: Changed from hard shutdown to warning-only mode.
         Disabling modules caused the system to get stuck and never recover.
         Instead, we just log warnings and try to free memory.
@@ -1092,7 +1011,7 @@ class ModuleOrchestrator:
         # If memory-triggered, try to free memory
         if "memory" in reason.lower():
             self._try_free_memory()
-            
+
         # Publish warning to bus but don't disable anything
         self._safe_bus_set(
             'memory_warning_event',
@@ -1106,7 +1025,7 @@ class ModuleOrchestrator:
             thesis=f"Memory warning (no shutdown): {reason}",
             confidence=0.7
         )
-        
+
         # DO NOT set emergency_mode = True
         # DO NOT disable modules
         # Just let the system continue with the warning logged
@@ -1134,20 +1053,20 @@ class ModuleOrchestrator:
             # Force garbage collection
             gc.collect()
             gc.collect()  # Second pass for cyclic references
-            
+
             # Clear any caches we control
             if hasattr(self, 'execution_history') and len(self.execution_history) > 50:
                 # Keep only last 50 entries
                 while len(self.execution_history) > 50:
                     self.execution_history.popleft()
-            
+
             # Clear SmartBus stale data if possible
             if self.smart_bus and hasattr(self.smart_bus, 'clear_stale_data'):
                 try:
                     self.smart_bus.clear_stale_data(max_age_s=300)
                 except Exception:
                     pass
-            
+
             self.logger.info("[MEMORY] Forced garbage collection to free memory")
         except Exception as e:
             self.logger.warning(f"[MEMORY] Failed to free memory: {e}")
@@ -1157,12 +1076,12 @@ class ModuleOrchestrator:
             return True
 
         time_in_emergency = time.time() - self.emergency_activation_time
-        
+
         # Use shorter cooldown for memory-triggered emergencies (30s instead of 5min)
         # Memory can recover quickly after GC, no need to wait 5 minutes
         is_memory_emergency = "memory" in self.emergency_mode_reason.lower()
         effective_cooldown = 30.0 if is_memory_emergency else self.config.emergency_cooldown_s
-        
+
         if time_in_emergency < effective_cooldown:
             remaining = effective_cooldown - time_in_emergency
             # Only log every 10 seconds to avoid spam
@@ -1271,6 +1190,12 @@ class ModuleOrchestrator:
 
     # ───── Config monitoring ─────
     def _start_config_monitoring(self):
+        # Phase-0 hotfix: avoid duplicate file watchers if ConfigurationManager is active.
+        # ConfigurationManager must be the sole file watcher (single source of truth).
+        if getattr(self, "config_manager", None) is not None:
+            self.logger.info("[OK] Configuration monitoring skipped (ConfigurationManager active)")
+            return
+
         try:
             loop = asyncio.get_running_loop()
             self.config_monitor_task = loop.create_task(self._monitor_config())
@@ -1425,7 +1350,7 @@ class ModuleOrchestrator:
         except Exception as e:
             self.logger.debug(f"Heartbeat bus push failed: {e}")
 
-    # ───── Async step execution ─────
+
     async def execute_step(self, market_data: Dict[str, Any]) -> Dict[str, Any]:
         if not self._initialized:
             raise RuntimeError("Orchestrator not initialized")
@@ -1453,10 +1378,6 @@ class ModuleOrchestrator:
             if self.emergency_mode:
                 return await self._execute_emergency_mode(market_data)
 
-        # ⬇️ NEW: alternate scheduler (queue) if enabled
-        if getattr(self.config, "use_queue_scheduler", False):
-            return await self._execute_step_queue(market_data)
-
         start_time = time.time()
         execution_id = f"exec_{int(start_time)}"
 
@@ -1469,6 +1390,14 @@ class ModuleOrchestrator:
 
                 # NEW (V1.5): startup readiness gate
                 await self._wait_for_system_ready_gate()
+
+                # Queue scheduler must obey the same lock + readiness gates as stage path
+                if getattr(self.config, "use_queue_scheduler", False):
+                    return await self._execute_step_queue(
+                        market_data,
+                        execution_id=execution_id,
+                        start_time=start_time,
+                    )
 
                 self._store_market_data(market_data, execution_id)
 
@@ -1541,7 +1470,6 @@ class ModuleOrchestrator:
                 self._enter_emergency_mode(reason)
 
             raise
-
 
     def _check_circuit_breaker(self, module_name: str) -> bool:
         with self._circuit_breaker_lock:
@@ -1778,6 +1706,8 @@ class ModuleOrchestrator:
             'timestamp': time.time(),
             'emergency_reason': self.emergency_mode_reason
         }
+
+
 
     # ───── Startup bootstrap: preflight → warmup → autotune → self-test → ready gate ─────
     async def bootstrap_async(self) -> None:
@@ -3410,14 +3340,22 @@ class ModuleOrchestrator:
                 graph[d].add(consumer)
         return indeg, graph
 
-    async def _execute_step_queue(self, market_data: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute_step_queue(
+        self,
+        market_data: Dict[str, Any],
+        *,
+        execution_id: str,
+        start_time: float,
+    ) -> Dict[str, Any]:
         """
         Queue-based scheduler: as soon as a module's deps resolve, schedule it.
         """
         from modules.core.exceptions import InputsNotReady, ExecutionSkipped, ModuleTimeout
 
-        start_time = time.time()
-        execution_id = f"exec_{int(start_time)}"
+        # Keep same semantics as stage path (cached after first pass)
+        await self._wait_for_configuration_readiness()
+        await self._wait_for_system_ready_gate()
+
         self._store_market_data(market_data, execution_id)
 
         indeg, graph = self._compute_indegree_and_graph()
@@ -3428,25 +3366,40 @@ class ModuleOrchestrator:
         running: Dict[str, asyncio.Task] = {}
 
         ready = [m for m, d in indeg.items() if d == 0]
-        ready.sort(key=lambda m: self.metadata[m].priority, reverse=True)
+        # Consistency: lower numbers first (matches stage/toposort)
+        ready.sort(key=lambda m: self.metadata[m].priority, reverse=False)
 
         async def run_module(m: str):
-            async with sem:
-                try:
-                    inputs = self._prepare_module_inputs(m, self.metadata[m], execution_id)
-                    res = await self._execute_module_safe(self.modules[m], m, inputs, self.metadata[m], execution_id)
-                    results[m] = res if isinstance(res, dict) else {'result': res}
-                    results[m].setdefault('status', 'SUCCESS')
-                except InputsNotReady as e:
-                    results[m] = {'error': 'Inputs not ready', 'missing': e.missing, 'status': 'INPUTS_NOT_READY'}
-                except ExecutionSkipped as e:
-                    results[m] = {'status': 'SKIPPED', 'reason': str(e)}
-                except ModuleTimeout as e:
-                    results[m] = {'error': str(e), 'status': 'TIMEOUT'}
-                except Exception as e:
-                    results[m] = {'error': str(e), 'status': 'ERROR'}
+            try:
+                async with sem:
+                    try:
+                        # Respect disable semantics
+                        if not self.smart_bus.is_module_enabled(m):
+                            md = self.metadata[m]
+                            if getattr(md, "critical", False):
+                                try:
+                                    self.logger.warning(f"[WARN] Critical module disabled: {m}; resetting failures and proceeding")
+                                    self.smart_bus.reset_module_failures(m)
+                                except Exception:
+                                    pass
+                            else:
+                                results[m] = {'status': 'SKIPPED', 'reason': 'Module disabled'}
+                                return
 
-                # Unlock dependents
+                        inputs = self._prepare_module_inputs(m, self.metadata[m], execution_id)
+                        res = await self._execute_module_safe(self.modules[m], m, inputs, self.metadata[m], execution_id)
+                        results[m] = res if isinstance(res, dict) else {'result': res}
+                        results[m].setdefault('status', 'SUCCESS')
+                    except InputsNotReady as e:
+                        results[m] = {'error': 'Inputs not ready', 'missing': e.missing, 'status': 'INPUTS_NOT_READY'}
+                    except ExecutionSkipped as e:
+                        results[m] = {'status': 'SKIPPED', 'reason': str(e)}
+                    except ModuleTimeout as e:
+                        results[m] = {'error': str(e), 'status': 'TIMEOUT'}
+                    except Exception as e:
+                        results[m] = {'error': str(e), 'status': 'ERROR'}
+            finally:
+                # Always unlock dependents to avoid deadlocks
                 for c in graph.get(m, []):
                     indeg[c] -= 1
                     if indeg[c] == 0 and c not in running and c not in results:
@@ -3456,13 +3409,9 @@ class ModuleOrchestrator:
         for m in ready:
             running[m] = asyncio.create_task(run_module(m))
 
-        # Wait for completion
         if running:
             await asyncio.gather(*running.values(), return_exceptions=False)
 
-        aggregated = self._aggregate_results(results, execution_id)
-        exec_time_ms = (time.time() - start_time) * 1000.0
-        self._record_execution(execution_id, exec_time_ms, results, aggregated)
         aggregated = self._aggregate_results(results, execution_id)
         exec_time_ms = (time.time() - start_time) * 1000.0
         self._record_execution(execution_id, exec_time_ms, results, aggregated)

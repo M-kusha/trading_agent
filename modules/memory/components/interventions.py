@@ -179,7 +179,14 @@ class InterventionsComponent(MemoryComponent):
         }
     
     def _extract_pattern_label(self, trade: Dict[str, Any], context: Dict[str, Any]) -> str:
-        """Extract or generate a pattern label for the trade."""
+        """
+        Extract or generate a pattern label for the trade.
+        
+        P2 FIX: Enhanced pattern labels with microstructure features:
+        - Spread regime (tight/normal/wide)
+        - Time-of-day bucket (more granular than session)
+        - Recent momentum direction
+        """
         # First, check if pattern_label is already in trade metadata
         if "pattern_label" in trade:
             return str(trade["pattern_label"])
@@ -194,6 +201,7 @@ class InterventionsComponent(MemoryComponent):
                 return max(loss_patterns.keys(), key=lambda k: loss_patterns[k].get("count", 0))
         
         # Generate pattern label from trade features
+        market_context = context.get("market_context", {}) or {}
         features: List[str] = []
         
         # Action type
@@ -207,23 +215,53 @@ class InterventionsComponent(MemoryComponent):
             else:
                 features.append("FLAT")
         
-        # Confidence level
+        # Regime (3 chars)
+        regime = str(market_context.get("regime", "unknown")).lower()[:3]
+        features.append(regime.upper())
+        
+        # P2 FIX: Spread regime (tight/normal/wide)
+        spread = safe_float(trade.get("spread"), 0.0)
+        avg_spread = safe_float(market_context.get("avg_spread"), spread)
+        if avg_spread > 0:
+            spread_ratio = spread / avg_spread
+            if spread_ratio < 0.7:
+                features.append("tsprd")  # tight spread
+            elif spread_ratio > 1.5:
+                features.append("wsprd")  # wide spread
+            # Normal spread: don't add (reduces label cardinality)
+        
+        # P2 FIX: Time-of-day bucket (more granular than session)
+        from datetime import datetime
+        hour = datetime.now().hour
+        if 0 <= hour < 6:
+            features.append("overnight")
+        elif 6 <= hour < 9:
+            features.append("premarket")
+        elif 9 <= hour < 12:
+            features.append("morn")  # Morning
+        elif 12 <= hour < 15:
+            features.append("aftn")  # Afternoon
+        elif 15 <= hour < 18:
+            features.append("late")  # Late session
+        else:
+            features.append("afterhrs")
+        
+        # P2 FIX: Recent momentum direction
+        recent_returns = safe_float(market_context.get("returns_5m", 0.0), 0.0)
+        if recent_returns == 0.0:
+            # Try other momentum indicators
+            recent_returns = safe_float(market_context.get("momentum", 0.0), 0.0)
+        if recent_returns > 0.001:
+            features.append("moup")  # momentum up
+        elif recent_returns < -0.001:
+            features.append("modn")  # momentum down
+        
+        # Confidence level (simplified)
         conf = safe_float(trade.get("confidence", 0.5), 0.5)
         if conf > 0.7:
-            features.append("HIGH_CONF")
+            features.append("HC")  # high confidence
         elif conf < 0.3:
-            features.append("LOW_CONF")
-        else:
-            features.append("MED_CONF")
-        
-        # Size bucket
-        size = safe_float(trade.get("size", 0.0), 0.0)
-        if size > 2.0:
-            features.append("BIG_SIZE")
-        elif size < 0.5:
-            features.append("SMALL_SIZE")
-        else:
-            features.append("STD_SIZE")
+            features.append("LC")  # low confidence
         
         return "-".join(features) if features else "UNKNOWN"
     

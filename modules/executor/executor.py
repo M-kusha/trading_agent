@@ -1544,6 +1544,9 @@ class Executor(BaseModule):
         if len(self.closed_positions) > 500:
             self.closed_positions = self.closed_positions[-500:]
 
+        # MEMORY LEARNING: Update UnifiedMemory with closed trade for online learning
+        self._update_memory_on_trade_close(closed_record)
+
         # Reset exit engine peak tracking for this instrument
         try:
             if EXIT_ENGINE_AVAILABLE and get_exit_engine:
@@ -1595,6 +1598,39 @@ class Executor(BaseModule):
 
         except Exception as e:
             self.logger.debug(f"Failed to notify PPO autonomy: {e}")
+
+    def _update_memory_on_trade_close(self, closed_record: Dict[str, Any]) -> None:
+        """
+        Notify memory system of closed trade via InfoBus.
+        
+        NOTE: This does NOT create a separate UnifiedMemory instance.
+        The orchestrator's UnifiedMemory reads from 'closed_positions' on the bus.
+        
+        This method ensures the trade is immediately available on the bus
+        and publishes a signal that a new trade is ready for learning.
+        
+        For standalone mode (no orchestrator), this is a no-op because
+        the training callback handles memory learning directly.
+        """
+        try:
+            # Publish trade-closed event for any listeners
+            # The orchestrator's UnifiedMemory will pick this up on next process() call
+            # via _store_experiences() which reads from 'closed_positions'
+            self.bus.set(
+                "latest_closed_trade",
+                closed_record,
+                module="Executor",
+                thesis=f"Trade closed: {closed_record.get('instrument')} PnL={closed_record.get('pnl', 0):.2f}"
+            )
+            
+            self.logger.debug(
+                f"[Executor] Published closed trade for memory: {closed_record.get('instrument')} "
+                f"PnL={closed_record.get('pnl', 0):.2f}"
+            )
+                    
+        except Exception as e:
+            # Non-fatal
+            self.logger.debug(f"[Executor] Trade publish failed (non-fatal): {e}")
 
     def _execute_sim(
         self,

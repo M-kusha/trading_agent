@@ -61,7 +61,7 @@ class TrendExpert(VotingExpertBase):
         self.module_name = self.__class__.__name__
 
         # Instruments to analyze (from config or default)
-        self.instruments = self.config.get("instruments", ["EURUSD", "XAUUSD"])
+        self.instruments = self.config.get("instruments", ["XAUUSD"])
 
         # Triple MA configuration
         # Use a slower long MA so TrendExpert only becomes active once
