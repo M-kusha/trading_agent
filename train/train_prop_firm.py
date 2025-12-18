@@ -56,6 +56,26 @@ from stable_baselines3.common.base_class import BaseAlgorithm
 # Environment
 from envs.prop_firm_env import PropFirmTradingEnv, PropFirmConfig
 
+# Curriculum system (optional)
+try:
+    from envs.curriculum_config import (
+        CurriculumStage,
+        CurriculumStageConfig,
+        get_stage_config,
+        get_stage_progression,
+    )
+    from envs.curriculum_manager import CurriculumManager
+    from envs.curriculum_env_wrapper import CurriculumEnvWrapper
+    CURRICULUM_AVAILABLE = True
+except ImportError:
+    CURRICULUM_AVAILABLE = False
+    CurriculumStage = None  # type: ignore
+    CurriculumStageConfig = None  # type: ignore
+    CurriculumManager = None  # type: ignore
+    CurriculumEnvWrapper = None  # type: ignore
+    get_stage_config = None  # type: ignore
+    get_stage_progression = None  # type: ignore
+
 # Optuna
 try:
     import optuna
@@ -744,7 +764,7 @@ class VecEpisodeTradingCallback(BaseCallback):
             
             # Try to get FPS from model's num_timesteps and elapsed time
             if 'fps' not in self._diagnostics or self._diagnostics.get('fps', 0) == 0:
-                if hasattr(self, '_start_time'):
+                if self._start_time is not None:
                     elapsed = time.time() - self._start_time
                     if elapsed > 0:
                         self._diagnostics['fps'] = self.num_timesteps / elapsed
@@ -769,11 +789,11 @@ class VecEpisodeTradingCallback(BaseCallback):
             # Get clip_range from model
             if 'clip_range' not in self._diagnostics:
                 if hasattr(self.model, 'clip_range'):
-                    cr = self.model.clip_range
+                    cr: Any = getattr(self.model, 'clip_range', 0.2)
                     if callable(cr):
-                        progress = self.num_timesteps / max(self.model._total_timesteps, 1) if hasattr(self.model, '_total_timesteps') else 1.0
+                        progress = self.num_timesteps / max(getattr(self.model, '_total_timesteps', 1), 1)
                         cr = cr(1.0 - progress)
-                    self._diagnostics['clip_range'] = float(cr)
+                    self._diagnostics['clip_range'] = float(cr) if cr is not None else 0.2
                     
         except Exception as e:
             pass  # Don't crash training if diagnostics fail
@@ -948,55 +968,134 @@ class VecEpisodeTradingCallback(BaseCallback):
                     if elapsed > 0:
                         self._diagnostics['fps'] = self.num_timesteps / elapsed
             
+            # Calculate ETA
+            eta_seconds = 0.0
+            if self._start_time and self.num_timesteps > 0:
+                elapsed = time.time() - self._start_time
+                remaining = self.total_timesteps - self.num_timesteps
+                rate = self.num_timesteps / max(elapsed, 1)
+                eta_seconds = remaining / max(rate, 1)
+            
+            # Calculate summary stats
+            mean_reward = float(np.mean(self._ep_rewards[-50:])) if self._ep_rewards else 0.0
+            mean_pnl = float(np.mean(self._ep_pnls[-50:])) if self._ep_pnls else 0.0
+            total_pnl = float(np.sum(self._ep_pnls)) if self._ep_pnls else 0.0
+            mean_win_rate = float(np.mean(self._ep_wrs[-50:])) if self._ep_wrs else 0.0
+            max_drawdown = float(np.max(self._ep_dds[-50:])) if self._ep_dds else 0.0
+            mean_trades = float(np.mean(self._ep_trades[-50:])) if self._ep_trades else 0.0
+            total_trades = int(np.sum(self._ep_trades)) if self._ep_trades else 0
+            mean_r_multiple = float(np.mean(self._ep_r_multiples[-50:])) if self._ep_r_multiples else 0.0
+            mean_profit_factor = float(np.mean(self._ep_profit_factors[-50:])) if self._ep_profit_factors else 0.0
+            mean_entry_quality = float(np.mean(self._ep_avg_entry_quality[-50:])) if self._ep_avg_entry_quality else 0.5
+            
+            # Status calculations for dashboard
+            def status_for_win_rate(wr):
+                if wr >= 0.55: return "good"
+                if wr >= 0.45: return "ok"
+                return "bad"
+            
+            def status_for_drawdown(dd):
+                if dd <= 0.03: return "good"
+                if dd <= 0.06: return "ok"
+                return "bad"
+            
+            def status_for_profit_factor(pf):
+                if pf >= 1.5: return "good"
+                if pf >= 1.0: return "ok"
+                return "bad"
+            
             metrics = {
                 "timestamp": datetime.now().isoformat(),
-                "timesteps": self.num_timesteps,
-                "total_timesteps": self.total_timesteps,
-                "progress_pct": 100.0 * (self.num_timesteps / max(self.total_timesteps, 1)),
-                "total_episodes": len(self._ep_rewards),
                 
-                # Summary stats (last 50 episodes)
-                "mean_reward": float(np.mean(self._ep_rewards[-50:])) if self._ep_rewards else 0.0,
-                "mean_pnl": float(np.mean(self._ep_pnls[-50:])) if self._ep_pnls else 0.0,
-                "total_pnl": float(np.sum(self._ep_pnls)) if self._ep_pnls else 0.0,
-                "mean_win_rate": float(np.mean(self._ep_wrs[-50:])) if self._ep_wrs else 0.0,  # Include ALL episodes
-                "max_drawdown": float(np.max(self._ep_dds[-50:])) if self._ep_dds else 0.0,
-                "mean_trades": float(np.mean(self._ep_trades[-50:])) if self._ep_trades else 0.0,
-                "total_trades": int(np.sum(self._ep_trades)) if self._ep_trades else 0,
+                # Progress section (for dashboard progress display)
+                "progress": {
+                    "timesteps": self.num_timesteps,
+                    "total_timesteps": self.total_timesteps,
+                    "progress_pct": 100.0 * (self.num_timesteps / max(self.total_timesteps, 1)),
+                    "total_episodes": len(self._ep_rewards),
+                    "eta_seconds": eta_seconds,
+                },
+                
+                # Learning section (PPO diagnostics)
+                "learning": {
+                    "fps": self._diagnostics.get('fps', 0),
+                    "n_updates": self._diagnostics.get('n_updates', 0),
+                    "mean_reward": mean_reward,
+                    "mean_reward_status": "good" if mean_reward > 0 else "ok" if mean_reward > -5 else "bad",
+                    "total_pnl": total_pnl,
+                    "total_pnl_status": "good" if total_pnl > 0 else "ok" if total_pnl > -1000 else "bad",
+                    "policy_loss": self._diagnostics.get('policy_loss', 0),
+                    "value_loss": self._diagnostics.get('value_loss', 0),
+                    "entropy": self._diagnostics.get('entropy', 0),
+                    "kl_divergence": self._diagnostics.get('kl_divergence', 0),
+                    "clip_fraction": self._diagnostics.get('clip_fraction', 0),
+                    "explained_variance": self._diagnostics.get('explained_variance', 0),
+                    "learning_rate": self._diagnostics.get('learning_rate', 0),
+                },
+                
+                # Trading section
+                "trading": {
+                    "total_trades": total_trades,
+                    "mean_trades": mean_trades,
+                    "mean_trades_status": "good" if mean_trades >= 5 else "ok" if mean_trades >= 1 else "bad",
+                    "mean_win_rate": mean_win_rate * 100,  # As percentage
+                    "mean_win_rate_status": status_for_win_rate(mean_win_rate),
+                    "max_drawdown": max_drawdown * 100,  # As percentage
+                    "max_drawdown_status": status_for_drawdown(max_drawdown),
+                },
+                
+                # Quality section
+                "quality": {
+                    "mean_profit_factor": mean_profit_factor,
+                    "mean_profit_factor_status": status_for_profit_factor(mean_profit_factor),
+                    "mean_r_multiple": mean_r_multiple,
+                    "mean_r_multiple_status": "good" if mean_r_multiple > 1 else "ok" if mean_r_multiple > 0 else "bad",
+                    "mean_entry_quality": mean_entry_quality,
+                    "mean_entry_quality_status": "good" if mean_entry_quality > 0.6 else "ok" if mean_entry_quality > 0.4 else "bad",
+                    "mean_mae": float(np.mean(self._ep_avg_maes[-50:])) if self._ep_avg_maes else 0.0,
+                    "mean_mfe": float(np.mean(self._ep_avg_mfes[-50:])) if self._ep_avg_mfes else 0.0,
+                    "mean_bars_held": float(np.mean(self._ep_avg_bars_held[-50:])) if self._ep_avg_bars_held else 0.0,
+                    "max_consecutive_wins": int(max(self._ep_consecutive_wins[-50:])) if self._ep_consecutive_wins else 0,
+                    "max_consecutive_losses": int(max(self._ep_consecutive_losses[-50:])) if self._ep_consecutive_losses else 0,
+                },
+                
+                # Exit stats
+                "exit_stats": {
+                    "distribution": dict(self._exit_reason_counts),
+                },
                 
                 # Recent history for charts
                 "recent_rewards": [float(x) for x in self._ep_rewards[-n_recent:]],
                 "recent_pnls": [float(x) for x in self._ep_pnls[-n_recent:]],
-                "recent_win_rates": [float(x) for x in self._ep_wrs[-n_recent:]],
-                "recent_drawdowns": [float(x) for x in self._ep_dds[-n_recent:]],
+                "recent_win_rates": [float(x) * 100 for x in self._ep_wrs[-n_recent:]],  # As percentage
+                "recent_drawdowns": [float(x) * 100 for x in self._ep_dds[-n_recent:]],  # As percentage
                 "recent_trades": [int(x) for x in self._ep_trades[-n_recent:]],
                 "recent_lengths": [int(x) for x in self._ep_lens[-n_recent:]],
-                
-                # NEW: Trading quality metrics
-                "mean_r_multiple": float(np.mean(self._ep_r_multiples[-50:])) if self._ep_r_multiples else 0.0,
-                "mean_profit_factor": float(np.mean(self._ep_profit_factors[-50:])) if self._ep_profit_factors else 0.0,
-                "mean_mae": float(np.mean(self._ep_avg_maes[-50:])) if self._ep_avg_maes else 0.0,
-                "mean_mfe": float(np.mean(self._ep_avg_mfes[-50:])) if self._ep_avg_mfes else 0.0,
-                "mean_bars_held": float(np.mean(self._ep_avg_bars_held[-50:])) if self._ep_avg_bars_held else 0.0,
-                "mean_entry_quality": float(np.mean(self._ep_avg_entry_quality[-50:])) if self._ep_avg_entry_quality else 0.5,
-                "max_consecutive_wins": int(max(self._ep_consecutive_wins[-50:])) if self._ep_consecutive_wins else 0,
-                "max_consecutive_losses": int(max(self._ep_consecutive_losses[-50:])) if self._ep_consecutive_losses else 0,
-                "exit_reason_distribution": dict(self._exit_reason_counts),
-                
-                # Recent trading metrics for charts
                 "recent_r_multiples": [float(x) for x in self._ep_r_multiples[-n_recent:]],
                 "recent_entry_quality": [float(x) for x in self._ep_avg_entry_quality[-n_recent:]],
                 "recent_bars_held": [float(x) for x in self._ep_avg_bars_held[-n_recent:]],
                 
-                # PPO training diagnostics
-                **self._diagnostics,
+                # Legacy flat fields for backward compatibility
+                "timesteps": self.num_timesteps,
+                "total_timesteps": self.total_timesteps,
+                "progress_pct": 100.0 * (self.num_timesteps / max(self.total_timesteps, 1)),
+                "total_episodes": len(self._ep_rewards),
+                "mean_reward": mean_reward,
+                "mean_pnl": mean_pnl,
+                "total_pnl": total_pnl,
+                "mean_win_rate": mean_win_rate,
+                "max_drawdown": max_drawdown,
+                "mean_trades": mean_trades,
+                "total_trades": total_trades,
+                "mean_r_multiple": mean_r_multiple,
+                "mean_profit_factor": mean_profit_factor,
+                "mean_entry_quality": mean_entry_quality,
             }
             
-            # Atomic write: write to temp file then rename to avoid race condition
-            temp_file = metrics_file.with_suffix('.tmp')
-            with open(temp_file, 'w', encoding='utf-8') as f:
-                json.dump(metrics, f, indent=2)
-            temp_file.replace(metrics_file)  # Atomic on most systems
+            # Write directly - simpler and works on Windows
+            # The dashboard server handles partial reads gracefully
+            with open(metrics_file, 'w', encoding='utf-8') as f:
+                json.dump(metrics, f)  # No indent for faster writes
                 
             # Debug: confirm file was written
             if len(self._ep_rewards) <= 5:
@@ -1612,18 +1711,837 @@ def train_prop_firm_agent(
 
 
 # =============================================================================
+# CURRICULUM TRAINING
+# =============================================================================
+
+class CurriculumTrainingCallback(BaseCallback):
+    """
+    Training callback with curriculum integration.
+    
+    Extends VecEpisodeTradingCallback with curriculum stage tracking,
+    automatic progression, LR warmup, and automatic checkpointing.
+    """
+    
+    def __init__(
+        self,
+        curriculum_manager: Any,  # CurriculumManager
+        total_timesteps: int,
+        log_interval_steps: int = 50_000,
+        save_path: str = "logs/curriculum",
+        verbose: int = 1,
+        enable_lr_warmup: bool = True,
+        enable_checkpoints: bool = True,
+    ):
+        super().__init__(verbose)
+        self.curriculum_manager = curriculum_manager
+        self.total_timesteps = total_timesteps
+        self.log_interval_steps = log_interval_steps
+        self.save_path = Path(save_path)
+        self.enable_lr_warmup = enable_lr_warmup
+        self.enable_checkpoints = enable_checkpoints
+        
+        self._last_log = 0
+        self._last_metrics_save: float = 0.0  # Time-based metrics saving
+        self._n_envs = 1
+        
+        # Episode tracking
+        self._ep_rewards: List[float] = []
+        self._ep_pnls: List[float] = []
+        self._ep_win_rates: List[float] = []
+        self._ep_drawdowns: List[float] = []
+        self._ep_trades: List[int] = []
+        self._ep_lens: List[int] = []
+        
+        # NEW: Trading quality metrics per episode
+        self._ep_profit_factors: List[float] = []
+        self._ep_r_multiples: List[float] = []
+        self._ep_entry_quality: List[float] = []
+        self._exit_reason_counts: Dict[str, int] = {}
+        
+        # PPO diagnostics (updated from logger)
+        self._ppo_diagnostics: Dict[str, float] = {}
+        self._n_updates: int = 0
+        
+        self._cur_rewards: List[float] = []
+        self._cur_lens: List[int] = []
+        
+        # Stage tracking
+        self._stage_history: List[Dict[str, Any]] = []
+        self._start_time: Optional[float] = None
+        self._last_stage: Optional[str] = None
+        self._base_lr: Optional[float] = None
+        
+        # Register transition callback
+        if self.curriculum_manager is not None:
+            self.curriculum_manager.on_transition_callback = self._on_stage_transition
+    
+    def _on_stage_transition(
+        self,
+        transition_type: str,
+        old_stage: Any,
+        new_stage: Any,
+        info: Dict[str, Any],
+    ) -> None:
+        """Called when curriculum stage changes."""
+        logger.info(f"🔄 Stage transition: {transition_type} ({old_stage.name} → {new_stage.name})")
+        
+        # Checkpoint on transition
+        if self.enable_checkpoints and self.model is not None:
+            try:
+                checkpoint_dir = self.save_path / "stage_checkpoints"
+                checkpoint_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Save model
+                model_path = checkpoint_dir / f"model_{old_stage.name}_to_{new_stage.name}_{self.num_timesteps}.zip"
+                self.model.save(str(model_path))
+                
+                # Save curriculum state
+                state_path = checkpoint_dir / f"curriculum_{old_stage.name}_to_{new_stage.name}_{self.num_timesteps}.json"
+                self.curriculum_manager.save(state_path)
+                
+                logger.info(f"  📁 Checkpoint saved: {model_path.name}")
+            except Exception as e:
+                logger.warning(f"  ⚠️ Checkpoint failed: {e}")
+    
+    def _on_training_start(self) -> None:
+        env = self.training_env
+        self._n_envs = int(getattr(env, "num_envs", 1))
+        self._cur_rewards = [0.0] * self._n_envs
+        self._cur_lens = [0] * self._n_envs
+        self._start_time = time.time()
+        
+        self.save_path.mkdir(parents=True, exist_ok=True)
+        
+        # Store base learning rate
+        if self.model is not None:
+            self._base_lr = float(self.model.learning_rate) if not callable(self.model.learning_rate) else None
+        
+        # Initialize stage tracking
+        if self.curriculum_manager is not None:
+            self._last_stage = self.curriculum_manager.current_stage.name
+        
+        # Save initial metrics file so dashboard sees data immediately
+        self._save_live_metrics()
+    
+    def _apply_lr_warmup(self) -> None:
+        """Apply learning rate warmup based on curriculum transition state."""
+        if not self.enable_lr_warmup or self.curriculum_manager is None or self.model is None:
+            return
+        
+        if self._base_lr is None:
+            return
+        
+        # Get LR multiplier from curriculum manager
+        lr_mult = self.curriculum_manager.get_lr_multiplier()
+        
+        if lr_mult < 1.0:
+            # Apply reduced LR during warmup
+            new_lr = self._base_lr * lr_mult
+            if hasattr(self.model, 'lr_schedule'):
+                # For SB3, we need to modify the lr_schedule
+                self.model.lr_schedule = lambda _: new_lr
+            elif hasattr(self.model, 'learning_rate'):
+                self.model.learning_rate = new_lr
+    
+    def _on_step(self) -> bool:
+        rewards = self.locals.get("rewards", None)
+        dones = self.locals.get("dones", None)
+        infos = self.locals.get("infos", None)
+
+        if rewards is None or dones is None or infos is None:
+            return True
+        
+        # Update transition state (LR warmup progress)
+        if self.curriculum_manager is not None:
+            self.curriculum_manager.step_transition_state(timesteps=self._n_envs)
+            self._apply_lr_warmup()
+
+        rewards_arr = np.array(rewards, dtype=np.float64).reshape(-1)
+        dones_arr = np.array(dones, dtype=np.bool_).reshape(-1)
+
+        for i in range(min(self._n_envs, len(rewards_arr))):
+            self._cur_rewards[i] += float(rewards_arr[i])
+            self._cur_lens[i] += 1
+
+        for i, done in enumerate(dones_arr[:self._n_envs]):
+            if not done:
+                continue
+
+            info = infos[i] if i < len(infos) else {}
+            if not isinstance(info, dict):
+                info = {}
+
+            ep_reward = self._cur_rewards[i]
+            ep_len = self._cur_lens[i]
+            
+            finfo = info.get("terminal_info", info)
+            
+            # Get episode_stats if available (contains detailed metrics)
+            ep_stats = finfo.get("episode_stats", info.get("episode_stats", {}))
+            
+            # Record basic metrics
+            self._ep_rewards.append(ep_reward)
+            self._ep_lens.append(ep_len)
+            self._ep_pnls.append(float(finfo.get("total_pnl", info.get("total_pnl", 0.0))))
+            self._ep_win_rates.append(float(finfo.get("win_rate", info.get("win_rate", 0.0))))
+            self._ep_drawdowns.append(float(finfo.get("drawdown", info.get("drawdown", 0.0))))
+            self._ep_trades.append(int(finfo.get("trade_count", info.get("trade_count", 0))))
+            
+            # Record trading quality metrics
+            self._ep_profit_factors.append(float(ep_stats.get("profit_factor", finfo.get("profit_factor", 0.0))))
+            self._ep_r_multiples.append(float(ep_stats.get("avg_r_multiple", finfo.get("avg_r_multiple", 0.0))))
+            self._ep_entry_quality.append(float(ep_stats.get("avg_entry_quality", finfo.get("avg_entry_quality", 0.5))))
+            
+            # Track exit reasons from episode_stats (key is exit_quality_distribution)
+            exit_dist = ep_stats.get("exit_quality_distribution", ep_stats.get("exit_distribution", {}))
+            for reason, count in exit_dist.items():
+                self._exit_reason_counts[reason] = self._exit_reason_counts.get(reason, 0) + int(count)
+            
+            # Update curriculum episode transition tick
+            if self.curriculum_manager is not None:
+                self.curriculum_manager.episode_transition_tick()
+            
+            # Track stage transitions
+            current_stage = finfo.get("curriculum_stage", info.get("curriculum_stage", "unknown"))
+            if self._stage_history and self._stage_history[-1]["stage"] != current_stage:
+                self._stage_history.append({
+                    "stage": current_stage,
+                    "timestep": self.num_timesteps,
+                    "episode": len(self._ep_rewards),
+                })
+            elif not self._stage_history:
+                self._stage_history.append({
+                    "stage": current_stage,
+                    "timestep": self.num_timesteps,
+                    "episode": 1,
+                })
+            
+            # Reset tracking
+            self._cur_rewards[i] = 0.0
+            self._cur_lens[i] = 0
+            
+            # Save live metrics
+            self._save_live_metrics()
+
+        # Collect PPO diagnostics from SB3 logger
+        self._update_ppo_diagnostics()
+
+        # Periodic logging
+        if self.num_timesteps - self._last_log >= self.log_interval_steps:
+            self._log_progress()
+            self._last_log = self.num_timesteps
+        
+        # Save metrics every 1 second (time-based, not step-based)
+        now = time.time()
+        if now - self._last_metrics_save >= 1.0:
+            self._save_live_metrics()
+            self._last_metrics_save = now
+
+        return True
+    
+    def _update_ppo_diagnostics(self) -> None:
+        """Extract PPO training diagnostics from the model/logger."""
+        if self.model is None:
+            return
+        
+        # Try to get diagnostics from the model's logger
+        try:
+            if hasattr(self.model, 'logger') and self.model.logger is not None:
+                logger_obj = self.model.logger
+                
+                # SB3 stores values in name_to_value dict
+                if hasattr(logger_obj, 'name_to_value'):
+                    values = logger_obj.name_to_value
+                    
+                    # Extract common PPO metrics
+                    self._ppo_diagnostics['policy_loss'] = float(values.get('train/policy_gradient_loss', values.get('train/policy_loss', 0)))
+                    self._ppo_diagnostics['value_loss'] = float(values.get('train/value_loss', 0))
+                    self._ppo_diagnostics['entropy'] = float(values.get('train/entropy_loss', values.get('train/entropy', 0)))
+                    self._ppo_diagnostics['kl_divergence'] = float(values.get('train/approx_kl', 0))
+                    self._ppo_diagnostics['clip_fraction'] = float(values.get('train/clip_fraction', 0))
+                    self._ppo_diagnostics['explained_variance'] = float(values.get('train/explained_variance', 0))
+                    self._ppo_diagnostics['learning_rate'] = float(values.get('train/learning_rate', 0))
+                    self._ppo_diagnostics['clip_range'] = float(values.get('train/clip_range', 0.2))
+                    
+                    # Track n_updates
+                    n_updates = values.get('train/n_updates', 0)
+                    if n_updates > 0:
+                        self._n_updates = int(n_updates)
+            
+            # Alternative: get from model attributes
+            if self._n_updates == 0 and hasattr(self.model, '_n_updates'):
+                self._n_updates = int(self.model._n_updates)
+                
+        except Exception:
+            pass  # Silently fail - diagnostics are optional
+    
+    def _log_progress(self) -> None:
+        """Log training progress."""
+        if not self._ep_rewards:
+            return
+
+
+        n = min(50, len(self._ep_rewards))
+        rewards = self._ep_rewards[-n:]
+        pnls = self._ep_pnls[-n:]
+        win_rates = self._ep_win_rates[-n:]
+        drawdowns = self._ep_drawdowns[-n:]
+        trades = self._ep_trades[-n:]
+
+        mean_reward = float(np.mean(rewards))
+        mean_pnl = float(np.mean(pnls))
+        mean_wr = float(np.mean(win_rates))
+        max_dd = float(np.max(drawdowns))
+        mean_trades = float(np.mean(trades))
+
+        progress = 100.0 * (self.num_timesteps / max(self.total_timesteps, 1))
+        
+        stage = self.curriculum_manager.current_stage.name if self.curriculum_manager else "N/A"
+
+        logger.info(
+            f"Step {self.num_timesteps:,}/{self.total_timesteps:,} ({progress:.1f}%) | "
+            f"Stage: {stage} | "
+            f"Reward {mean_reward:+.3f} | PnL €{mean_pnl:+.0f} | "
+            f"WR {mean_wr:.1%} | Trades {mean_trades:.1f} | MaxDD {max_dd:.1%}"
+        )
+    
+    def _save_live_metrics(self) -> None:
+        """Save metrics for dashboard."""
+        try:
+            # Save to standard location that dashboard expects
+            metrics_file = Path("logs/training/live_metrics.json")
+            metrics_file.parent.mkdir(parents=True, exist_ok=True)
+            
+            logger.debug(f"Saving live metrics to {metrics_file.absolute()}")
+            
+            n_recent = min(100, len(self._ep_rewards))
+            
+            # Compute FPS
+            fps = 0.0
+            if self._start_time is not None and self.num_timesteps > 0:
+                elapsed = time.time() - self._start_time
+                if elapsed > 0:
+                    fps = self.num_timesteps / elapsed
+            
+            # Calculate ETA
+            eta_seconds = 0.0
+            if self._start_time and self.num_timesteps > 0:
+                elapsed = time.time() - self._start_time
+                remaining = self.total_timesteps - self.num_timesteps
+                rate = self.num_timesteps / max(elapsed, 1)
+                eta_seconds = remaining / max(rate, 1)
+            
+            # Get curriculum progress
+            curriculum_progress = {}
+            if self.curriculum_manager:
+                curriculum_progress = self.curriculum_manager.get_progress_report()
+            
+            # Build curriculum detail section
+            curriculum_detail = {}
+            if self.curriculum_manager:
+                stage_cfg = self.curriculum_manager.stage_config
+                competence = stage_cfg.competence  # It's 'competence' not 'promotion_criteria'
+                
+                # Extract current_metrics and criteria_met from promotion_checks
+                promotion_checks = curriculum_progress.get("promotion_checks", {})
+                current_metrics = {}
+                criteria_met = {}
+                
+                # Map the nested check format to flat format expected by dashboard
+                for check_name, check_data in promotion_checks.items():
+                    if isinstance(check_data, dict):
+                        current_metrics[check_name] = check_data.get("actual", 0)
+                        criteria_met[check_name] = check_data.get("passed", False)
+                
+                # Also add rolling stats as current metrics
+                rolling_stats_raw = curriculum_progress.get("rolling_stats", {})
+                if rolling_stats_raw:
+                    current_metrics["win_rate"] = rolling_stats_raw.get("mean_win_rate", 0)
+                    current_metrics["profit_factor"] = rolling_stats_raw.get("mean_profit_factor", 0)
+                    current_metrics["drawdown"] = rolling_stats_raw.get("mean_drawdown", 0)
+                    current_metrics["trade_count"] = rolling_stats_raw.get("mean_trade_count", 0)
+                    current_metrics["pnl"] = rolling_stats_raw.get("mean_pnl", 0)
+                
+                curriculum_detail = {
+                    "stage_name": self.curriculum_manager.current_stage.name,
+                    "stage_idx": int(self.curriculum_manager.current_stage.value),
+                    "is_in_transition": self.curriculum_manager.is_in_transition,
+                    "reward_blend_factor": self.curriculum_manager.reward_blend_factor,
+                    "lr_multiplier": self.curriculum_manager.get_lr_multiplier(),
+                    # Promotion criteria thresholds (from competence)
+                    "promotion_thresholds": {
+                        "min_episodes": competence.min_episodes,
+                        "min_win_rate": competence.min_win_rate,
+                        "min_profit_factor": competence.min_profit_factor,
+                        "max_drawdown": competence.max_avg_drawdown,
+                        "confidence_level": getattr(competence, 'confidence_level', 0.95),
+                    },
+                    # Current vs required metrics (extracted from promotion_checks)
+                    "current_metrics": current_metrics,
+                    "criteria_met": criteria_met,
+                    # Data difficulty settings
+                    "data_difficulty": {
+                        "volatility_range": stage_cfg.data_difficulty.volatility_percentile_range if stage_cfg.data_difficulty else (0.0, 1.0),
+                        "trend_clarity_min": stage_cfg.data_difficulty.min_trend_clarity if stage_cfg.data_difficulty else 0.0,
+                        "include_asian": stage_cfg.data_difficulty.include_asian_session if stage_cfg.data_difficulty else True,
+                        "include_london": stage_cfg.data_difficulty.include_london_session if stage_cfg.data_difficulty else True,
+                        "include_ny": stage_cfg.data_difficulty.include_ny_session if stage_cfg.data_difficulty else True,
+                        "exclude_high_impact_news": stage_cfg.data_difficulty.exclude_high_impact_news if stage_cfg.data_difficulty else False,
+                    },
+                    # Transition settings
+                    "transition_settings": {
+                        "lr_warmup_steps": stage_cfg.transition.lr_warmup_steps if stage_cfg.transition else 0,
+                        "lr_warmup_factor": stage_cfg.transition.lr_warmup_factor if stage_cfg.transition else 1.0,
+                        "reward_blend_episodes": stage_cfg.transition.reward_blend_episodes if stage_cfg.transition else 0,
+                        "cooldown_episodes": stage_cfg.transition.transition_cooldown_episodes if stage_cfg.transition else 0,
+                    },
+                }
+            
+            # Calculate summary stats
+            mean_reward = float(np.mean(self._ep_rewards[-50:])) if self._ep_rewards else 0.0
+            mean_pnl = float(np.mean(self._ep_pnls[-50:])) if self._ep_pnls else 0.0
+            total_pnl = float(np.sum(self._ep_pnls)) if self._ep_pnls else 0.0
+            mean_win_rate = float(np.mean(self._ep_win_rates[-50:])) if self._ep_win_rates else 0.0
+            max_drawdown = float(np.max(self._ep_drawdowns[-50:])) if self._ep_drawdowns else 0.0
+            mean_trades = float(np.mean(self._ep_trades[-50:])) if self._ep_trades else 0.0
+            total_trades = int(np.sum(self._ep_trades)) if self._ep_trades else 0
+            
+            # Get rolling stats from curriculum for more accurate metrics
+            rolling_stats = curriculum_progress.get("rolling_stats", {})
+            
+            # Use curriculum rolling stats if available (more accurate)
+            if rolling_stats.get("total_trades", 0) > 0:
+                total_trades = rolling_stats.get("total_trades", total_trades)
+                mean_win_rate = rolling_stats.get("mean_win_rate", mean_win_rate)
+                mean_pnl = rolling_stats.get("mean_pnl", mean_pnl)
+                max_drawdown = rolling_stats.get("max_drawdown_seen", max_drawdown)
+                mean_trades = rolling_stats.get("mean_trade_count", mean_trades)
+            
+            # Calculate mean quality metrics from our tracked data
+            # Use rolling_stats if available, otherwise our tracked values
+            mean_profit_factor = rolling_stats.get("mean_profit_factor", 0.0)
+            mean_r_multiple = rolling_stats.get("mean_r_multiple", 0.0)
+            mean_entry_quality = rolling_stats.get("mean_entry_quality", 0.5)
+            
+            # Override with our tracked values if we have them (and they're non-zero)
+            if self._ep_profit_factors:
+                recent_pf = [x for x in self._ep_profit_factors[-50:] if x > 0]
+                if recent_pf:
+                    mean_profit_factor = float(np.mean(recent_pf))
+            
+            if self._ep_r_multiples:
+                recent_rm = self._ep_r_multiples[-50:]
+                if recent_rm:
+                    mean_r_multiple = float(np.mean(recent_rm))
+            
+            if self._ep_entry_quality:
+                recent_eq = self._ep_entry_quality[-50:]
+                if recent_eq:
+                    mean_entry_quality = float(np.mean(recent_eq))
+            
+            # Status calculations for dashboard
+            def status_for_win_rate(wr):
+                if wr >= 0.55: return "good"
+                if wr >= 0.45: return "ok"
+                return "bad"
+            
+            def status_for_drawdown(dd):
+                if dd <= 0.03: return "good"
+                if dd <= 0.06: return "ok"
+                return "bad"
+            
+            def status_for_profit_factor(pf):
+                if pf >= 1.5: return "good"
+                if pf >= 1.0: return "ok"
+                return "bad"
+            
+            # Get PPO diagnostics
+            ppo_policy_loss = abs(self._ppo_diagnostics.get('policy_loss', 0))
+            ppo_value_loss = self._ppo_diagnostics.get('value_loss', 0)
+            ppo_entropy = abs(self._ppo_diagnostics.get('entropy', 0))
+            ppo_kl = self._ppo_diagnostics.get('kl_divergence', 0)
+            ppo_clip_fraction = self._ppo_diagnostics.get('clip_fraction', 0)
+            ppo_explained_var = self._ppo_diagnostics.get('explained_variance', 0)
+            ppo_learning_rate = self._ppo_diagnostics.get('learning_rate', 0)
+            
+            metrics = {
+                "timestamp": datetime.now().isoformat(),
+                
+                # Progress section (for dashboard progress display)
+                "progress": {
+                    "timesteps": self.num_timesteps,
+                    "total_timesteps": self.total_timesteps,
+                    "progress_pct": 100.0 * (self.num_timesteps / max(self.total_timesteps, 1)),
+                    "total_episodes": len(self._ep_rewards),
+                    "eta_seconds": eta_seconds,
+                },
+                
+                # Learning section (PPO diagnostics)
+                "learning": {
+                    "fps": fps,
+                    "n_updates": self._n_updates,
+                    "mean_reward": mean_reward,
+                    "mean_reward_status": "good" if mean_reward > 0 else "ok" if mean_reward > -5 else "bad",
+                    "total_pnl": total_pnl,
+                    "total_pnl_status": "good" if total_pnl > 0 else "ok" if total_pnl > -1000 else "bad",
+                    # PPO diagnostics
+                    "policy_loss": ppo_policy_loss,
+                    "value_loss": ppo_value_loss,
+                    "entropy": ppo_entropy,
+                    "kl_divergence": ppo_kl,
+                    "clip_fraction": ppo_clip_fraction,
+                    "explained_variance": ppo_explained_var,
+                    "learning_rate": ppo_learning_rate,
+                },
+                
+                # Trading section
+                "trading": {
+                    "total_trades": total_trades,
+                    "mean_trades": mean_trades,
+                    "mean_trades_status": "good" if mean_trades >= 5 else "ok" if mean_trades >= 1 else "bad",
+                    "mean_win_rate": mean_win_rate * 100,  # As percentage
+                    "mean_win_rate_status": status_for_win_rate(mean_win_rate),
+                    "max_drawdown": max_drawdown * 100,  # As percentage
+                    "max_drawdown_status": status_for_drawdown(max_drawdown),
+                },
+                
+                # Quality section
+                "quality": {
+                    "mean_profit_factor": mean_profit_factor,
+                    "mean_profit_factor_status": status_for_profit_factor(mean_profit_factor),
+                    "mean_r_multiple": mean_r_multiple,
+                    "mean_r_multiple_status": "good" if mean_r_multiple > 1 else "ok" if mean_r_multiple > 0 else "bad",
+                    "mean_entry_quality": mean_entry_quality,
+                    "mean_entry_quality_status": "good" if mean_entry_quality > 0.6 else "ok" if mean_entry_quality > 0.4 else "bad",
+                },
+                
+                # Exit stats - use tracked exit reasons
+                "exit_stats": {
+                    "distribution": dict(self._exit_reason_counts),
+                },
+                
+                # Curriculum data
+                "curriculum_stage": self.curriculum_manager.current_stage.name if self.curriculum_manager else "N/A",
+                "curriculum_stage_idx": int(self.curriculum_manager.current_stage.value) if self.curriculum_manager else 0,
+                "curriculum_progress": curriculum_progress,
+                "curriculum_detail": curriculum_detail,
+                
+                # Recent history for charts
+                "recent_rewards": [float(x) for x in self._ep_rewards[-n_recent:]],
+                "recent_pnls": [float(x) for x in self._ep_pnls[-n_recent:]],
+                "recent_win_rates": [float(x) * 100 for x in self._ep_win_rates[-n_recent:]],  # As percentage
+                "recent_drawdowns": [float(x) * 100 for x in self._ep_drawdowns[-n_recent:]],  # As percentage
+                "recent_trades": [int(x) for x in self._ep_trades[-n_recent:]],
+                
+                # Stage history
+                "stage_history": self._stage_history,
+                
+                # Legacy flat fields for backward compatibility
+                "timesteps": self.num_timesteps,
+                "total_timesteps": self.total_timesteps,
+                "fps": fps,
+                "progress_pct": 100.0 * (self.num_timesteps / max(self.total_timesteps, 1)),
+                "total_episodes": len(self._ep_rewards),
+                "mean_reward": mean_reward,
+                "mean_pnl": mean_pnl,
+                "total_pnl": total_pnl,
+                "mean_win_rate": mean_win_rate,
+                "max_drawdown": max_drawdown,
+                "mean_trades": mean_trades,
+                "total_trades": total_trades,
+            }
+            
+            with open(metrics_file, 'w', encoding='utf-8') as f:
+                json.dump(metrics, f)
+                
+        except Exception as e:
+            import traceback
+            logger.error(f"Failed to save live metrics: {e}")
+            traceback.print_exc()
+
+
+def create_curriculum_env(
+    data: Dict[str, Dict[str, pd.DataFrame]],
+    curriculum_manager: Any,  # CurriculumManager
+    seed: int = 0,
+    monitor_dir: Optional[str] = None,
+    use_action_masking: bool = True,
+) -> Any:
+    """
+    Create a single curriculum-wrapped environment.
+    """
+    if not CURRICULUM_AVAILABLE or CurriculumEnvWrapper is None:
+        raise RuntimeError("Curriculum system not available")
+    
+    # Get current stage config
+    stage_config = curriculum_manager.stage_config
+    
+    # Create base config with curriculum settings
+    # CRITICAL: entry_quality_gate_enabled=False allows exploration in early stages
+    base_config = PropFirmConfig(
+        max_steps_per_episode=stage_config.max_steps_per_episode,
+        entry_quality_gate_enabled=stage_config.constraints.entry_quality_gate_enabled,
+        entry_quality_threshold=stage_config.constraints.entry_quality_threshold,
+    )
+    
+    # Create base environment
+    base_env = PropFirmTradingEnv(data, base_config)
+    
+    # Wrap with curriculum
+    env = CurriculumEnvWrapper(
+        env=base_env,
+        curriculum_manager=curriculum_manager,
+        auto_update_curriculum=True,
+        verbose=True,
+    )
+    
+    # Add monitor if requested
+    if monitor_dir:
+        Path(monitor_dir).mkdir(parents=True, exist_ok=True)
+        env = Monitor(env, filename=str(Path(monitor_dir) / f"monitor_{seed}.csv"))
+    
+    # Add action masking if available
+    if use_action_masking and MASKABLE_AVAILABLE and ActionMasker is not None:
+        env = ActionMasker(env, _mask_fn)
+    
+    # Seed the environment
+    try:
+        env.reset(seed=seed)
+    except Exception:
+        pass
+    
+    return env
+
+
+def create_curriculum_vec_envs(
+    data: Dict[str, Dict[str, pd.DataFrame]],
+    curriculum_manager: Any,  # CurriculumManager
+    n_envs: int,
+    seed: int,
+    monitor_dir: str = "logs/curriculum/training",
+    use_action_masking: bool = True,
+    frame_stack: int = 1,
+) -> VecEnv:
+    """
+    Create vectorized curriculum environments.
+    
+    All environments share the same CurriculumManager, so stage transitions
+    are synchronized across all parallel environments.
+    """
+    Path(monitor_dir).mkdir(parents=True, exist_ok=True)
+
+    def make_env(rank: int) -> Callable[[], Any]:
+        def _init():
+            env = create_curriculum_env(
+                data=data,
+                curriculum_manager=curriculum_manager,
+                seed=seed + rank,
+                monitor_dir=monitor_dir,
+                use_action_masking=use_action_masking,
+            )
+            return env
+        return _init
+
+    if platform.system() != "Windows" and n_envs > 1:
+        start_method = pick_subproc_start_method() or "spawn"
+        logger.info(f"Creating {n_envs} PARALLEL curriculum envs (SubprocVecEnv)")
+        venv = SubprocVecEnv([make_env(i) for i in range(n_envs)], start_method=start_method)
+    else:
+        logger.info(f"Creating {n_envs} curriculum envs (DummyVecEnv)")
+        venv = DummyVecEnv([make_env(i) for i in range(n_envs)])
+
+    if frame_stack and frame_stack > 1:
+        venv = VecFrameStack(venv, n_stack=int(frame_stack))
+
+    return venv
+
+
+def train_curriculum_agent(
+    data: Dict[str, Dict[str, pd.DataFrame]],
+    total_timesteps: int,
+    n_envs: int,
+    learning_rate: float,
+    batch_size: int,
+    n_steps: int,
+    n_epochs: int,
+    gamma: float,
+    gae_lambda: float,
+    clip_range: float,
+    ent_coef: float,
+    vf_coef: float,
+    max_grad_norm: float,
+    target_kl: float,
+    policy_hidden: int,
+    value_hidden: int,
+    checkpoint_freq: int,
+    start_stage: str = "FOUNDATION",
+    resume_path: Optional[str] = None,
+    frame_stack: int = 1,
+) -> BaseAlgorithm:
+    """
+    Train with curriculum learning - progressive difficulty stages.
+    
+    The agent starts at FOUNDATION and earns progression to harder stages
+    by demonstrating statistical competence (not just time or luck).
+    """
+    if not CURRICULUM_AVAILABLE or CurriculumStage is None or CurriculumManager is None:
+        raise RuntimeError("Curriculum system not available. Check imports.")
+    
+    seed_everything(42)
+    
+    save_dir = Path("models/curriculum")
+    save_dir.mkdir(parents=True, exist_ok=True)
+    
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    use_masking = bool(MASKABLE_AVAILABLE)
+    
+    # Initialize or resume curriculum manager
+    initial_stage = CurriculumStage[start_stage]
+    
+    if resume_path and Path(resume_path).exists():
+        logger.info(f"Resuming curriculum from {resume_path}")
+        curriculum_manager = CurriculumManager.load(Path(resume_path))
+    else:
+        curriculum_manager = CurriculumManager(
+            initial_stage=initial_stage,
+            auto_promote=True,
+            auto_demote=True,
+            verbose=True,
+        )
+    
+    logger.info(f"Curriculum training: starting at {curriculum_manager.current_stage.name}")
+    if get_stage_progression is not None:
+        logger.info(f"Stage progression: {' → '.join(s.name for s in get_stage_progression())}")
+    
+    # Create curriculum-wrapped environments
+    train_env = create_curriculum_vec_envs(
+        data=data,
+        curriculum_manager=curriculum_manager,
+        n_envs=n_envs,
+        seed=42,
+        monitor_dir=str(save_dir / "training"),
+        use_action_masking=use_masking,
+        frame_stack=frame_stack,
+    )
+    
+    # Create model
+    policy_kwargs = dict(
+        net_arch=dict(
+            pi=[policy_hidden, policy_hidden // 2],
+            vf=[value_hidden, value_hidden // 2],
+        ),
+        activation_fn=nn.Tanh,
+    )
+    
+    Algo = PPO
+    if use_masking and MASKABLE_AVAILABLE and MaskablePPO is not None:
+        Algo = MaskablePPO  # type: ignore[assignment]
+    
+    model = Algo(
+        "MlpPolicy",
+        train_env,
+        learning_rate=learning_rate,
+        n_steps=n_steps,
+        batch_size=batch_size,
+        n_epochs=n_epochs,
+        gamma=gamma,
+        gae_lambda=gae_lambda,
+        clip_range=clip_range,
+        ent_coef=ent_coef,
+        vf_coef=vf_coef,
+        max_grad_norm=max_grad_norm,
+        target_kl=target_kl,
+        policy_kwargs=policy_kwargs,
+        verbose=0,
+        tensorboard_log="runs/curriculum",
+        device=device,
+        seed=42,
+    )
+    
+    # Create callbacks
+    callbacks: List[BaseCallback] = [
+        CurriculumTrainingCallback(
+            curriculum_manager=curriculum_manager,
+            total_timesteps=total_timesteps,
+            log_interval_steps=50_000,
+            save_path=str(save_dir),
+        ),
+        CheckpointCallback(
+            save_freq=checkpoint_freq,
+            save_path=str(save_dir / "checkpoints"),
+            name_prefix="curriculum_ppo",
+        ),
+    ]
+    
+    start_time = datetime.now()
+    try:
+        model.learn(
+            total_timesteps=total_timesteps,
+            callback=CallbackList(callbacks),
+            tb_log_name="curriculum_ppo",
+            progress_bar=True,
+        )
+    except KeyboardInterrupt:
+        logger.warning("Curriculum training interrupted by user")
+    finally:
+        duration = datetime.now() - start_time
+        logger.info(f"Training duration: {duration}")
+        
+        # Save final model and curriculum state
+        model.save(str(save_dir / "curriculum_ppo_final.zip"))
+        curriculum_manager.save(save_dir / "curriculum_state.json")
+        
+        # Save training summary
+        summary = {
+            "total_timesteps": int(getattr(model, "num_timesteps", 0)),
+            "final_stage": curriculum_manager.current_stage.name,
+            "curriculum_progress": curriculum_manager.get_progress_report(),
+            "completed_at": datetime.now().isoformat(),
+        }
+        with open(save_dir / "training_summary.json", "w") as f:
+            json.dump(summary, f, indent=2)
+        
+        logger.info(f"Final stage: {curriculum_manager.current_stage.name}")
+        logger.info(f"Model saved to: {save_dir}")
+        
+        try:
+            train_env.close()
+        except Exception:
+            pass
+        
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    
+    return model
+
+
+# =============================================================================
 # CLI
 # =============================================================================
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="PropFirm PPO Training (10/10) with Walk-Forward Optuna")
 
+    # Training mode selection
     parser.add_argument("--optuna", action="store_true", help="Run Optuna hyperparameter optimization")
+    parser.add_argument("--curriculum", action="store_true", help="Run curriculum learning (progressive difficulty)")
+    
+    # Optuna options
     parser.add_argument("--trials", type=int, default=25, help="Optuna trials")
     parser.add_argument("--trial-timesteps", type=int, default=750_000, help="Steps per Optuna trial")
     parser.add_argument("--optuna-storage", type=str, default=None, help="Optuna storage URL (optional)")
     parser.add_argument("--study-name", type=str, default="propfirm_ppo", help="Optuna study name")
     parser.add_argument("--walk-forward-folds", type=int, default=2, help="Walk-forward folds (Optuna)")
+    
+    # Curriculum options
+    parser.add_argument(
+        "--start-stage",
+        type=str,
+        default="FOUNDATION",
+        help="Starting curriculum stage (FOUNDATION, DISCIPLINE, MARKET_STRUCTURE, etc.)",
+    )
+    parser.add_argument("--resume-curriculum", type=str, default=None, help="Resume curriculum from state file")
 
     parser.add_argument("--timesteps", type=int, default=10_000_000, help="Total training timesteps")
     default_n_envs = 2 if platform.system() == "Windows" else 4
@@ -1676,6 +2594,7 @@ def main() -> None:
     logger.info(f"Platform: {platform.system()} {platform.release()}")
     logger.info(f"MaskablePPO available: {MASKABLE_AVAILABLE}")
     logger.info(f"Optuna available: {OPTUNA_AVAILABLE}")
+    logger.info(f"Curriculum available: {CURRICULUM_AVAILABLE}")
     logger.info(f"Dashboard available: {DASHBOARD_AVAILABLE}")
     logger.info("=" * 70)
 
@@ -1734,7 +2653,39 @@ def main() -> None:
             study_name=args.study_name,
             storage=args.optuna_storage,
         )
+    elif args.curriculum:
+        # Curriculum learning mode
+        if not CURRICULUM_AVAILABLE:
+            raise RuntimeError("Curriculum system not available. Check curriculum imports.")
+        
+        logger.info("=" * 70)
+        logger.info("CURRICULUM LEARNING MODE")
+        logger.info("=" * 70)
+        
+        train_curriculum_agent(
+            data=data,
+            total_timesteps=args.timesteps,
+            n_envs=args.n_envs,
+            learning_rate=args.lr,
+            batch_size=args.batch_size,
+            n_steps=args.n_steps,
+            n_epochs=args.n_epochs,
+            gamma=args.gamma,
+            gae_lambda=args.gae_lambda,
+            clip_range=args.clip_range,
+            ent_coef=args.ent_coef,
+            vf_coef=args.vf_coef,
+            max_grad_norm=args.max_grad_norm,
+            target_kl=args.target_kl,
+            policy_hidden=args.policy_hidden,
+            value_hidden=args.value_hidden,
+            checkpoint_freq=args.checkpoint_freq,
+            start_stage=args.start_stage,
+            resume_path=args.resume_curriculum,
+            frame_stack=max(1, int(args.frame_stack)),
+        )
     else:
+        # Standard propfirm training (default)
         train_prop_firm_agent(
             data=data,
             total_timesteps=args.timesteps,

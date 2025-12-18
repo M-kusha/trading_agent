@@ -272,13 +272,21 @@ class MetricsReader:
     def _process_metrics(self, raw: Dict[str, Any]) -> Dict[str, Any]:
         """Process raw metrics into dashboard format with status colors."""
         
+        # Helper to get nested or flat values (supports new nested format and legacy flat format)
+        def get_nested(section: str, key: str, default: Any = 0) -> Any:
+            """Get value from nested structure or fall back to flat key."""
+            if section in raw and isinstance(raw[section], dict):
+                return raw[section].get(key, raw.get(key, default))
+            return raw.get(key, default)
+        
         # ─────────────────────────────────────────────────────────────
         # PROGRESS
         # ─────────────────────────────────────────────────────────────
-        timesteps = self._safe_int(raw.get("timesteps", 0))
-        total_timesteps = self._safe_int(raw.get("total_timesteps", 1))
-        progress_pct = self._safe_float(raw.get("progress_pct", 0))
-        total_episodes = self._safe_int(raw.get("total_episodes", 0))
+        progress_section = raw.get("progress", {})
+        timesteps = self._safe_int(progress_section.get("timesteps", raw.get("timesteps", 0)))
+        total_timesteps = self._safe_int(progress_section.get("total_timesteps", raw.get("total_timesteps", 1)))
+        progress_pct = self._safe_float(progress_section.get("progress_pct", raw.get("progress_pct", 0)))
+        total_episodes = self._safe_int(progress_section.get("total_episodes", raw.get("total_episodes", 0)))
         
         progress = {
             "timesteps": timesteps,
@@ -291,21 +299,22 @@ class MetricsReader:
         # ─────────────────────────────────────────────────────────────
         # LEARNING METRICS (PPO)
         # ─────────────────────────────────────────────────────────────
-        mean_reward = self._safe_float(raw.get("mean_reward", 0))
+        learning_section = raw.get("learning", {})
+        mean_reward = self._safe_float(learning_section.get("mean_reward", raw.get("mean_reward", 0)))
         mean_pnl = self._safe_float(raw.get("mean_pnl", 0))
-        total_pnl = self._safe_float(raw.get("total_pnl", 0))
+        total_pnl = self._safe_float(learning_section.get("total_pnl", raw.get("total_pnl", 0)))
         
-        # PPO diagnostics
-        approx_kl = self._safe_float(raw.get("approx_kl", 0))
-        clip_fraction = self._safe_float(raw.get("clip_fraction", 0))
-        entropy = self._safe_float(raw.get("entropy", 0))
-        explained_variance = self._safe_float(raw.get("explained_variance", 0))
-        value_loss = self._safe_float(raw.get("value_loss", 0))
-        policy_loss = self._safe_float(raw.get("policy_loss", 0))
-        learning_rate = self._safe_float(raw.get("learning_rate", 3e-4))
-        fps = self._safe_float(raw.get("fps", 0))
-        n_updates = self._safe_int(raw.get("n_updates", 0))
-        clip_range = self._safe_float(raw.get("clip_range", 0.2))
+        # PPO diagnostics - read from nested learning section first, then flat
+        approx_kl = self._safe_float(learning_section.get("kl_divergence", learning_section.get("approx_kl", raw.get("approx_kl", 0))))
+        clip_fraction = self._safe_float(learning_section.get("clip_fraction", raw.get("clip_fraction", 0)))
+        entropy = self._safe_float(learning_section.get("entropy", raw.get("entropy", 0)))
+        explained_variance = self._safe_float(learning_section.get("explained_variance", raw.get("explained_variance", 0)))
+        value_loss = self._safe_float(learning_section.get("value_loss", raw.get("value_loss", 0)))
+        policy_loss = self._safe_float(learning_section.get("policy_loss", raw.get("policy_loss", 0)))
+        learning_rate = self._safe_float(learning_section.get("learning_rate", raw.get("learning_rate", 3e-4)))
+        fps = self._safe_float(learning_section.get("fps", raw.get("fps", 0)))
+        n_updates = self._safe_int(learning_section.get("n_updates", raw.get("n_updates", 0)))
+        clip_range = self._safe_float(learning_section.get("clip_range", raw.get("clip_range", 0.2)))
         
         # Update history
         self._append_history("entropy", entropy)
@@ -343,10 +352,22 @@ class MetricsReader:
         # ─────────────────────────────────────────────────────────────
         # TRADING METRICS
         # ─────────────────────────────────────────────────────────────
-        mean_win_rate = self._safe_float(raw.get("mean_win_rate", 0)) * 100  # Convert to percentage
-        max_drawdown = self._safe_float(raw.get("max_drawdown", 0)) * 100  # Convert to percentage
-        mean_trades = self._safe_float(raw.get("mean_trades", 0))
-        total_trades = self._safe_int(raw.get("total_trades", 0))
+        trading_section = raw.get("trading", {})
+        # Win rate: nested is already percentage (0-100), flat was 0-1
+        mean_win_rate_raw = trading_section.get("mean_win_rate", raw.get("mean_win_rate", 0))
+        # If value is less than 1, it's a ratio (0-1), convert to percentage
+        mean_win_rate = self._safe_float(mean_win_rate_raw)
+        if mean_win_rate < 1 and mean_win_rate > 0:
+            mean_win_rate = mean_win_rate * 100
+        
+        # Drawdown: nested is already percentage, flat was 0-1
+        max_drawdown_raw = trading_section.get("max_drawdown", raw.get("max_drawdown", 0))
+        max_drawdown = self._safe_float(max_drawdown_raw)
+        if max_drawdown < 1 and max_drawdown > 0:
+            max_drawdown = max_drawdown * 100
+            
+        mean_trades = self._safe_float(trading_section.get("mean_trades", raw.get("mean_trades", 0)))
+        total_trades = self._safe_int(trading_section.get("total_trades", raw.get("total_trades", 0)))
         
         # Update history
         self._append_history("win_rates", mean_win_rate)
@@ -366,12 +387,13 @@ class MetricsReader:
         # ─────────────────────────────────────────────────────────────
         # TRADE QUALITY METRICS
         # ─────────────────────────────────────────────────────────────
-        mean_r_multiple = self._safe_float(raw.get("mean_r_multiple", 0))
-        mean_profit_factor = self._safe_float(raw.get("mean_profit_factor", 0))
+        quality_section = raw.get("quality", {})
+        mean_r_multiple = self._safe_float(quality_section.get("mean_r_multiple", raw.get("mean_r_multiple", 0)))
+        mean_profit_factor = self._safe_float(quality_section.get("mean_profit_factor", raw.get("mean_profit_factor", 0)))
         mean_mae = self._safe_float(raw.get("mean_mae", 0))
         mean_mfe = self._safe_float(raw.get("mean_mfe", 0))
         mean_bars_held = self._safe_float(raw.get("mean_bars_held", 0))
-        mean_entry_quality = self._safe_float(raw.get("mean_entry_quality", 0.5))
+        mean_entry_quality = self._safe_float(quality_section.get("mean_entry_quality", raw.get("mean_entry_quality", 0.5)))
         max_consecutive_wins = self._safe_int(raw.get("max_consecutive_wins", 0))
         max_consecutive_losses = self._safe_int(raw.get("max_consecutive_losses", 0))
         
@@ -398,7 +420,11 @@ class MetricsReader:
         # ─────────────────────────────────────────────────────────────
         # EXIT REASON DISTRIBUTION
         # ─────────────────────────────────────────────────────────────
-        exit_distribution = self._safe_dict(raw.get("exit_reason_distribution", {}))
+        # Try nested exit_stats.distribution first, then flat exit_reason_distribution
+        exit_stats_section = raw.get("exit_stats", {})
+        exit_distribution = self._safe_dict(
+            exit_stats_section.get("distribution", raw.get("exit_reason_distribution", {}))
+        )
         
         # Classify exit reasons
         good_exits = ["trailing_stop", "agent_close"]
@@ -436,6 +462,18 @@ class MetricsReader:
         # ─────────────────────────────────────────────────────────────
         # ASSEMBLE FINAL PAYLOAD
         # ─────────────────────────────────────────────────────────────
+        
+        # Handle recent_win_rates and recent_drawdowns conversion
+        # If values are already percentage (>1), don't multiply
+        def maybe_to_pct(values: List[float]) -> List[float]:
+            if not values:
+                return []
+            # If max value > 1, assume already percentage
+            max_val = max(abs(v) for v in values) if values else 0
+            if max_val > 1:
+                return values
+            return [v * 100 for v in values]
+        
         return {
             "status": "active",
             "message": "",
@@ -449,11 +487,18 @@ class MetricsReader:
             "quality": quality,
             "exit_stats": exit_stats,
             
+            # Curriculum data - passthrough from training callback
+            "curriculum_stage": raw.get("curriculum_stage", "N/A"),
+            "curriculum_stage_idx": raw.get("curriculum_stage_idx", 0),
+            "curriculum_progress": raw.get("curriculum_progress", {}),
+            "curriculum_detail": raw.get("curriculum_detail", {}),
+            "stage_history": raw.get("stage_history", []),
+            
             # Chart data
             "recent_rewards": recent_rewards,
             "recent_pnls": recent_pnls,
-            "recent_win_rates": [w * 100 for w in recent_win_rates],  # Convert to %
-            "recent_drawdowns": [d * 100 for d in recent_drawdowns],  # Convert to %
+            "recent_win_rates": maybe_to_pct(recent_win_rates),
+            "recent_drawdowns": maybe_to_pct(recent_drawdowns),
             "recent_trades": recent_trades_list,
             "recent_r_multiples": recent_r_multiples,
             "recent_entry_quality": recent_entry_quality,
