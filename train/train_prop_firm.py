@@ -1714,6 +1714,53 @@ def train_prop_firm_agent(
 # CURRICULUM TRAINING
 # =============================================================================
 
+class CurriculumCheckpointCallback(BaseCallback):
+    """
+    Saves curriculum state alongside regular model checkpoints.
+    
+    This ensures we can fully resume training with:
+    - Model weights
+    - Curriculum stage
+    - Rolling stats window
+    - Episode counts
+    """
+    
+    def __init__(
+        self,
+        curriculum_manager: Any,
+        save_freq: int,
+        save_path: str,
+        name_prefix: str = "curriculum_state",
+        verbose: int = 0,
+    ):
+        super().__init__(verbose)
+        self.curriculum_manager = curriculum_manager
+        self.save_freq = save_freq
+        self.save_path = Path(save_path)
+        self.name_prefix = name_prefix
+        self._last_save = 0
+    
+    def _on_step(self) -> bool:
+        if self.curriculum_manager is None:
+            return True
+        
+        # Save at same frequency as CheckpointCallback
+        if self.num_timesteps - self._last_save >= self.save_freq:
+            self.save_path.mkdir(parents=True, exist_ok=True)
+            
+            state_path = self.save_path / f"{self.name_prefix}_{self.num_timesteps}_steps.json"
+            try:
+                self.curriculum_manager.save(state_path)
+                if self.verbose >= 1:
+                    logger.info(f"  📁 Curriculum state saved: {state_path.name}")
+            except Exception as e:
+                logger.warning(f"  ⚠️ Curriculum state save failed: {e}")
+            
+            self._last_save = self.num_timesteps
+        
+        return True
+
+
 class CurriculumTrainingCallback(BaseCallback):
     """
     Training callback with curriculum integration.
@@ -1897,12 +1944,14 @@ class CurriculumTrainingCallback(BaseCallback):
             for reason, count in exit_dist.items():
                 self._exit_reason_counts[reason] = self._exit_reason_counts.get(reason, 0) + int(count)
             
-            # Update curriculum episode transition tick
-            if self.curriculum_manager is not None:
-                self.curriculum_manager.episode_transition_tick()
+            # NOTE: episode_transition_tick is called by CurriculumEnvWrapper._on_episode_end
+            # via record_episode_from_info(), so we don't call it here to avoid double-counting
             
-            # Track stage transitions
-            current_stage = finfo.get("curriculum_stage", info.get("curriculum_stage", "unknown"))
+            # Track stage transitions (get from curriculum manager directly)
+            if self.curriculum_manager is not None:
+                current_stage = self.curriculum_manager.current_stage.name
+            else:
+                current_stage = finfo.get("curriculum_stage", info.get("curriculum_stage", "unknown"))
             if self._stage_history and self._stage_history[-1]["stage"] != current_stage:
                 self._stage_history.append({
                     "stage": current_stage,
@@ -1967,6 +2016,10 @@ class CurriculumTrainingCallback(BaseCallback):
                     n_updates = values.get('train/n_updates', 0)
                     if n_updates > 0:
                         self._n_updates = int(n_updates)
+                    
+                    # Update curriculum manager with current entropy for entropy-based reward shaping
+                    if self.curriculum_manager is not None and self._ppo_diagnostics['entropy'] != 0:
+                        self.curriculum_manager.update_entropy(abs(self._ppo_diagnostics['entropy']))
             
             # Alternative: get from model attributes
             if self._n_updates == 0 and hasattr(self.model, '_n_updates'):
@@ -2290,8 +2343,11 @@ def create_curriculum_env(
     # Wrap with curriculum
     env = CurriculumEnvWrapper(
         env=base_env,
-        curriculum_manager=curriculum_manager,
-        auto_update_curriculum=True,
+        manager=curriculum_manager,
+        apply_reward_shaping=True,
+        apply_execution_difficulty=True,
+        apply_constraints=True,
+        apply_data_difficulty=True,
         verbose=True,
     )
     
@@ -2470,6 +2526,12 @@ def train_curriculum_agent(
             save_freq=checkpoint_freq,
             save_path=str(save_dir / "checkpoints"),
             name_prefix="curriculum_ppo",
+        ),
+        CurriculumCheckpointCallback(
+            curriculum_manager=curriculum_manager,
+            save_freq=checkpoint_freq,
+            save_path=str(save_dir / "checkpoints"),
+            name_prefix="curriculum_state",
         ),
     ]
     

@@ -5,16 +5,22 @@ Curriculum Configuration for Trading RL Agent
 
 Defines curriculum progression from early learning to live-ready discipline.
 
-Enhancements in this version:
-- Minor typing cleanups
-- Added lightweight validation helpers (optional; no runtime impact unless called)
+Enhancements in this version (v2.0):
+- Skill-based competency requirements per stage
+- Entropy targets for exploration management
+- Composite scoring configuration
+- Recovery protocol definitions
+- Validation configuration
+- Adaptive threshold settings
+- Mixed-stage sampling configuration
+- Review session scheduling
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from enum import IntEnum
-from typing import Callable, Dict, List, Optional, Tuple
+from dataclasses import dataclass, field
+from enum import Enum, IntEnum
+from typing import Callable, Dict, List, Optional, Tuple, Set
 
 
 class CurriculumStage(IntEnum):
@@ -26,6 +32,29 @@ class CurriculumStage(IntEnum):
     ADAPTIVE = 5
     SPECIALIST = 6
     LIVE_READY = 7
+
+
+class TradingSkill(Enum):
+    """Decomposed trading competencies for granular assessment."""
+    ENTRY_TIMING = "entry_timing"           # Enters at good prices
+    EXIT_QUALITY = "exit_quality"           # Trailing stops > hard stops
+    DRAWDOWN_CONTROL = "drawdown_control"   # Stays within limits
+    POSITION_SIZING = "position_sizing"     # Uses appropriate size
+    PATIENCE = "patience"                   # Doesn't overtrade
+    TREND_ALIGNMENT = "trend_alignment"     # Trades with trend
+    RISK_REWARD = "risk_reward"             # Good R-multiples
+    CONSISTENCY = "consistency"             # Low variance
+    LOSS_MANAGEMENT = "loss_management"     # Handles losing streaks
+    ADAPTATION = "adaptation"               # Adjusts to market regimes
+
+
+class MarketRegime(Enum):
+    """Market regime classification for validation."""
+    TRENDING_UP = "trending_up"
+    TRENDING_DOWN = "trending_down"
+    RANGING = "ranging"
+    HIGH_VOLATILITY = "high_volatility"
+    LOW_VOLATILITY = "low_volatility"
 
 
 @dataclass
@@ -56,27 +85,19 @@ class DataDifficulty:
     Allows early stages to train on "easier" market conditions
     (clear trends, lower volatility) before introducing complex regimes.
     """
-    # Volatility filtering: percentile range [0, 1] to include
-    # (0.0, 0.5) = only low volatility periods; (0.0, 1.0) = all
     volatility_percentile_range: Tuple[float, float] = (0.0, 1.0)
+    min_trend_clarity: float = 0.0
     
-    # Trend clarity: filter for periods with clearer directional movement
-    # Higher threshold = only clearer trends included
-    min_trend_clarity: float = 0.0  # [0, 1] where 0=any, 1=strongest trends only
-    
-    # Session filtering
     include_asian_session: bool = True
     include_london_session: bool = True
     include_ny_session: bool = True
     include_overlap_sessions: bool = True
     
-    # News/event filtering
-    exclude_high_impact_news: bool = False  # Avoid high-volatility news periods
-    exclude_market_open_close: bool = False  # Avoid first/last 30 min
+    exclude_high_impact_news: bool = False
+    exclude_market_open_close: bool = False
     
-    # Date range weighting
-    prefer_recent_data: bool = False  # Weight recent data more heavily
-    recent_data_weight: float = 1.0  # 1.0 = no preference, 2.0 = 2x weight to recent
+    prefer_recent_data: bool = False
+    recent_data_weight: float = 1.0
 
 
 @dataclass
@@ -86,19 +107,14 @@ class TransitionSettings:
     
     Prevents sudden destabilization when moving to harder stages.
     """
-    # Learning rate adjustment on promotion
     lr_warmup_enabled: bool = True
-    lr_warmup_factor: float = 0.3  # Start at 30% of normal LR
-    lr_warmup_steps: int = 10_000  # Steps to reach full LR
+    lr_warmup_factor: float = 0.3
+    lr_warmup_steps: int = 10_000
     
-    # Reward smoothing between stages
     reward_blend_enabled: bool = True
-    reward_blend_episodes: int = 20  # Episodes to blend old/new reward config
+    reward_blend_episodes: int = 20
     
-    # Checkpoint on promotion/demotion
     checkpoint_on_transition: bool = True
-    
-    # Cooldown before next transition evaluation
     transition_cooldown_episodes: int = 50
 
 
@@ -207,11 +223,8 @@ class CompetenceThresholds:
     max_avg_drawdown: float = 0.20
     min_avg_pnl: float = -1000.0
     
-    # R-Multiple threshold: require good risk-adjusted returns
-    min_avg_r_multiple: float = 0.0  # 0 = disabled, 0.3+ = positive expectancy
-    
-    # Entropy floor: prevent premature policy collapse
-    min_entropy: float = 0.0  # 0 = disabled, 0.1+ = require exploration
+    min_avg_r_multiple: float = 0.0
+    min_entropy: float = 0.0
 
     max_win_rate_std: float = 0.30
     max_pnl_std: float = 10000.0
@@ -221,6 +234,214 @@ class CompetenceThresholds:
     max_consecutive_loss_rate: float = 0.30
 
     evaluation_window: int = 50
+
+
+@dataclass
+class SkillRequirements:
+    """
+    Per-stage skill requirements for promotion.
+    
+    Maps skills to minimum scores [0, 1] required to pass.
+    """
+    required_skills: Dict[TradingSkill, float] = field(default_factory=dict)
+    
+    # Minimum confidence required for skill assessment to count
+    min_confidence: float = 0.5
+    
+    # Whether all skills must pass or just weighted average
+    require_all_skills: bool = False
+    weighted_threshold: float = 0.6  # If not require_all_skills, weighted avg must exceed this
+    
+    # Skill weights for weighted average (default equal weights)
+    skill_weights: Dict[TradingSkill, float] = field(default_factory=dict)
+    
+    def get_weight(self, skill: TradingSkill) -> float:
+        """Get weight for a skill, defaulting to 1.0."""
+        return self.skill_weights.get(skill, 1.0)
+
+
+@dataclass
+class EntropyTargets:
+    """
+    Entropy targets for exploration management.
+    
+    Prevents policy collapse (too low entropy) or random behavior (too high).
+    """
+    min_entropy: float = 0.1
+    max_entropy: float = 0.8
+    
+    # Penalty coefficient when outside range
+    low_entropy_penalty_scale: float = 0.1
+    high_entropy_penalty_scale: float = 0.05
+    
+    # Whether to use entropy in promotion criteria
+    use_in_promotion: bool = True
+
+
+@dataclass
+class CompositeScoringConfig:
+    """
+    Configuration for weighted composite competence scoring.
+    
+    Allows nuanced evaluation rather than all-or-nothing gating.
+    """
+    enabled: bool = True
+    
+    # Weights for composite score (must sum to ~1.0)
+    weights: Dict[str, float] = field(default_factory=lambda: {
+        "win_rate": 0.20,
+        "profit_factor": 0.20,
+        "drawdown": 0.15,
+        "consistency": 0.15,
+        "r_multiple": 0.10,
+        "dd_breach_rate": 0.10,
+        "trade_activity": 0.05,
+        "consecutive_loss_rate": 0.05,
+    })
+    
+    # Hard floors: must meet regardless of composite score
+    hard_floors: Dict[str, float] = field(default_factory=lambda: {
+        "win_rate": 0.30,
+        "max_drawdown": 0.25,
+        "dd_breach_rate": 0.40,
+    })
+    
+    # Threshold composite score must exceed for promotion
+    promotion_threshold: float = 0.70
+    
+    # Threshold below which demotion is triggered
+    demotion_threshold: float = 0.35
+
+
+@dataclass
+class AdaptiveThresholdConfig:
+    """
+    Configuration for adaptive threshold relaxation.
+    
+    Slightly relaxes thresholds if agent is plateaued but close to promotion.
+    """
+    enabled: bool = True
+    
+    # Plateau detection
+    plateau_episodes_threshold: int = 100  # Episodes without improvement
+    plateau_improvement_threshold: float = 0.01  # Min improvement to not count as plateau
+    
+    # Maximum relaxation allowed (as fraction)
+    max_relaxation: float = 0.10  # Up to 10% relaxation
+    
+    # Episodes over which relaxation builds up
+    relaxation_buildup_episodes: int = 500
+    
+    # Which metrics can be relaxed (safety metrics excluded)
+    relaxable_metrics: Set[str] = field(default_factory=lambda: {
+        "min_win_rate",
+        "min_profit_factor",
+        "min_avg_pnl",
+        "min_trade_count_avg",
+        "max_win_rate_std",
+        "max_pnl_std",
+    })
+    
+    # Metrics that should NEVER be relaxed (safety-critical)
+    never_relax: Set[str] = field(default_factory=lambda: {
+        "max_avg_drawdown",
+        "max_dd_breach_rate",
+        "max_consecutive_loss_rate",
+    })
+
+
+@dataclass
+class RecoveryProtocolConfig:
+    """
+    Configuration for recovery protocol after repeated failures.
+    """
+    enabled: bool = True
+    
+    # Trigger after this many demotions from the same stage
+    trigger_after_demotions: int = 2
+    
+    # Duration of recovery protocol in episodes
+    recovery_duration_episodes: int = 200
+    
+    # Focus skill override (if None, determined from diagnosis)
+    focus_skill: Optional[TradingSkill] = None
+    
+    # Reward modifications during recovery
+    reward_modifications: Dict[str, float] = field(default_factory=dict)
+    
+    # Constraint modifications during recovery (stricter limits)
+    constraint_modifications: Dict[str, float] = field(default_factory=dict)
+
+
+@dataclass
+class MixedStageSamplingConfig:
+    """
+    Configuration for training on mixture of stages.
+    
+    Prevents catastrophic forgetting by occasionally training on earlier stages.
+    """
+    enabled: bool = True
+    
+    # Weight for current stage
+    current_stage_weight: float = 0.70
+    
+    # Weight for recent stages (1-2 stages back)
+    recent_stages_weight: float = 0.20
+    
+    # Weight for foundation stage (always some basics)
+    foundation_weight: float = 0.10
+    
+    # How many stages back to sample from
+    recent_stage_depth: int = 2
+
+
+@dataclass
+class ReviewSessionConfig:
+    """
+    Configuration for periodic review sessions on earlier stages.
+    
+    Ensures agent hasn't forgotten earlier skills.
+    """
+    enabled: bool = True
+    
+    # Episodes between review sessions
+    review_frequency: int = 500
+    
+    # Episodes per review session
+    review_duration: int = 50
+    
+    # How many stages back to review
+    review_depth: int = 2
+    
+    # Minimum stage to trigger reviews (no reviews in foundation)
+    min_stage_for_review: CurriculumStage = CurriculumStage.MARKET_STRUCTURE
+
+
+@dataclass
+class ValidationConfig:
+    """
+    Configuration for hold-out validation before promotion.
+    """
+    enabled: bool = False  # Disabled by default (requires separate validation data)
+    
+    # Number of validation episodes
+    validation_episodes: int = 100
+    
+    # Minimum performance ratio (validation / training)
+    min_performance_ratio: float = 0.85
+    
+    # Maximum acceptable performance drop
+    max_performance_drop: float = 0.15
+    
+    # Required regimes to validate on
+    required_regimes: List[MarketRegime] = field(default_factory=lambda: [
+        MarketRegime.TRENDING_UP,
+        MarketRegime.TRENDING_DOWN,
+        MarketRegime.RANGING,
+    ])
+    
+    # Minimum episodes per regime
+    min_episodes_per_regime: int = 20
 
 
 @dataclass
@@ -243,20 +464,45 @@ class CurriculumStageConfig:
     allow_demotion: bool = False
     is_terminal: bool = False
     
-    # Data difficulty for this stage (filter training data)
     data_difficulty: DataDifficulty = None  # type: ignore[assignment]
-    
-    # Transition settings for this stage
     transition: TransitionSettings = None  # type: ignore[assignment]
+    
+    # New v2.0 configurations
+    skill_requirements: SkillRequirements = None  # type: ignore[assignment]
+    entropy_targets: EntropyTargets = None  # type: ignore[assignment]
+    composite_scoring: CompositeScoringConfig = None  # type: ignore[assignment]
+    adaptive_thresholds: AdaptiveThresholdConfig = None  # type: ignore[assignment]
+    recovery_protocol: RecoveryProtocolConfig = None  # type: ignore[assignment]
+    mixed_stage_sampling: MixedStageSamplingConfig = None  # type: ignore[assignment]
+    review_session: ReviewSessionConfig = None  # type: ignore[assignment]
+    validation: ValidationConfig = None  # type: ignore[assignment]
     
     def __post_init__(self) -> None:
         if self.data_difficulty is None:
             self.data_difficulty = DataDifficulty()
         if self.transition is None:
             self.transition = TransitionSettings()
+        if self.skill_requirements is None:
+            self.skill_requirements = SkillRequirements()
+        if self.entropy_targets is None:
+            self.entropy_targets = EntropyTargets()
+        if self.composite_scoring is None:
+            self.composite_scoring = CompositeScoringConfig()
+        if self.adaptive_thresholds is None:
+            self.adaptive_thresholds = AdaptiveThresholdConfig()
+        if self.recovery_protocol is None:
+            self.recovery_protocol = RecoveryProtocolConfig()
+        if self.mixed_stage_sampling is None:
+            self.mixed_stage_sampling = MixedStageSamplingConfig()
+        if self.review_session is None:
+            self.review_session = ReviewSessionConfig()
+        if self.validation is None:
+            self.validation = ValidationConfig()
 
 
-# --- Stage factories (UNCHANGED semantics; kept as provided) ---
+# =============================================================================
+# Stage Factory Functions
+# =============================================================================
 
 def get_foundation_config() -> CurriculumStageConfig:
     return CurriculumStageConfig(
@@ -322,40 +568,38 @@ def get_foundation_config() -> CurriculumStageConfig:
             max_risk_per_trade_pct=0.01,
         ),
         competence=CompetenceThresholds(
-            min_episodes=250,  # Extended from 100 for stronger foundation
-            min_timesteps=200_000,  # Extended from 100_000
+            min_episodes=250,
+            min_timesteps=200_000,
             min_win_rate=0.35,
             min_profit_factor=0.6,
             max_avg_drawdown=0.30,
             min_avg_pnl=-500.0,
-            min_avg_r_multiple=0.0,  # No R-multiple requirement in foundation
-            min_entropy=0.15,  # Require some exploration to prevent collapse
+            min_avg_r_multiple=0.0,
+            min_entropy=0.15,
             max_win_rate_std=0.25,
             max_pnl_std=5000.0,
             min_trade_count_avg=2.0,
             max_dd_breach_rate=0.40,
             max_consecutive_loss_rate=0.25,
-            evaluation_window=75,  # Larger window for more stable evaluation
+            evaluation_window=75,
         ),
         max_steps_per_episode=1500,
         include_memory_features=False,
         include_world_model_features=False,
         include_expert_signals=True,
         allow_demotion=False,
-        # Easy data: low volatility, clear trends, avoid news
         data_difficulty=DataDifficulty(
-            volatility_percentile_range=(0.0, 0.50),  # Only low volatility (tightened from 0.6)
-            min_trend_clarity=0.3,  # Prefer clearer directional moves
+            volatility_percentile_range=(0.0, 0.50),
+            min_trend_clarity=0.3,
             include_asian_session=True,
             include_london_session=True,
             include_ny_session=True,
             include_overlap_sessions=True,
-            exclude_high_impact_news=True,  # Avoid news spikes
-            exclude_market_open_close=True,  # Avoid chaotic open/close
+            exclude_high_impact_news=True,
+            exclude_market_open_close=True,
             prefer_recent_data=False,
             recent_data_weight=1.0,
         ),
-        # No LR warmup needed for first stage
         transition=TransitionSettings(
             lr_warmup_enabled=False,
             lr_warmup_factor=1.0,
@@ -364,6 +608,43 @@ def get_foundation_config() -> CurriculumStageConfig:
             reward_blend_episodes=0,
             checkpoint_on_transition=True,
             transition_cooldown_episodes=30,
+        ),
+        # Skill requirements for Foundation - very basic
+        skill_requirements=SkillRequirements(
+            required_skills={
+                TradingSkill.ENTRY_TIMING: 0.30,
+                TradingSkill.DRAWDOWN_CONTROL: 0.40,
+            },
+            min_confidence=0.4,
+            require_all_skills=False,
+            weighted_threshold=0.35,
+        ),
+        # High entropy targets - encourage exploration
+        entropy_targets=EntropyTargets(
+            min_entropy=0.30,
+            max_entropy=0.80,
+            low_entropy_penalty_scale=0.15,
+            high_entropy_penalty_scale=0.02,
+            use_in_promotion=True,
+        ),
+        composite_scoring=CompositeScoringConfig(
+            enabled=True,
+            promotion_threshold=0.55,
+            demotion_threshold=0.25,
+        ),
+        adaptive_thresholds=AdaptiveThresholdConfig(
+            enabled=True,
+            plateau_episodes_threshold=150,
+            max_relaxation=0.15,
+        ),
+        recovery_protocol=RecoveryProtocolConfig(
+            enabled=False,  # No recovery in foundation
+        ),
+        mixed_stage_sampling=MixedStageSamplingConfig(
+            enabled=False,  # No mixing in foundation
+        ),
+        review_session=ReviewSessionConfig(
+            enabled=False,  # No reviews in foundation
         ),
     )
 
@@ -447,16 +728,16 @@ def get_discipline_config() -> CurriculumStageConfig:
             max_risk_per_trade_pct=0.008,
         ),
         competence=CompetenceThresholds(
-            min_episodes=150,  # Increased for more stability
+            min_episodes=150,
             min_timesteps=200_000,
             min_win_rate=0.38,
             min_profit_factor=0.75,
             max_avg_drawdown=0.18,
             min_avg_pnl=-200.0,
-            min_avg_r_multiple=0.1,  # Start requiring positive R-multiple
-            min_entropy=0.12,  # Allow some policy focus
+            min_avg_r_multiple=0.02,
+            min_entropy=0.12,
             max_win_rate_std=0.22,
-            max_pnl_std=3000.0,
+            max_pnl_std=5000.0,
             min_trade_count_avg=2.5,
             max_dd_breach_rate=0.30,
             max_consecutive_loss_rate=0.20,
@@ -467,28 +748,68 @@ def get_discipline_config() -> CurriculumStageConfig:
         include_world_model_features=False,
         include_expert_signals=True,
         allow_demotion=True,
-        # Medium-easy data: gradual volatility increase
         data_difficulty=DataDifficulty(
-            volatility_percentile_range=(0.0, 0.65),  # Gradual increase from 0.50
-            min_trend_clarity=0.15,  # Slightly clearer moves
+            volatility_percentile_range=(0.0, 0.65),
+            min_trend_clarity=0.15,
             include_asian_session=True,
             include_london_session=True,
             include_ny_session=True,
             include_overlap_sessions=True,
             exclude_high_impact_news=True,
-            exclude_market_open_close=False,  # Allow open/close now
+            exclude_market_open_close=False,
             prefer_recent_data=False,
             recent_data_weight=1.0,
         ),
-        # LR warmup when entering this stage
         transition=TransitionSettings(
             lr_warmup_enabled=True,
-            lr_warmup_factor=0.4,  # Start at 40% LR
+            lr_warmup_factor=0.4,
             lr_warmup_steps=8_000,
             reward_blend_enabled=True,
             reward_blend_episodes=15,
             checkpoint_on_transition=True,
             transition_cooldown_episodes=40,
+        ),
+        skill_requirements=SkillRequirements(
+            required_skills={
+                TradingSkill.ENTRY_TIMING: 0.40,
+                TradingSkill.DRAWDOWN_CONTROL: 0.50,
+                TradingSkill.PATIENCE: 0.45,
+                TradingSkill.LOSS_MANAGEMENT: 0.40,
+            },
+            min_confidence=0.5,
+            require_all_skills=False,
+            weighted_threshold=0.45,
+        ),
+        entropy_targets=EntropyTargets(
+            min_entropy=0.20,
+            max_entropy=0.60,
+            low_entropy_penalty_scale=0.12,
+            high_entropy_penalty_scale=0.04,
+            use_in_promotion=True,
+        ),
+        composite_scoring=CompositeScoringConfig(
+            enabled=True,
+            promotion_threshold=0.60,
+            demotion_threshold=0.30,
+        ),
+        adaptive_thresholds=AdaptiveThresholdConfig(
+            enabled=True,
+            plateau_episodes_threshold=120,
+            max_relaxation=0.12,
+        ),
+        recovery_protocol=RecoveryProtocolConfig(
+            enabled=True,
+            trigger_after_demotions=2,
+            recovery_duration_episodes=150,
+        ),
+        mixed_stage_sampling=MixedStageSamplingConfig(
+            enabled=True,
+            current_stage_weight=0.80,
+            recent_stages_weight=0.15,
+            foundation_weight=0.05,
+        ),
+        review_session=ReviewSessionConfig(
+            enabled=False,
         ),
     )
 
@@ -585,8 +906,8 @@ def get_market_structure_config() -> CurriculumStageConfig:
             min_profit_factor=1.0,
             max_avg_drawdown=0.10,
             min_avg_pnl=50.0,
-            min_avg_r_multiple=0.3,  # Require meaningful R-multiple
-            min_entropy=0.08,  # Policy can be more focused
+            min_avg_r_multiple=0.05,
+            min_entropy=0.08,
             max_win_rate_std=0.12,
             max_pnl_std=1000.0,
             min_trade_count_avg=4.0,
@@ -599,15 +920,14 @@ def get_market_structure_config() -> CurriculumStageConfig:
         include_world_model_features=True,
         include_expert_signals=True,
         allow_demotion=True,
-        # Wider volatility range, gradual increase
         data_difficulty=DataDifficulty(
-            volatility_percentile_range=(0.05, 0.80),  # Exclude extreme calm, include more vol
-            min_trend_clarity=0.05,  # Accept most market conditions
+            volatility_percentile_range=(0.05, 0.80),
+            min_trend_clarity=0.05,
             include_asian_session=True,
             include_london_session=True,
             include_ny_session=True,
             include_overlap_sessions=True,
-            exclude_high_impact_news=False,  # Start handling news
+            exclude_high_impact_news=False,
             exclude_market_open_close=False,
             prefer_recent_data=False,
             recent_data_weight=1.0,
@@ -620,6 +940,54 @@ def get_market_structure_config() -> CurriculumStageConfig:
             reward_blend_episodes=20,
             checkpoint_on_transition=True,
             transition_cooldown_episodes=50,
+        ),
+        skill_requirements=SkillRequirements(
+            required_skills={
+                TradingSkill.ENTRY_TIMING: 0.50,
+                TradingSkill.EXIT_QUALITY: 0.45,
+                TradingSkill.DRAWDOWN_CONTROL: 0.60,
+                TradingSkill.PATIENCE: 0.55,
+                TradingSkill.CONSISTENCY: 0.50,
+                TradingSkill.RISK_REWARD: 0.45,
+            },
+            min_confidence=0.5,
+            require_all_skills=False,
+            weighted_threshold=0.52,
+        ),
+        entropy_targets=EntropyTargets(
+            min_entropy=0.15,
+            max_entropy=0.50,
+            low_entropy_penalty_scale=0.10,
+            high_entropy_penalty_scale=0.05,
+            use_in_promotion=True,
+        ),
+        composite_scoring=CompositeScoringConfig(
+            enabled=True,
+            promotion_threshold=0.65,
+            demotion_threshold=0.32,
+        ),
+        adaptive_thresholds=AdaptiveThresholdConfig(
+            enabled=True,
+            plateau_episodes_threshold=100,
+            max_relaxation=0.10,
+        ),
+        recovery_protocol=RecoveryProtocolConfig(
+            enabled=True,
+            trigger_after_demotions=2,
+            recovery_duration_episodes=200,
+        ),
+        mixed_stage_sampling=MixedStageSamplingConfig(
+            enabled=True,
+            current_stage_weight=0.75,
+            recent_stages_weight=0.18,
+            foundation_weight=0.07,
+        ),
+        review_session=ReviewSessionConfig(
+            enabled=True,
+            review_frequency=500,
+            review_duration=50,
+            review_depth=2,
+            min_stage_for_review=CurriculumStage.MARKET_STRUCTURE,
         ),
     )
 
@@ -718,8 +1086,8 @@ def get_economic_logic_config() -> CurriculumStageConfig:
             min_profit_factor=1.2,
             max_avg_drawdown=0.07,
             min_avg_pnl=150.0,
-            min_avg_r_multiple=0.5,  # Strong R-multiple requirement
-            min_entropy=0.05,  # Allow focused policy
+            min_avg_r_multiple=0.08,
+            min_entropy=0.05,
             max_win_rate_std=0.10,
             max_pnl_std=600.0,
             min_trade_count_avg=4.5,
@@ -732,10 +1100,9 @@ def get_economic_logic_config() -> CurriculumStageConfig:
         include_world_model_features=True,
         include_expert_signals=True,
         allow_demotion=True,
-        # Full data: all market conditions including news
         data_difficulty=DataDifficulty(
-            volatility_percentile_range=(0.1, 0.95),  # Avoid extreme calm, handle most volatility
-            min_trend_clarity=0.0,  # Accept all market conditions
+            volatility_percentile_range=(0.1, 0.95),
+            min_trend_clarity=0.0,
             include_asian_session=True,
             include_london_session=True,
             include_ny_session=True,
@@ -753,6 +1120,54 @@ def get_economic_logic_config() -> CurriculumStageConfig:
             reward_blend_episodes=25,
             checkpoint_on_transition=True,
             transition_cooldown_episodes=60,
+        ),
+        skill_requirements=SkillRequirements(
+            required_skills={
+                TradingSkill.ENTRY_TIMING: 0.55,
+                TradingSkill.EXIT_QUALITY: 0.55,
+                TradingSkill.DRAWDOWN_CONTROL: 0.65,
+                TradingSkill.PATIENCE: 0.60,
+                TradingSkill.TREND_ALIGNMENT: 0.50,
+                TradingSkill.RISK_REWARD: 0.55,
+                TradingSkill.CONSISTENCY: 0.55,
+            },
+            min_confidence=0.55,
+            require_all_skills=False,
+            weighted_threshold=0.57,
+        ),
+        entropy_targets=EntropyTargets(
+            min_entropy=0.10,
+            max_entropy=0.40,
+            low_entropy_penalty_scale=0.08,
+            high_entropy_penalty_scale=0.06,
+            use_in_promotion=True,
+        ),
+        composite_scoring=CompositeScoringConfig(
+            enabled=True,
+            promotion_threshold=0.68,
+            demotion_threshold=0.35,
+        ),
+        adaptive_thresholds=AdaptiveThresholdConfig(
+            enabled=True,
+            plateau_episodes_threshold=100,
+            max_relaxation=0.08,
+        ),
+        recovery_protocol=RecoveryProtocolConfig(
+            enabled=True,
+            trigger_after_demotions=2,
+            recovery_duration_episodes=200,
+        ),
+        mixed_stage_sampling=MixedStageSamplingConfig(
+            enabled=True,
+            current_stage_weight=0.72,
+            recent_stages_weight=0.20,
+            foundation_weight=0.08,
+        ),
+        review_session=ReviewSessionConfig(
+            enabled=True,
+            review_frequency=450,
+            review_duration=50,
+            review_depth=2,
         ),
     )
 
@@ -851,8 +1266,8 @@ def get_professional_config() -> CurriculumStageConfig:
             min_profit_factor=1.3,
             max_avg_drawdown=0.05,
             min_avg_pnl=250.0,
-            min_avg_r_multiple=0.7,  # Strong R-multiple for professional stage
-            min_entropy=0.03,  # Allow very focused policy
+            min_avg_r_multiple=0.12,
+            min_entropy=0.03,
             max_win_rate_std=0.08,
             max_pnl_std=400.0,
             min_trade_count_avg=5.0,
@@ -865,7 +1280,6 @@ def get_professional_config() -> CurriculumStageConfig:
         include_world_model_features=True,
         include_expert_signals=True,
         allow_demotion=True,
-        # Full real-world data
         data_difficulty=DataDifficulty(
             volatility_percentile_range=(0.0, 1.0),
             min_trend_clarity=0.0,
@@ -875,7 +1289,7 @@ def get_professional_config() -> CurriculumStageConfig:
             include_overlap_sessions=True,
             exclude_high_impact_news=False,
             exclude_market_open_close=False,
-            prefer_recent_data=True,  # Start preferring recent data
+            prefer_recent_data=True,
             recent_data_weight=1.2,
         ),
         transition=TransitionSettings(
@@ -886,6 +1300,55 @@ def get_professional_config() -> CurriculumStageConfig:
             reward_blend_episodes=25,
             checkpoint_on_transition=True,
             transition_cooldown_episodes=75,
+        ),
+        skill_requirements=SkillRequirements(
+            required_skills={
+                TradingSkill.ENTRY_TIMING: 0.60,
+                TradingSkill.EXIT_QUALITY: 0.60,
+                TradingSkill.DRAWDOWN_CONTROL: 0.70,
+                TradingSkill.PATIENCE: 0.65,
+                TradingSkill.TREND_ALIGNMENT: 0.55,
+                TradingSkill.RISK_REWARD: 0.60,
+                TradingSkill.CONSISTENCY: 0.60,
+                TradingSkill.LOSS_MANAGEMENT: 0.60,
+            },
+            min_confidence=0.6,
+            require_all_skills=False,
+            weighted_threshold=0.62,
+        ),
+        entropy_targets=EntropyTargets(
+            min_entropy=0.05,
+            max_entropy=0.30,
+            low_entropy_penalty_scale=0.06,
+            high_entropy_penalty_scale=0.08,
+            use_in_promotion=True,
+        ),
+        composite_scoring=CompositeScoringConfig(
+            enabled=True,
+            promotion_threshold=0.72,
+            demotion_threshold=0.38,
+        ),
+        adaptive_thresholds=AdaptiveThresholdConfig(
+            enabled=True,
+            plateau_episodes_threshold=100,
+            max_relaxation=0.07,
+        ),
+        recovery_protocol=RecoveryProtocolConfig(
+            enabled=True,
+            trigger_after_demotions=2,
+            recovery_duration_episodes=250,
+        ),
+        mixed_stage_sampling=MixedStageSamplingConfig(
+            enabled=True,
+            current_stage_weight=0.70,
+            recent_stages_weight=0.22,
+            foundation_weight=0.08,
+        ),
+        review_session=ReviewSessionConfig(
+            enabled=True,
+            review_frequency=400,
+            review_duration=60,
+            review_depth=2,
         ),
     )
 
@@ -984,6 +1447,8 @@ def get_adaptive_config() -> CurriculumStageConfig:
             min_profit_factor=1.4,
             max_avg_drawdown=0.04,
             min_avg_pnl=350.0,
+            min_avg_r_multiple=0.15,
+            min_entropy=0.03,
             max_win_rate_std=0.06,
             max_pnl_std=300.0,
             min_trade_count_avg=5.5,
@@ -996,7 +1461,6 @@ def get_adaptive_config() -> CurriculumStageConfig:
         include_world_model_features=True,
         include_expert_signals=True,
         allow_demotion=True,
-        # Full data with recent preference
         data_difficulty=DataDifficulty(
             volatility_percentile_range=(0.0, 1.0),
             min_trend_clarity=0.0,
@@ -1017,6 +1481,55 @@ def get_adaptive_config() -> CurriculumStageConfig:
             reward_blend_episodes=30,
             checkpoint_on_transition=True,
             transition_cooldown_episodes=100,
+        ),
+        skill_requirements=SkillRequirements(
+            required_skills={
+                TradingSkill.ENTRY_TIMING: 0.65,
+                TradingSkill.EXIT_QUALITY: 0.65,
+                TradingSkill.DRAWDOWN_CONTROL: 0.75,
+                TradingSkill.PATIENCE: 0.70,
+                TradingSkill.TREND_ALIGNMENT: 0.60,
+                TradingSkill.RISK_REWARD: 0.65,
+                TradingSkill.CONSISTENCY: 0.65,
+                TradingSkill.ADAPTATION: 0.55,
+            },
+            min_confidence=0.6,
+            require_all_skills=False,
+            weighted_threshold=0.65,
+        ),
+        entropy_targets=EntropyTargets(
+            min_entropy=0.05,
+            max_entropy=0.25,
+            low_entropy_penalty_scale=0.05,
+            high_entropy_penalty_scale=0.08,
+            use_in_promotion=True,
+        ),
+        composite_scoring=CompositeScoringConfig(
+            enabled=True,
+            promotion_threshold=0.75,
+            demotion_threshold=0.40,
+        ),
+        adaptive_thresholds=AdaptiveThresholdConfig(
+            enabled=True,
+            plateau_episodes_threshold=100,
+            max_relaxation=0.06,
+        ),
+        recovery_protocol=RecoveryProtocolConfig(
+            enabled=True,
+            trigger_after_demotions=2,
+            recovery_duration_episodes=300,
+        ),
+        mixed_stage_sampling=MixedStageSamplingConfig(
+            enabled=True,
+            current_stage_weight=0.68,
+            recent_stages_weight=0.24,
+            foundation_weight=0.08,
+        ),
+        review_session=ReviewSessionConfig(
+            enabled=True,
+            review_frequency=350,
+            review_duration=60,
+            review_depth=3,
         ),
     )
 
@@ -1115,6 +1628,8 @@ def get_specialist_config() -> CurriculumStageConfig:
             min_profit_factor=1.5,
             max_avg_drawdown=0.035,
             min_avg_pnl=450.0,
+            min_avg_r_multiple=0.18,
+            min_entropy=0.02,
             max_win_rate_std=0.05,
             max_pnl_std=250.0,
             min_trade_count_avg=5.5,
@@ -1127,7 +1642,6 @@ def get_specialist_config() -> CurriculumStageConfig:
         include_world_model_features=True,
         include_expert_signals=True,
         allow_demotion=True,
-        # Full data with strong recent focus
         data_difficulty=DataDifficulty(
             volatility_percentile_range=(0.0, 1.0),
             min_trend_clarity=0.0,
@@ -1138,7 +1652,7 @@ def get_specialist_config() -> CurriculumStageConfig:
             exclude_high_impact_news=False,
             exclude_market_open_close=False,
             prefer_recent_data=True,
-            recent_data_weight=1.5,  # Strong preference for recent data
+            recent_data_weight=1.5,
         ),
         transition=TransitionSettings(
             lr_warmup_enabled=True,
@@ -1148,6 +1662,56 @@ def get_specialist_config() -> CurriculumStageConfig:
             reward_blend_episodes=35,
             checkpoint_on_transition=True,
             transition_cooldown_episodes=150,
+        ),
+        skill_requirements=SkillRequirements(
+            required_skills={
+                TradingSkill.ENTRY_TIMING: 0.70,
+                TradingSkill.EXIT_QUALITY: 0.70,
+                TradingSkill.DRAWDOWN_CONTROL: 0.80,
+                TradingSkill.PATIENCE: 0.75,
+                TradingSkill.TREND_ALIGNMENT: 0.65,
+                TradingSkill.RISK_REWARD: 0.70,
+                TradingSkill.CONSISTENCY: 0.70,
+                TradingSkill.ADAPTATION: 0.60,
+                TradingSkill.LOSS_MANAGEMENT: 0.70,
+            },
+            min_confidence=0.65,
+            require_all_skills=False,
+            weighted_threshold=0.70,
+        ),
+        entropy_targets=EntropyTargets(
+            min_entropy=0.03,
+            max_entropy=0.20,
+            low_entropy_penalty_scale=0.04,
+            high_entropy_penalty_scale=0.10,
+            use_in_promotion=True,
+        ),
+        composite_scoring=CompositeScoringConfig(
+            enabled=True,
+            promotion_threshold=0.78,
+            demotion_threshold=0.42,
+        ),
+        adaptive_thresholds=AdaptiveThresholdConfig(
+            enabled=True,
+            plateau_episodes_threshold=100,
+            max_relaxation=0.05,
+        ),
+        recovery_protocol=RecoveryProtocolConfig(
+            enabled=True,
+            trigger_after_demotions=2,
+            recovery_duration_episodes=350,
+        ),
+        mixed_stage_sampling=MixedStageSamplingConfig(
+            enabled=True,
+            current_stage_weight=0.65,
+            recent_stages_weight=0.27,
+            foundation_weight=0.08,
+        ),
+        review_session=ReviewSessionConfig(
+            enabled=True,
+            review_frequency=300,
+            review_duration=70,
+            review_depth=3,
         ),
     )
 
@@ -1246,6 +1810,8 @@ def get_live_ready_config() -> CurriculumStageConfig:
             min_profit_factor=1.6,
             max_avg_drawdown=0.03,
             min_avg_pnl=550.0,
+            min_avg_r_multiple=0.20,
+            min_entropy=0.02,
             max_win_rate_std=0.04,
             max_pnl_std=200.0,
             min_trade_count_avg=5.5,
@@ -1259,7 +1825,6 @@ def get_live_ready_config() -> CurriculumStageConfig:
         include_expert_signals=True,
         allow_demotion=True,
         is_terminal=True,
-        # Live-ready: full data, maximum recent focus
         data_difficulty=DataDifficulty(
             volatility_percentile_range=(0.0, 1.0),
             min_trend_clarity=0.0,
@@ -1270,7 +1835,7 @@ def get_live_ready_config() -> CurriculumStageConfig:
             exclude_high_impact_news=False,
             exclude_market_open_close=False,
             prefer_recent_data=True,
-            recent_data_weight=2.0,  # Heavy emphasis on recent market conditions
+            recent_data_weight=2.0,
         ),
         transition=TransitionSettings(
             lr_warmup_enabled=True,
@@ -1281,8 +1846,63 @@ def get_live_ready_config() -> CurriculumStageConfig:
             checkpoint_on_transition=True,
             transition_cooldown_episodes=200,
         ),
+        skill_requirements=SkillRequirements(
+            required_skills={
+                TradingSkill.ENTRY_TIMING: 0.75,
+                TradingSkill.EXIT_QUALITY: 0.75,
+                TradingSkill.DRAWDOWN_CONTROL: 0.85,
+                TradingSkill.PATIENCE: 0.80,
+                TradingSkill.TREND_ALIGNMENT: 0.70,
+                TradingSkill.RISK_REWARD: 0.75,
+                TradingSkill.CONSISTENCY: 0.75,
+                TradingSkill.ADAPTATION: 0.65,
+                TradingSkill.LOSS_MANAGEMENT: 0.75,
+                TradingSkill.POSITION_SIZING: 0.70,
+            },
+            min_confidence=0.7,
+            require_all_skills=False,
+            weighted_threshold=0.75,
+        ),
+        entropy_targets=EntropyTargets(
+            min_entropy=0.02,
+            max_entropy=0.15,
+            low_entropy_penalty_scale=0.03,
+            high_entropy_penalty_scale=0.12,
+            use_in_promotion=False,  # Terminal stage
+        ),
+        composite_scoring=CompositeScoringConfig(
+            enabled=True,
+            promotion_threshold=0.85,  # High bar for terminal stage
+            demotion_threshold=0.45,
+        ),
+        adaptive_thresholds=AdaptiveThresholdConfig(
+            enabled=True,
+            plateau_episodes_threshold=150,
+            max_relaxation=0.04,
+        ),
+        recovery_protocol=RecoveryProtocolConfig(
+            enabled=True,
+            trigger_after_demotions=2,
+            recovery_duration_episodes=400,
+        ),
+        mixed_stage_sampling=MixedStageSamplingConfig(
+            enabled=True,
+            current_stage_weight=0.60,
+            recent_stages_weight=0.30,
+            foundation_weight=0.10,
+        ),
+        review_session=ReviewSessionConfig(
+            enabled=True,
+            review_frequency=250,
+            review_duration=80,
+            review_depth=4,
+        ),
     )
 
+
+# =============================================================================
+# Registry and Helpers
+# =============================================================================
 
 CURRICULUM_CONFIGS: Dict[CurriculumStage, Callable[[], CurriculumStageConfig]] = {
     CurriculumStage.FOUNDATION: get_foundation_config,
@@ -1335,11 +1955,12 @@ def get_previous_stage(current: CurriculumStage) -> Optional[CurriculumStage]:
 
 def validate_stage_config(cfg: CurriculumStageConfig) -> List[str]:
     """
-    Optional: call this in tests/CI to flag misconfigured thresholds.
+    Validates stage configuration for consistency.
     Returns list of human-readable issues.
     """
     issues: List[str] = []
     c = cfg.competence
+    
     if not (0.0 <= c.min_win_rate <= 1.0):
         issues.append(f"{cfg.stage.name}: min_win_rate out of [0,1]")
     if not (0.0 <= c.max_avg_drawdown <= 1.0):
@@ -1348,4 +1969,28 @@ def validate_stage_config(cfg: CurriculumStageConfig) -> List[str]:
         issues.append(f"{cfg.stage.name}: evaluation_window < MIN_EVALUATION_EPISODES ({MIN_EVALUATION_EPISODES})")
     if c.min_episodes < MIN_EVALUATION_EPISODES:
         issues.append(f"{cfg.stage.name}: min_episodes < MIN_EVALUATION_EPISODES ({MIN_EVALUATION_EPISODES})")
+    
+    # Validate entropy targets
+    e = cfg.entropy_targets
+    if e.min_entropy > e.max_entropy:
+        issues.append(f"{cfg.stage.name}: min_entropy > max_entropy")
+    
+    # Validate composite scoring weights
+    cs = cfg.composite_scoring
+    if cs.enabled:
+        weight_sum = sum(cs.weights.values())
+        if abs(weight_sum - 1.0) > 0.1:
+            issues.append(f"{cfg.stage.name}: composite scoring weights sum to {weight_sum:.2f}, expected ~1.0")
+    
+    # Validate skill requirements
+    sr = cfg.skill_requirements
+    for skill, threshold in sr.required_skills.items():
+        if not (0.0 <= threshold <= 1.0):
+            issues.append(f"{cfg.stage.name}: skill {skill.value} threshold {threshold} out of [0,1]")
+    
     return issues
+
+
+def validate_all_configs() -> Dict[CurriculumStage, List[str]]:
+    """Validate all stage configurations."""
+    return {stage: validate_stage_config(get_stage_config(stage)) for stage in CurriculumStage}

@@ -57,6 +57,7 @@ class InfoBusLiveDataConnector:
         self.account = MT5Credentials.ACCOUNT
         self.password = MT5Credentials.PASSWORD
         self.server = MT5Credentials.SERVER
+        self.terminal_path = MT5Credentials.PATH  # Path to specific MT5 terminal (e.g., FTMO)
 
         self.instruments = instruments
         self.timeframes = timeframes
@@ -187,11 +188,12 @@ class InfoBusLiveDataConnector:
     def connect(self, info_bus: Optional[InfoBus] = None) -> bool:
         """Enhanced connection with InfoBus integration and comprehensive monitoring."""
 
+        path_info = f", Path: {self.terminal_path}" if self.terminal_path else ""
         self.live_logger.info(
             format_operator_message(
                 "🔗",
                 "ATTEMPTING_MT5_CONNECTION",
-                details=f"Server: {self.server}, Account: {self.account}",
+                details=f"Server: {self.server}, Account: {self.account}{path_info}",
                 context="connection_attempt",
             )
         )
@@ -200,8 +202,13 @@ class InfoBusLiveDataConnector:
             try:
                 connection_start = time.time()
 
+                # Build initialization kwargs (include path if specified for FTMO terminal)
+                init_kwargs = {}
+                if self.terminal_path:
+                    init_kwargs["path"] = self.terminal_path
+
                 # Initialize MT5
-                if not mt5.initialize():
+                if not mt5.initialize(**init_kwargs):
                     error = mt5.last_error()
                     raise ConnectionError(f"MT5 initialization failed: {error}")
 

@@ -28,6 +28,7 @@ class ConnectionConfig:
     account: int
     password: str
     server: str
+    path: Optional[str] = None  # Path to specific MT5 terminal (e.g., FTMO terminal)
     timeout: int = 60000  # milliseconds
     max_retries: int = 10
     retry_delay: float = 5.0  # seconds
@@ -112,9 +113,10 @@ class MT5ConnectionManager:
                 self.status.last_connect_attempt = time.time()
 
                 try:
+                    path_info = f", Path: {self.config.path}" if self.config.path else ""
                     self.logger.info(
                         f"Connecting to MT5 (attempt {attempt}/{max_attempts})... "
-                        f"Account: {self.config.account}, Server: {self.config.server}"
+                        f"Account: {self.config.account}, Server: {self.config.server}{path_info}"
                     )
 
                     # Shutdown any existing connection
@@ -124,13 +126,19 @@ class MT5ConnectionManager:
                     except:
                         pass
 
+                    # Build initialization kwargs
+                    init_kwargs = {
+                        "login": self.config.account,
+                        "password": self.config.password,
+                        "server": self.config.server,
+                        "timeout": self.config.timeout,
+                    }
+                    # Add path if specified (for specific MT5 terminal like FTMO)
+                    if self.config.path:
+                        init_kwargs["path"] = self.config.path
+
                     # Initialize MT5
-                    if not mt5 or not mt5.initialize(  # type: ignore[attr-defined]
-                        login=self.config.account,
-                        password=self.config.password,
-                        server=self.config.server,
-                        timeout=self.config.timeout
-                    ):
+                    if not mt5 or not mt5.initialize(**init_kwargs):  # type: ignore[attr-defined]
                         error = mt5.last_error() if mt5 else (1, "MT5 not available")  # type: ignore[attr-defined]
                         error_msg = f"Initialize failed: {error}"
                         self.logger.warning(error_msg)

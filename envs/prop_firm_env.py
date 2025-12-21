@@ -1155,8 +1155,11 @@ class PropFirmTradingEnv(gym.Env):
         pos = self.position
         initial_risk = float(pos.initial_risk_eur)
         entry_fee = float(pos.entry_fee_eur)
-        mae = float(pos.lowest_pnl)
-        mfe = float(pos.peak_pnl)
+        # MAE: Maximum Adverse Excursion - always stored as positive (absolute worst drawdown)
+        # lowest_pnl is negative when position went against us
+        mae = abs(float(pos.lowest_pnl))
+        # MFE: Maximum Favorable Excursion - best unrealized profit (always positive or zero)
+        mfe = max(0.0, float(pos.peak_pnl))
         bars_held = self.episode_bars - pos.entry_bar
         entry_quality = float(pos.entry_quality)
 

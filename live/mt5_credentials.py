@@ -17,7 +17,11 @@ class MT5Credentials:
     ACCOUNT: Optional[int] = _cfg.mt5.account
     PASSWORD: Optional[str] = _cfg.mt5.password
     SERVER: str = _cfg.mt5.server
+    PATH: Optional[str] = getattr(_cfg.mt5, 'path', None)  # Path to specific MT5 terminal (e.g., FTMO)
 
     @classmethod
     def as_dict(cls) -> Dict[str, Any]:
-        return {"login": cls.ACCOUNT, "password": cls.PASSWORD, "server": cls.SERVER}
+        result = {"login": cls.ACCOUNT, "password": cls.PASSWORD, "server": cls.SERVER}
+        if cls.PATH:
+            result["path"] = cls.PATH
+        return result

@@ -27,9 +27,11 @@ rl:
   eval_freq: 0
 
 mt5:
-  account: 100194880
-  password: "*1RsAfYp"
-  server: "MetaQuotes-Demo"
+  account: 1512227067
+  password: "@j853U*BunDEl1"
+  server: "FTMO-Demo"
+  # Path to FTMO MT5 terminal executable (required when multiple MT5 installations exist)
+  path: "C:\\Program Files\\FTMO Global Markets MT5 Terminal\\terminal64.exe"
 
 risk_overrides:
   emergency_drawdown_trigger: 0.09

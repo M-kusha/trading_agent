@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>PropFirm PPO Training Dashboard</title>
+  <title>PropFirm PPO Training Dashboard v2.0</title>
 
   <!-- Fonts -->
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -20,6 +20,8 @@
             'slide-up': 'slideUp 0.55s cubic-bezier(0.22, 1, 0.36, 1)',
             'float': 'float 8s ease-in-out infinite',
             'glow': 'glow 2.4s ease-in-out infinite alternate',
+            'shimmer': 'shimmer 2s infinite',
+            'pulse-slow': 'pulse 3s ease-in-out infinite',
           },
           keyframes: {
             fadeIn: { '0%': { opacity: '0' }, '100%': { opacity: '1' } },
@@ -28,6 +30,10 @@
             glow: {
               '0%': { boxShadow: '0 0 18px rgba(99,102,241,0.25)' },
               '100%': { boxShadow: '0 0 60px rgba(236,72,153,0.18), 0 0 38px rgba(168,85,247,0.22)' },
+            },
+            shimmer: {
+              '0%': { transform: 'translateX(-100%)' },
+              '100%': { transform: 'translateX(100%)' },
             },
           },
         },
@@ -63,7 +69,6 @@
       overflow-x: hidden;
     }
 
-    /* subtle grid overlay */
     body::before{
       content:"";
       position: fixed;
@@ -77,7 +82,6 @@
       mask-image: radial-gradient(circle at 30% 20%, black 0%, transparent 60%);
     }
 
-    /* subtle noise */
     body::after{
       content:"";
       position: fixed;
@@ -89,7 +93,6 @@
       mix-blend-mode: overlay;
     }
 
-    /* Scrollbar */
     ::-webkit-scrollbar { width: 10px; height: 10px; }
     ::-webkit-scrollbar-track { background: rgba(2, 6, 23, 0.6); border-radius: 999px; }
     ::-webkit-scrollbar-thumb {
@@ -101,7 +104,6 @@
       background: linear-gradient(180deg, rgba(99,102,241,0.75), rgba(236,72,153,0.55));
     }
 
-    /* Glass */
     .glass{
       background: linear-gradient(135deg,
         rgba(15,23,42,0.72) 0%,
@@ -140,7 +142,6 @@
     .status-bad { color: #fb7185; }
     .status-neutral { color: #93a4bf; }
 
-    /* no "balls": status is a clean corner tag */
     .status-tag{
       display: inline-flex;
       align-items: center;
@@ -159,7 +160,6 @@
     .tag-ok   { color: rgba(251,191,36,0.95); border-color: rgba(251,191,36,0.22); background: rgba(251,191,36,0.10); }
     .tag-bad  { color: rgba(251,113,133,0.95); border-color: rgba(251,113,133,0.22); background: rgba(251,113,133,0.10); }
 
-    /* Live */
     .live-dot{
       width: 10px; height: 10px; border-radius: 999px;
       background: #34d399;
@@ -172,7 +172,6 @@
       animation: none;
     }
 
-    /* Tooltip */
     .tooltip{ position: relative; display: inline-flex; width: 100%; }
     .tooltip-content{
       position: absolute;
@@ -199,37 +198,6 @@
       transform: translateX(-50%) translateY(0px);
     }
 
-    /* Tabs */
-    .tab-shell{
-      background: rgba(2,6,23,0.55);
-      border: 1px solid rgba(255,255,255,0.08);
-      border-radius: 999px;
-      padding: 6px;
-      display: inline-flex;
-      gap: 6px;
-      box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
-    }
-    .tab-button{
-      padding: 10px 14px;
-      font-weight: 800;
-      border-radius: 999px;
-      transition: all 0.18s ease;
-      border: 1px solid transparent;
-      color: rgba(226,232,240,0.80);
-      letter-spacing: 0.01em;
-    }
-    .tab-button.active{
-      background: linear-gradient(135deg, rgba(99,102,241,0.22), rgba(168,85,247,0.18), rgba(236,72,153,0.14));
-      border-color: rgba(99,102,241,0.32);
-      color: #c7d2fe;
-      box-shadow: 0 10px 25px -14px rgba(99,102,241,0.55);
-    }
-    .tab-button:not(.active):hover{
-      background: rgba(99,102,241,0.10);
-      color: rgba(226,232,240,0.92);
-    }
-
-    /* Progress */
     .progress-bar{
       height: 10px;
       border-radius: 999px;
@@ -245,177 +213,6 @@
       transition: width 0.45s cubic-bezier(0.4, 0, 0.2, 1);
     }
 
-    /* KPI grid: equal-size tiles */
-    .kpi-grid{
-      display: grid;
-      grid-template-columns: repeat(1, minmax(0, 1fr));
-      gap: 16px;
-      align-items: stretch;
-    }
-    @media (min-width: 768px){
-      .kpi-grid{ grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    }
-    @media (min-width: 1280px){
-      .kpi-grid{ grid-template-columns: repeat(3, minmax(0, 1fr)); }
-    }
-    .kpi-tile{
-      height: 180px; /* enforce same height */
-      display: flex;
-      flex-direction: column;
-      justify-content: space-between;
-      gap: 10px;
-      padding: 20px;
-      border-radius: 22px;
-    }
-    .kpi-label{
-      font-size: 11px;
-      letter-spacing: 0.16em;
-      text-transform: uppercase;
-      color: rgba(148,163,184,0.70);
-      font-weight: 900;
-    }
-    .kpi-sub{
-      font-size: 12px;
-      color: rgba(148,163,184,0.55);
-      display: -webkit-box;
-      -webkit-line-clamp: 2;
-      line-clamp: 2;
-      -webkit-box-orient: vertical;
-      overflow: hidden;
-      min-height: 32px; /* equalize */
-    }
-    .kpi-value{
-      font-size: 36px;
-      line-height: 1.02;
-      letter-spacing: -0.03em;
-      font-weight: 950;
-    }
-    .kpi-accent{
-      position:absolute;
-      inset: 0;
-      border-radius: 22px;
-      pointer-events: none;
-      opacity: 0.9;
-      mask-image: radial-gradient(circle at 10% 10%, black 0%, transparent 55%);
-    }
-
-    /* Sparkline */
-    .sparkline{ display:flex; align-items:flex-end; gap:2px; height: 28px; }
-    .sparkline-bar{ flex:1; min-width:3px; border-radius: 999px; transition: height 0.25s ease; }
-
-    /* Health ring */
-    .ring{
-      width: 108px; height: 108px; border-radius: 999px;
-      display:flex; align-items:center; justify-content:center;
-      box-shadow: 0 18px 55px -22px rgba(0,0,0,0.75), inset 0 1px 0 rgba(255,255,255,0.06);
-      border: 1px solid rgba(255,255,255,0.08);
-      position: relative;
-      overflow: hidden;
-    }
-    .ring-inner{
-      width: 78px; height: 78px; border-radius: 999px;
-      background: rgba(2,6,23,0.78);
-      border: 1px solid rgba(255,255,255,0.06);
-      display:flex; flex-direction:column; align-items:center; justify-content:center;
-      gap: 2px;
-    }
-
-    /* Learning cards (no bars, no "higher bar" text) */
-    .diag-grid{
-      display:grid;
-      grid-template-columns: repeat(1, minmax(0, 1fr));
-      gap: 16px;
-    }
-    @media (min-width: 768px){
-      .diag-grid{ grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    }
-    @media (min-width: 1280px){
-      .diag-grid{ grid-template-columns: repeat(3, minmax(0, 1fr)); }
-    }
-    .diag-card{
-      height: 180px;
-      padding: 20px;
-      border-radius: 22px;
-      display:flex;
-      flex-direction: column;
-      justify-content: space-between;
-      gap: 10px;
-    }
-    .diag-ideal{
-      font-size: 12px;
-      color: rgba(148,163,184,0.60);
-      white-space: nowrap;
-      overflow:hidden;
-      text-overflow: ellipsis;
-    }
-
-    /* Side panels for Overview/Learning tab - equal height */
-    .side-panel {
-      min-height: 200px;
-    }
-    .side-panel-runtime {
-      min-height: 280px;
-    }
-
-    /* Small stat cards (Episodes, FPS, Trades, Updates) - uniform height */
-    .stat-card {
-      height: 80px;
-      display: flex;
-      flex-direction: column;
-      justify-content: center;
-    }
-
-    /* Chart section cards - uniform height */
-    .chart-card {
-      min-height: 260px;
-    }
-
-    /* Exit Reasons: clean list rows */
-    .exit-row{
-      display:grid;
-      grid-template-columns: 1.4fr 0.9fr 70px;
-      gap: 12px;
-      align-items:center;
-      padding: 12px 14px;
-      border-radius: 16px;
-      border: 1px solid rgba(255,255,255,0.06);
-      background: rgba(2,6,23,0.38);
-    }
-    .exit-row:hover{
-      border-color: rgba(99,102,241,0.18);
-      background: rgba(2,6,23,0.48);
-    }
-    @media (max-width: 900px){
-      .exit-row{ grid-template-columns: 1fr; gap: 8px; }
-    }
-    .mini-bar{
-      height: 10px;
-      border-radius: 999px;
-      background: rgba(2,6,23,0.60);
-      border: 1px solid rgba(255,255,255,0.06);
-      overflow:hidden;
-    }
-    .mini-fill{
-      height: 100%;
-      border-radius: 999px;
-      transition: width 0.35s ease;
-      background: linear-gradient(90deg, rgba(99,102,241,0.85), rgba(236,72,153,0.55));
-    }
-
-    /* Exit summary segments */
-    .exit-stack{
-      height: 14px;
-      border-radius: 999px;
-      overflow: hidden;
-      border: 1px solid rgba(255,255,255,0.06);
-      background: rgba(2,6,23,0.55);
-      display:flex;
-    }
-    .seg-good{ background: linear-gradient(90deg, rgba(52,211,153,0.85), rgba(52,211,153,0.45)); }
-    .seg-neutral{ background: rgba(148,163,184,0.22); }
-    .seg-bad{ background: linear-gradient(90deg, rgba(251,113,133,0.75), rgba(251,113,133,0.35)); }
-
-    /* Curriculum stage progression */
     .stage-track{
       display: flex;
       gap: 4px;
@@ -462,42 +259,75 @@
       background: linear-gradient(90deg, rgba(52,211,153,0.7), rgba(34,211,238,0.5));
     }
 
-    /* Criteria checklist */
-    .criteria-row{
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 10px 14px;
-      border-radius: 12px;
+    .skill-bar{
+      height: 8px;
+      border-radius: 999px;
+      background: rgba(2,6,23,0.6);
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,0.06);
+    }
+    .skill-fill{
+      height: 100%;
+      border-radius: 999px;
+      transition: width 0.4s ease;
+    }
+
+    .exit-stack{
+      height: 14px;
+      border-radius: 999px;
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,0.06);
+      background: rgba(2,6,23,0.55);
+      display:flex;
+    }
+    .seg-good{ background: linear-gradient(90deg, rgba(52,211,153,0.85), rgba(52,211,153,0.45)); }
+    .seg-neutral{ background: rgba(148,163,184,0.22); }
+    .seg-bad{ background: linear-gradient(90deg, rgba(251,113,133,0.75), rgba(251,113,133,0.35)); }
+
+    .exit-row{
+      display:grid;
+      grid-template-columns: 1.4fr 0.9fr 70px;
+      gap: 12px;
+      align-items:center;
+      padding: 12px 14px;
+      border-radius: 16px;
       border: 1px solid rgba(255,255,255,0.06);
       background: rgba(2,6,23,0.38);
-      margin-bottom: 8px;
     }
-    .criteria-row.met{ border-color: rgba(52,211,153,0.25); background: rgba(52,211,153,0.08); }
-    .criteria-row.not-met{ border-color: rgba(251,113,133,0.2); background: rgba(251,113,133,0.05); }
-
-    /* Transition indicator */
-    .transition-badge{
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      padding: 6px 12px;
+    .exit-row:hover{
+      border-color: rgba(99,102,241,0.18);
+      background: rgba(2,6,23,0.48);
+    }
+    .mini-bar{
+      height: 10px;
       border-radius: 999px;
-      font-size: 11px;
-      font-weight: 800;
-      text-transform: uppercase;
-      letter-spacing: 0.1em;
+      background: rgba(2,6,23,0.60);
+      border: 1px solid rgba(255,255,255,0.06);
+      overflow:hidden;
     }
-    .transition-badge.active{
-      background: linear-gradient(135deg, rgba(251,191,36,0.25), rgba(236,72,153,0.15));
-      border: 1px solid rgba(251,191,36,0.35);
-      color: rgba(251,191,36,0.95);
-      animation: pulse 2s infinite;
+    .mini-fill{
+      height: 100%;
+      border-radius: 999px;
+      transition: width 0.35s ease;
+      background: linear-gradient(90deg, rgba(99,102,241,0.85), rgba(236,72,153,0.55));
     }
-    .transition-badge.stable{
-      background: rgba(52,211,153,0.12);
-      border: 1px solid rgba(52,211,153,0.25);
-      color: rgba(52,211,153,0.9);
+
+    .recommendation-card{
+      background: linear-gradient(135deg, rgba(251,191,36,0.08), rgba(236,72,153,0.05));
+      border: 1px solid rgba(251,191,36,0.2);
+      border-radius: 16px;
+      padding: 16px;
+    }
+
+    .recovery-active{
+      background: linear-gradient(135deg, rgba(251,113,133,0.12), rgba(236,72,153,0.08));
+      border: 1px solid rgba(251,113,133,0.3);
+      animation: pulse-slow 3s ease-in-out infinite;
+    }
+
+    .review-active{
+      background: linear-gradient(135deg, rgba(34,211,238,0.12), rgba(99,102,241,0.08));
+      border: 1px solid rgba(34,211,238,0.3);
     }
 
     @media (prefers-reduced-motion: reduce){
@@ -510,10 +340,10 @@
   <div id="root"></div>
 
   <script type="text/babel">
-    const { useState, useEffect } = React;
+    const { useState, useEffect, useMemo } = React;
 
     // ─────────────────────────────────────────────────────────────────────────────
-    // UTIL
+    // UTILITIES
     // ─────────────────────────────────────────────────────────────────────────────
     const fmt = {
       num: (x, digits = 2) => (x == null || isNaN(x)) ? "—" : Number(x).toFixed(digits),
@@ -575,33 +405,6 @@
       return <span className={tagClass(status)}>{text}</span>;
     }
 
-    function Sparkline({ data, status = "good", height = 28 }) {
-      if (!data || data.length === 0) return null;
-      const slice = data.slice(-30).map(v => (typeof v === "number" ? v : 0));
-      const max = Math.max(...slice.map(v => Math.abs(v)), 0.001);
-      const colors = { good: "#34d399", ok: "#fbbf24", bad: "#fb7185" };
-      const color = colors[status] || "#a5b4fc";
-      return (
-        <div className="sparkline" style={{ height }}>
-          {slice.map((val, i) => {
-            const h = Math.max(5, (Math.abs(val) / max) * height);
-            const isNeg = val < 0;
-            return (
-              <div
-                key={i}
-                className="sparkline-bar"
-                style={{
-                  height: h,
-                  backgroundColor: isNeg ? "#fb7185" : color,
-                  opacity: 0.35 + (i / slice.length) * 0.55,
-                }}
-              />
-            );
-          })}
-        </div>
-      );
-    }
-
     function SectionHeader({ title, subtitle, icon }) {
       return (
         <div className="flex items-start gap-3 mb-5">
@@ -617,8 +420,9 @@
       );
     }
 
-    function ProgressBar({ value, max = 100, label, showPct = true }) {
+    function ProgressBar({ value, max = 100, label, showPct = true, color = null }) {
       const pct = max > 0 ? (value / max) * 100 : 0;
+      const fillStyle = color ? { background: color } : {};
       return (
         <div className="w-full">
           {label && (
@@ -628,111 +432,491 @@
             </div>
           )}
           <div className="progress-bar">
-            <div className="progress-fill" style={{ width: `${Math.min(pct, 100)}%` }} />
+            <div className="progress-fill" style={{ width: `${Math.min(pct, 100)}%`, ...fillStyle }} />
           </div>
         </div>
       );
     }
 
-    function scoreFromStatus(s) {
-      if (s === "good") return 1.0;
-      if (s === "ok") return 0.65;
-      if (s === "bad") return 0.25;
-      return 0.5;
+    function Sparkline({ data, status = "good", height = 28 }) {
+      if (!data || data.length === 0) return null;
+      const slice = data.slice(-30).map(v => (typeof v === "number" ? v : 0));
+      const max = Math.max(...slice.map(v => Math.abs(v)), 0.001);
+      const colors = { good: "#34d399", ok: "#fbbf24", bad: "#fb7185" };
+      const color = colors[status] || "#a5b4fc";
+      return (
+        <div className="flex items-end gap-0.5" style={{ height }}>
+          {slice.map((val, i) => {
+            const h = Math.max(5, (Math.abs(val) / max) * height);
+            const isNeg = val < 0;
+            return (
+              <div
+                key={i}
+                className="flex-1 min-w-0.5 rounded-full"
+                style={{
+                  height: h,
+                  backgroundColor: isNeg ? "#fb7185" : color,
+                  opacity: 0.35 + (i / slice.length) * 0.55,
+                }}
+              />
+            );
+          })}
+        </div>
+      );
     }
 
-    function HealthRing({ title, statuses }) {
-      const avg = (statuses && statuses.length)
-        ? statuses.map(scoreFromStatus).reduce((a,b)=>a+b,0) / statuses.length
-        : 0.5;
-      const pct = Math.round(avg * 100);
-      const cut = 360 * (1 - avg);
+    // Curriculum Stage Names and Icons
+    const STAGE_NAMES = [
+      "Foundation", "Discipline", "Market Structure", "Economic Logic",
+      "Professional", "Adaptive", "Specialist", "Live Ready"
+    ];
+    const STAGE_ICONS = ["🌱", "📏", "🏗️", "💡", "💼", "🔄", "🎯", "🚀"];
 
-      const ringBg =
-        `radial-gradient(circle at 50% 50%, rgba(2,6,23,0.85) 58%, transparent 59%),
-         conic-gradient(from 220deg,
-           rgba(99,102,241,0.95) 0deg,
-           rgba(168,85,247,0.90) ${Math.max(0, 360 - cut)}deg,
-           rgba(255,255,255,0.08) ${Math.max(0, 360 - cut)}deg,
-           rgba(255,255,255,0.08) 360deg)`;
+    // Skill Names and Descriptions
+    const SKILL_META = {
+      entry_timing: { label: "Entry Timing", icon: "🎯", desc: "Quality of trade entry points" },
+      exit_quality: { label: "Exit Quality", icon: "🚪", desc: "Ability to exit at optimal points" },
+      drawdown_control: { label: "DD Control", icon: "📉", desc: "Managing maximum drawdown" },
+      position_sizing: { label: "Position Size", icon: "📊", desc: "Appropriate position sizing" },
+      patience: { label: "Patience", icon: "⏳", desc: "Avoiding overtrading" },
+      trend_alignment: { label: "Trend Align", icon: "📈", desc: "Trading with the trend" },
+      risk_reward: { label: "Risk/Reward", icon: "⚖️", desc: "R-multiple per trade" },
+      consistency: { label: "Consistency", icon: "🔄", desc: "Stable win rate across episodes" },
+      loss_management: { label: "Loss Mgmt", icon: "🛡️", desc: "Handling consecutive losses" },
+      adaptation: { label: "Adaptation", icon: "🧠", desc: "Adjusting to market conditions" },
+    };
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // CHART COMPONENT
+    // ─────────────────────────────────────────────────────────────────────────────
+    function smoothPath(points) {
+      if (points.length < 3) return points.map((p,i)=>`${i===0?'M':'L'} ${p.x} ${p.y}`).join(" ");
+      const d = [];
+      d.push(`M ${points[0].x} ${points[0].y}`);
+      for (let i=0;i<points.length-1;i++){
+        const p0 = points[i-1] || points[i];
+        const p1 = points[i];
+        const p2 = points[i+1];
+        const p3 = points[i+2] || p2;
+        const cp1x = p1.x + (p2.x - p0.x) / 6;
+        const cp1y = p1.y + (p2.y - p0.y) / 6;
+        const cp2x = p2.x - (p3.x - p1.x) / 6;
+        const cp2y = p2.y - (p3.y - p1.y) / 6;
+        d.push(`C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${p2.x} ${p2.y}`);
+      }
+      return d.join(" ");
+    }
+
+    function LargeChart({ data, baseline = 0, colorPositive = "#34d399", colorNegative = "#fb7185", invertColors = false }) {
+      if (!data || data.length === 0) return <div className="h-full flex items-center justify-center text-slate-500">No data</div>;
+
+      const values = data.map(v => typeof v === "number" ? v : 0);
+      const min = Math.min(...values, baseline);
+      const max = Math.max(...values, baseline);
+      const range = max - min || 1;
+
+      const points = values.map((v,i)=>({
+        x: (i / (values.length - 1 || 1)) * 100,
+        y: 100 - ((v - min) / range) * 100,
+      }));
+      const baselineY = 100 - ((baseline - min) / range) * 100;
+
+      const pathD = smoothPath(points);
+      const areaD = `${pathD} L ${points[points.length-1]?.x || 0} 100 L 0 100 Z`;
+
+      const last = values[values.length-1] || 0;
+      const isPos = invertColors ? last <= baseline : last >= baseline;
+      const lineColor = isPos ? colorPositive : colorNegative;
 
       return (
-        <div className="glass-card rounded-3xl p-6 flex items-center justify-between gap-6 animate-slide-up">
-          <div>
-            <div className="text-xs uppercase tracking-[0.16em] text-slate-500 font-black">Health</div>
-            <div className="text-xl font-black text-white mt-2">{title}</div>
-            <div className="text-sm text-slate-500 mt-2">
-              Composite score derived from key statuses (no theatrics).
-            </div>
-          </div>
+        <div className="h-full w-full relative">
+          <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="w-full h-full">
+            <defs>
+              <linearGradient id={`chartFill-${lineColor.replace('#','')}`} x1="0" y1="0" x2="1" y2="0">
+                <stop offset="0%" stopColor={lineColor} stopOpacity="0.20" />
+                <stop offset="55%" stopColor={lineColor} stopOpacity="0.10" />
+                <stop offset="100%" stopColor={lineColor} stopOpacity="0.18" />
+              </linearGradient>
+            </defs>
 
-          <div className="ring" style={{ background: ringBg }}>
-            <div className="ring-inner">
-              <div className="mono text-2xl font-black text-white">{pct}</div>
-              <div className="text-[11px] uppercase tracking-[0.18em] text-slate-500 font-black">Score</div>
-            </div>
+            <line x1="0" y1={baselineY} x2="100" y2={baselineY} stroke="rgba(255,255,255,0.10)" strokeWidth="0.5" />
+            <line x1="0" y1="25" x2="100" y2="25" stroke="rgba(255,255,255,0.06)" strokeWidth="0.35" />
+            <line x1="0" y1="75" x2="100" y2="75" stroke="rgba(255,255,255,0.06)" strokeWidth="0.35" />
+
+            <path d={areaD} fill={`url(#chartFill-${lineColor.replace('#','')})`} />
+            <path d={pathD} fill="none" stroke={lineColor} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+          </svg>
+
+          <div className={"absolute right-2 top-2 mono text-sm font-black " + (isPos ? "text-emerald-300" : "text-rose-300")}>
+            {fmt.num(last, 2)}
           </div>
         </div>
       );
     }
 
-    // KPI tile (equal height)
-    function KPI({ label, value, status, tooltip, sub = "", spark = null, accent = "" }) {
-      const accentStyle = accent || "linear-gradient(135deg, rgba(99,102,241,0.18), rgba(236,72,153,0.10), transparent 60%)";
-      return (
-        <Tooltip content={tooltip}>
-          <div className="glass-card kpi-tile relative animate-slide-up">
-            <div className="kpi-accent" style={{ background: accentStyle }}></div>
-
-            <div className="flex items-start justify-between gap-3 relative">
-              <div className="min-w-0">
-                <div className="kpi-label truncate">{label}</div>
-                <div className="kpi-sub mt-2">{sub}</div>
-              </div>
-              <StatusTag status={status} />
-            </div>
-
-            <div className={"mono kpi-value relative " + statusClass(status)}>
-              {value}
-            </div>
-
-            <div className="relative">
-              {spark}
-            </div>
+    // ─────────────────────────────────────────────────────────────────────────────
+    // SKILL ASSESSMENT COMPONENT
+    // ─────────────────────────────────────────────────────────────────────────────
+    function SkillAssessmentPanel({ skillAssessment }) {
+      if (!skillAssessment || !skillAssessment.scores) {
+        return (
+          <div className="text-center py-8 text-slate-500">
+            <div className="text-3xl mb-2">🎯</div>
+            <div>Skill assessment data not available yet</div>
           </div>
-        </Tooltip>
+        );
+      }
+
+      const { scores, confidence, weakest_skills, strongest_skills } = skillAssessment;
+      
+      const skillEntries = Object.entries(scores).map(([key, value]) => ({
+        key,
+        score: value || 0,
+        confidence: confidence?.[key] || 0,
+        meta: SKILL_META[key] || { label: key, icon: "📊", desc: "Trading skill" },
+        isWeak: weakest_skills?.includes(key),
+        isStrong: strongest_skills?.includes(key),
+      })).sort((a, b) => b.score - a.score);
+
+      return (
+        <div className="space-y-3">
+          {skillEntries.map(skill => {
+            const pct = Math.min(skill.score * 100, 100);
+            const confPct = Math.min(skill.confidence * 100, 100);
+            const color = skill.isWeak ? "#fb7185" : skill.isStrong ? "#34d399" : "#a5b4fc";
+            
+            return (
+              <Tooltip key={skill.key} content={
+                <div>
+                  <div className="font-bold text-white">{skill.meta.label}</div>
+                  <div className="text-slate-300 text-sm">{skill.meta.desc}</div>
+                  <div className="text-slate-400 text-xs mt-1">
+                    Score: {fmt.pct(pct, 1)} | Confidence: {fmt.pct(confPct, 0)}
+                  </div>
+                </div>
+              }>
+                <div className="flex items-center gap-3">
+                  <div className="w-6 text-center">{skill.meta.icon}</div>
+                  <div className="w-20 text-xs text-slate-400 truncate">{skill.meta.label}</div>
+                  <div className="flex-1">
+                    <div className="skill-bar">
+                      <div 
+                        className="skill-fill" 
+                        style={{ width: `${pct}%`, background: color }}
+                      />
+                    </div>
+                  </div>
+                  <div className={`mono text-xs font-bold w-12 text-right ${skill.isWeak ? 'text-rose-400' : skill.isStrong ? 'text-emerald-400' : 'text-slate-300'}`}>
+                    {fmt.pct(pct, 0)}
+                  </div>
+                  {skill.isWeak && <span className="text-xs">⚠️</span>}
+                  {skill.isStrong && <span className="text-xs">⭐</span>}
+                </div>
+              </Tooltip>
+            );
+          })}
+        </div>
       );
     }
 
-    // Learning diagnostic card (equal height, clean)
-    function DiagCard({ label, value, status, ideal, tooltip, accent = "" }) {
-      const accentStyle = accent || "linear-gradient(135deg, rgba(34,211,238,0.14), rgba(99,102,241,0.12), transparent 60%)";
+    // ─────────────────────────────────────────────────────────────────────────────
+    // COMPOSITE SCORE COMPONENT
+    // ─────────────────────────────────────────────────────────────────────────────
+    function CompositeScorePanel({ compositeScore }) {
+      if (!compositeScore) {
+        return (
+          <div className="text-center py-6 text-slate-500">
+            <div className="text-3xl mb-2">📊</div>
+            <div>Composite score not available yet</div>
+          </div>
+        );
+      }
+
+      const { total_score, meets_hard_floors, promotion_ready, components } = compositeScore;
+      const totalPct = (total_score || 0) * 100;
+      
+      const scoreColor = totalPct >= 80 ? "#34d399" : totalPct >= 60 ? "#fbbf24" : "#fb7185";
+
       return (
-        <Tooltip content={tooltip}>
-          <div className="glass-card diag-card relative animate-slide-up">
-            <div className="kpi-accent" style={{ background: accentStyle, borderRadius: "22px" }}></div>
-
-            <div className="flex items-start justify-between gap-3 relative">
-              <div className="min-w-0">
-                <div className="kpi-label truncate">{label}</div>
-                <div className="diag-ideal mt-2">Ideal: <span className="mono text-slate-400 font-semibold">{ideal}</span></div>
+        <div>
+          {/* Main Score */}
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <div className="text-xs uppercase tracking-wider text-slate-500 font-bold">Composite Score</div>
+              <div className="text-sm text-slate-400 mt-1">
+                {promotion_ready ? "✅ Ready to promote" : meets_hard_floors ? "⏳ Building competence" : "❌ Hard floors not met"}
               </div>
-              <StatusTag status={status} />
             </div>
-
-            <div className={"mono text-4xl font-black tracking-tight relative " + statusClass(status)}>
-              {value}
-            </div>
-
-            <div className="text-xs text-slate-600 relative">
-              Live PPO diagnostics (compact, readable, no clutter).
+            <div className="text-right">
+              <div className="mono text-4xl font-black" style={{ color: scoreColor }}>
+                {fmt.pct(totalPct, 1)}
+              </div>
             </div>
           </div>
-        </Tooltip>
+
+          {/* Hard Floors Status */}
+          <div className={`rounded-xl p-3 mb-4 ${meets_hard_floors ? 'bg-emerald-500/10 border border-emerald-500/20' : 'bg-rose-500/10 border border-rose-500/20'}`}>
+            <div className="flex items-center gap-2">
+              <span className="text-lg">{meets_hard_floors ? "✓" : "✗"}</span>
+              <span className={`text-sm font-bold ${meets_hard_floors ? 'text-emerald-400' : 'text-rose-400'}`}>
+                Hard Floors {meets_hard_floors ? "Passed" : "Failed"}
+              </span>
+            </div>
+            <div className="text-xs text-slate-400 mt-1">
+              Win rate ≥30%, Max DD ≤25%, DD breach rate ≤40%
+            </div>
+          </div>
+
+          {/* Component Breakdown */}
+          {components && Object.keys(components).length > 0 && (
+            <div className="space-y-2">
+              <div className="text-xs uppercase tracking-wider text-slate-500 font-bold mb-2">Components</div>
+              {Object.entries(components).map(([key, value]) => {
+                const pct = (value || 0) * 100;
+                return (
+                  <div key={key} className="flex items-center gap-2">
+                    <div className="w-28 text-xs text-slate-400 truncate">{key.replace(/_/g, ' ')}</div>
+                    <div className="flex-1">
+                      <div className="skill-bar">
+                        <div className="skill-fill" style={{ width: `${pct}%`, background: pct >= 70 ? '#34d399' : pct >= 50 ? '#fbbf24' : '#fb7185' }} />
+                      </div>
+                    </div>
+                    <div className="mono text-xs text-slate-300 w-10 text-right">{fmt.pct(pct, 0)}</div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
       );
     }
 
-    // Exit distribution: summary + rows
+    // ─────────────────────────────────────────────────────────────────────────────
+    // LEARNING VELOCITY COMPONENT
+    // ─────────────────────────────────────────────────────────────────────────────
+    function LearningVelocityPanel({ learningVelocity }) {
+      if (!learningVelocity) {
+        return (
+          <div className="text-center py-6 text-slate-500">
+            <div className="text-3xl mb-2">📈</div>
+            <div>Learning velocity data not available</div>
+          </div>
+        );
+      }
+
+      const { 
+        improvement_rate, 
+        is_plateaued, 
+        plateau_episodes, 
+        per_metric_slopes,
+        window_size 
+      } = learningVelocity;
+
+      const rateColor = improvement_rate > 0.5 ? "#34d399" : improvement_rate > 0 ? "#fbbf24" : "#fb7185";
+
+      return (
+        <div>
+          {/* Main Velocity */}
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <div className="text-xs uppercase tracking-wider text-slate-500 font-bold">Improvement Rate</div>
+              <div className="text-sm text-slate-400 mt-1">
+                Over last {window_size || 100} episodes
+              </div>
+            </div>
+            <div className="text-right">
+              <div className="mono text-3xl font-black" style={{ color: rateColor }}>
+                {improvement_rate > 0 ? "+" : ""}{fmt.pct(improvement_rate, 2)}
+              </div>
+            </div>
+          </div>
+
+          {/* Plateau Warning */}
+          {is_plateaued && (
+            <div className="rounded-xl p-3 mb-4 bg-amber-500/10 border border-amber-500/20">
+              <div className="flex items-center gap-2">
+                <span className="text-lg">⚠️</span>
+                <span className="text-sm font-bold text-amber-400">Plateau Detected</span>
+              </div>
+              <div className="text-xs text-slate-400 mt-1">
+                No significant improvement for {plateau_episodes || 0} episodes. Consider adjusting hyperparameters.
+              </div>
+            </div>
+          )}
+
+          {/* Per-Metric Slopes */}
+          {per_metric_slopes && Object.keys(per_metric_slopes).length > 0 && (
+            <div className="space-y-2">
+              <div className="text-xs uppercase tracking-wider text-slate-500 font-bold mb-2">Metric Trends</div>
+              {Object.entries(per_metric_slopes).slice(0, 6).map(([key, slope]) => {
+                const slopeVal = slope || 0;
+                const isPositive = slopeVal > 0;
+                return (
+                  <div key={key} className="flex items-center justify-between p-2 rounded-lg bg-black/20">
+                    <span className="text-xs text-slate-400">{key.replace(/_/g, ' ')}</span>
+                    <span className={`mono text-xs font-bold ${isPositive ? 'text-emerald-400' : slopeVal < 0 ? 'text-rose-400' : 'text-slate-400'}`}>
+                      {isPositive ? "↑" : slopeVal < 0 ? "↓" : "→"} {fmt.num(Math.abs(slopeVal) * 100, 2)}%
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // RECOVERY & REVIEW STATUS
+    // ─────────────────────────────────────────────────────────────────────────────
+    function RecoveryReviewPanel({ recoveryProtocol, reviewSession, demotionAnalysis }) {
+      const hasRecovery = recoveryProtocol?.is_active;
+      const hasReview = reviewSession?.is_active;
+      const hasDemotions = demotionAnalysis?.total_demotions > 0;
+
+      if (!hasRecovery && !hasReview && !hasDemotions) {
+        return (
+          <div className="text-center py-6 text-slate-500">
+            <div className="text-3xl mb-2">✨</div>
+            <div>No active protocols or demotions</div>
+            <div className="text-xs mt-1">Agent is training normally</div>
+          </div>
+        );
+      }
+
+      return (
+        <div className="space-y-4">
+          {/* Recovery Protocol */}
+          {hasRecovery && (
+            <div className="recovery-active rounded-2xl p-4">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-xl">🔧</span>
+                <span className="text-sm font-bold text-rose-300">Recovery Protocol Active</span>
+              </div>
+              <div className="grid grid-cols-2 gap-3 text-xs">
+                <div>
+                  <div className="text-slate-500">Focus Skill</div>
+                  <div className="text-white font-bold">{recoveryProtocol.focus_skill || "General"}</div>
+                </div>
+                <div>
+                  <div className="text-slate-500">Episodes Left</div>
+                  <div className="text-white font-bold">{recoveryProtocol.episodes_remaining || 0}</div>
+                </div>
+              </div>
+              {recoveryProtocol.trigger_reason && (
+                <div className="text-xs text-slate-400 mt-2">
+                  Trigger: {recoveryProtocol.trigger_reason}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Review Session */}
+          {hasReview && (
+            <div className="review-active rounded-2xl p-4">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-xl">📚</span>
+                <span className="text-sm font-bold text-cyan-300">Review Session Active</span>
+              </div>
+              <div className="grid grid-cols-2 gap-3 text-xs">
+                <div>
+                  <div className="text-slate-500">Reviewing Stage</div>
+                  <div className="text-white font-bold">{STAGE_NAMES[reviewSession.review_stage] || `Stage ${reviewSession.review_stage}`}</div>
+                </div>
+                <div>
+                  <div className="text-slate-500">Episodes Left</div>
+                  <div className="text-white font-bold">{reviewSession.episodes_remaining || 0}</div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Demotion History */}
+          {hasDemotions && (
+            <div className="rounded-2xl p-4 bg-black/20 border border-white/5">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-xl">📉</span>
+                <span className="text-sm font-bold text-slate-300">Demotion History</span>
+              </div>
+              <div className="grid grid-cols-2 gap-3 text-xs">
+                <div>
+                  <div className="text-slate-500">Total Demotions</div>
+                  <div className="text-rose-400 font-bold">{demotionAnalysis.total_demotions}</div>
+                </div>
+                <div>
+                  <div className="text-slate-500">Repeated Failures</div>
+                  <div className="text-amber-400 font-bold">{demotionAnalysis.repeated_failures || 0}</div>
+                </div>
+              </div>
+              {demotionAnalysis.common_failure_reasons?.length > 0 && (
+                <div className="mt-2">
+                  <div className="text-xs text-slate-500 mb-1">Common Issues:</div>
+                  <div className="flex flex-wrap gap-1">
+                    {demotionAnalysis.common_failure_reasons.slice(0, 3).map((reason, i) => (
+                      <span key={i} className="px-2 py-1 rounded-full bg-rose-500/10 text-rose-300 text-xs">
+                        {reason}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // RECOMMENDATIONS COMPONENT
+    // ─────────────────────────────────────────────────────────────────────────────
+    function RecommendationsPanel({ recommendations, blockers }) {
+      const hasRecs = recommendations && recommendations.length > 0;
+      const hasBlockers = blockers && blockers.length > 0;
+
+      if (!hasRecs && !hasBlockers) {
+        return null;
+      }
+
+      return (
+        <div className="space-y-4">
+          {/* Blockers */}
+          {hasBlockers && (
+            <div>
+              <div className="text-xs uppercase tracking-wider text-slate-500 font-bold mb-2">Promotion Blockers</div>
+              <div className="space-y-2">
+                {blockers.slice(0, 5).map((blocker, i) => (
+                  <div key={i} className="flex items-start gap-2 p-3 rounded-xl bg-rose-500/5 border border-rose-500/10">
+                    <span className="text-rose-400">✗</span>
+                    <span className="text-sm text-slate-300">{blocker}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Recommendations */}
+          {hasRecs && (
+            <div>
+              <div className="text-xs uppercase tracking-wider text-slate-500 font-bold mb-2">Recommendations</div>
+              <div className="space-y-2">
+                {recommendations.slice(0, 4).map((rec, i) => (
+                  <div key={i} className="recommendation-card">
+                    <div className="flex items-start gap-2">
+                      <span className="text-amber-400">💡</span>
+                      <span className="text-sm text-slate-300">{rec}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // EXIT DISTRIBUTION COMPONENT
+    // ─────────────────────────────────────────────────────────────────────────────
     function ExitDistribution({ exit_stats }) {
       const dist = exit_stats?.distribution || {};
       const entries = Object.entries(dist).sort(([,a],[,b]) => b - a);
@@ -758,18 +942,16 @@
         hard_stop: "Hard Stop",
         emergency_close: "Emergency Close",
         risk_liquidation: "Risk Liquidation",
-        episode_truncate_flatten: "Episode Truncate Flatten",
+        episode_truncate_flatten: "Episode Truncate",
         daily_limit_safety: "Daily Limit Safety",
-        "term:episode_length": "Term: Episode Length",
       };
 
       return (
         <div className="glass-card rounded-3xl p-6">
-          <div className="flex items-start justify-between gap-4">
+          <div className="flex items-start justify-between gap-4 mb-4">
             <div>
-              <div className="text-xs uppercase tracking-[0.16em] text-slate-500 font-black">Exit Distribution</div>
-              <div className="text-xl font-black text-white mt-2">Why Trades End</div>
-              
+              <div className="text-xs uppercase tracking-wider text-slate-500 font-bold">Exit Distribution</div>
+              <div className="text-lg font-black text-white mt-1">Why Trades End</div>
             </div>
             <div className="text-right">
               <div className="text-xs text-slate-600">Total</div>
@@ -777,41 +959,33 @@
             </div>
           </div>
 
-          <div className="mt-5">
-            <div className="exit-stack" title="Good / Neutral / Bad">
-              <div className="seg-good" style={{ width: `${Math.max(0, goodPct)}%` }}></div>
-              <div className="seg-neutral" style={{ width: `${Math.max(0, neuPct)}%` }}></div>
-              <div className="seg-bad" style={{ width: `${Math.max(0, badPct)}%` }}></div>
-            </div>
-            <div className="flex justify-between text-xs text-slate-500 mt-2">
-              <span className="text-emerald-300 font-semibold">Good {fmt.pct(goodPct, 1)}</span>
-              <span className="text-slate-400 font-semibold">Neutral {fmt.pct(neuPct, 1)}</span>
-              <span className="text-rose-300 font-semibold">Bad {fmt.pct(badPct, 1)}</span>
-            </div>
+          <div className="exit-stack mb-3" title="Good / Neutral / Bad">
+            <div className="seg-good" style={{ width: `${Math.max(0, goodPct)}%` }}></div>
+            <div className="seg-neutral" style={{ width: `${Math.max(0, neuPct)}%` }}></div>
+            <div className="seg-bad" style={{ width: `${Math.max(0, badPct)}%` }}></div>
+          </div>
+          <div className="flex justify-between text-xs text-slate-500 mb-4">
+            <span className="text-emerald-300 font-semibold">Good {fmt.pct(goodPct, 1)}</span>
+            <span className="text-slate-400 font-semibold">Neutral {fmt.pct(neuPct, 1)}</span>
+            <span className="text-rose-300 font-semibold">Bad {fmt.pct(badPct, 1)}</span>
           </div>
 
-          <div className="mt-5 space-y-2">
+          <div className="space-y-2 max-h-64 overflow-y-auto">
             {entries.length === 0 ? (
               <div className="text-slate-500 text-sm">No exit data yet.</div>
-            ) : entries.map(([reason, count]) => {
+            ) : entries.slice(0, 8).map(([reason, count]) => {
               const c = Number(count) || 0;
               const pct = (c / total) * 100;
               return (
                 <div key={reason} className="exit-row">
                   <div className="min-w-0">
                     <div className="text-sm font-bold text-white truncate">{labels[reason] || reason}</div>
-                    <div className="text-xs text-slate-600 mt-1">{fmt.pct(pct, 1)} of exits</div>
+                    <div className="text-xs text-slate-600">{fmt.pct(pct, 1)}</div>
                   </div>
-
-                  <div>
-                    <div className="mini-bar">
-                      <div className="mini-fill" style={{ width: `${Math.min(100, pct)}%` }}></div>
-                    </div>
+                  <div className="mini-bar">
+                    <div className="mini-fill" style={{ width: `${Math.min(100, pct)}%` }}></div>
                   </div>
-
-                  <div className="mono text-right text-sm font-black text-slate-200">
-                    {fmt.int(c)}
-                  </div>
+                  <div className="mono text-right text-sm font-black text-slate-200">{fmt.int(c)}</div>
                 </div>
               );
             })}
@@ -826,6 +1000,18 @@
     function OverviewTab({ data }) {
       const { progress, learning, trading, quality, exit_stats } = data;
 
+      const metrics = [
+        { label: "Win Rate", value: fmt.pct(trading?.mean_win_rate, 1), status: trading?.mean_win_rate_status },
+        { label: "Max DD", value: fmt.pct(trading?.max_drawdown, 2), status: trading?.max_drawdown_status },
+        { label: "Profit Factor", value: fmt.num(quality?.mean_profit_factor, 2), status: quality?.mean_profit_factor_status },
+        { label: "Mean Reward", value: fmt.num(learning?.mean_reward, 2), status: learning?.mean_reward_status },
+        { label: "Total P&L", value: fmt.currency(learning?.total_pnl), status: learning?.total_pnl_status },
+        { label: "Entry Quality", value: fmt.pct((quality?.mean_entry_quality || 0) * 100, 1), status: quality?.mean_entry_quality_status },
+        { label: "Trades/Ep", value: fmt.num(trading?.mean_trades, 1), status: trading?.mean_trades_status },
+        { label: "R-Multiple", value: fmt.num(quality?.mean_r_multiple, 2), status: quality?.mean_r_multiple_status },
+        { label: "Total Trades", value: fmt.int(trading?.total_trades), status: "ok" },
+      ];
+
       return (
         <div className="space-y-6 animate-fade-in">
           {/* Command Center */}
@@ -839,7 +1025,6 @@
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
               {/* Main Progress Card */}
               <div className="lg:col-span-8 glass-card rounded-3xl p-6">
-                {/* Progress Header */}
                 <div className="flex items-start justify-between gap-6">
                   <div className="flex-1">
                     <div className="flex items-baseline gap-3">
@@ -853,21 +1038,15 @@
                     </div>
                   </div>
                   <div className="text-right glass-card rounded-2xl px-5 py-3">
-                    <div className="text-[10px] uppercase tracking-[0.18em] text-slate-500 font-bold">ETA</div>
+                    <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold">ETA</div>
                     <div className="mono text-2xl font-black text-white mt-1">{fmt.time(progress?.eta_seconds)}</div>
                   </div>
                 </div>
 
-                {/* Progress Bar */}
                 <div className="mt-5">
-                  <ProgressBar
-                    value={progress?.timesteps || 0}
-                    max={progress?.total_timesteps || 1}
-                    showPct={false}
-                  />
+                  <ProgressBar value={progress?.timesteps || 0} max={progress?.total_timesteps || 1} showPct={false} />
                 </div>
 
-                {/* Runtime Stats Row */}
                 <div className="mt-5 flex items-center justify-between px-2">
                   <div className="flex items-center gap-2">
                     <div className="w-2 h-2 rounded-full bg-indigo-500"></div>
@@ -891,22 +1070,10 @@
                   </div>
                 </div>
 
-                {/* Divider */}
                 <div className="my-5 h-px bg-gradient-to-r from-transparent via-white/10 to-transparent"></div>
 
-                {/* Key Metrics Grid */}
                 <div className="grid grid-cols-3 gap-3">
-                  {[
-                    { label: "Win Rate", value: fmt.pct(trading?.mean_win_rate, 1), status: trading?.mean_win_rate_status },
-                    { label: "Max DD", value: fmt.pct(trading?.max_drawdown, 2), status: trading?.max_drawdown_status },
-                    { label: "Profit Factor", value: fmt.num(quality?.mean_profit_factor, 2), status: quality?.mean_profit_factor_status },
-                    { label: "Mean Reward", value: fmt.num(learning?.mean_reward, 2), status: learning?.mean_reward_status },
-                    { label: "Total P&L", value: fmt.currency(learning?.total_pnl), status: learning?.total_pnl_status },
-                    { label: "Entry Quality", value: fmt.pct((quality?.mean_entry_quality || 0) * 100, 1), status: quality?.mean_entry_quality_status },
-                    { label: "Trades/Ep", value: fmt.num(trading?.mean_trades, 1), status: trading?.mean_trades_status },
-                    { label: "R-Multiple", value: fmt.num(quality?.mean_r_multiple, 2), status: quality?.mean_r_multiple_status },
-                    { label: "Total Trades", value: fmt.int(trading?.total_trades), status: "ok" },
-                  ].map((m, i) => (
+                  {metrics.map((m, i) => (
                     <div key={i} className="glass-card rounded-xl p-3 flex items-center justify-between gap-2">
                       <span className="text-xs text-slate-400 font-medium">{m.label}</span>
                       <div className="flex items-center gap-2">
@@ -918,280 +1085,93 @@
                 </div>
               </div>
 
-              {/* Health Rings Side Panel */}
+              {/* Side Panel */}
               <div className="lg:col-span-4 space-y-4">
-                <HealthRing
-                  title="System Quality"
-                  statuses={[
-                    learning?.mean_reward_status,
-                    learning?.total_pnl_status,
-                    trading?.mean_win_rate_status,
-                    trading?.max_drawdown_status,
-                    quality?.mean_profit_factor_status,
-                    quality?.mean_entry_quality_status
-                  ].filter(Boolean)}
-                />
-                
-                {/* Learning Stability Mini Ring */}
-                <div className="glass-card rounded-2xl p-4 flex items-center justify-between gap-4">
-                  <div>
-                    <div className="text-[10px] uppercase tracking-[0.16em] text-slate-500 font-bold">Learning</div>
-                    <div className="text-sm font-bold text-white mt-1">Stability</div>
+                <div className="glass-card rounded-2xl p-4">
+                  <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold mb-2">Current Stage</div>
+                  <div className="flex items-center gap-3">
+                    <span className="text-2xl">{STAGE_ICONS[data.curriculum_stage_idx || 0]}</span>
+                    <div>
+                      <div className="text-lg font-black text-white">{data.curriculum_stage || "N/A"}</div>
+                      <div className="text-xs text-slate-400">Stage {(data.curriculum_stage_idx || 0) + 1} of {STAGE_NAMES.length}</div>
+                    </div>
                   </div>
-                  {(() => {
-                    const lStatuses = [
-                      learning?.approx_kl_status,
-                      learning?.clip_fraction_status,
-                      learning?.entropy_status,
-                      learning?.explained_variance_status,
-                      learning?.value_loss_status,
-                      learning?.policy_loss_status
-                    ].filter(Boolean);
-                    const avg = lStatuses.length ? lStatuses.map(scoreFromStatus).reduce((a,b)=>a+b,0) / lStatuses.length : 0.5;
-                    const pct = Math.round(avg * 100);
-                    const color = pct >= 70 ? "text-emerald-400" : pct >= 45 ? "text-amber-400" : "text-rose-400";
-                    return (
-                      <div className="flex items-center gap-3">
-                        <div className={"mono text-2xl font-black " + color}>{pct}</div>
-                        <div className={"w-2 h-2 rounded-full " + (pct >= 70 ? "bg-emerald-500" : pct >= 45 ? "bg-amber-500" : "bg-rose-500")}></div>
-                      </div>
-                    );
-                  })()}
+                </div>
+                
+                <div className="glass-card rounded-2xl p-4">
+                  <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold mb-2">Learning</div>
+                  <div className="space-y-2">
+                    <div className="flex justify-between">
+                      <span className="text-xs text-slate-400">Entropy</span>
+                      <span className={"mono text-sm font-bold " + statusClass(learning?.entropy_status)}>{fmt.num(learning?.entropy, 2)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-xs text-slate-400">KL Div</span>
+                      <span className={"mono text-sm font-bold " + statusClass(learning?.approx_kl_status)}>{fmt.scientific(learning?.approx_kl, 4)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-xs text-slate-400">Clip Frac</span>
+                      <span className={"mono text-sm font-bold " + statusClass(learning?.clip_fraction_status)}>{fmt.num(learning?.clip_fraction, 3)}</span>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
           </section>
 
-          {/* Exit reasons */}
+          {/* Exit Distribution */}
           <section className="glass rounded-3xl p-6 md:p-7">
-            <SectionHeader
-              title="Exit Reason Distribution"
-              subtitle="How trades are being closed"
-              icon="🚪"
-            />
+            <SectionHeader title="Exit Reason Distribution" subtitle="How trades are being closed" icon="🚪" />
             <ExitDistribution exit_stats={exit_stats} />
           </section>
         </div>
       );
     }
 
-    function LearningTab({ data }) {
-      const { learning } = data;
-
-      const rows = [
-        {
-          label: "Policy Loss",
-          key: "policy_loss",
-          value: fmt.scientific(learning?.policy_loss, 4),
-          status: learning?.policy_loss_status,
-          ideal: "< 0 (negative)",
-          tooltip: "PPO policy gradient loss. Negative is commonly healthy; large positive can mean instability.",
-          accent: "linear-gradient(135deg, rgba(99,102,241,0.18), rgba(168,85,247,0.10), transparent 60%)"
-        },
-        {
-          label: "Value Loss",
-          key: "value_loss",
-          value: fmt.scientific(learning?.value_loss, 4),
-          status: learning?.value_loss_status,
-          ideal: "< 0.1",
-          tooltip: "Value function regression loss. Lower generally indicates better return prediction.",
-          accent: "linear-gradient(135deg, rgba(52,211,153,0.14), rgba(34,211,238,0.08), transparent 60%)"
-        },
-        {
-          label: "Entropy",
-          key: "entropy",
-          value: fmt.num(learning?.entropy, 2),
-          status: learning?.entropy_status,
-          ideal: "-9 to -5",
-          tooltip: "Exploration measure. Too low can mean collapse; too high can mean randomness.",
-          accent: "linear-gradient(135deg, rgba(251,191,36,0.14), rgba(236,72,153,0.08), transparent 60%)"
-        },
-        {
-          label: "KL Divergence",
-          key: "approx_kl",
-          value: fmt.scientific(learning?.approx_kl, 5),
-          status: learning?.approx_kl_status,
-          ideal: "< 0.015",
-          tooltip: "Magnitude of policy updates. Larger KL often implies overly aggressive updates.",
-          accent: "linear-gradient(135deg, rgba(34,211,238,0.14), rgba(99,102,241,0.10), transparent 60%)"
-        },
-        {
-          label: "Clip Fraction",
-          key: "clip_fraction",
-          value: fmt.num(learning?.clip_fraction, 3),
-          status: learning?.clip_fraction_status,
-          ideal: "0.05 – 0.20",
-          tooltip: "Fraction of samples clipped. Too low can mean weak learning; too high can mean unstable updates.",
-          accent: "linear-gradient(135deg, rgba(168,85,247,0.14), rgba(236,72,153,0.08), transparent 60%)"
-        },
-        {
-          label: "Explained Variance",
-          key: "explained_variance",
-          value: fmt.num(learning?.explained_variance, 3),
-          status: learning?.explained_variance_status,
-          ideal: "> 0.5",
-          tooltip: "How well the value function explains returns. Higher is better; negative can indicate severe mismatch.",
-          accent: "linear-gradient(135deg, rgba(236,72,153,0.14), rgba(99,102,241,0.08), transparent 60%)"
-        },
-      ];
-
-      return (
-        <div className="space-y-6 animate-fade-in">
-          <section className="glass rounded-3xl p-6 md:p-7">
-            <SectionHeader
-              title="Learning Diagnostics"
-              subtitle={`${fmt.int(learning?.n_updates)} policy updates`}
-              icon="🧠"
-            />
-
-            {/* Diagnostics Grid - Clean 2-column layout */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {rows.map(r => (
-                <div key={r.key} className="glass-card rounded-2xl p-5 relative overflow-hidden group hover:border-indigo-500/20 transition-all">
-                  <div className="absolute inset-0 opacity-60" style={{ background: r.accent }}></div>
-                  <div className="relative">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <div className="text-xs uppercase tracking-[0.14em] text-slate-400 font-bold">{r.label}</div>
-                        <div className={"mono text-2xl font-black mt-2 " + statusClass(r.status)}>{r.value}</div>
-                      </div>
-                      <div className={"w-3 h-3 rounded-full mt-1 " + (r.status === "good" ? "bg-emerald-500" : r.status === "ok" ? "bg-amber-500" : "bg-rose-500")}></div>
-                    </div>
-                    <div className="mt-3 pt-3 border-t border-white/5">
-                      <div className="text-xs text-slate-500">Ideal: <span className="text-slate-400 font-medium">{r.ideal}</span></div>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* Runtime Stats Bar */}
-            <div className="mt-6 glass-card rounded-2xl p-4">
-              <div className="flex flex-wrap items-center justify-between gap-6">
-                <div className="flex items-center gap-6">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold">FPS</span>
-                    <span className="mono text-lg font-bold text-white">{fmt.int(learning?.fps)}</span>
-                  </div>
-                  <div className="w-px h-6 bg-white/10"></div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold">Learning Rate</span>
-                    <span className="mono text-lg font-bold text-white">{fmt.scientific(learning?.learning_rate, 2)}</span>
-                  </div>
-                  <div className="w-px h-6 bg-white/10"></div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold">Clip Range</span>
-                    <span className="mono text-lg font-bold text-white">{fmt.num(learning?.clip_range, 2)}</span>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold">Updates</span>
-                  <span className="mono text-xl font-black bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent">{fmt.int(learning?.n_updates)}</span>
-                </div>
-              </div>
-            </div>
-          </section>
-        </div>
-      );
-    }
-
-    function smoothPath(points) {
-      if (points.length < 3) return points.map((p,i)=>`${i===0?'M':'L'} ${p.x} ${p.y}`).join(" ");
-      const d = [];
-      d.push(`M ${points[0].x} ${points[0].y}`);
-      for (let i=0;i<points.length-1;i++){
-        const p0 = points[i-1] || points[i];
-        const p1 = points[i];
-        const p2 = points[i+1];
-        const p3 = points[i+2] || p2;
-        const cp1x = p1.x + (p2.x - p0.x) / 6;
-        const cp1y = p1.y + (p2.y - p0.y) / 6;
-        const cp2x = p2.x - (p3.x - p1.x) / 6;
-        const cp2y = p2.y - (p3.y - p1.y) / 6;
-        d.push(`C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${p2.x} ${p2.y}`);
-      }
-      return d.join(" ");
-    }
-
-    function LargeChart({ data, baseline = 0, colorPositive = "#34d399", colorNegative = "#fb7185", invertColors = false }) {
-      if (!data || data.length === 0) return <div className="h-full flex items-center justify-center text-slate-500">No data available</div>;
-
-      const values = data.map(v => typeof v === "number" ? v : 0);
-      const min = Math.min(...values, baseline);
-      const max = Math.max(...values, baseline);
-      const range = max - min || 1;
-
-      const points = values.map((v,i)=>({
-        x: (i / (values.length - 1 || 1)) * 100,
-        y: 100 - ((v - min) / range) * 100,
-      }));
-      const baselineY = 100 - ((baseline - min) / range) * 100;
-
-      const pathD = smoothPath(points);
-      const areaD = `${pathD} L ${points[points.length-1]?.x || 0} 100 L 0 100 Z`;
-
-      const last = values[values.length-1] || 0;
-      const isPos = invertColors ? last <= baseline : last >= baseline;
-      const lineColor = isPos ? colorPositive : colorNegative;
-
-      return (
-        <div className="h-full w-full relative">
-          <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="w-full h-full">
-            <defs>
-              <linearGradient id="chartFill" x1="0" y1="0" x2="1" y2="0">
-                <stop offset="0%" stopColor={lineColor} stopOpacity="0.20" />
-                <stop offset="55%" stopColor={lineColor} stopOpacity="0.10" />
-                <stop offset="100%" stopColor={lineColor} stopOpacity="0.18" />
-              </linearGradient>
-            </defs>
-
-            <line x1="0" y1={baselineY} x2="100" y2={baselineY} stroke="rgba(255,255,255,0.10)" strokeWidth="0.5" />
-            <line x1="0" y1="25" x2="100" y2="25" stroke="rgba(255,255,255,0.06)" strokeWidth="0.35" />
-            <line x1="0" y1="75" x2="100" y2="75" stroke="rgba(255,255,255,0.06)" strokeWidth="0.35" />
-
-            <path d={areaD} fill="url(#chartFill)" />
-            <path d={pathD} fill="none" stroke={lineColor} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
-          </svg>
-
-          <div className={"absolute right-2 top-2 mono text-sm font-black " + (isPos ? "text-emerald-300" : "text-rose-300")}>
-            {fmt.num(last, 2)}
-          </div>
-        </div>
-      );
-    }
-
-    // Curriculum Stage Names
-    const STAGE_NAMES = [
-      "Foundation", "Discipline", "Market Structure", "Economic Logic",
-      "Professional", "Adaptive", "Specialist", "Live Ready"
-    ];
-    const STAGE_ICONS = ["🌱", "📏", "🏗️", "💡", "💼", "🔄", "🎯", "🚀"];
-
     function CurriculumTab({ data }) {
       const curriculum = data.curriculum_detail || {};
       const progress = data.curriculum_progress || {};
       const stageHistory = data.stage_history || [];
-      const currentStageIdx = curriculum.stage_idx || 0;
-      const stageName = curriculum.stage_name || STAGE_NAMES[currentStageIdx] || "Unknown";
+      const currentStageIdx = progress.stage_index ?? curriculum.stage_idx ?? 0;
+      const stageName = progress.current_stage || curriculum.stage_name || STAGE_NAMES[currentStageIdx] || "Unknown";
 
-      const thresholds = curriculum.promotion_thresholds || {};
-      const currentMetrics = curriculum.current_metrics || {};
-      const criteriaMet = curriculum.criteria_met || {};
-      const dataDiff = curriculum.data_difficulty || {};
-      const transSettings = curriculum.transition_settings || {};
+      const promotionChecks = progress.promotion_checks || {};
+      const skillAssessment = progress.skill_assessment || null;
+      const compositeScore = progress.composite_score || null;
+      const learningVelocity = progress.learning_velocity || null;
+      const recoveryProtocol = progress.recovery_protocol || null;
+      const reviewSession = progress.review_session || null;
+      const demotionAnalysis = progress.demotion_analysis || null;
+      const recommendations = progress.recommendations || [];
+      const blockers = progress.blockers || [];
+      const adaptiveThresholds = progress.adaptive_thresholds || null;
+      const entropyStatus = progress.entropy_status || null;
 
-      const isInTransition = curriculum.is_in_transition || false;
-      const rewardBlend = curriculum.reward_blend_factor ?? 1.0;
-      const lrMult = curriculum.lr_multiplier ?? 1.0;
+      const isInTransition = progress.is_in_transition || curriculum.is_in_transition || false;
+      const isInRecovery = recoveryProtocol?.is_active || false;
+      const isInReview = reviewSession?.is_active || false;
+      const rewardBlend = progress.reward_blend_factor ?? curriculum.reward_blend_factor ?? 1.0;
+      const lrMult = progress.lr_multiplier ?? curriculum.lr_multiplier ?? 1.0;
 
-      // Criteria items to show
-      const criteriaItems = [
-        { key: "min_episodes", label: "Min Episodes", current: currentMetrics.episodes || 0, required: thresholds.min_episodes || 0, format: "int" },
-        { key: "min_win_rate", label: "Win Rate", current: currentMetrics.win_rate || 0, required: thresholds.min_win_rate || 0, format: "pct" },
-        { key: "min_profit_factor", label: "Profit Factor", current: currentMetrics.profit_factor || 0, required: thresholds.min_profit_factor || 0, format: "num" },
-        { key: "max_drawdown", label: "Max Drawdown", current: currentMetrics.drawdown || 0, required: thresholds.max_drawdown || 1, format: "pct", invert: true },
-        { key: "min_r_multiple", label: "R-Multiple", current: currentMetrics.r_multiple || 0, required: thresholds.min_r_multiple || 0, format: "num" },
-      ].filter(c => c.required > 0 || c.invert);  // Only show criteria with thresholds set
+      // Build criteria items from promotion_checks
+      const criteriaItems = Object.entries(promotionChecks)
+        .filter(([key, check]) => check && check.required !== undefined)
+        .map(([key, check]) => ({
+          key,
+          label: key.replace(/_/g, ' '),
+          current: check.actual ?? 0,
+          required: check.required ?? 0,
+          passed: check.passed ?? false,
+        }));
+
+      const passedCount = criteriaItems.filter(c => c.passed).length;
+      const totalCount = criteriaItems.length;
+
+      // Calculate readiness from composite score or criteria
+      let readinessScore = compositeScore?.total_score ? compositeScore.total_score * 100 : 0;
+      if (!readinessScore && totalCount > 0) {
+        readinessScore = (passedCount / totalCount) * 100;
+      }
 
       return (
         <div className="space-y-6 animate-fade-in">
@@ -1225,141 +1205,166 @@
               </div>
             </div>
 
-            {/* Transition Status */}
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-              <div className="glass-card rounded-2xl p-5">
+            {/* Status Cards */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-5">
+              <div className={`glass-card rounded-2xl p-5 ${isInRecovery ? 'recovery-active' : isInReview ? 'review-active' : ''}`}>
                 <div className="flex items-center justify-between mb-3">
-                  <span className="text-xs uppercase tracking-[0.14em] text-slate-500 font-bold">Transition State</span>
-                  <div className={"transition-badge " + (isInTransition ? "active" : "stable")}>
-                    {isInTransition ? "🔄 Transitioning" : "✓ Stable"}
-                  </div>
+                  <span className="text-xs uppercase tracking-wider text-slate-500 font-bold">State</span>
+                  <span className={`text-xs font-bold px-2 py-1 rounded-full ${
+                    isInRecovery ? 'bg-rose-500/20 text-rose-300' :
+                    isInReview ? 'bg-cyan-500/20 text-cyan-300' :
+                    isInTransition ? 'bg-amber-500/20 text-amber-300' :
+                    'bg-emerald-500/20 text-emerald-300'
+                  }`}>
+                    {isInRecovery ? "🔧 Recovery" : isInReview ? "📚 Review" : isInTransition ? "🔄 Transition" : "✓ Stable"}
+                  </span>
                 </div>
                 <div className="text-2xl font-black text-white">{stageName}</div>
                 <div className="text-sm text-slate-400 mt-1">Stage {currentStageIdx + 1}</div>
               </div>
 
               <div className="glass-card rounded-2xl p-5">
-                <div className="text-xs uppercase tracking-[0.14em] text-slate-500 font-bold mb-3">Learning Rate</div>
+                <div className="text-xs uppercase tracking-wider text-slate-500 font-bold mb-3">Learning Rate</div>
                 <div className={"mono text-3xl font-black " + (lrMult < 1.0 ? "text-amber-400" : "text-emerald-400")}>
                   {fmt.pct(lrMult * 100, 0)}
                 </div>
-                <div className="text-sm text-slate-400 mt-1">
-                  {lrMult < 1.0 ? `Warming up (${transSettings.lr_warmup_steps || 0} steps)` : "Full rate"}
-                </div>
-                <div className="progress-bar mt-3">
-                  <div className="progress-fill" style={{ width: `${lrMult * 100}%` }} />
-                </div>
+                <div className="text-sm text-slate-400 mt-1">{lrMult < 1.0 ? "Warming up" : "Full rate"}</div>
+                <div className="mt-3"><ProgressBar value={lrMult * 100} max={100} showPct={false} /></div>
               </div>
 
               <div className="glass-card rounded-2xl p-5">
-                <div className="text-xs uppercase tracking-[0.14em] text-slate-500 font-bold mb-3">Reward Blend</div>
-                <div className={"mono text-3xl font-black " + (rewardBlend < 1.0 ? "text-purple-400" : "text-emerald-400")}>
-                  {fmt.pct(rewardBlend * 100, 0)}
+                <div className="text-xs uppercase tracking-wider text-slate-500 font-bold mb-3">Readiness</div>
+                <div className={"mono text-3xl font-black " + (readinessScore >= 80 ? "text-emerald-400" : readinessScore >= 50 ? "text-amber-400" : "text-rose-400")}>
+                  {fmt.num(readinessScore, 1)}%
                 </div>
-                <div className="text-sm text-slate-400 mt-1">
-                  {rewardBlend < 1.0 ? `Blending (${transSettings.reward_blend_episodes || 0} eps)` : "Current stage"}
-                </div>
-                <div className="progress-bar mt-3">
-                  <div className="progress-fill" style={{ width: `${rewardBlend * 100}%`, background: "linear-gradient(90deg, #8b5cf6, #ec4899)" }} />
+                <div className="text-sm text-slate-400 mt-1">{passedCount}/{totalCount} criteria</div>
+                <div className="mt-3">
+                  <ProgressBar 
+                    value={readinessScore} 
+                    max={100} 
+                    showPct={false}
+                    color={readinessScore >= 80 ? 'linear-gradient(90deg, #10b981, #34d399)' : readinessScore >= 50 ? 'linear-gradient(90deg, #f59e0b, #fbbf24)' : 'linear-gradient(90deg, #ef4444, #fb7185)'}
+                  />
                 </div>
               </div>
             </div>
-          </section>
 
-          {/* Promotion Criteria */}
-          <section className="glass rounded-3xl p-6 md:p-7">
-            <SectionHeader
-              title="Promotion Criteria"
-              subtitle="Requirements to advance to next stage"
-              icon="📋"
-            />
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {criteriaItems.map(item => {
-                const met = item.invert 
-                  ? (item.current <= item.required)
-                  : (item.current >= item.required);
-                const currentVal = item.format === "pct" ? fmt.pct(item.current * 100, 1) 
-                  : item.format === "int" ? fmt.int(item.current) 
-                  : fmt.num(item.current, 2);
-                const reqVal = item.format === "pct" ? fmt.pct(item.required * 100, 1)
-                  : item.format === "int" ? fmt.int(item.required)
-                  : fmt.num(item.required, 2);
-                return (
-                  <div key={item.key} className={"criteria-row " + (met ? "met" : "not-met")}>
-                    <div className="flex items-center gap-3">
-                      <div className={"w-6 h-6 rounded-full flex items-center justify-center text-sm " + (met ? "bg-emerald-500/20 text-emerald-400" : "bg-rose-500/20 text-rose-400")}>
-                        {met ? "✓" : "○"}
-                      </div>
-                      <div>
-                        <div className="text-sm font-bold text-white">{item.label}</div>
-                        <div className="text-xs text-slate-500">{item.invert ? "≤" : "≥"} {reqVal}</div>
+            {/* Promotion Criteria Grid */}
+            {criteriaItems.length > 0 && (
+              <div className="glass-card rounded-2xl p-5">
+                <div className="text-xs uppercase tracking-wider text-slate-500 font-bold mb-4">Promotion Criteria</div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
+                  {criteriaItems.map(item => (
+                    <div key={item.key} className="glass-card rounded-xl p-3 flex items-center justify-between gap-2">
+                      <span className="text-xs text-slate-400 font-medium truncate">{item.label}</span>
+                      <div className="flex items-center gap-2">
+                        <span className={"mono text-sm font-bold " + (item.passed ? "text-emerald-400" : "text-rose-400")}>
+                          {typeof item.current === 'number' ? fmt.num(item.current, 2) : String(item.current)}
+                        </span>
+                        <div className={"w-2 h-2 rounded-full " + (item.passed ? "bg-emerald-500" : "bg-rose-500")}></div>
                       </div>
                     </div>
-                    <div className={"mono text-lg font-black " + (met ? "text-emerald-400" : "text-rose-400")}>
-                      {currentVal}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </section>
 
-          {/* Data Difficulty & Settings */}
+          {/* V2.0 Features Grid */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Skill Assessment */}
             <section className="glass rounded-3xl p-6">
-              <SectionHeader title="Data Difficulty" subtitle="Training data filtering" icon="📊" />
-              <div className="space-y-3">
-                <div className="flex justify-between items-center p-3 rounded-xl bg-black/20">
-                  <span className="text-sm text-slate-400">Volatility Range</span>
-                  <span className="mono text-sm font-bold text-white">
-                    {dataDiff.volatility_range ? `${fmt.pct(dataDiff.volatility_range[0] * 100, 0)} - ${fmt.pct(dataDiff.volatility_range[1] * 100, 0)}` : "0% - 100%"}
-                  </span>
-                </div>
-                <div className="flex justify-between items-center p-3 rounded-xl bg-black/20">
-                  <span className="text-sm text-slate-400">Min Trend Clarity</span>
-                  <span className="mono text-sm font-bold text-white">{fmt.pct((dataDiff.trend_clarity_min || 0) * 100, 0)}</span>
-                </div>
-                <div className="flex justify-between items-center p-3 rounded-xl bg-black/20">
-                  <span className="text-sm text-slate-400">Sessions</span>
-                  <span className="mono text-sm font-bold text-white">
-                    {[
-                      dataDiff.include_asian && "Asian",
-                      dataDiff.include_london && "London",
-                      dataDiff.include_ny && "NY"
-                    ].filter(Boolean).join(", ") || "All"}
-                  </span>
-                </div>
-                <div className="flex justify-between items-center p-3 rounded-xl bg-black/20">
-                  <span className="text-sm text-slate-400">Exclude News</span>
-                  <span className={"mono text-sm font-bold " + (dataDiff.exclude_high_impact_news ? "text-amber-400" : "text-slate-400")}>
-                    {dataDiff.exclude_high_impact_news ? "Yes" : "No"}
-                  </span>
-                </div>
-              </div>
+              <SectionHeader title="Skill Assessment" subtitle="10 trading competencies" icon="🎯" />
+              <SkillAssessmentPanel skillAssessment={skillAssessment} />
             </section>
 
+            {/* Composite Score */}
             <section className="glass rounded-3xl p-6">
-              <SectionHeader title="Transition Settings" subtitle="Stage change behavior" icon="⚙️" />
-              <div className="space-y-3">
-                <div className="flex justify-between items-center p-3 rounded-xl bg-black/20">
-                  <span className="text-sm text-slate-400">LR Warmup Steps</span>
-                  <span className="mono text-sm font-bold text-white">{fmt.int(transSettings.lr_warmup_steps || 0)}</span>
-                </div>
-                <div className="flex justify-between items-center p-3 rounded-xl bg-black/20">
-                  <span className="text-sm text-slate-400">LR Start Factor</span>
-                  <span className="mono text-sm font-bold text-white">{fmt.pct((transSettings.lr_warmup_start || 1.0) * 100, 0)}</span>
-                </div>
-                <div className="flex justify-between items-center p-3 rounded-xl bg-black/20">
-                  <span className="text-sm text-slate-400">Reward Blend Episodes</span>
-                  <span className="mono text-sm font-bold text-white">{fmt.int(transSettings.reward_blend_episodes || 0)}</span>
-                </div>
-                <div className="flex justify-between items-center p-3 rounded-xl bg-black/20">
-                  <span className="text-sm text-slate-400">Cooldown Episodes</span>
-                  <span className="mono text-sm font-bold text-white">{fmt.int(transSettings.cooldown_episodes || 0)}</span>
-                </div>
-              </div>
+              <SectionHeader title="Composite Score" subtitle="Weighted promotion metric" icon="📊" />
+              <CompositeScorePanel compositeScore={compositeScore} />
             </section>
+
+            {/* Learning Velocity */}
+            <section className="glass rounded-3xl p-6">
+              <SectionHeader title="Learning Velocity" subtitle="Improvement tracking" icon="📈" />
+              <LearningVelocityPanel learningVelocity={learningVelocity} />
+            </section>
+
+            {/* Recovery & Review Status */}
+            <section className="glass rounded-3xl p-6">
+              <SectionHeader title="Protocols & Status" subtitle="Recovery and review sessions" icon="🔧" />
+              <RecoveryReviewPanel 
+                recoveryProtocol={recoveryProtocol} 
+                reviewSession={reviewSession}
+                demotionAnalysis={demotionAnalysis}
+              />
+            </section>
+          </div>
+
+          {/* Recommendations */}
+          {(recommendations.length > 0 || blockers.length > 0) && (
+            <section className="glass rounded-3xl p-6">
+              <SectionHeader title="Insights & Recommendations" subtitle="Actionable guidance" icon="💡" />
+              <RecommendationsPanel recommendations={recommendations} blockers={blockers} />
+            </section>
+          )}
+
+          {/* Entropy & Adaptive Thresholds */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Entropy Status */}
+            {entropyStatus && (
+              <section className="glass rounded-3xl p-6">
+                <SectionHeader title="Entropy Management" subtitle="Exploration vs exploitation" icon="🎲" />
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-slate-400">Current Entropy</span>
+                    <span className="mono text-xl font-black text-white">{fmt.num(entropyStatus.current, 2)}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-slate-400">Target Range</span>
+                    <span className="mono text-sm text-slate-300">
+                      {fmt.num(entropyStatus.min_target, 2)} – {fmt.num(entropyStatus.max_target, 2)}
+                    </span>
+                  </div>
+                  {entropyStatus.penalty !== 0 && (
+                    <div className={`rounded-xl p-3 ${entropyStatus.penalty > 0 ? 'bg-rose-500/10 border border-rose-500/20' : 'bg-emerald-500/10 border border-emerald-500/20'}`}>
+                      <span className={`text-sm ${entropyStatus.penalty > 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
+                        {entropyStatus.penalty > 0 ? "⚠️ Penalty applied" : "✓ In target range"}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </section>
+            )}
+
+            {/* Adaptive Thresholds */}
+            {adaptiveThresholds && (
+              <section className="glass rounded-3xl p-6">
+                <SectionHeader title="Adaptive Thresholds" subtitle="Dynamic relaxation" icon="⚡" />
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-slate-400">Relaxation Amount</span>
+                    <span className="mono text-xl font-black text-white">{fmt.pct(adaptiveThresholds.relaxation_amount * 100, 1)}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-slate-400">Max Allowed</span>
+                    <span className="mono text-sm text-slate-300">{fmt.pct(adaptiveThresholds.max_relaxation * 100, 0)}</span>
+                  </div>
+                  {adaptiveThresholds.relaxed_metrics?.length > 0 && (
+                    <div>
+                      <div className="text-xs text-slate-500 mb-2">Relaxed Metrics:</div>
+                      <div className="flex flex-wrap gap-1">
+                        {adaptiveThresholds.relaxed_metrics.map((metric, i) => (
+                          <span key={i} className="px-2 py-1 rounded-full bg-amber-500/10 text-amber-300 text-xs">
+                            {metric}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </section>
+            )}
           </div>
 
           {/* Stage History */}
@@ -1386,6 +1391,69 @@
       );
     }
 
+    function LearningTab({ data }) {
+      const { learning } = data;
+
+      const rows = [
+        { label: "Policy Loss", value: fmt.scientific(learning?.policy_loss, 4), status: learning?.policy_loss_status, ideal: "< 0 (negative)" },
+        { label: "Value Loss", value: fmt.scientific(learning?.value_loss, 4), status: learning?.value_loss_status, ideal: "< 0.1" },
+        { label: "Entropy", value: fmt.num(learning?.entropy, 2), status: learning?.entropy_status, ideal: "-9 to -5" },
+        { label: "KL Divergence", value: fmt.scientific(learning?.approx_kl, 5), status: learning?.approx_kl_status, ideal: "< 0.015" },
+        { label: "Clip Fraction", value: fmt.num(learning?.clip_fraction, 3), status: learning?.clip_fraction_status, ideal: "0.05 – 0.20" },
+        { label: "Explained Var", value: fmt.num(learning?.explained_variance, 3), status: learning?.explained_variance_status, ideal: "> 0.5" },
+      ];
+
+      return (
+        <div className="space-y-6 animate-fade-in">
+          <section className="glass rounded-3xl p-6 md:p-7">
+            <SectionHeader title="Learning Diagnostics" subtitle={`${fmt.int(learning?.n_updates)} policy updates`} icon="🧠" />
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {rows.map(r => (
+                <div key={r.label} className="glass-card rounded-2xl p-5">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-xs uppercase tracking-wider text-slate-400 font-bold">{r.label}</div>
+                      <div className={"mono text-2xl font-black mt-2 " + statusClass(r.status)}>{r.value}</div>
+                    </div>
+                    <div className={"w-3 h-3 rounded-full mt-1 " + (r.status === "good" ? "bg-emerald-500" : r.status === "ok" ? "bg-amber-500" : "bg-rose-500")}></div>
+                  </div>
+                  <div className="mt-3 pt-3 border-t border-white/5">
+                    <div className="text-xs text-slate-500">Ideal: <span className="text-slate-400 font-medium">{r.ideal}</span></div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-6 glass-card rounded-2xl p-4">
+              <div className="flex flex-wrap items-center justify-between gap-6">
+                <div className="flex items-center gap-6">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold">FPS</span>
+                    <span className="mono text-lg font-bold text-white">{fmt.int(learning?.fps)}</span>
+                  </div>
+                  <div className="w-px h-6 bg-white/10"></div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold">LR</span>
+                    <span className="mono text-lg font-bold text-white">{fmt.scientific(learning?.learning_rate, 2)}</span>
+                  </div>
+                  <div className="w-px h-6 bg-white/10"></div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold">Clip</span>
+                    <span className="mono text-lg font-bold text-white">{fmt.num(learning?.clip_range, 2)}</span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold">Updates</span>
+                  <span className="mono text-xl font-black bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent">{fmt.int(learning?.n_updates)}</span>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+      );
+    }
+
     function ChartsTab({ data }) {
       const rewards = data.recent_rewards || [];
       const pnls = data.recent_pnls || [];
@@ -1397,28 +1465,26 @@
         <div className="space-y-6 animate-fade-in">
           <section className="glass rounded-3xl p-6 md:p-7">
             <SectionHeader title="Reward History" subtitle="Last 100 episodes" icon="📈" />
-            <div className="h-56">
-              <LargeChart data={rewards} colorPositive="#34d399" colorNegative="#fb7185" />
-            </div>
+            <div className="h-56"><LargeChart data={rewards} colorPositive="#34d399" colorNegative="#fb7185" /></div>
           </section>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <section className="glass chart-card rounded-3xl p-6">
+            <section className="glass rounded-3xl p-6">
               <SectionHeader title="P&L History" icon="💵" />
               <div className="h-44"><LargeChart data={pnls} /></div>
             </section>
 
-            <section className="glass chart-card rounded-3xl p-6">
+            <section className="glass rounded-3xl p-6">
               <SectionHeader title="Win Rate Trend" icon="🎯" />
               <div className="h-44"><LargeChart data={winRates} baseline={50} colorPositive="#a5b4fc" colorNegative="#fb7185" /></div>
             </section>
 
-            <section className="glass chart-card rounded-3xl p-6">
+            <section className="glass rounded-3xl p-6">
               <SectionHeader title="Drawdown History" icon="📉" />
               <div className="h-44"><LargeChart data={drawdowns.map(d=>-Math.abs(d))} invertColors colorPositive="#fb7185" colorNegative="#fb7185" /></div>
             </section>
 
-            <section className="glass chart-card rounded-3xl p-6">
+            <section className="glass rounded-3xl p-6">
               <SectionHeader title="R-Multiple Trend" icon="⭐" />
               <div className="h-44"><LargeChart data={rMult} /></div>
             </section>
@@ -1484,6 +1550,7 @@
       return (
         <div className="min-h-screen px-4 py-5 md:px-7 md:py-7">
           <div className="max-w-[1500px] mx-auto">
+            {/* Header */}
             <header className="glass rounded-3xl p-5 md:p-6 mb-6 sticky top-3 z-20">
               <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-5">
                 <div className="flex items-center gap-4">
@@ -1492,10 +1559,10 @@
                   </div>
                   <div className="min-w-0">
                     <h1 className="text-xl md:text-2xl font-black gradient-text tracking-tight">
-                      PropFirm PPO Training Dashboard
+                      PropFirm PPO Dashboard v2.0
                     </h1>
                     <p className="text-sm text-slate-500 mt-1">
-                      Real-time monitoring • Action masking • Walk-forward training
+                      Curriculum Learning • Skill Assessment • Recovery Protocols
                     </p>
                   </div>
                 </div>
@@ -1510,19 +1577,14 @@
 
                   {lastUpdate && (
                     <div className="px-3 py-2 rounded-2xl bg-black/20 border border-white/5">
-                      <span className="text-xs text-slate-500 font-black uppercase tracking-[0.14em]">Updated</span>
+                      <span className="text-xs text-slate-500 font-black uppercase tracking-wider">Updated</span>
                       <span className="mono text-sm text-slate-200 font-black ml-2">{lastUpdate.toLocaleTimeString()}</span>
                     </div>
                   )}
 
-                  <div className="px-3 py-2 rounded-2xl bg-black/20 border border-white/5">
-                    <span className="text-xs text-slate-500 font-black uppercase tracking-[0.14em]">Updates</span>
-                    <span className="mono text-sm text-slate-200 font-black ml-2">{updateCount}</span>
-                  </div>
-
                   {data?.progress && (
                     <div className="px-3 py-2 rounded-2xl bg-black/20 border border-white/5">
-                      <span className="text-xs text-slate-500 font-black uppercase tracking-[0.14em]">Steps</span>
+                      <span className="text-xs text-slate-500 font-black uppercase tracking-wider">Steps</span>
                       <span className="mono text-sm text-slate-200 font-black ml-2">
                         {fmt.int(data.progress.timesteps)} / {fmt.int(data.progress.total_timesteps)}
                       </span>
@@ -1531,6 +1593,7 @@
                 </div>
               </div>
 
+              {/* Tabs */}
               <div className="mt-5 flex items-center justify-center">
                 <div className="inline-flex items-center gap-1 p-1.5 rounded-2xl bg-black/30 border border-white/5 backdrop-blur-sm">
                   {tabs.map(tab => (
@@ -1550,6 +1613,7 @@
               </div>
             </header>
 
+            {/* Main Content */}
             <main>
               {!data || data.status === "waiting" ? (
                 <div className="glass rounded-3xl p-10 md:p-12 text-center animate-slide-up">
@@ -1558,7 +1622,7 @@
                   </div>
                   <h2 className="text-xl font-black text-white mb-2 tracking-tight">Waiting for Training Data</h2>
                   <p className="text-slate-500 max-w-md mx-auto">
-                    {data?.message || "Start training to see live metrics. The dashboard updates automatically once data is available."}
+                    {data?.message || "Start training with --curriculum flag to see live curriculum metrics."}
                   </p>
                   <div className="mt-6 text-xs text-slate-600">
                     Listening on <span className="mono text-slate-400">/ws</span>
@@ -1574,12 +1638,10 @@
               )}
             </main>
 
+            {/* Footer */}
             <footer className="mt-8 text-center text-xs text-slate-600">
               <p>
-                PropFirm PPO Training System • Updates: <span className="mono">{updateCount}</span>
-                {data?.progress && (
-                  <span> • {fmt.int(data.progress.timesteps)} / {fmt.int(data.progress.total_timesteps)} steps</span>
-                )}
+                PropFirm PPO v2.0 • Curriculum Learning System • Updates: <span className="mono">{updateCount}</span>
               </p>
             </footer>
           </div>
@@ -1592,4 +1654,3 @@
   </script>
 </body>
 </html>
-
