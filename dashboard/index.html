@@ -20,7 +20,6 @@
             'slide-up': 'slideUp 0.55s cubic-bezier(0.22, 1, 0.36, 1)',
             'float': 'float 8s ease-in-out infinite',
             'glow': 'glow 2.4s ease-in-out infinite alternate',
-            'shimmer': 'shimmer 2s infinite',
             'pulse-slow': 'pulse 3s ease-in-out infinite',
           },
           keyframes: {
@@ -30,10 +29,6 @@
             glow: {
               '0%': { boxShadow: '0 0 18px rgba(99,102,241,0.25)' },
               '100%': { boxShadow: '0 0 60px rgba(236,72,153,0.18), 0 0 38px rgba(168,85,247,0.22)' },
-            },
-            shimmer: {
-              '0%': { transform: 'translateX(-100%)' },
-              '100%': { transform: 'translateX(100%)' },
             },
           },
         },
@@ -142,24 +137,6 @@
     .status-bad { color: #fb7185; }
     .status-neutral { color: #93a4bf; }
 
-    .status-tag{
-      display: inline-flex;
-      align-items: center;
-      padding: 6px 10px;
-      border-radius: 10px;
-      border: 1px solid rgba(255,255,255,0.08);
-      background: rgba(2,6,23,0.55);
-      box-shadow: inset 0 1px 0 rgba(255,255,255,0.05);
-      font-weight: 900;
-      letter-spacing: 0.18em;
-      font-size: 10px;
-      text-transform: uppercase;
-      white-space: nowrap;
-    }
-    .tag-good { color: rgba(52,211,153,0.95); border-color: rgba(52,211,153,0.22); background: rgba(52,211,153,0.10); }
-    .tag-ok   { color: rgba(251,191,36,0.95); border-color: rgba(251,191,36,0.22); background: rgba(251,191,36,0.10); }
-    .tag-bad  { color: rgba(251,113,133,0.95); border-color: rgba(251,113,133,0.22); background: rgba(251,113,133,0.10); }
-
     .live-dot{
       width: 10px; height: 10px; border-radius: 999px;
       background: #34d399;
@@ -188,9 +165,10 @@
       visibility: hidden;
       transition: all 0.18s ease;
       z-index: 100;
-      width: min(360px, 80vw);
+      width: min(420px, 88vw);
       box-shadow: 0 18px 45px rgba(0, 0, 0, 0.65);
       pointer-events: none;
+      text-align: left;
     }
     .tooltip:hover .tooltip-content{
       opacity: 1;
@@ -210,114 +188,42 @@
       border-radius: 999px;
       background: linear-gradient(90deg, #6366f1 0%, #8b5cf6 45%, #ec4899 100%);
       box-shadow: 0 0 18px rgba(168,85,247,0.25);
-      transition: width 0.45s cubic-bezier(0.4, 0, 0.2, 1);
+      transition: width 0.35s cubic-bezier(0.4, 0, 0.2, 1);
     }
 
-    .stage-track{
-      display: flex;
-      gap: 4px;
-      align-items: center;
-    }
-    .stage-node{
-      width: 36px;
-      height: 36px;
-      border-radius: 50%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-weight: 900;
-      font-size: 12px;
-      border: 2px solid transparent;
-      transition: all 0.3s ease;
-    }
-    .stage-node.completed{
-      background: linear-gradient(135deg, rgba(52,211,153,0.85), rgba(34,211,238,0.65));
-      border-color: rgba(52,211,153,0.5);
-      color: white;
-      box-shadow: 0 0 20px rgba(52,211,153,0.3);
-    }
-    .stage-node.current{
-      background: linear-gradient(135deg, rgba(99,102,241,0.9), rgba(168,85,247,0.8));
-      border-color: rgba(168,85,247,0.6);
-      color: white;
-      box-shadow: 0 0 25px rgba(99,102,241,0.4);
-      animation: glow 2s ease-in-out infinite alternate;
-    }
-    .stage-node.pending{
-      background: rgba(2,6,23,0.6);
-      border-color: rgba(255,255,255,0.15);
-      color: rgba(148,163,184,0.6);
-    }
-    .stage-connector{
-      flex: 1;
-      height: 3px;
-      border-radius: 999px;
-      background: rgba(255,255,255,0.1);
-      min-width: 20px;
-    }
-    .stage-connector.completed{
-      background: linear-gradient(90deg, rgba(52,211,153,0.7), rgba(34,211,238,0.5));
-    }
-
-    .skill-bar{
-      height: 8px;
-      border-radius: 999px;
-      background: rgba(2,6,23,0.6);
-      overflow: hidden;
-      border: 1px solid rgba(255,255,255,0.06);
-    }
-    .skill-fill{
-      height: 100%;
-      border-radius: 999px;
-      transition: width 0.4s ease;
-    }
-
-    .exit-stack{
-      height: 14px;
-      border-radius: 999px;
-      overflow: hidden;
-      border: 1px solid rgba(255,255,255,0.06);
-      background: rgba(2,6,23,0.55);
-      display:flex;
-    }
-    .seg-good{ background: linear-gradient(90deg, rgba(52,211,153,0.85), rgba(52,211,153,0.45)); }
-    .seg-neutral{ background: rgba(148,163,184,0.22); }
-    .seg-bad{ background: linear-gradient(90deg, rgba(251,113,133,0.75), rgba(251,113,133,0.35)); }
-
-    .exit-row{
-      display:grid;
-      grid-template-columns: 1.4fr 0.9fr 70px;
-      gap: 12px;
+    .pill{
+      display:inline-flex;
       align-items:center;
-      padding: 12px 14px;
-      border-radius: 16px;
-      border: 1px solid rgba(255,255,255,0.06);
-      background: rgba(2,6,23,0.38);
-    }
-    .exit-row:hover{
-      border-color: rgba(99,102,241,0.18);
-      background: rgba(2,6,23,0.48);
-    }
-    .mini-bar{
-      height: 10px;
-      border-radius: 999px;
-      background: rgba(2,6,23,0.60);
-      border: 1px solid rgba(255,255,255,0.06);
-      overflow:hidden;
-    }
-    .mini-fill{
-      height: 100%;
-      border-radius: 999px;
-      transition: width 0.35s ease;
-      background: linear-gradient(90deg, rgba(99,102,241,0.85), rgba(236,72,153,0.55));
+      gap:8px;
+      padding:8px 10px;
+      border-radius: 14px;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(2,6,23,0.45);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.05);
     }
 
-    .recommendation-card{
-      background: linear-gradient(135deg, rgba(251,191,36,0.08), rgba(236,72,153,0.05));
-      border: 1px solid rgba(251,191,36,0.2);
-      border-radius: 16px;
-      padding: 16px;
+    .table-head{
+      font-size: 11px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      font-weight: 900;
+      color: rgba(148,163,184,0.75);
     }
+
+    .row{
+      border: 1px solid rgba(255,255,255,0.06);
+      background: rgba(2,6,23,0.30);
+      border-radius: 16px;
+      padding: 12px 14px;
+    }
+    .row:hover{
+      background: rgba(2,6,23,0.42);
+      border-color: rgba(99,102,241,0.16);
+    }
+
+    .badge-good { background: rgba(52,211,153,0.12); border: 1px solid rgba(52,211,153,0.22); color: rgba(52,211,153,0.95); }
+    .badge-bad  { background: rgba(251,113,133,0.12); border: 1px solid rgba(251,113,133,0.22); color: rgba(251,113,133,0.95); }
+    .badge-ok   { background: rgba(251,191,36,0.12); border: 1px solid rgba(251,191,36,0.22); color: rgba(251,191,36,0.95); }
 
     .recovery-active{
       background: linear-gradient(135deg, rgba(251,113,133,0.12), rgba(236,72,153,0.08));
@@ -339,1318 +245,1355 @@
 <body>
   <div id="root"></div>
 
-  <script type="text/babel">
-    const { useState, useEffect, useMemo } = React;
+<script type="text/babel">
+  const { useState, useEffect, useMemo } = React;
 
-    // ─────────────────────────────────────────────────────────────────────────────
-    // UTILITIES
-    // ─────────────────────────────────────────────────────────────────────────────
-    const fmt = {
-      num: (x, digits = 2) => (x == null || isNaN(x)) ? "—" : Number(x).toFixed(digits),
-      pct: (x, digits = 1) => (x == null || isNaN(x)) ? "—%" : Number(x).toFixed(digits) + "%",
-      int: (x) => (x == null || isNaN(x)) ? "—" : Math.round(Number(x)).toLocaleString(),
-      currency: (x, digits = 0) => {
-        if (x == null || isNaN(x)) return "—";
-        const v = Number(x);
-        const sign = v >= 0 ? "+" : "";
-        return sign + "€" + v.toFixed(digits).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-      },
-      time: (seconds) => {
-        if (seconds == null || isNaN(seconds) || seconds < 0) return "—";
-        const s0 = Math.floor(Number(seconds));
-        const h = Math.floor(s0 / 3600);
-        const m = Math.floor((s0 % 3600) / 60);
-        const s = Math.floor(s0 % 60);
-        if (h > 0) return `${h}h ${m}m`;
-        if (m > 0) return `${m}m ${s}s`;
-        return `${s}s`;
-      },
-      scientific: (x, digits = 2) => {
-        if (x == null || isNaN(x)) return "—";
-        const v = Number(x);
-        if (Math.abs(v) < 0.0001 || Math.abs(v) > 10000) return v.toExponential(digits);
-        return v.toFixed(digits);
-      },
-    };
+  // ─────────────────────────────────────────────────────────────────────────────
+  // UTILITIES
+  // ─────────────────────────────────────────────────────────────────────────────
+  const fmt = {
+    num: (x, digits = 2) => (x == null || isNaN(x)) ? "—" : Number(x).toFixed(digits),
+    int: (x) => (x == null || isNaN(x)) ? "—" : Math.round(Number(x)).toLocaleString(),
+    scientific: (x, digits = 2) => {
+      if (x == null || isNaN(x)) return "—";
+      const v = Number(x);
+      if (Math.abs(v) < 0.0001 || Math.abs(v) > 10000) return v.toExponential(digits);
+      return v.toFixed(digits);
+    },
+    time: (seconds) => {
+      if (seconds == null || isNaN(seconds) || seconds < 0) return "—";
+      const s0 = Math.floor(Number(seconds));
+      const h = Math.floor(s0 / 3600);
+      const m = Math.floor((s0 % 3600) / 60);
+      const s = Math.floor(s0 % 60);
+      if (h > 0) return `${h}h ${m}m`;
+      if (m > 0) return `${m}m ${s}s`;
+      return `${s}s`;
+    },
+    pctSmart: (x, digits = 1) => {
+      if (x == null || isNaN(x)) return "—%";
+      const v = Number(x);
+      const p = (Math.abs(v) <= 1.5) ? v * 100 : v;
+      return p.toFixed(digits) + "%";
+    },
+    currency: (x, digits = 0) => {
+      if (x == null || isNaN(x)) return "—";
+      const v = Number(x);
+      const sign = v >= 0 ? "+" : "";
+      return sign + "€" + v.toFixed(digits).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    },
+  };
 
-    const statusClass = (status) => {
-      switch (status) {
-        case "good": return "status-good";
-        case "ok": return "status-ok";
-        case "bad": return "status-bad";
-        default: return "status-neutral";
-      }
-    };
+  const statusClass = (status) => {
+    switch (status) {
+      case "good": return "status-good";
+      case "ok": return "status-ok";
+      case "bad": return "status-bad";
+      default: return "status-neutral";
+    }
+  };
 
-    const tagClass = (status) => {
-      switch (status) {
-        case "good": return "status-tag tag-good";
-        case "ok": return "status-tag tag-ok";
-        case "bad": return "status-tag tag-bad";
-        default: return "status-tag";
-      }
-    };
+  function Tooltip({ children, content }) {
+    return (
+      <div className="tooltip">
+        {children}
+        <div className="tooltip-content">{content}</div>
+      </div>
+    );
+  }
 
-    function Tooltip({ children, content }) {
-      return (
-        <div className="tooltip">
-          {children}
-          <div className="tooltip-content">{content}</div>
+  function SectionHeader({ title, subtitle, icon }) {
+    return (
+      <div className="flex items-start gap-3 mb-5">
+        <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-indigo-500/30 via-purple-500/25 to-pink-500/20 border border-white/10 flex items-center justify-center shadow-lg shadow-indigo-500/15">
+          <span className="text-xl">{icon}</span>
         </div>
-      );
-    }
-
-    function StatusTag({ status }) {
-      const text = (status || "—").toUpperCase();
-      return <span className={tagClass(status)}>{text}</span>;
-    }
-
-    function SectionHeader({ title, subtitle, icon }) {
-      return (
-        <div className="flex items-start gap-3 mb-5">
-          <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-indigo-500/30 via-purple-500/25 to-pink-500/20 border border-white/10 flex items-center justify-center shadow-lg shadow-indigo-500/15">
-            <span className="text-xl">{icon}</span>
-          </div>
-          <div className="min-w-0 flex-1">
-            <h2 className="text-lg md:text-xl font-black text-white tracking-tight">{title}</h2>
-            {subtitle && <p className="text-xs md:text-sm text-slate-500 mt-1">{subtitle}</p>}
-            <div className="h-px mt-4 bg-gradient-to-r from-indigo-400/35 via-purple-400/20 to-transparent" />
-          </div>
+        <div className="min-w-0 flex-1">
+          <h2 className="text-lg md:text-xl font-black text-white tracking-tight">{title}</h2>
+          {subtitle && <p className="text-xs md:text-sm text-slate-500 mt-1">{subtitle}</p>}
+          <div className="h-px mt-4 bg-gradient-to-r from-indigo-400/35 via-purple-400/20 to-transparent" />
         </div>
-      );
-    }
+      </div>
+    );
+  }
 
-    function ProgressBar({ value, max = 100, label, showPct = true, color = null }) {
-      const pct = max > 0 ? (value / max) * 100 : 0;
-      const fillStyle = color ? { background: color } : {};
-      return (
-        <div className="w-full">
-          {label && (
-            <div className="flex justify-between text-xs text-slate-500 mb-2">
-              <span>{label}</span>
-              {showPct && <span className="mono">{fmt.pct(pct, 1)}</span>}
-            </div>
-          )}
-          <div className="progress-bar">
-            <div className="progress-fill" style={{ width: `${Math.min(pct, 100)}%`, ...fillStyle }} />
-          </div>
+  function ProgressBar({ value01, color = null }) {
+    const pct = Math.max(0, Math.min(1, value01 || 0)) * 100;
+    const style = color ? { background: color } : {};
+    return (
+      <div className="progress-bar">
+        <div className="progress-fill" style={{ width: `${pct}%`, ...style }} />
+      </div>
+    );
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // PROMOTION CRITERIA META
+  // ─────────────────────────────────────────────────────────────────────────────
+  const CRIT_META = {
+    min_episodes: {
+      label: "Min Episodes", icon:"📊", group:"Prerequisites", format:"int", higher:true,
+      hint:"Minimum episodes required in the current stage before any promotion decision is valid."
+    },
+    min_timesteps:{
+      label: "Min Timesteps", icon:"⏱️", group:"Prerequisites", format:"int", higher:true,
+      hint:"Minimum timesteps required in the current stage before any promotion decision is valid."
+    },
+    data_sufficiency:{
+      label: "Data Sufficiency", icon:"🧾", group:"Prerequisites", format:"int", higher:true,
+      hint:"Minimum samples to compute stable rolling stats (prevents promoting on noisy/early data)."
+    },
+
+    win_rate:      { label: "Win Rate", icon:"🎯", group:"Performance", format:"pct", higher:true, hint:"Higher win rate is good, but must coexist with risk control." },
+    profit_factor: { label: "Profit Factor", icon:"💰", group:"Performance", format:"num", higher:true, hint:"Gross profit / gross loss. > 1 implies positive expectancy." },
+    avg_pnl:       { label: "Avg PnL", icon:"💵", group:"Performance", format:"currency", higher:true, hint:"Average PnL over the evaluation window." },
+    r_multiple:    { label: "R-Multiple", icon:"⚖️", group:"Performance", format:"num", higher:true, hint:"Average R per trade; risk-adjusted performance." },
+
+    avg_drawdown:  { label: "Avg Drawdown", icon:"📉", group:"Risk", format:"pct", higher:false, hint:"Lower is better. Promotion requires controlled equity volatility." },
+    dd_breach_rate:{ label: "DD Breach Rate", icon:"🚨", group:"Risk", format:"pct", higher:false, hint:"Rate of drawdown-rule breaches. Must be very low." },
+    consecutive_loss_rate:{ label:"Consecutive Loss Breach", icon:"📛", group:"Risk", format:"pct", higher:false, hint:"Frequency of exceeding max consecutive losses." },
+
+    trade_activity:{ label: "Trades / Episode", icon:"📈", group:"Activity", format:"num", higher:true, hint:"Ensures enough trading activity to evaluate behavior." },
+  };
+
+  // Key aliases (backend emits normalized keys in v2.1 server.py, but keep safety net)
+  const KEY_ALIASES = {
+    win_rate_mean: "win_rate",
+    mean_win_rate: "win_rate",
+    profit_factor_mean: "profit_factor",
+    mean_profit_factor: "profit_factor",
+    mean_drawdown: "avg_drawdown",
+    max_drawdown: "avg_drawdown",
+    dd_breach_rate_mean: "dd_breach_rate",
+    consecutive_loss_breach_rate: "consecutive_loss_rate",
+    trade_count_avg: "trade_activity",
+    trades_per_episode: "trade_activity",
+    "insufficient data": "data_sufficiency",
+    insufficient_data: "data_sufficiency",
+    sufficient_data: "data_sufficiency",
+    episodes: "min_episodes",
+    timesteps: "min_timesteps",
+  };
+
+  function canonicalKey(k) {
+    if (!k) return k;
+    const direct = KEY_ALIASES[k];
+    if (direct) return direct;
+    const nk = String(k).trim().toLowerCase().replaceAll(" ", "_").replaceAll("-", "_");
+    return KEY_ALIASES[nk] || nk;
+  }
+
+  function formatValueByMeta(meta, v) {
+    if (v == null || isNaN(v)) return "—";
+    if (meta?.format === "pct") return fmt.pctSmart(v, 1);
+    if (meta?.format === "currency") return fmt.currency(v, 0);
+    if (meta?.format === "int") return fmt.int(v);
+    return fmt.num(v, 2);
+  }
+
+  function computeGap(meta, current, required) {
+    if (current == null || required == null || isNaN(current) || isNaN(required)) return null;
+    const higher = meta?.higher !== false;
+    const cur = Number(current);
+    const req = Number(required);
+    return higher ? (req - cur) : (cur - req); // >0 means blocked
+  }
+
+  function progress01(meta, current, required) {
+    if (current == null || required == null || isNaN(current) || isNaN(required)) return 0;
+    const higher = meta?.higher !== false;
+    const cur = Number(current);
+    const req = Number(required);
+    if (higher) {
+      if (req === 0) return cur >= 0 ? 1 : 0;
+      return Math.max(0, Math.min(1, cur / req));
+    } else {
+      if (cur <= req) return 1;
+      return Math.max(0, Math.min(1, req / cur));
+    }
+  }
+
+  function badgeClass(passed) {
+    return "px-2 py-1 rounded-full text-[11px] font-black tracking-wider " + (passed ? "badge-good" : "badge-bad");
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // SIMPLE SVG CHART
+  // ─────────────────────────────────────────────────────────────────────────────
+  function smoothPath(points) {
+    if (points.length < 3) return points.map((p,i)=>`${i===0?'M':'L'} ${p.x} ${p.y}`).join(" ");
+    const d = [];
+    d.push(`M ${points[0].x} ${points[0].y}`);
+    for (let i=0;i<points.length-1;i++){
+      const p0 = points[i-1] || points[i];
+      const p1 = points[i];
+      const p2 = points[i+1];
+      const p3 = points[i+2] || p2;
+      const cp1x = p1.x + (p2.x - p0.x) / 6;
+      const cp1y = p1.y + (p2.y - p0.y) / 6;
+      const cp2x = p2.x - (p3.x - p1.x) / 6;
+      const cp2y = p2.y - (p3.y - p1.y) / 6;
+      d.push(`C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${p2.x} ${p2.y}`);
+    }
+    return d.join(" ");
+  }
+
+  function LargeChart({ data, baseline = 0, colorPositive = "#34d399", colorNegative = "#fb7185" }) {
+    if (!data || data.length === 0) return <div className="h-full flex items-center justify-center text-slate-500">No data</div>;
+    const values = data.map(v => typeof v === "number" ? v : 0);
+    const min = Math.min(...values, baseline);
+    const max = Math.max(...values, baseline);
+    const range = max - min || 1;
+
+    const points = values.map((v,i)=>({
+      x: (i / (values.length - 1 || 1)) * 100,
+      y: 100 - ((v - min) / range) * 100,
+    }));
+    const baselineY = 100 - ((baseline - min) / range) * 100;
+
+    const pathD = smoothPath(points);
+    const areaD = `${pathD} L ${points[points.length-1]?.x || 0} 100 L 0 100 Z`;
+    const last = values[values.length-1] || 0;
+    const isPos = last >= baseline;
+    const lineColor = isPos ? colorPositive : colorNegative;
+
+    return (
+      <div className="h-full w-full relative">
+        <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="w-full h-full">
+          <defs>
+            <linearGradient id={`chartFill-${lineColor.replace('#','')}`} x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0%" stopColor={lineColor} stopOpacity="0.20" />
+              <stop offset="55%" stopColor={lineColor} stopOpacity="0.10" />
+              <stop offset="100%" stopColor={lineColor} stopOpacity="0.18" />
+            </linearGradient>
+          </defs>
+          <line x1="0" y1={baselineY} x2="100" y2={baselineY} stroke="rgba(255,255,255,0.10)" strokeWidth="0.5" />
+          <line x1="0" y1="25" x2="100" y2="25" stroke="rgba(255,255,255,0.06)" strokeWidth="0.35" />
+          <line x1="0" y1="75" x2="100" y2="75" stroke="rgba(255,255,255,0.06)" strokeWidth="0.35" />
+          <path d={areaD} fill={`url(#chartFill-${lineColor.replace('#','')})`} />
+          <path d={pathD} fill="none" stroke={lineColor} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+        </svg>
+        <div className={"absolute right-2 top-2 mono text-sm font-black " + (isPos ? "text-emerald-300" : "text-rose-300")}>
+          {fmt.num(last, 2)}
         </div>
-      );
-    }
+      </div>
+    );
+  }
 
-    function Sparkline({ data, status = "good", height = 28 }) {
-      if (!data || data.length === 0) return null;
-      const slice = data.slice(-30).map(v => (typeof v === "number" ? v : 0));
-      const max = Math.max(...slice.map(v => Math.abs(v)), 0.001);
-      const colors = { good: "#34d399", ok: "#fbbf24", bad: "#fb7185" };
-      const color = colors[status] || "#a5b4fc";
-      return (
-        <div className="flex items-end gap-0.5" style={{ height }}>
-          {slice.map((val, i) => {
-            const h = Math.max(5, (Math.abs(val) / max) * height);
-            const isNeg = val < 0;
-            return (
-              <div
-                key={i}
-                className="flex-1 min-w-0.5 rounded-full"
-                style={{
-                  height: h,
-                  backgroundColor: isNeg ? "#fb7185" : color,
-                  opacity: 0.35 + (i / slice.length) * 0.55,
-                }}
-              />
-            );
-          })}
-        </div>
-      );
-    }
-
-    // Curriculum Stage Names and Icons
-    const STAGE_NAMES = [
-      "Foundation", "Discipline", "Market Structure", "Economic Logic",
-      "Professional", "Adaptive", "Specialist", "Live Ready"
-    ];
-    const STAGE_ICONS = ["🌱", "📏", "🏗️", "💡", "💼", "🔄", "🎯", "🚀"];
-
-    // Skill Names and Descriptions
-    const SKILL_META = {
-      entry_timing: { label: "Entry Timing", icon: "🎯", desc: "Quality of trade entry points" },
-      exit_quality: { label: "Exit Quality", icon: "🚪", desc: "Ability to exit at optimal points" },
-      drawdown_control: { label: "DD Control", icon: "📉", desc: "Managing maximum drawdown" },
-      position_sizing: { label: "Position Size", icon: "📊", desc: "Appropriate position sizing" },
-      patience: { label: "Patience", icon: "⏳", desc: "Avoiding overtrading" },
-      trend_alignment: { label: "Trend Align", icon: "📈", desc: "Trading with the trend" },
-      risk_reward: { label: "Risk/Reward", icon: "⚖️", desc: "R-multiple per trade" },
-      consistency: { label: "Consistency", icon: "🔄", desc: "Stable win rate across episodes" },
-      loss_management: { label: "Loss Mgmt", icon: "🛡️", desc: "Handling consecutive losses" },
-      adaptation: { label: "Adaptation", icon: "🧠", desc: "Adjusting to market conditions" },
-    };
-
-    // ─────────────────────────────────────────────────────────────────────────────
-    // CHART COMPONENT
-    // ─────────────────────────────────────────────────────────────────────────────
-    function smoothPath(points) {
-      if (points.length < 3) return points.map((p,i)=>`${i===0?'M':'L'} ${p.x} ${p.y}`).join(" ");
-      const d = [];
-      d.push(`M ${points[0].x} ${points[0].y}`);
-      for (let i=0;i<points.length-1;i++){
-        const p0 = points[i-1] || points[i];
-        const p1 = points[i];
-        const p2 = points[i+1];
-        const p3 = points[i+2] || p2;
-        const cp1x = p1.x + (p2.x - p0.x) / 6;
-        const cp1y = p1.y + (p2.y - p0.y) / 6;
-        const cp2x = p2.x - (p3.x - p1.x) / 6;
-        const cp2y = p2.y - (p3.y - p1.y) / 6;
-        d.push(`C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${p2.x} ${p2.y}`);
-      }
-      return d.join(" ");
-    }
-
-    function LargeChart({ data, baseline = 0, colorPositive = "#34d399", colorNegative = "#fb7185", invertColors = false }) {
-      if (!data || data.length === 0) return <div className="h-full flex items-center justify-center text-slate-500">No data</div>;
-
-      const values = data.map(v => typeof v === "number" ? v : 0);
-      const min = Math.min(...values, baseline);
-      const max = Math.max(...values, baseline);
-      const range = max - min || 1;
-
-      const points = values.map((v,i)=>({
-        x: (i / (values.length - 1 || 1)) * 100,
-        y: 100 - ((v - min) / range) * 100,
-      }));
-      const baselineY = 100 - ((baseline - min) / range) * 100;
-
-      const pathD = smoothPath(points);
-      const areaD = `${pathD} L ${points[points.length-1]?.x || 0} 100 L 0 100 Z`;
-
-      const last = values[values.length-1] || 0;
-      const isPos = invertColors ? last <= baseline : last >= baseline;
-      const lineColor = isPos ? colorPositive : colorNegative;
-
-      return (
-        <div className="h-full w-full relative">
-          <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="w-full h-full">
-            <defs>
-              <linearGradient id={`chartFill-${lineColor.replace('#','')}`} x1="0" y1="0" x2="1" y2="0">
-                <stop offset="0%" stopColor={lineColor} stopOpacity="0.20" />
-                <stop offset="55%" stopColor={lineColor} stopOpacity="0.10" />
-                <stop offset="100%" stopColor={lineColor} stopOpacity="0.18" />
-              </linearGradient>
-            </defs>
-
-            <line x1="0" y1={baselineY} x2="100" y2={baselineY} stroke="rgba(255,255,255,0.10)" strokeWidth="0.5" />
-            <line x1="0" y1="25" x2="100" y2="25" stroke="rgba(255,255,255,0.06)" strokeWidth="0.35" />
-            <line x1="0" y1="75" x2="100" y2="75" stroke="rgba(255,255,255,0.06)" strokeWidth="0.35" />
-
-            <path d={areaD} fill={`url(#chartFill-${lineColor.replace('#','')})`} />
-            <path d={pathD} fill="none" stroke={lineColor} strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
-          </svg>
-
-          <div className={"absolute right-2 top-2 mono text-sm font-black " + (isPos ? "text-emerald-300" : "text-rose-300")}>
-            {fmt.num(last, 2)}
-          </div>
-        </div>
-      );
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────────
-    // SKILL ASSESSMENT COMPONENT
-    // ─────────────────────────────────────────────────────────────────────────────
-    function SkillAssessmentPanel({ skillAssessment }) {
-      if (!skillAssessment || !skillAssessment.scores) {
-        return (
-          <div className="text-center py-8 text-slate-500">
-            <div className="text-3xl mb-2">🎯</div>
-            <div>Skill assessment data not available yet</div>
-          </div>
-        );
-      }
-
-      const { scores, confidence, weakest_skills, strongest_skills } = skillAssessment;
-      
-      const skillEntries = Object.entries(scores).map(([key, value]) => ({
-        key,
-        score: value || 0,
-        confidence: confidence?.[key] || 0,
-        meta: SKILL_META[key] || { label: key, icon: "📊", desc: "Trading skill" },
-        isWeak: weakest_skills?.includes(key),
-        isStrong: strongest_skills?.includes(key),
-      })).sort((a, b) => b.score - a.score);
-
-      return (
-        <div className="space-y-3">
-          {skillEntries.map(skill => {
-            const pct = Math.min(skill.score * 100, 100);
-            const confPct = Math.min(skill.confidence * 100, 100);
-            const color = skill.isWeak ? "#fb7185" : skill.isStrong ? "#34d399" : "#a5b4fc";
-            
-            return (
-              <Tooltip key={skill.key} content={
-                <div>
-                  <div className="font-bold text-white">{skill.meta.label}</div>
-                  <div className="text-slate-300 text-sm">{skill.meta.desc}</div>
-                  <div className="text-slate-400 text-xs mt-1">
-                    Score: {fmt.pct(pct, 1)} | Confidence: {fmt.pct(confPct, 0)}
-                  </div>
-                </div>
-              }>
-                <div className="flex items-center gap-3">
-                  <div className="w-6 text-center">{skill.meta.icon}</div>
-                  <div className="w-20 text-xs text-slate-400 truncate">{skill.meta.label}</div>
-                  <div className="flex-1">
-                    <div className="skill-bar">
-                      <div 
-                        className="skill-fill" 
-                        style={{ width: `${pct}%`, background: color }}
-                      />
-                    </div>
-                  </div>
-                  <div className={`mono text-xs font-bold w-12 text-right ${skill.isWeak ? 'text-rose-400' : skill.isStrong ? 'text-emerald-400' : 'text-slate-300'}`}>
-                    {fmt.pct(pct, 0)}
-                  </div>
-                  {skill.isWeak && <span className="text-xs">⚠️</span>}
-                  {skill.isStrong && <span className="text-xs">⭐</span>}
-                </div>
-              </Tooltip>
-            );
-          })}
-        </div>
-      );
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────────
-    // COMPOSITE SCORE COMPONENT
-    // ─────────────────────────────────────────────────────────────────────────────
-    function CompositeScorePanel({ compositeScore }) {
-      if (!compositeScore) {
-        return (
-          <div className="text-center py-6 text-slate-500">
-            <div className="text-3xl mb-2">📊</div>
-            <div>Composite score not available yet</div>
-          </div>
-        );
-      }
-
-      const { total_score, meets_hard_floors, promotion_ready, components } = compositeScore;
-      const totalPct = (total_score || 0) * 100;
-      
-      const scoreColor = totalPct >= 80 ? "#34d399" : totalPct >= 60 ? "#fbbf24" : "#fb7185";
-
-      return (
-        <div>
-          {/* Main Score */}
-          <div className="flex items-center justify-between mb-4">
-            <div>
-              <div className="text-xs uppercase tracking-wider text-slate-500 font-bold">Composite Score</div>
-              <div className="text-sm text-slate-400 mt-1">
-                {promotion_ready ? "✅ Ready to promote" : meets_hard_floors ? "⏳ Building competence" : "❌ Hard floors not met"}
-              </div>
-            </div>
-            <div className="text-right">
-              <div className="mono text-4xl font-black" style={{ color: scoreColor }}>
-                {fmt.pct(totalPct, 1)}
-              </div>
-            </div>
-          </div>
-
-          {/* Hard Floors Status */}
-          <div className={`rounded-xl p-3 mb-4 ${meets_hard_floors ? 'bg-emerald-500/10 border border-emerald-500/20' : 'bg-rose-500/10 border border-rose-500/20'}`}>
-            <div className="flex items-center gap-2">
-              <span className="text-lg">{meets_hard_floors ? "✓" : "✗"}</span>
-              <span className={`text-sm font-bold ${meets_hard_floors ? 'text-emerald-400' : 'text-rose-400'}`}>
-                Hard Floors {meets_hard_floors ? "Passed" : "Failed"}
-              </span>
-            </div>
-            <div className="text-xs text-slate-400 mt-1">
-              Win rate ≥30%, Max DD ≤25%, DD breach rate ≤40%
-            </div>
-          </div>
-
-          {/* Component Breakdown */}
-          {components && Object.keys(components).length > 0 && (
-            <div className="space-y-2">
-              <div className="text-xs uppercase tracking-wider text-slate-500 font-bold mb-2">Components</div>
-              {Object.entries(components).map(([key, value]) => {
-                const pct = (value || 0) * 100;
-                return (
-                  <div key={key} className="flex items-center gap-2">
-                    <div className="w-28 text-xs text-slate-400 truncate">{key.replace(/_/g, ' ')}</div>
-                    <div className="flex-1">
-                      <div className="skill-bar">
-                        <div className="skill-fill" style={{ width: `${pct}%`, background: pct >= 70 ? '#34d399' : pct >= 50 ? '#fbbf24' : '#fb7185' }} />
-                      </div>
-                    </div>
-                    <div className="mono text-xs text-slate-300 w-10 text-right">{fmt.pct(pct, 0)}</div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      );
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────────
-    // LEARNING VELOCITY COMPONENT
-    // ─────────────────────────────────────────────────────────────────────────────
-    function LearningVelocityPanel({ learningVelocity }) {
-      if (!learningVelocity) {
-        return (
-          <div className="text-center py-6 text-slate-500">
-            <div className="text-3xl mb-2">📈</div>
-            <div>Learning velocity data not available</div>
-          </div>
-        );
-      }
-
-      const { 
-        improvement_rate, 
-        is_plateaued, 
-        plateau_episodes, 
-        per_metric_slopes,
-        window_size 
-      } = learningVelocity;
-
-      const rateColor = improvement_rate > 0.5 ? "#34d399" : improvement_rate > 0 ? "#fbbf24" : "#fb7185";
-
-      return (
-        <div>
-          {/* Main Velocity */}
-          <div className="flex items-center justify-between mb-4">
-            <div>
-              <div className="text-xs uppercase tracking-wider text-slate-500 font-bold">Improvement Rate</div>
-              <div className="text-sm text-slate-400 mt-1">
-                Over last {window_size || 100} episodes
-              </div>
-            </div>
-            <div className="text-right">
-              <div className="mono text-3xl font-black" style={{ color: rateColor }}>
-                {improvement_rate > 0 ? "+" : ""}{fmt.pct(improvement_rate, 2)}
-              </div>
-            </div>
-          </div>
-
-          {/* Plateau Warning */}
-          {is_plateaued && (
-            <div className="rounded-xl p-3 mb-4 bg-amber-500/10 border border-amber-500/20">
-              <div className="flex items-center gap-2">
-                <span className="text-lg">⚠️</span>
-                <span className="text-sm font-bold text-amber-400">Plateau Detected</span>
-              </div>
-              <div className="text-xs text-slate-400 mt-1">
-                No significant improvement for {plateau_episodes || 0} episodes. Consider adjusting hyperparameters.
-              </div>
-            </div>
-          )}
-
-          {/* Per-Metric Slopes */}
-          {per_metric_slopes && Object.keys(per_metric_slopes).length > 0 && (
-            <div className="space-y-2">
-              <div className="text-xs uppercase tracking-wider text-slate-500 font-bold mb-2">Metric Trends</div>
-              {Object.entries(per_metric_slopes).slice(0, 6).map(([key, slope]) => {
-                const slopeVal = slope || 0;
-                const isPositive = slopeVal > 0;
-                return (
-                  <div key={key} className="flex items-center justify-between p-2 rounded-lg bg-black/20">
-                    <span className="text-xs text-slate-400">{key.replace(/_/g, ' ')}</span>
-                    <span className={`mono text-xs font-bold ${isPositive ? 'text-emerald-400' : slopeVal < 0 ? 'text-rose-400' : 'text-slate-400'}`}>
-                      {isPositive ? "↑" : slopeVal < 0 ? "↓" : "→"} {fmt.num(Math.abs(slopeVal) * 100, 2)}%
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      );
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────────
-    // RECOVERY & REVIEW STATUS
-    // ─────────────────────────────────────────────────────────────────────────────
-    function RecoveryReviewPanel({ recoveryProtocol, reviewSession, demotionAnalysis }) {
-      const hasRecovery = recoveryProtocol?.is_active;
-      const hasReview = reviewSession?.is_active;
-      const hasDemotions = demotionAnalysis?.total_demotions > 0;
-
-      if (!hasRecovery && !hasReview && !hasDemotions) {
-        return (
-          <div className="text-center py-6 text-slate-500">
-            <div className="text-3xl mb-2">✨</div>
-            <div>No active protocols or demotions</div>
-            <div className="text-xs mt-1">Agent is training normally</div>
-          </div>
-        );
-      }
-
-      return (
-        <div className="space-y-4">
-          {/* Recovery Protocol */}
-          {hasRecovery && (
-            <div className="recovery-active rounded-2xl p-4">
-              <div className="flex items-center gap-2 mb-2">
-                <span className="text-xl">🔧</span>
-                <span className="text-sm font-bold text-rose-300">Recovery Protocol Active</span>
-              </div>
-              <div className="grid grid-cols-2 gap-3 text-xs">
-                <div>
-                  <div className="text-slate-500">Focus Skill</div>
-                  <div className="text-white font-bold">{recoveryProtocol.focus_skill || "General"}</div>
-                </div>
-                <div>
-                  <div className="text-slate-500">Episodes Left</div>
-                  <div className="text-white font-bold">{recoveryProtocol.episodes_remaining || 0}</div>
-                </div>
-              </div>
-              {recoveryProtocol.trigger_reason && (
-                <div className="text-xs text-slate-400 mt-2">
-                  Trigger: {recoveryProtocol.trigger_reason}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Review Session */}
-          {hasReview && (
-            <div className="review-active rounded-2xl p-4">
-              <div className="flex items-center gap-2 mb-2">
-                <span className="text-xl">📚</span>
-                <span className="text-sm font-bold text-cyan-300">Review Session Active</span>
-              </div>
-              <div className="grid grid-cols-2 gap-3 text-xs">
-                <div>
-                  <div className="text-slate-500">Reviewing Stage</div>
-                  <div className="text-white font-bold">{STAGE_NAMES[reviewSession.review_stage] || `Stage ${reviewSession.review_stage}`}</div>
-                </div>
-                <div>
-                  <div className="text-slate-500">Episodes Left</div>
-                  <div className="text-white font-bold">{reviewSession.episodes_remaining || 0}</div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Demotion History */}
-          {hasDemotions && (
-            <div className="rounded-2xl p-4 bg-black/20 border border-white/5">
-              <div className="flex items-center gap-2 mb-2">
-                <span className="text-xl">📉</span>
-                <span className="text-sm font-bold text-slate-300">Demotion History</span>
-              </div>
-              <div className="grid grid-cols-2 gap-3 text-xs">
-                <div>
-                  <div className="text-slate-500">Total Demotions</div>
-                  <div className="text-rose-400 font-bold">{demotionAnalysis.total_demotions}</div>
-                </div>
-                <div>
-                  <div className="text-slate-500">Repeated Failures</div>
-                  <div className="text-amber-400 font-bold">{demotionAnalysis.repeated_failures || 0}</div>
-                </div>
-              </div>
-              {demotionAnalysis.common_failure_reasons?.length > 0 && (
-                <div className="mt-2">
-                  <div className="text-xs text-slate-500 mb-1">Common Issues:</div>
-                  <div className="flex flex-wrap gap-1">
-                    {demotionAnalysis.common_failure_reasons.slice(0, 3).map((reason, i) => (
-                      <span key={i} className="px-2 py-1 rounded-full bg-rose-500/10 text-rose-300 text-xs">
-                        {reason}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      );
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────────
-    // RECOMMENDATIONS COMPONENT
-    // ─────────────────────────────────────────────────────────────────────────────
-    function RecommendationsPanel({ recommendations, blockers }) {
-      const hasRecs = recommendations && recommendations.length > 0;
-      const hasBlockers = blockers && blockers.length > 0;
-
-      if (!hasRecs && !hasBlockers) {
-        return null;
-      }
-
-      return (
-        <div className="space-y-4">
-          {/* Blockers */}
-          {hasBlockers && (
-            <div>
-              <div className="text-xs uppercase tracking-wider text-slate-500 font-bold mb-2">Promotion Blockers</div>
-              <div className="space-y-2">
-                {blockers.slice(0, 5).map((blocker, i) => (
-                  <div key={i} className="flex items-start gap-2 p-3 rounded-xl bg-rose-500/5 border border-rose-500/10">
-                    <span className="text-rose-400">✗</span>
-                    <span className="text-sm text-slate-300">{blocker}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Recommendations */}
-          {hasRecs && (
-            <div>
-              <div className="text-xs uppercase tracking-wider text-slate-500 font-bold mb-2">Recommendations</div>
-              <div className="space-y-2">
-                {recommendations.slice(0, 4).map((rec, i) => (
-                  <div key={i} className="recommendation-card">
-                    <div className="flex items-start gap-2">
-                      <span className="text-amber-400">💡</span>
-                      <span className="text-sm text-slate-300">{rec}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      );
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────────
-    // EXIT DISTRIBUTION COMPONENT
-    // ─────────────────────────────────────────────────────────────────────────────
-    function ExitDistribution({ exit_stats }) {
-      const dist = exit_stats?.distribution || {};
-      const entries = Object.entries(dist).sort(([,a],[,b]) => b - a);
-      const total = entries.reduce((s, [,c]) => s + (Number(c) || 0), 0) || 1;
-
-      const good = new Set(["trailing_stop", "agent_close"]);
-      const bad = new Set(["hard_stop", "emergency_close", "risk_liquidation"]);
-
-      const goodCount = entries.reduce((s,[k,c]) => s + (good.has(k) ? (Number(c)||0) : 0), 0);
-      const badCount  = entries.reduce((s,[k,c]) => s + (bad.has(k) ? (Number(c)||0) : 0), 0);
-      const neuCount  = Math.max(0, total - goodCount - badCount);
-
-      const goodPct = (goodCount / total) * 100;
-      const badPct  = (badCount / total) * 100;
-      const neuPct  = 100 - goodPct - badPct;
-
-      const labels = {
-        trailing_stop: "Trailing Stop",
-        agent_close: "Agent Close",
-        time_decay: "Time Decay",
-        hard_close: "Hard Close",
-        weekend_flatten: "Weekend Flatten",
-        hard_stop: "Hard Stop",
-        emergency_close: "Emergency Close",
-        risk_liquidation: "Risk Liquidation",
-        episode_truncate_flatten: "Episode Truncate",
-        daily_limit_safety: "Daily Limit Safety",
-      };
-
+  // ─────────────────────────────────────────────────────────────────────────────
+  // CURRICULUM PANELS
+  // ─────────────────────────────────────────────────────────────────────────────
+  function RequirementsTable({ criteria, prerequisitesNote }) {
+    if (!criteria || criteria.length === 0) {
       return (
         <div className="glass-card rounded-3xl p-6">
-          <div className="flex items-start justify-between gap-4 mb-4">
-            <div>
-              <div className="text-xs uppercase tracking-wider text-slate-500 font-bold">Exit Distribution</div>
-              <div className="text-lg font-black text-white mt-1">Why Trades End</div>
-            </div>
-            <div className="text-right">
-              <div className="text-xs text-slate-600">Total</div>
-              <div className="mono text-xl font-black text-slate-200">{fmt.int(total)}</div>
-            </div>
+          <div className="text-center py-10 text-slate-500">
+            <div className="text-3xl mb-2">📋</div>
+            <div>No promotion criteria received from backend.</div>
+            <div className="text-xs mt-2">Expected: curriculum_progress.promotion_checks = {"{required, actual, passed}"}</div>
           </div>
+        </div>
+      );
+    }
 
-          <div className="exit-stack mb-3" title="Good / Neutral / Bad">
-            <div className="seg-good" style={{ width: `${Math.max(0, goodPct)}%` }}></div>
-            <div className="seg-neutral" style={{ width: `${Math.max(0, neuPct)}%` }}></div>
-            <div className="seg-bad" style={{ width: `${Math.max(0, badPct)}%` }}></div>
-          </div>
-          <div className="flex justify-between text-xs text-slate-500 mb-4">
-            <span className="text-emerald-300 font-semibold">Good {fmt.pct(goodPct, 1)}</span>
-            <span className="text-slate-400 font-semibold">Neutral {fmt.pct(neuPct, 1)}</span>
-            <span className="text-rose-300 font-semibold">Bad {fmt.pct(badPct, 1)}</span>
-          </div>
+    const groups = useMemo(() => {
+      const g = {};
+      criteria.forEach(c => {
+        const group = c.meta?.group || "Other";
+        if (!g[group]) g[group] = [];
+        g[group].push(c);
+      });
+      Object.keys(g).forEach(k => g[k].sort((a,b) => (b.blockerGap - a.blockerGap)));
+      return g;
+    }, [criteria]);
 
-          <div className="space-y-2 max-h-64 overflow-y-auto">
-            {entries.length === 0 ? (
-              <div className="text-slate-500 text-sm">No exit data yet.</div>
-            ) : entries.slice(0, 8).map(([reason, count]) => {
-              const c = Number(count) || 0;
-              const pct = (c / total) * 100;
-              return (
-                <div key={reason} className="exit-row">
+    const groupOrder = ["Prerequisites", "Performance", "Risk", "Activity", "Other"].filter(g => groups[g]?.length);
+    const total = criteria.length;
+    const passed = criteria.filter(c => c.passed).length;
+    const blockers = criteria.filter(c => !c.passed).sort((a,b)=>b.blockerGap-a.blockerGap);
+
+    return (
+      <div className="glass-card rounded-3xl p-6">
+        <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4 mb-4">
+          <div className="min-w-0">
+            <div className="text-xs uppercase tracking-wider text-slate-500 font-black">Promotion Requirements</div>
+            <div className="text-lg font-black text-white mt-1">Gates to leave this stage (sorted by impact)</div>
+            <div className="text-xs text-slate-500 mt-2">
+              Source of truth: <span className="mono text-slate-300">curriculum_progress.promotion_checks</span>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="pill">
+              <span className="text-xs text-slate-500 font-black uppercase tracking-wider">Passed</span>
+              <span className="mono text-sm font-black text-white">{passed}/{total}</span>
+            </div>
+            <div className={"pill " + (blockers.length === 0 ? "badge-good" : "badge-bad")}>
+              <span className="text-xs font-black uppercase tracking-wider">{blockers.length === 0 ? "Promotion Ready" : "Blocked"}</span>
+            </div>
+          </div>
+        </div>
+
+        {prerequisitesNote && (
+          <div className="row mb-4 border-indigo-500/20">
+            <div className="text-sm font-black text-white">Interpretation</div>
+            <div className="text-sm text-slate-300 mt-1">{prerequisitesNote}</div>
+          </div>
+        )}
+
+        {blockers.length > 0 && (
+          <div className="mb-5 row">
+            <div className="text-xs uppercase tracking-wider text-slate-500 font-black mb-2">Top Blockers</div>
+            <div className="flex flex-col gap-2">
+              {blockers.slice(0,5).map((b, i) => (
+                <div key={i} className="flex items-center justify-between gap-4">
                   <div className="min-w-0">
-                    <div className="text-sm font-bold text-white truncate">{labels[reason] || reason}</div>
-                    <div className="text-xs text-slate-600">{fmt.pct(pct, 1)}</div>
+                    <div className="text-sm font-bold text-white truncate">
+                      {b.meta?.icon} {b.meta?.label || b.key}
+                    </div>
+                    <div className="text-xs text-slate-500 truncate">{b.meta?.hint || ""}</div>
                   </div>
-                  <div className="mini-bar">
-                    <div className="mini-fill" style={{ width: `${Math.min(100, pct)}%` }}></div>
+                  <div className="text-right">
+                    <div className="mono text-sm font-black text-rose-300">{b.gapText}</div>
+                    <div className="mono text-xs text-slate-500">
+                      {formatValueByMeta(b.meta, b.current)} / {formatValueByMeta(b.meta, b.required)}
+                    </div>
                   </div>
-                  <div className="mono text-right text-sm font-black text-slate-200">{fmt.int(c)}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="space-y-5">
+          {groupOrder.map(groupName => (
+            <div key={groupName}>
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-xs uppercase tracking-wider text-slate-500 font-black">{groupName}</div>
+                <div className="text-xs text-slate-600">
+                  {groups[groupName].filter(x => x.passed).length}/{groups[groupName].length} passed
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-2">
+                <div className="px-3 grid grid-cols-12 gap-3 table-head">
+                  <div className="col-span-5">Criterion</div>
+                  <div className="col-span-2 text-right">Current</div>
+                  <div className="col-span-2 text-right">Required</div>
+                  <div className="col-span-2 text-right">Gap</div>
+                  <div className="col-span-1 text-right">Status</div>
+                </div>
+
+                {groups[groupName].map((c, idx) => (
+                  <Tooltip
+                    key={idx}
+                    content={
+                      <div>
+                        <div className="font-bold text-white">{c.meta?.icon} {c.meta?.label || c.key}</div>
+                        <div className="text-slate-300 text-sm">{c.meta?.hint || "Promotion gate criterion."}</div>
+                        <div className="text-slate-400 text-xs mt-2">
+                          Current: <span className="mono text-slate-200">{formatValueByMeta(c.meta, c.current)}</span><br/>
+                          Required: <span className="mono text-slate-200">{formatValueByMeta(c.meta, c.required)}</span>
+                        </div>
+                        <div className="text-slate-400 text-xs mt-2">
+                          Key: <span className="mono">{c.key}</span> • Canonical: <span className="mono">{c.canonical}</span>
+                        </div>
+                      </div>
+                    }
+                  >
+                    <div className={"row grid grid-cols-12 gap-3 items-center cursor-help " + (c.passed ? "" : "border-rose-500/20")}>
+                      <div className="col-span-5 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm">{c.meta?.icon || "📌"}</span>
+                          <div className="min-w-0">
+                            <div className="text-sm font-black text-white truncate">{c.meta?.label || c.key}</div>
+                            <div className="mt-2">
+                              <ProgressBar
+                                value01={c.progress01}
+                                color={c.passed ? "linear-gradient(90deg,#10b981,#34d399)" : "linear-gradient(90deg,#ef4444,#fb7185)"}
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="col-span-2 text-right mono text-sm font-black text-slate-200">
+                        {formatValueByMeta(c.meta, c.current)}
+                      </div>
+                      <div className="col-span-2 text-right mono text-sm font-black text-slate-300">
+                        {formatValueByMeta(c.meta, c.required)}
+                      </div>
+                      <div className="col-span-2 text-right mono text-sm font-black">
+                        <span className={c.passed ? "text-emerald-300" : "text-rose-300"}>
+                          {c.gapText}
+                        </span>
+                      </div>
+                      <div className="col-span-1 text-right">
+                        <span className={badgeClass(c.passed)}>{c.passed ? "PASS" : "FAIL"}</span>
+                      </div>
+                    </div>
+                  </Tooltip>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  function SkillAssessmentPanel({ skillAssessment }) {
+    if (!skillAssessment || !skillAssessment.scores) {
+      return (
+        <div className="text-center py-8 text-slate-500">
+          <div className="text-3xl mb-2">🎯</div>
+          <div>Skill assessment data not available yet</div>
+        </div>
+      );
+    }
+
+    const entries = Object.entries(skillAssessment.scores).map(([k,v]) => ({
+      key:k, score: Number(v||0), conf: Number(skillAssessment.confidence?.[k]||0)
+    })).sort((a,b)=>b.score-a.score);
+
+    return (
+      <div className="space-y-3">
+        {entries.slice(0,10).map((s, i) => {
+          const pct = Math.max(0, Math.min(1, s.score)) * 100;
+          const conf = Math.max(0, Math.min(1, s.conf)) * 100;
+          const isWeak = skillAssessment.weakest_skills?.includes(s.key);
+          const isStrong = skillAssessment.strongest_skills?.includes(s.key);
+          const color = isWeak ? "#fb7185" : isStrong ? "#34d399" : "#a5b4fc";
+          return (
+            <div key={i} className="row">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-sm font-black text-white truncate">
+                    {isStrong ? "⭐" : isWeak ? "⚠️" : "•"} {s.key.replace(/_/g," ")}
+                  </div>
+                  <div className="text-xs text-slate-500 mt-1">Confidence: <span className="mono text-slate-300">{fmt.pctSmart(conf, 0)}</span></div>
+                </div>
+                <div className="mono text-sm font-black text-slate-200">{fmt.pctSmart(pct, 0)}</div>
+              </div>
+              <div className="mt-3">
+                <ProgressBar value01={pct/100} color={`linear-gradient(90deg, ${color}, rgba(236,72,153,0.55))`} />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
+  function CompositeScorePanel({ compositeScore, prerequisites }) {
+    if (!compositeScore) {
+      return (
+        <div className="text-center py-8 text-slate-500">
+          <div className="text-3xl mb-2">📊</div>
+          <div>Composite score not available yet</div>
+        </div>
+      );
+    }
+
+    const totalPct = (Number(compositeScore.total_score || 0) * 100);
+    const scoreColor = totalPct >= 80 ? "text-emerald-400" : totalPct >= 60 ? "text-amber-400" : "text-rose-400";
+
+    const strictReady = !!compositeScore.promotion_ready_strict;
+    const baseReady = !!compositeScore.promotion_ready;
+    const prereqOk = prerequisites?.all_passed;
+
+    let verdict = "⏳ Building competence";
+    if (strictReady) verdict = "✅ Ready to promote (strict)";
+    else if (baseReady && !prereqOk) verdict = "🧷 Composite looks ready, but prerequisites not met";
+    else if (!compositeScore.meets_hard_floors) verdict = "❌ Hard floors not met";
+
+    return (
+      <div>
+        <div className="row mb-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-xs uppercase tracking-wider text-slate-500 font-black">Composite Score</div>
+              <div className="text-xs text-slate-500 mt-1">{verdict}</div>
+            </div>
+            <div className={"mono text-3xl font-black " + scoreColor}>{fmt.pctSmart(totalPct, 1)}</div>
+          </div>
+          <div className="mt-3">
+            <ProgressBar value01={totalPct/100} color={totalPct>=80?"linear-gradient(90deg,#10b981,#34d399)":totalPct>=60?"linear-gradient(90deg,#f59e0b,#fbbf24)":"linear-gradient(90deg,#ef4444,#fb7185)"} />
+          </div>
+
+          {!strictReady && baseReady && !prereqOk && (
+            <div className="mt-3 px-3 py-2 rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-200 text-xs">
+              Composite readiness is advisory until prerequisites pass (episodes/timesteps/data sufficiency).
+            </div>
+          )}
+        </div>
+
+        {compositeScore.components && Object.keys(compositeScore.components).length > 0 && (
+          <div className="space-y-2">
+            {Object.entries(compositeScore.components).map(([k,v]) => {
+              const p = Math.max(0, Math.min(1, Number(v||0))) * 100;
+              return (
+                <div key={k} className="row">
+                  <div className="flex items-center justify-between">
+                    <div className="text-xs text-slate-400 font-bold truncate">{k.replace(/_/g," ")}</div>
+                    <div className="mono text-xs text-slate-300">{fmt.pctSmart(p,0)}</div>
+                  </div>
+                  <div className="mt-2">
+                    <ProgressBar value01={p/100} />
+                  </div>
                 </div>
               );
             })}
           </div>
+        )}
+      </div>
+    );
+  }
+
+  function LearningVelocityPanel({ learningVelocity }) {
+    if (!learningVelocity) {
+      return (
+        <div className="text-center py-8 text-slate-500">
+          <div className="text-3xl mb-2">📈</div>
+          <div>Learning velocity data not available yet</div>
         </div>
       );
     }
 
-    // ─────────────────────────────────────────────────────────────────────────────
-    // TABS
-    // ─────────────────────────────────────────────────────────────────────────────
-    function OverviewTab({ data }) {
-      const { progress, learning, trading, quality, exit_stats } = data;
+    const rate = Number(learningVelocity.improvement_rate || 0);
+    const rateColor = rate > 0.5 ? "text-emerald-400" : rate > 0 ? "text-amber-400" : "text-rose-400";
 
-      const metrics = [
-        { label: "Win Rate", value: fmt.pct(trading?.mean_win_rate, 1), status: trading?.mean_win_rate_status },
-        { label: "Max DD", value: fmt.pct(trading?.max_drawdown, 2), status: trading?.max_drawdown_status },
-        { label: "Profit Factor", value: fmt.num(quality?.mean_profit_factor, 2), status: quality?.mean_profit_factor_status },
-        { label: "Mean Reward", value: fmt.num(learning?.mean_reward, 2), status: learning?.mean_reward_status },
-        { label: "Total P&L", value: fmt.currency(learning?.total_pnl), status: learning?.total_pnl_status },
-        { label: "Entry Quality", value: fmt.pct((quality?.mean_entry_quality || 0) * 100, 1), status: quality?.mean_entry_quality_status },
-        { label: "Trades/Ep", value: fmt.num(trading?.mean_trades, 1), status: trading?.mean_trades_status },
-        { label: "R-Multiple", value: fmt.num(quality?.mean_r_multiple, 2), status: quality?.mean_r_multiple_status },
-        { label: "Total Trades", value: fmt.int(trading?.total_trades), status: "ok" },
-      ];
-
-      return (
-        <div className="space-y-6 animate-fade-in">
-          {/* Command Center */}
-          <section className="glass rounded-3xl p-6 md:p-7">
-            <SectionHeader
-              title="Training Command Center"
-              subtitle={`Episode ${fmt.int(progress?.total_episodes)} • Step ${fmt.int(progress?.timesteps)} • Live telemetry`}
-              icon="🚀"
-            />
-
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-              {/* Main Progress Card */}
-              <div className="lg:col-span-8 glass-card rounded-3xl p-6">
-                <div className="flex items-start justify-between gap-6">
-                  <div className="flex-1">
-                    <div className="flex items-baseline gap-3">
-                      <div className="text-4xl md:text-5xl font-black bg-gradient-to-r from-indigo-400 via-purple-400 to-pink-400 bg-clip-text text-transparent">
-                        {fmt.pct(progress?.progress_pct, 1)}
-                      </div>
-                      <div className="text-sm text-slate-500 font-medium">complete</div>
-                    </div>
-                    <div className="text-sm text-slate-400 mt-2">
-                      {fmt.int(progress?.timesteps)} / {fmt.int(progress?.total_timesteps)} timesteps
-                    </div>
-                  </div>
-                  <div className="text-right glass-card rounded-2xl px-5 py-3">
-                    <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold">ETA</div>
-                    <div className="mono text-2xl font-black text-white mt-1">{fmt.time(progress?.eta_seconds)}</div>
-                  </div>
-                </div>
-
-                <div className="mt-5">
-                  <ProgressBar value={progress?.timesteps || 0} max={progress?.total_timesteps || 1} showPct={false} />
-                </div>
-
-                <div className="mt-5 flex items-center justify-between px-2">
-                  <div className="flex items-center gap-2">
-                    <div className="w-2 h-2 rounded-full bg-indigo-500"></div>
-                    <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold">Episodes</span>
-                    <span className="mono text-sm font-bold text-white">{fmt.int(progress?.total_episodes)}</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <div className="w-2 h-2 rounded-full bg-emerald-500"></div>
-                    <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold">FPS</span>
-                    <span className="mono text-sm font-bold text-white">{fmt.int(learning?.fps)}</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <div className="w-2 h-2 rounded-full bg-amber-500"></div>
-                    <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold">Trades</span>
-                    <span className="mono text-sm font-bold text-white">{fmt.int(trading?.total_trades)}</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <div className="w-2 h-2 rounded-full bg-pink-500"></div>
-                    <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold">Updates</span>
-                    <span className="mono text-sm font-bold text-white">{fmt.int(learning?.n_updates)}</span>
-                  </div>
-                </div>
-
-                <div className="my-5 h-px bg-gradient-to-r from-transparent via-white/10 to-transparent"></div>
-
-                <div className="grid grid-cols-3 gap-3">
-                  {metrics.map((m, i) => (
-                    <div key={i} className="glass-card rounded-xl p-3 flex items-center justify-between gap-2">
-                      <span className="text-xs text-slate-400 font-medium">{m.label}</span>
-                      <div className="flex items-center gap-2">
-                        <span className={"mono text-sm font-bold " + statusClass(m.status)}>{m.value}</span>
-                        <div className={"w-2 h-2 rounded-full " + (m.status === "good" ? "bg-emerald-500" : m.status === "ok" ? "bg-amber-500" : "bg-rose-500")}></div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Side Panel */}
-              <div className="lg:col-span-4 space-y-4">
-                <div className="glass-card rounded-2xl p-4">
-                  <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold mb-2">Current Stage</div>
-                  <div className="flex items-center gap-3">
-                    <span className="text-2xl">{STAGE_ICONS[data.curriculum_stage_idx || 0]}</span>
-                    <div>
-                      <div className="text-lg font-black text-white">{data.curriculum_stage || "N/A"}</div>
-                      <div className="text-xs text-slate-400">Stage {(data.curriculum_stage_idx || 0) + 1} of {STAGE_NAMES.length}</div>
-                    </div>
-                  </div>
-                </div>
-                
-                <div className="glass-card rounded-2xl p-4">
-                  <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold mb-2">Learning</div>
-                  <div className="space-y-2">
-                    <div className="flex justify-between">
-                      <span className="text-xs text-slate-400">Entropy</span>
-                      <span className={"mono text-sm font-bold " + statusClass(learning?.entropy_status)}>{fmt.num(learning?.entropy, 2)}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-xs text-slate-400">KL Div</span>
-                      <span className={"mono text-sm font-bold " + statusClass(learning?.approx_kl_status)}>{fmt.scientific(learning?.approx_kl, 4)}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-xs text-slate-400">Clip Frac</span>
-                      <span className={"mono text-sm font-bold " + statusClass(learning?.clip_fraction_status)}>{fmt.num(learning?.clip_fraction, 3)}</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
+    return (
+      <div>
+        <div className="row mb-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-xs uppercase tracking-wider text-slate-500 font-black">Improvement Rate</div>
+              <div className="text-xs text-slate-500 mt-1">Window: {fmt.int(learningVelocity.window_size || 100)} episodes</div>
             </div>
-          </section>
-
-          {/* Exit Distribution */}
-          <section className="glass rounded-3xl p-6 md:p-7">
-            <SectionHeader title="Exit Reason Distribution" subtitle="How trades are being closed" icon="🚪" />
-            <ExitDistribution exit_stats={exit_stats} />
-          </section>
+            <div className={"mono text-2xl font-black " + rateColor}>{(rate>=0?"+":"") + fmt.pctSmart(rate*100,2)}</div>
+          </div>
+          {learningVelocity.is_plateaued && (
+            <div className="mt-3 px-3 py-2 rounded-xl badge-ok">
+              Plateau detected • {fmt.int(learningVelocity.plateau_episodes || 0)} episodes without improvement
+            </div>
+          )}
         </div>
-      );
-    }
 
-    function CurriculumTab({ data }) {
-      const curriculum = data.curriculum_detail || {};
-      const progress = data.curriculum_progress || {};
-      const stageHistory = data.stage_history || [];
-      const currentStageIdx = progress.stage_index ?? curriculum.stage_idx ?? 0;
-      const stageName = progress.current_stage || curriculum.stage_name || STAGE_NAMES[currentStageIdx] || "Unknown";
+        {learningVelocity.per_metric_slopes && Object.keys(learningVelocity.per_metric_slopes).length > 0 && (
+          <div className="space-y-2">
+            {Object.entries(learningVelocity.per_metric_slopes).slice(0,6).map(([k,v]) => {
+              const s = Number(v||0);
+              const dir = s>0 ? "↑" : s<0 ? "↓" : "→";
+              const cls = s>0 ? "text-emerald-400" : s<0 ? "text-rose-400" : "text-slate-400";
+              return (
+                <div key={k} className="row flex items-center justify-between">
+                  <div className="text-xs text-slate-400 font-bold truncate">{k.replace(/_/g," ")}</div>
+                  <div className={"mono text-xs font-black " + cls}>{dir} {fmt.num(Math.abs(s)*100,2)}%</div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  }
 
-      const promotionChecks = progress.promotion_checks || {};
-      const skillAssessment = progress.skill_assessment || null;
-      const compositeScore = progress.composite_score || null;
-      const learningVelocity = progress.learning_velocity || null;
-      const recoveryProtocol = progress.recovery_protocol || null;
-      const reviewSession = progress.review_session || null;
-      const demotionAnalysis = progress.demotion_analysis || null;
-      const recommendations = progress.recommendations || [];
-      const blockers = progress.blockers || [];
-      const adaptiveThresholds = progress.adaptive_thresholds || null;
-      const entropyStatus = progress.entropy_status || null;
+  function ProtocolsPanel({ recoveryProtocol, reviewSession, demotionAnalysis, adaptiveThresholds, entropyStatus }) {
+    const hasRecovery = recoveryProtocol?.is_active;
+    const hasReview = reviewSession?.is_active;
 
-      const isInTransition = progress.is_in_transition || curriculum.is_in_transition || false;
-      const isInRecovery = recoveryProtocol?.is_active || false;
-      const isInReview = reviewSession?.is_active || false;
-      const rewardBlend = progress.reward_blend_factor ?? curriculum.reward_blend_factor ?? 1.0;
-      const lrMult = progress.lr_multiplier ?? curriculum.lr_multiplier ?? 1.0;
-
-      // Build criteria items from promotion_checks
-      const criteriaItems = Object.entries(promotionChecks)
-        .filter(([key, check]) => check && check.required !== undefined)
-        .map(([key, check]) => ({
-          key,
-          label: key.replace(/_/g, ' '),
-          current: check.actual ?? 0,
-          required: check.required ?? 0,
-          passed: check.passed ?? false,
-        }));
-
-      const passedCount = criteriaItems.filter(c => c.passed).length;
-      const totalCount = criteriaItems.length;
-
-      // Calculate readiness from composite score or criteria
-      let readinessScore = compositeScore?.total_score ? compositeScore.total_score * 100 : 0;
-      if (!readinessScore && totalCount > 0) {
-        readinessScore = (passedCount / totalCount) * 100;
-      }
-
-      return (
-        <div className="space-y-6 animate-fade-in">
-          {/* Stage Progression */}
-          <section className="glass rounded-3xl p-6 md:p-7">
-            <SectionHeader
-              title="Curriculum Progress"
-              subtitle={`Stage ${currentStageIdx + 1} of ${STAGE_NAMES.length}: ${stageName}`}
-              icon="🎓"
-            />
-
-            {/* Stage Track */}
-            <div className="glass-card rounded-2xl p-5 mb-5">
-              <div className="stage-track justify-between">
-                {STAGE_NAMES.map((name, idx) => (
-                  <React.Fragment key={idx}>
-                    <Tooltip content={name}>
-                      <div className={"stage-node " + (idx < currentStageIdx ? "completed" : idx === currentStageIdx ? "current" : "pending")}>
-                        {idx < currentStageIdx ? "✓" : STAGE_ICONS[idx]}
-                      </div>
-                    </Tooltip>
-                    {idx < STAGE_NAMES.length - 1 && (
-                      <div className={"stage-connector " + (idx < currentStageIdx ? "completed" : "")} />
-                    )}
-                  </React.Fragment>
-                ))}
-              </div>
-              <div className="flex justify-between mt-4 text-xs text-slate-500">
-                <span>Foundation</span>
-                <span>Live Ready</span>
-              </div>
+    return (
+      <div className="space-y-3">
+        <div className={"row " + (hasRecovery ? "recovery-active" : hasReview ? "review-active" : "")}>
+          <div className="flex items-center justify-between">
+            <div className="text-sm font-black text-white">State</div>
+            <div className={"px-2 py-1 rounded-full text-[11px] font-black tracking-wider " +
+              (hasRecovery ? "badge-bad" : hasReview ? "badge-ok" : "badge-good")}>
+              {hasRecovery ? "RECOVERY" : hasReview ? "REVIEW" : "STABLE"}
             </div>
-
-            {/* Status Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-5">
-              <div className={`glass-card rounded-2xl p-5 ${isInRecovery ? 'recovery-active' : isInReview ? 'review-active' : ''}`}>
-                <div className="flex items-center justify-between mb-3">
-                  <span className="text-xs uppercase tracking-wider text-slate-500 font-bold">State</span>
-                  <span className={`text-xs font-bold px-2 py-1 rounded-full ${
-                    isInRecovery ? 'bg-rose-500/20 text-rose-300' :
-                    isInReview ? 'bg-cyan-500/20 text-cyan-300' :
-                    isInTransition ? 'bg-amber-500/20 text-amber-300' :
-                    'bg-emerald-500/20 text-emerald-300'
-                  }`}>
-                    {isInRecovery ? "🔧 Recovery" : isInReview ? "📚 Review" : isInTransition ? "🔄 Transition" : "✓ Stable"}
-                  </span>
-                </div>
-                <div className="text-2xl font-black text-white">{stageName}</div>
-                <div className="text-sm text-slate-400 mt-1">Stage {currentStageIdx + 1}</div>
-              </div>
-
-              <div className="glass-card rounded-2xl p-5">
-                <div className="text-xs uppercase tracking-wider text-slate-500 font-bold mb-3">Learning Rate</div>
-                <div className={"mono text-3xl font-black " + (lrMult < 1.0 ? "text-amber-400" : "text-emerald-400")}>
-                  {fmt.pct(lrMult * 100, 0)}
-                </div>
-                <div className="text-sm text-slate-400 mt-1">{lrMult < 1.0 ? "Warming up" : "Full rate"}</div>
-                <div className="mt-3"><ProgressBar value={lrMult * 100} max={100} showPct={false} /></div>
-              </div>
-
-              <div className="glass-card rounded-2xl p-5">
-                <div className="text-xs uppercase tracking-wider text-slate-500 font-bold mb-3">Readiness</div>
-                <div className={"mono text-3xl font-black " + (readinessScore >= 80 ? "text-emerald-400" : readinessScore >= 50 ? "text-amber-400" : "text-rose-400")}>
-                  {fmt.num(readinessScore, 1)}%
-                </div>
-                <div className="text-sm text-slate-400 mt-1">{passedCount}/{totalCount} criteria</div>
-                <div className="mt-3">
-                  <ProgressBar 
-                    value={readinessScore} 
-                    max={100} 
-                    showPct={false}
-                    color={readinessScore >= 80 ? 'linear-gradient(90deg, #10b981, #34d399)' : readinessScore >= 50 ? 'linear-gradient(90deg, #f59e0b, #fbbf24)' : 'linear-gradient(90deg, #ef4444, #fb7185)'}
-                  />
-                </div>
-              </div>
-            </div>
-
-            {/* Promotion Criteria Grid */}
-            {criteriaItems.length > 0 && (
-              <div className="glass-card rounded-2xl p-5">
-                <div className="text-xs uppercase tracking-wider text-slate-500 font-bold mb-4">Promotion Criteria</div>
-                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
-                  {criteriaItems.map(item => (
-                    <div key={item.key} className="glass-card rounded-xl p-3 flex items-center justify-between gap-2">
-                      <span className="text-xs text-slate-400 font-medium truncate">{item.label}</span>
-                      <div className="flex items-center gap-2">
-                        <span className={"mono text-sm font-bold " + (item.passed ? "text-emerald-400" : "text-rose-400")}>
-                          {typeof item.current === 'number' ? fmt.num(item.current, 2) : String(item.current)}
-                        </span>
-                        <div className={"w-2 h-2 rounded-full " + (item.passed ? "bg-emerald-500" : "bg-rose-500")}></div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </section>
-
-          {/* V2.0 Features Grid */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Skill Assessment */}
-            <section className="glass rounded-3xl p-6">
-              <SectionHeader title="Skill Assessment" subtitle="10 trading competencies" icon="🎯" />
-              <SkillAssessmentPanel skillAssessment={skillAssessment} />
-            </section>
-
-            {/* Composite Score */}
-            <section className="glass rounded-3xl p-6">
-              <SectionHeader title="Composite Score" subtitle="Weighted promotion metric" icon="📊" />
-              <CompositeScorePanel compositeScore={compositeScore} />
-            </section>
-
-            {/* Learning Velocity */}
-            <section className="glass rounded-3xl p-6">
-              <SectionHeader title="Learning Velocity" subtitle="Improvement tracking" icon="📈" />
-              <LearningVelocityPanel learningVelocity={learningVelocity} />
-            </section>
-
-            {/* Recovery & Review Status */}
-            <section className="glass rounded-3xl p-6">
-              <SectionHeader title="Protocols & Status" subtitle="Recovery and review sessions" icon="🔧" />
-              <RecoveryReviewPanel 
-                recoveryProtocol={recoveryProtocol} 
-                reviewSession={reviewSession}
-                demotionAnalysis={demotionAnalysis}
-              />
-            </section>
           </div>
 
-          {/* Recommendations */}
-          {(recommendations.length > 0 || blockers.length > 0) && (
-            <section className="glass rounded-3xl p-6">
-              <SectionHeader title="Insights & Recommendations" subtitle="Actionable guidance" icon="💡" />
-              <RecommendationsPanel recommendations={recommendations} blockers={blockers} />
-            </section>
-          )}
+          <div className="mt-3 grid grid-cols-2 gap-3 text-xs">
+            <div>
+              <div className="text-slate-500">Recovery Focus</div>
+              <div className="text-slate-200 font-black">{hasRecovery ? (recoveryProtocol.focus_skill || "General") : "—"}</div>
+            </div>
+            <div>
+              <div className="text-slate-500">Episodes Remaining</div>
+              <div className="text-slate-200 font-black">
+                {hasRecovery ? fmt.int(recoveryProtocol.episodes_remaining || 0) : hasReview ? fmt.int(reviewSession.episodes_remaining || 0) : "—"}
+              </div>
+            </div>
+          </div>
 
-          {/* Entropy & Adaptive Thresholds */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Entropy Status */}
-            {entropyStatus && (
-              <section className="glass rounded-3xl p-6">
-                <SectionHeader title="Entropy Management" subtitle="Exploration vs exploitation" icon="🎲" />
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm text-slate-400">Current Entropy</span>
-                    <span className="mono text-xl font-black text-white">{fmt.num(entropyStatus.current, 2)}</span>
+          {recoveryProtocol?.trigger_reason && (
+            <div className="mt-3 text-xs text-slate-500">Trigger: <span className="text-slate-300">{recoveryProtocol.trigger_reason}</span></div>
+          )}
+        </div>
+
+        {demotionAnalysis && (demotionAnalysis.total_demotions > 0) && (
+          <div className="row">
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-black text-white">Demotions</div>
+              <div className="mono text-sm font-black text-rose-300">{fmt.int(demotionAnalysis.total_demotions)}</div>
+            </div>
+            <div className="text-xs text-slate-500 mt-2">
+              Repeated failures: <span className="mono text-slate-300">{fmt.int(demotionAnalysis.repeated_failures || 0)}</span>
+            </div>
+            {demotionAnalysis.common_failure_reasons?.length > 0 && (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {demotionAnalysis.common_failure_reasons.slice(0,4).map((r,i)=>(
+                  <span key={i} className="px-2 py-1 rounded-full bg-rose-500/10 border border-rose-500/20 text-rose-300 text-xs">{r}</span>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {adaptiveThresholds && (
+          <div className="row">
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-black text-white">Adaptive Thresholds</div>
+              <div className="mono text-sm font-black text-slate-200">{fmt.pctSmart((adaptiveThresholds.relaxation_amount||0)*100, 1)}</div>
+            </div>
+            <div className="text-xs text-slate-500 mt-2">
+              Max: <span className="mono text-slate-300">{fmt.pctSmart((adaptiveThresholds.max_relaxation||0)*100, 0)}</span>
+            </div>
+            {adaptiveThresholds.relaxed_metrics?.length > 0 && (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {adaptiveThresholds.relaxed_metrics.slice(0,6).map((m,i)=>(
+                  <span key={i} className="px-2 py-1 rounded-full bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs">{m}</span>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {entropyStatus && (
+          <div className="row">
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-black text-white">Entropy Gate</div>
+              <div className="mono text-sm font-black text-slate-200">{fmt.num(entropyStatus.current, 2)}</div>
+            </div>
+            <div className="text-xs text-slate-500 mt-2">
+              Target: <span className="mono text-slate-300">{fmt.num(entropyStatus.min_target, 2)} – {fmt.num(entropyStatus.max_target, 2)}</span>
+            </div>
+            {Number(entropyStatus.penalty||0) !== 0 && (
+              <div className="mt-3 px-3 py-2 rounded-xl badge-ok">Penalty active: <span className="mono">{fmt.num(entropyStatus.penalty, 4)}</span></div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  function StageRequirementsPanel({ requirementsByStage, stageName }) {
+    const r = requirementsByStage?.stages?.[stageName]?.requirements;
+    const available = requirementsByStage?.available;
+
+    if (!available) {
+      return (
+        <div className="row">
+          <div className="text-sm font-black text-white">Stage Requirements</div>
+          <div className="text-xs text-slate-500 mt-2">
+            Not available. Backend could not import curriculum config.
+          </div>
+          {requirementsByStage?.error && (
+            <div className="mt-2 text-xs text-rose-300 mono">{String(requirementsByStage.error)}</div>
+          )}
+        </div>
+      );
+    }
+
+    if (!r) {
+      return (
+        <div className="row">
+          <div className="text-sm font-black text-white">Stage Requirements</div>
+          <div className="text-xs text-slate-500 mt-2">
+            No stage config found for <span className="mono text-slate-300">{stageName}</span>.
+          </div>
+        </div>
+      );
+    }
+
+    const criteria = r.promotion_criteria || {};
+    const critEntries = Object.entries(criteria).slice(0, 12);
+
+    const entropy = r.entropy_targets || {};
+    const skills = r.skill_requirements || {};
+
+    return (
+      <div className="glass-card rounded-3xl p-6">
+        <div className="text-xs uppercase tracking-wider text-slate-500 font-black">Stage Requirements (Config)</div>
+        <div className="text-lg font-black text-white mt-1">{stageName}</div>
+        <div className="text-xs text-slate-500 mt-2">
+          Source: <span className="mono text-slate-300">{requirementsByStage.source}</span>
+        </div>
+
+        {critEntries.length > 0 && (
+          <div className="mt-4">
+            <div className="text-xs uppercase tracking-wider text-slate-500 font-black mb-2">Competence Thresholds</div>
+            <div className="space-y-2">
+              {critEntries.map(([k,v]) => (
+                <div key={k} className="row flex items-center justify-between">
+                  <div className="text-xs text-slate-400 font-bold truncate">{k}</div>
+                  <div className="mono text-xs text-slate-200 font-black">{String(v)}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {Object.keys(entropy).length > 0 && (
+          <div className="mt-4">
+            <div className="text-xs uppercase tracking-wider text-slate-500 font-black mb-2">Entropy Targets</div>
+            <div className="row mono text-xs text-slate-300 overflow-auto">
+              {JSON.stringify(entropy, null, 2)}
+            </div>
+          </div>
+        )}
+
+        {Object.keys(skills).length > 0 && (
+          <div className="mt-4">
+            <div className="text-xs uppercase tracking-wider text-slate-500 font-black mb-2">Skill Requirements</div>
+            <div className="row mono text-xs text-slate-300 overflow-auto">
+              {JSON.stringify(skills, null, 2)}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // TABS
+  // ─────────────────────────────────────────────────────────────────────────────
+  function OverviewTab({ data }) {
+    const progress = data.progress || {};
+    const learning = data.learning || {};
+    const trading = data.trading || {};
+    const quality = data.quality || {};
+    const exit_stats = data.exit_stats || {};
+
+    const keyCards = [
+      { label: "Win Rate", value: fmt.pctSmart(trading.mean_win_rate, 1), status: trading.mean_win_rate_status },
+      { label: "Max DD", value: fmt.pctSmart(trading.max_drawdown, 2), status: trading.max_drawdown_status },
+      { label: "Profit Factor", value: fmt.num(quality.mean_profit_factor, 2), status: quality.mean_profit_factor_status },
+      { label: "Entry Quality", value: fmt.pctSmart(quality.mean_entry_quality, 1), status: quality.mean_entry_quality_status },
+      { label: "Mean Reward", value: fmt.num(learning.mean_reward, 2), status: learning.mean_reward_status },
+      { label: "Total P&L", value: fmt.currency(learning.total_pnl, 0), status: learning.total_pnl_status },
+      { label: "Trades/Ep", value: fmt.num(trading.mean_trades, 1), status: trading.mean_trades_status },
+      { label: "R-Multiple", value: fmt.num(quality.mean_r_multiple, 2), status: quality.mean_r_multiple_status },
+      { label: "Total Trades", value: fmt.int(trading.total_trades), status: "ok" },
+    ];
+
+    const dist = exit_stats?.distribution || {};
+    const exitEntries = Object.entries(dist).sort(([,a],[,b]) => (Number(b)||0) - (Number(a)||0)).slice(0,8);
+    const totalExits = Object.values(dist).reduce((s,x)=>s+(Number(x)||0),0) || 0;
+
+    return (
+      <div className="space-y-6 animate-fade-in">
+        <section className="glass rounded-3xl p-6 md:p-7">
+          <SectionHeader
+            title="Training Command Center"
+            subtitle={`Episode ${fmt.int(progress.total_episodes)} • Step ${fmt.int(progress.timesteps)} • Live telemetry`}
+            icon="🚀"
+          />
+
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+            <div className="lg:col-span-8 glass-card rounded-3xl p-6">
+              <div className="flex items-start justify-between gap-6">
+                <div className="flex-1">
+                  <div className="flex items-baseline gap-3">
+                    <div className="text-4xl md:text-5xl font-black bg-gradient-to-r from-indigo-400 via-purple-400 to-pink-400 bg-clip-text text-transparent">
+                      {fmt.pctSmart(progress.progress_pct, 1)}
+                    </div>
+                    <div className="text-sm text-slate-500 font-medium">complete</div>
                   </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm text-slate-400">Target Range</span>
-                    <span className="mono text-sm text-slate-300">
-                      {fmt.num(entropyStatus.min_target, 2)} – {fmt.num(entropyStatus.max_target, 2)}
-                    </span>
+                  <div className="text-sm text-slate-400 mt-2">
+                    {fmt.int(progress.timesteps)} / {fmt.int(progress.total_timesteps)} timesteps
                   </div>
-                  {entropyStatus.penalty !== 0 && (
-                    <div className={`rounded-xl p-3 ${entropyStatus.penalty > 0 ? 'bg-rose-500/10 border border-rose-500/20' : 'bg-emerald-500/10 border border-emerald-500/20'}`}>
-                      <span className={`text-sm ${entropyStatus.penalty > 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
-                        {entropyStatus.penalty > 0 ? "⚠️ Penalty applied" : "✓ In target range"}
-                      </span>
+                </div>
+                <div className="text-right glass-card rounded-2xl px-5 py-3">
+                  <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold">ETA</div>
+                  <div className="mono text-2xl font-black text-white mt-1">{fmt.time(progress.eta_seconds)}</div>
+                </div>
+              </div>
+
+              <div className="mt-5">
+                <ProgressBar value01={(progress.total_timesteps>0)?(progress.timesteps/progress.total_timesteps):0} />
+              </div>
+
+              <div className="my-5 h-px bg-gradient-to-r from-transparent via-white/10 to-transparent"></div>
+
+              <div className="grid grid-cols-3 gap-3">
+                {keyCards.map((m, i) => (
+                  <div key={i} className="glass-card rounded-xl p-3 flex items-center justify-between gap-2">
+                    <span className="text-xs text-slate-400 font-medium">{m.label}</span>
+                    <div className="flex items-center gap-2">
+                      <span className={"mono text-sm font-bold " + statusClass(m.status)}>{m.value}</span>
+                      <div className={"w-2 h-2 rounded-full " + (m.status === "good" ? "bg-emerald-500" : m.status === "ok" ? "bg-amber-500" : "bg-rose-500")}></div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="lg:col-span-4 space-y-4">
+              <div className="glass-card rounded-2xl p-4">
+                <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold mb-2">Learning Health</div>
+                <div className="space-y-2">
+                  <div className="flex justify-between">
+                    <span className="text-xs text-slate-400">Entropy</span>
+                    <span className={"mono text-sm font-bold " + statusClass(learning.entropy_status)}>{fmt.num(learning.entropy, 2)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-xs text-slate-400">KL Div</span>
+                    <span className={"mono text-sm font-bold " + statusClass(learning.approx_kl_status)}>{fmt.scientific(learning.approx_kl, 4)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-xs text-slate-400">Clip Frac</span>
+                    <span className={"mono text-sm font-bold " + statusClass(learning.clip_fraction_status)}>{fmt.num(learning.clip_fraction, 3)}</span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="glass-card rounded-2xl p-4">
+                <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold mb-3">Exit Reasons (Top)</div>
+                {exitEntries.length === 0 ? (
+                  <div className="text-sm text-slate-500">No exit data yet.</div>
+                ) : (
+                  <div className="space-y-2 max-h-56 overflow-y-auto">
+                    {exitEntries.map(([k,v]) => {
+                      const c = Number(v)||0;
+                      const pct = totalExits>0 ? (c/totalExits)*100 : 0;
+                      return (
+                        <div key={k} className="flex items-center justify-between gap-3">
+                          <div className="text-xs text-slate-400 truncate">{k}</div>
+                          <div className="mono text-xs text-slate-300">{fmt.int(c)} ({fmt.num(pct,1)}%)</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    );
+  }
+
+  function CurriculumTab({ data }) {
+    const cp = data.curriculum_progress || {};
+    const stageHistory = data.stage_history || [];
+    const reqs = data.requirements_by_stage || null;
+
+    const stageName = cp.current_stage || data.curriculum_stage || "N/A";
+    const stageIdx = (cp.stage_index != null ? cp.stage_index : data.curriculum_stage_idx) || 0;
+
+    const promotionChecks = cp.promotion_checks || {};
+    const prerequisites = cp.prerequisites || null;
+
+    const criteria = useMemo(() => {
+      const out = [];
+      for (const [k, check] of Object.entries(promotionChecks)) {
+        if (!check || check.required === undefined) continue;
+
+        const canonical = canonicalKey(k);
+        const meta = CRIT_META[canonical] || {
+          label: canonical.replace(/_/g," "), icon:"📌", group:"Other", format:"num", higher:true,
+          hint:"Unmapped criterion; add meta if you want better grouping/formatting."
+        };
+
+        const current = check.actual;
+        const required = check.required;
+        const passed = !!check.passed;
+
+        const gap = computeGap(meta, current, required);
+        const blockerGap = passed ? 0 : Math.max(0, gap == null ? 0 : gap);
+
+        let gapText = "—";
+        if (gap != null && !isNaN(gap)) {
+          if (passed) gapText = "✓";
+          else {
+            const dir = (meta.higher !== false) ? "↑" : "↓";
+            const mag = Math.abs(gap);
+            const show = meta.format === "pct" ? fmt.pctSmart(mag, 1) :
+                         meta.format === "currency" ? fmt.currency(mag,0) :
+                         meta.format === "int" ? fmt.int(mag) :
+                         fmt.num(mag, 2);
+            gapText = `${dir} ${show}`;
+          }
+        }
+
+        out.push({
+          key: k,
+          canonical,
+          meta,
+          current,
+          required,
+          passed,
+          gap,
+          blockerGap,
+          progress01: progress01(meta, current, required),
+          gapText,
+        });
+      }
+
+      // Global sort: biggest blockers first
+      out.sort((a,b)=> (b.blockerGap - a.blockerGap));
+      return out;
+    }, [promotionChecks]);
+
+    const blockers = cp.blockers || [];
+    const recommendations = cp.recommendations || [];
+
+    const skillAssessment = cp.skill_assessment || null;
+    const compositeScore = cp.composite_score || null;
+    const learningVelocity = cp.learning_velocity || null;
+    const recoveryProtocol = cp.recovery_protocol || null;
+    const reviewSession = cp.review_session || null;
+    const demotionAnalysis = cp.demotion_analysis || null;
+    const adaptiveThresholds = cp.adaptive_thresholds || null;
+    const entropyStatus = cp.entropy_status || null;
+
+    const isInTransition = !!cp.is_in_transition;
+    const rewardBlend = (cp.reward_blend_factor != null ? cp.reward_blend_factor : 1.0);
+    const lrMult = (cp.lr_multiplier != null ? cp.lr_multiplier : 1.0);
+
+    // Interpretation note: if only prereqs failing, tell the truth explicitly
+    const prereqFailing = criteria.filter(c => c.meta?.group === "Prerequisites" && !c.passed);
+    const nonPrereqFailing = criteria.filter(c => c.meta?.group !== "Prerequisites" && !c.passed);
+    const prereqNote =
+      prereqFailing.length > 0 && nonPrereqFailing.length === 0
+        ? "Promotion is currently blocked only by sample count (episodes/timesteps/data sufficiency). This is normal early in a stage; keep training until prerequisites pass."
+        : null;
+
+    return (
+      <div className="space-y-6 animate-fade-in">
+        <section className="glass rounded-3xl p-6 md:p-7">
+          <SectionHeader
+            title="Current Stage Inspector"
+            subtitle={`Stage ${fmt.int(stageIdx + 1)} • ${stageName}`}
+            icon="🎓"
+          />
+
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+            <div className="lg:col-span-8 space-y-5">
+              <RequirementsTable criteria={criteria} prerequisitesNote={prereqNote} />
+
+              {(blockers.length > 0 || recommendations.length > 0) && (
+                <div className="glass-card rounded-3xl p-6">
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="text-sm font-black text-white">Insights</div>
+                    <div className="text-xs text-slate-600">From backend: blockers + recommendations</div>
+                  </div>
+
+                  {blockers.length > 0 && (
+                    <div className="mb-4">
+                      <div className="text-xs uppercase tracking-wider text-slate-500 font-black mb-2">Blockers</div>
+                      <div className="space-y-2">
+                        {blockers.slice(0,8).map((b,i)=>(
+                          <div key={i} className="row flex items-start gap-2">
+                            <span className="text-rose-400 font-black">✗</span>
+                            <span className="text-sm text-slate-300">{b}</span>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   )}
-                </div>
-              </section>
-            )}
 
-            {/* Adaptive Thresholds */}
-            {adaptiveThresholds && (
-              <section className="glass rounded-3xl p-6">
-                <SectionHeader title="Adaptive Thresholds" subtitle="Dynamic relaxation" icon="⚡" />
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm text-slate-400">Relaxation Amount</span>
-                    <span className="mono text-xl font-black text-white">{fmt.pct(adaptiveThresholds.relaxation_amount * 100, 1)}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm text-slate-400">Max Allowed</span>
-                    <span className="mono text-sm text-slate-300">{fmt.pct(adaptiveThresholds.max_relaxation * 100, 0)}</span>
-                  </div>
-                  {adaptiveThresholds.relaxed_metrics?.length > 0 && (
+                  {recommendations.length > 0 && (
                     <div>
-                      <div className="text-xs text-slate-500 mb-2">Relaxed Metrics:</div>
-                      <div className="flex flex-wrap gap-1">
-                        {adaptiveThresholds.relaxed_metrics.map((metric, i) => (
-                          <span key={i} className="px-2 py-1 rounded-full bg-amber-500/10 text-amber-300 text-xs">
-                            {metric}
-                          </span>
+                      <div className="text-xs uppercase tracking-wider text-slate-500 font-black mb-2">Recommendations</div>
+                      <div className="space-y-2">
+                        {recommendations.slice(0,8).map((r,i)=>(
+                          <div key={i} className="row flex items-start gap-2">
+                            <span className="text-amber-400">💡</span>
+                            <span className="text-sm text-slate-300">{r}</span>
+                          </div>
                         ))}
                       </div>
                     </div>
                   )}
                 </div>
-              </section>
-            )}
-          </div>
-
-          {/* Stage History */}
-          {stageHistory.length > 0 && (
-            <section className="glass rounded-3xl p-6">
-              <SectionHeader title="Stage History" subtitle="Transition timeline" icon="📜" />
-              <div className="space-y-2 max-h-48 overflow-y-auto">
-                {stageHistory.slice(-10).reverse().map((entry, i) => (
-                  <div key={i} className="flex items-center justify-between p-3 rounded-xl bg-black/20">
-                    <div className="flex items-center gap-3">
-                      <span className="text-lg">{STAGE_ICONS[entry.stage] || "📍"}</span>
-                      <span className="text-sm font-bold text-white">{STAGE_NAMES[entry.stage] || `Stage ${entry.stage}`}</span>
-                    </div>
-                    <div className="text-right">
-                      <div className="mono text-xs text-slate-400">Step {fmt.int(entry.timestep)}</div>
-                      <div className="mono text-xs text-slate-500">Ep {fmt.int(entry.episode)}</div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </section>
-          )}
-        </div>
-      );
-    }
-
-    function LearningTab({ data }) {
-      const { learning } = data;
-
-      const rows = [
-        { label: "Policy Loss", value: fmt.scientific(learning?.policy_loss, 4), status: learning?.policy_loss_status, ideal: "< 0 (negative)" },
-        { label: "Value Loss", value: fmt.scientific(learning?.value_loss, 4), status: learning?.value_loss_status, ideal: "< 0.1" },
-        { label: "Entropy", value: fmt.num(learning?.entropy, 2), status: learning?.entropy_status, ideal: "-9 to -5" },
-        { label: "KL Divergence", value: fmt.scientific(learning?.approx_kl, 5), status: learning?.approx_kl_status, ideal: "< 0.015" },
-        { label: "Clip Fraction", value: fmt.num(learning?.clip_fraction, 3), status: learning?.clip_fraction_status, ideal: "0.05 – 0.20" },
-        { label: "Explained Var", value: fmt.num(learning?.explained_variance, 3), status: learning?.explained_variance_status, ideal: "> 0.5" },
-      ];
-
-      return (
-        <div className="space-y-6 animate-fade-in">
-          <section className="glass rounded-3xl p-6 md:p-7">
-            <SectionHeader title="Learning Diagnostics" subtitle={`${fmt.int(learning?.n_updates)} policy updates`} icon="🧠" />
-
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {rows.map(r => (
-                <div key={r.label} className="glass-card rounded-2xl p-5">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <div className="text-xs uppercase tracking-wider text-slate-400 font-bold">{r.label}</div>
-                      <div className={"mono text-2xl font-black mt-2 " + statusClass(r.status)}>{r.value}</div>
-                    </div>
-                    <div className={"w-3 h-3 rounded-full mt-1 " + (r.status === "good" ? "bg-emerald-500" : r.status === "ok" ? "bg-amber-500" : "bg-rose-500")}></div>
-                  </div>
-                  <div className="mt-3 pt-3 border-t border-white/5">
-                    <div className="text-xs text-slate-500">Ideal: <span className="text-slate-400 font-medium">{r.ideal}</span></div>
-                  </div>
-                </div>
-              ))}
+              )}
             </div>
 
-            <div className="mt-6 glass-card rounded-2xl p-4">
-              <div className="flex flex-wrap items-center justify-between gap-6">
-                <div className="flex items-center gap-6">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold">FPS</span>
-                    <span className="mono text-lg font-bold text-white">{fmt.int(learning?.fps)}</span>
+            <div className="lg:col-span-4 space-y-5">
+              <div className={"glass-card rounded-3xl p-6 " + (recoveryProtocol?.is_active ? "recovery-active" : reviewSession?.is_active ? "review-active" : "")}>
+                <div className="text-xs uppercase tracking-wider text-slate-500 font-black mb-3">Stage Runtime</div>
+                <div className="space-y-2 text-sm">
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Epoch</span>
+                    <span className="mono text-slate-200 font-black">{fmt.int(cp.stage_epoch || 0)}</span>
                   </div>
-                  <div className="w-px h-6 bg-white/10"></div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold">LR</span>
-                    <span className="mono text-lg font-bold text-white">{fmt.scientific(learning?.learning_rate, 2)}</span>
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Stage Episodes</span>
+                    <span className="mono text-slate-200 font-black">{fmt.int(cp.stage_episodes || 0)}</span>
                   </div>
-                  <div className="w-px h-6 bg-white/10"></div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold">Clip</span>
-                    <span className="mono text-lg font-bold text-white">{fmt.num(learning?.clip_range, 2)}</span>
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Stage Timesteps</span>
+                    <span className="mono text-slate-200 font-black">{fmt.int(cp.stage_timesteps || 0)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Transition</span>
+                    <span className={"mono font-black " + (isInTransition ? "text-amber-300" : "text-emerald-300")}>{isInTransition ? "YES" : "NO"}</span>
                   </div>
                 </div>
+
+                <div className="my-4 h-px bg-white/5"></div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="row">
+                    <div className="text-xs text-slate-500 font-black uppercase tracking-wider">Reward Blend</div>
+                    <div className="mono text-lg font-black text-white mt-1">{fmt.num(rewardBlend, 2)}</div>
+                  </div>
+                  <div className="row">
+                    <div className="text-xs text-slate-500 font-black uppercase tracking-wider">LR Mult</div>
+                    <div className="mono text-lg font-black text-white mt-1">{fmt.num(lrMult, 2)}</div>
+                  </div>
+                </div>
+
+                {prerequisites && (
+                  <div className="mt-4 row border-indigo-500/20">
+                    <div className="text-xs uppercase tracking-wider text-slate-500 font-black">Prerequisites</div>
+                    <div className="flex items-center justify-between mt-1">
+                      <div className="text-sm text-slate-300">Passed</div>
+                      <div className={"mono text-sm font-black " + (prerequisites.all_passed ? "text-emerald-300" : "text-amber-300")}>
+                        {fmt.int(prerequisites.passed)} / {fmt.int(prerequisites.total)}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="glass-card rounded-3xl p-6">
+                <SectionHeader title="Protocols" subtitle="Recovery / review / adaptive / entropy" icon="🧰" />
+                <ProtocolsPanel
+                  recoveryProtocol={recoveryProtocol}
+                  reviewSession={reviewSession}
+                  demotionAnalysis={demotionAnalysis}
+                  adaptiveThresholds={adaptiveThresholds}
+                  entropyStatus={entropyStatus}
+                />
+              </div>
+
+              <StageRequirementsPanel requirementsByStage={reqs} stageName={stageName} />
+            </div>
+          </div>
+        </section>
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <section className="glass rounded-3xl p-6">
+            <SectionHeader title="Skill Assessment" subtitle="Competency decomposition" icon="🎯" />
+            <SkillAssessmentPanel skillAssessment={skillAssessment} />
+          </section>
+
+          <section className="glass rounded-3xl p-6">
+            <SectionHeader title="Composite Score" subtitle="Promotion readiness metric" icon="📊" />
+            <CompositeScorePanel compositeScore={compositeScore} prerequisites={prerequisites} />
+          </section>
+
+          <section className="glass rounded-3xl p-6">
+            <SectionHeader title="Learning Velocity" subtitle="Trend over evaluation window" icon="📈" />
+            <LearningVelocityPanel learningVelocity={learningVelocity} />
+          </section>
+        </div>
+
+        {stageHistory.length > 0 && (
+          <section className="glass rounded-3xl p-6">
+            <SectionHeader title="Stage History" subtitle="Recent transitions" icon="📜" />
+            <div className="space-y-2 max-h-56 overflow-y-auto">
+              {stageHistory.slice(-12).reverse().map((e, i) => {
+                const label =
+                  e.stage_name ??
+                  (e.stage_index != null ? `Stage ${e.stage_index}` : null) ??
+                  (e.stage != null ? `Stage ${e.stage}` : "Stage");
+
+                return (
+                  <div key={i} className="row flex items-center justify-between">
+                    <div className="min-w-0">
+                      <div className="text-sm font-black text-white truncate">{label}</div>
+                      <div className="text-xs text-slate-500">Step {fmt.int(e.timestep)} • Ep {fmt.int(e.episode)}</div>
+                    </div>
+                    <div className="mono text-xs text-slate-500 truncate max-w-[55%]">{String(e.reason || "")}</div>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
+        <section className="glass rounded-3xl p-6">
+          <SectionHeader title="Debug" subtitle="Backend payload snapshot" icon="🧪" />
+          <details className="glass-card rounded-2xl p-4">
+            <summary className="cursor-pointer text-sm font-black text-white">Show raw curriculum payload</summary>
+            <pre className="mt-4 text-xs text-slate-300 bg-black/40 border border-white/5 rounded-xl p-4 overflow-auto">
+{JSON.stringify({ curriculum_progress: cp, promotion_checks: promotionChecks, requirements_by_stage: reqs }, null, 2)}
+            </pre>
+          </details>
+        </section>
+      </div>
+    );
+  }
+
+  function LearningTab({ data }) {
+    const learning = data.learning || {};
+    const rows = [
+      { label: "Policy Loss", value: fmt.scientific(learning.policy_loss, 4), status: learning.policy_loss_status, ideal: "< 0 (negative)" },
+      { label: "Value Loss", value: fmt.scientific(learning.value_loss, 4), status: learning.value_loss_status, ideal: "< 0.1" },
+      { label: "Entropy", value: fmt.num(learning.entropy, 2), status: learning.entropy_status, ideal: "-9 to -5" },
+      { label: "KL Divergence", value: fmt.scientific(learning.approx_kl, 5), status: learning.approx_kl_status, ideal: "< 0.015" },
+      { label: "Clip Fraction", value: fmt.num(learning.clip_fraction, 3), status: learning.clip_fraction_status, ideal: "0.05 – 0.20" },
+      { label: "Explained Var", value: fmt.num(learning.explained_variance, 3), status: learning.explained_variance_status, ideal: "> 0.5" },
+    ];
+
+    return (
+      <div className="space-y-6 animate-fade-in">
+        <section className="glass rounded-3xl p-6 md:p-7">
+          <SectionHeader title="Learning Diagnostics" subtitle={`${fmt.int(learning.n_updates)} policy updates`} icon="🧠" />
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {rows.map(r => (
+              <div key={r.label} className="glass-card rounded-2xl p-5">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-xs uppercase tracking-wider text-slate-400 font-black">{r.label}</div>
+                    <div className={"mono text-2xl font-black mt-2 " + statusClass(r.status)}>{r.value}</div>
+                  </div>
+                  <div className={"w-3 h-3 rounded-full mt-1 " + (r.status === "good" ? "bg-emerald-500" : r.status === "ok" ? "bg-amber-500" : "bg-rose-500")}></div>
+                </div>
+                <div className="mt-3 pt-3 border-t border-white/5">
+                  <div className="text-xs text-slate-500">Ideal: <span className="text-slate-400 font-medium">{r.ideal}</span></div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-6 glass-card rounded-2xl p-4">
+            <div className="flex flex-wrap items-center justify-between gap-6">
+              <div className="flex items-center gap-6">
                 <div className="flex items-center gap-2">
-                  <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold">Updates</span>
-                  <span className="mono text-xl font-black bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent">{fmt.int(learning?.n_updates)}</span>
+                  <span className="text-xs text-slate-500 uppercase tracking-wider font-black">FPS</span>
+                  <span className="mono text-lg font-black text-white">{fmt.int(learning.fps)}</span>
+                </div>
+                <div className="w-px h-6 bg-white/10"></div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-slate-500 uppercase tracking-wider font-black">LR</span>
+                  <span className="mono text-lg font-black text-white">{fmt.scientific(learning.learning_rate, 2)}</span>
+                </div>
+                <div className="w-px h-6 bg-white/10"></div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-slate-500 uppercase tracking-wider font-black">Clip</span>
+                  <span className="mono text-lg font-black text-white">{fmt.num(learning.clip_range, 2)}</span>
                 </div>
               </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-slate-500 uppercase tracking-wider font-black">Updates</span>
+                <span className="mono text-xl font-black bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent">{fmt.int(learning.n_updates)}</span>
+              </div>
             </div>
-          </section>
-        </div>
-      );
-    }
-
-    function ChartsTab({ data }) {
-      const rewards = data.recent_rewards || [];
-      const pnls = data.recent_pnls || [];
-      const winRates = data.recent_win_rates || [];
-      const drawdowns = data.recent_drawdowns || [];
-      const rMult = data.recent_r_multiples || [];
-
-      return (
-        <div className="space-y-6 animate-fade-in">
-          <section className="glass rounded-3xl p-6 md:p-7">
-            <SectionHeader title="Reward History" subtitle="Last 100 episodes" icon="📈" />
-            <div className="h-56"><LargeChart data={rewards} colorPositive="#34d399" colorNegative="#fb7185" /></div>
-          </section>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <section className="glass rounded-3xl p-6">
-              <SectionHeader title="P&L History" icon="💵" />
-              <div className="h-44"><LargeChart data={pnls} /></div>
-            </section>
-
-            <section className="glass rounded-3xl p-6">
-              <SectionHeader title="Win Rate Trend" icon="🎯" />
-              <div className="h-44"><LargeChart data={winRates} baseline={50} colorPositive="#a5b4fc" colorNegative="#fb7185" /></div>
-            </section>
-
-            <section className="glass rounded-3xl p-6">
-              <SectionHeader title="Drawdown History" icon="📉" />
-              <div className="h-44"><LargeChart data={drawdowns.map(d=>-Math.abs(d))} invertColors colorPositive="#fb7185" colorNegative="#fb7185" /></div>
-            </section>
-
-            <section className="glass rounded-3xl p-6">
-              <SectionHeader title="R-Multiple Trend" icon="⭐" />
-              <div className="h-44"><LargeChart data={rMult} /></div>
-            </section>
           </div>
+        </section>
+      </div>
+    );
+  }
+
+  function ChartsTab({ data }) {
+    const rewards = data.recent_rewards || [];
+    const pnls = data.recent_pnls || [];
+    const winRates = data.recent_win_rates || [];
+    const drawdowns = data.recent_drawdowns || [];
+    const rMult = data.recent_r_multiples || [];
+
+    return (
+      <div className="space-y-6 animate-fade-in">
+        <section className="glass rounded-3xl p-6 md:p-7">
+          <SectionHeader title="Reward History" subtitle="Last 100 episodes" icon="📈" />
+          <div className="h-56"><LargeChart data={rewards} colorPositive="#34d399" colorNegative="#fb7185" /></div>
+        </section>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <section className="glass rounded-3xl p-6">
+            <SectionHeader title="P&L History" icon="💵" />
+            <div className="h-44"><LargeChart data={pnls} /></div>
+          </section>
+
+          <section className="glass rounded-3xl p-6">
+            <SectionHeader title="Win Rate Trend" icon="🎯" />
+            <div className="h-44"><LargeChart data={winRates} baseline={50} colorPositive="#a5b4fc" colorNegative="#fb7185" /></div>
+          </section>
+
+          <section className="glass rounded-3xl p-6">
+            <SectionHeader title="Drawdown History" icon="📉" />
+            <div className="h-44"><LargeChart data={drawdowns.map(d=>-Math.abs(d))} baseline={0} colorPositive="#fb7185" colorNegative="#fb7185" /></div>
+          </section>
+
+          <section className="glass rounded-3xl p-6">
+            <SectionHeader title="R-Multiple Trend" icon="⭐" />
+            <div className="h-44"><LargeChart data={rMult} /></div>
+          </section>
         </div>
-      );
-    }
+      </div>
+    );
+  }
 
-    // ─────────────────────────────────────────────────────────────────────────────
-    // MAIN APP
-    // ─────────────────────────────────────────────────────────────────────────────
-    function App() {
-      const [data, setData] = useState(null);
-      const [connected, setConnected] = useState(false);
-      const [activeTab, setActiveTab] = useState("overview");
-      const [lastUpdate, setLastUpdate] = useState(null);
-      const [updateCount, setUpdateCount] = useState(0);
+  // ─────────────────────────────────────────────────────────────────────────────
+  // MAIN APP
+  // ─────────────────────────────────────────────────────────────────────────────
+  function App() {
+    const [data, setData] = useState(null);
+    const [connected, setConnected] = useState(false);
+    const [activeTab, setActiveTab] = useState("overview");
+    const [lastUpdate, setLastUpdate] = useState(null);
+    const [updateCount, setUpdateCount] = useState(0);
 
-      useEffect(() => {
-        let ws;
-        let reconnectTimeout;
+    useEffect(() => {
+      let ws;
+      let reconnectTimeout;
 
-        const connect = () => {
-          const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-          const url = `${protocol}://${window.location.host}/ws`;
-          ws = new WebSocket(url);
+      const connect = () => {
+        const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+        const url = `${protocol}://${window.location.host}/ws`;
+        ws = new WebSocket(url);
 
-          ws.onopen = () => setConnected(true);
+        ws.onopen = () => setConnected(true);
 
-          ws.onmessage = (event) => {
-            try {
-              const payload = JSON.parse(event.data);
-              setData(payload);
-              setLastUpdate(new Date());
-              setUpdateCount(c => c + 1);
-            } catch (e) {
-              console.error("Parse error:", e);
-            }
-          };
-
-          ws.onclose = () => {
-            setConnected(false);
-            reconnectTimeout = setTimeout(connect, 2000);
-          };
-
-          ws.onerror = (err) => console.error("WebSocket error:", err);
+        ws.onmessage = (event) => {
+          try {
+            const payload = JSON.parse(event.data);
+            setData(payload);
+            setLastUpdate(new Date());
+            setUpdateCount(c => c + 1);
+          } catch (e) {
+            console.error("Parse error:", e);
+          }
         };
 
-        connect();
-        return () => {
-          if (ws) ws.close();
-          if (reconnectTimeout) clearTimeout(reconnectTimeout);
+        ws.onclose = () => {
+          setConnected(false);
+          reconnectTimeout = setTimeout(connect, 2000);
         };
-      }, []);
 
-      const tabs = [
-        { id: "overview", label: "Overview", icon: "📊" },
-        { id: "curriculum", label: "Curriculum", icon: "🎓" },
-        { id: "learning", label: "Learning", icon: "🧠" },
-        { id: "charts", label: "Charts", icon: "📈" },
-      ];
+        ws.onerror = (err) => console.error("WebSocket error:", err);
+      };
 
-      return (
-        <div className="min-h-screen px-4 py-5 md:px-7 md:py-7">
-          <div className="max-w-[1500px] mx-auto">
-            {/* Header */}
-            <header className="glass rounded-3xl p-5 md:p-6 mb-6 sticky top-3 z-20">
-              <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-5">
-                <div className="flex items-center gap-4">
-                  <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 flex items-center justify-center shadow-lg shadow-purple-500/25 animate-glow">
-                    <span className="text-2xl">🤖</span>
-                  </div>
-                  <div className="min-w-0">
-                    <h1 className="text-xl md:text-2xl font-black gradient-text tracking-tight">
-                      PropFirm PPO Dashboard v2.0
-                    </h1>
-                    <p className="text-sm text-slate-500 mt-1">
-                      Curriculum Learning • Skill Assessment • Recovery Protocols
-                    </p>
-                  </div>
+      connect();
+      return () => {
+        if (ws) ws.close();
+        if (reconnectTimeout) clearTimeout(reconnectTimeout);
+      };
+    }, []);
+
+    const tabs = [
+      { id: "overview", label: "Overview", icon: "📊" },
+      { id: "curriculum", label: "Curriculum", icon: "🎓" },
+      { id: "learning", label: "Learning", icon: "🧠" },
+      { id: "charts", label: "Charts", icon: "📈" },
+    ];
+
+    return (
+      <div className="min-h-screen px-4 py-5 md:px-7 md:py-7">
+        <div className="max-w-[1500px] mx-auto">
+          <header className="glass rounded-3xl p-5 md:p-6 mb-6 sticky top-3 z-20">
+            <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-5">
+              <div className="flex items-center gap-4">
+                <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 flex items-center justify-center shadow-lg shadow-purple-500/25 animate-glow">
+                  <span className="text-2xl">🤖</span>
+                </div>
+                <div className="min-w-0">
+                  <h1 className="text-xl md:text-2xl font-black gradient-text tracking-tight">
+                    PropFirm PPO Dashboard v2.1
+                  </h1>
+                  <p className="text-sm text-slate-500 mt-1">
+                    Stage Inspector • Promotion Gates • Requirements Reference
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="px-3 py-2 rounded-2xl bg-black/20 border border-white/5 flex items-center gap-2">
+                  <div className={"live-dot " + (connected ? "" : "disconnected")} />
+                  <span className="text-sm text-slate-300 font-semibold">
+                    {connected ? "Live" : "Reconnecting…"}
+                  </span>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-3">
-                  <div className="px-3 py-2 rounded-2xl bg-black/20 border border-white/5 flex items-center gap-2">
-                    <div className={"live-dot " + (connected ? "" : "disconnected")} />
-                    <span className="text-sm text-slate-300 font-semibold">
-                      {connected ? "Live" : "Reconnecting…"}
+                {lastUpdate && (
+                  <div className="px-3 py-2 rounded-2xl bg-black/20 border border-white/5">
+                    <span className="text-xs text-slate-500 font-black uppercase tracking-wider">Updated</span>
+                    <span className="mono text-sm text-slate-200 font-black ml-2">{lastUpdate.toLocaleTimeString()}</span>
+                  </div>
+                )}
+
+                {data?.progress && (
+                  <div className="px-3 py-2 rounded-2xl bg-black/20 border border-white/5">
+                    <span className="text-xs text-slate-500 font-black uppercase tracking-wider">Steps</span>
+                    <span className="mono text-sm text-slate-200 font-black ml-2">
+                      {fmt.int(data.progress.timesteps)} / {fmt.int(data.progress.total_timesteps)}
                     </span>
                   </div>
+                )}
+              </div>
+            </div>
 
-                  {lastUpdate && (
-                    <div className="px-3 py-2 rounded-2xl bg-black/20 border border-white/5">
-                      <span className="text-xs text-slate-500 font-black uppercase tracking-wider">Updated</span>
-                      <span className="mono text-sm text-slate-200 font-black ml-2">{lastUpdate.toLocaleTimeString()}</span>
-                    </div>
-                  )}
+            <div className="mt-5 flex items-center justify-center">
+              <div className="inline-flex items-center gap-1 p-1.5 rounded-2xl bg-black/30 border border-white/5 backdrop-blur-sm">
+                {tabs.map(tab => (
+                  <button
+                    key={tab.id}
+                    onClick={() => setActiveTab(tab.id)}
+                    className={"px-5 py-2.5 rounded-xl font-black text-sm transition-all duration-200 flex items-center gap-2 " +
+                      (activeTab === tab.id
+                        ? "bg-gradient-to-r from-indigo-500/20 via-purple-500/20 to-pink-500/20 text-white border border-indigo-500/30 shadow-lg shadow-indigo-500/10"
+                        : "text-slate-400 hover:text-white hover:bg-white/5")}
+                  >
+                    <span className="text-base">{tab.icon}</span>
+                    <span>{tab.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </header>
 
-                  {data?.progress && (
-                    <div className="px-3 py-2 rounded-2xl bg-black/20 border border-white/5">
-                      <span className="text-xs text-slate-500 font-black uppercase tracking-wider">Steps</span>
-                      <span className="mono text-sm text-slate-200 font-black ml-2">
-                        {fmt.int(data.progress.timesteps)} / {fmt.int(data.progress.total_timesteps)}
-                      </span>
-                    </div>
-                  )}
+          <main>
+            {!data || data.status === "waiting" ? (
+              <div className="glass rounded-3xl p-10 md:p-12 text-center animate-slide-up">
+                <div className="w-20 h-20 mx-auto mb-6 rounded-3xl bg-gradient-to-br from-indigo-500/20 to-pink-500/15 border border-white/10 flex items-center justify-center animate-float">
+                  <span className="text-4xl">⏳</span>
+                </div>
+                <h2 className="text-xl font-black text-white mb-2 tracking-tight">Waiting for Training Data</h2>
+                <p className="text-slate-500 max-w-md mx-auto">
+                  {data?.message || "Start training to see live metrics."}
+                </p>
+                <div className="mt-6 text-xs text-slate-600">
+                  Listening on <span className="mono text-slate-400">/ws</span>
                 </div>
               </div>
+            ) : (
+              <>
+                {activeTab === "overview" && <OverviewTab data={data} />}
+                {activeTab === "curriculum" && <CurriculumTab data={data} />}
+                {activeTab === "learning" && <LearningTab data={data} />}
+                {activeTab === "charts" && <ChartsTab data={data} />}
+              </>
+            )}
+          </main>
 
-              {/* Tabs */}
-              <div className="mt-5 flex items-center justify-center">
-                <div className="inline-flex items-center gap-1 p-1.5 rounded-2xl bg-black/30 border border-white/5 backdrop-blur-sm">
-                  {tabs.map(tab => (
-                    <button
-                      key={tab.id}
-                      onClick={() => setActiveTab(tab.id)}
-                      className={"px-5 py-2.5 rounded-xl font-bold text-sm transition-all duration-200 flex items-center gap-2 " + 
-                        (activeTab === tab.id 
-                          ? "bg-gradient-to-r from-indigo-500/20 via-purple-500/20 to-pink-500/20 text-white border border-indigo-500/30 shadow-lg shadow-indigo-500/10" 
-                          : "text-slate-400 hover:text-white hover:bg-white/5")}
-                    >
-                      <span className="text-base">{tab.icon}</span>
-                      <span>{tab.label}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </header>
-
-            {/* Main Content */}
-            <main>
-              {!data || data.status === "waiting" ? (
-                <div className="glass rounded-3xl p-10 md:p-12 text-center animate-slide-up">
-                  <div className="w-20 h-20 mx-auto mb-6 rounded-3xl bg-gradient-to-br from-indigo-500/20 to-pink-500/15 border border-white/10 flex items-center justify-center animate-float">
-                    <span className="text-4xl">⏳</span>
-                  </div>
-                  <h2 className="text-xl font-black text-white mb-2 tracking-tight">Waiting for Training Data</h2>
-                  <p className="text-slate-500 max-w-md mx-auto">
-                    {data?.message || "Start training with --curriculum flag to see live curriculum metrics."}
-                  </p>
-                  <div className="mt-6 text-xs text-slate-600">
-                    Listening on <span className="mono text-slate-400">/ws</span>
-                  </div>
-                </div>
-              ) : (
-                <>
-                  {activeTab === "overview" && <OverviewTab data={data} />}
-                  {activeTab === "curriculum" && <CurriculumTab data={data} />}
-                  {activeTab === "learning" && <LearningTab data={data} />}
-                  {activeTab === "charts" && <ChartsTab data={data} />}
-                </>
-              )}
-            </main>
-
-            {/* Footer */}
-            <footer className="mt-8 text-center text-xs text-slate-600">
-              <p>
-                PropFirm PPO v2.0 • Curriculum Learning System • Updates: <span className="mono">{updateCount}</span>
-              </p>
-            </footer>
-          </div>
+          <footer className="mt-8 text-center text-xs text-slate-600">
+            <p>
+              PropFirm PPO v2.1 • Updates: <span className="mono">{updateCount}</span>
+            </p>
+          </footer>
         </div>
-      );
-    }
+      </div>
+    );
+  }
 
-    const root = ReactDOM.createRoot(document.getElementById("root"));
-    root.render(<App />);
-  </script>
+  const root = ReactDOM.createRoot(document.getElementById("root"));
+  root.render(<App />);
+</script>
+
 </body>
 </html>

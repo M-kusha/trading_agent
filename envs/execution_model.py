@@ -45,10 +45,12 @@ class ExecutionConfig:
     # Base spread configuration
     base_spread_points: float = 0.20          # Base spread in price points
     spread_mult_range: Tuple[float, float] = (0.85, 1.40)  # Random multiplier range
+    spread_mult: float = 1.0                  # Current episode's spread multiplier (sampled from range)
     
     # Slippage configuration  
     slippage_points_sigma: float = 0.05       # Stdev of slippage (points)
     slippage_mult_range: Tuple[float, float] = (0.60, 1.80)  # Random multiplier range
+    slippage_mult: float = 1.0                # Current episode's slippage multiplier (sampled from range)
     
     # Commission and latency
     commission_per_lot: float = 0.0           # EUR per lot (set if broker charges)

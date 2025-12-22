@@ -521,25 +521,75 @@ def get_foundation_config() -> CurriculumStageConfig:
             enable_randomization=False,
         ),
         rewards=RewardShaping(
-            reward_scale=5.0,
-            loss_multiplier=0.5,
-            r_multiple_bonus_threshold=1.0,
-            r_multiple_bonus_scale=0.2,
-            r_multiple_bonus_cap=0.4,
+            # ============================================================================
+            # FOUNDATION: PURE PnL LEARNING - MINIMAL BONUSES
+            # ============================================================================
+            # Goal: Agent learns that PnL matters. Bonuses kept near-zero to ensure
+            # the base reward signal dominates. Breakeven should be ~47-50% win rate.
+            # 
+            # Math for $300 trade (0.3% of 100k):
+            #   base_reward = 0.003 * 5.0 = 0.015
+            #   max_bonus   = 0.003 (20% of base) 
+            #   Breakeven with bonuses: ~47% win rate
+            # ============================================================================
+            reward_scale=5.0,           # Moderate scale
+            loss_multiplier=0.95,       # 95% penalty - slight leniency for learning
+            
+            # R-multiple bonus: DISABLED in Foundation - keep it simple
+            r_multiple_bonus_threshold=99.0,  # Effectively disabled
+            r_multiple_bonus_scale=0.0,
+            r_multiple_bonus_cap=0.0,
+            
+            # MAE efficiency: DISABLED
             mae_efficiency_enabled=False,
+            mae_efficiency_scale=0.0,
+            mae_efficiency_threshold=99.0,
+            
+            # Time efficiency: DISABLED
             time_efficiency_enabled=False,
+            time_efficiency_scale=0.0,
+            optimal_trade_bars=12,
+            max_trade_bars_for_bonus=48,
+            
+            # Exit quality: DISABLED (learn to trade first)
             exit_quality_enabled=False,
+            trailing_stop_bonus=0.0,
+            agent_close_bonus=0.0,
+            hard_stop_penalty=0.0,
+            risk_liquidation_penalty=0.0,
+            
+            # Truncation handling: Keep
+            truncation_winner_discount=0.30,
+            truncation_loser_extra_penalty=0.15,
+            
+            # Entry quality: DISABLED
             entry_quality_integration=False,
-            dd_shaping_enabled=False,
+            entry_quality_weight=0.0,
+            
+            # DD shaping: Light touch
+            dd_shaping_enabled=True,
+            dd_threshold=0.10,          # Only start at 10% DD
+            dd_penalty_scale=0.25,      # Light penalty
+            dd_severity_exponent=1.2,
+            dd_severity_cap=0.5,
+            
+            # Streaks: DISABLED
             streak_modifier_enabled=False,
+            win_streak_bonus_per_win=0.0,
+            loss_streak_penalty_per_loss=0.0,
+            
+            # Anti-churn: DISABLED
             anti_churn_enabled=False,
-            hard_block_penalty=0.0,
-            soft_block_penalty=0.0,
+            daily_trade_soft_limit=100,
+            churn_penalty_per_trade=0.0,
+            
+            hard_block_penalty=0.01,
+            soft_block_penalty=0.005,
             per_step_shaping_enabled=False,
-            exploration_bonus=0.01,
-            directional_accuracy_weight=1.5,
-            min_reward=-2.0,
-            max_reward=3.0,
+            exploration_bonus=0.002,    # Tiny exploration bonus
+            directional_accuracy_weight=1.0,
+            min_reward=-2.5,
+            max_reward=2.5,
         ),
         constraints=TradingConstraints(
             max_positions=1,
@@ -570,14 +620,14 @@ def get_foundation_config() -> CurriculumStageConfig:
         competence=CompetenceThresholds(
             min_episodes=250,
             min_timesteps=200_000,
-            min_win_rate=0.35,
-            min_profit_factor=0.6,
-            max_avg_drawdown=0.30,
-            min_avg_pnl=-500.0,
-            min_avg_r_multiple=0.0,
-            min_entropy=0.15,
-            max_win_rate_std=0.25,
-            max_pnl_std=5000.0,
+            min_win_rate=0.38,  # Raised from 0.35 - need better than random
+            min_profit_factor=0.75,  # Raised from 0.6 - need near-breakeven
+            max_avg_drawdown=0.25,  # Tightened from 0.30
+            min_avg_pnl=-150.0,  # CRITICAL: Raised from -500 - can't hemorrhage money
+            min_avg_r_multiple=-0.15,  # CRITICAL: Raised from 0.0 - must show risk awareness
+            min_entropy=0.12,  # Slightly reduced
+            max_win_rate_std=0.22,  # Tightened from 0.25
+            max_pnl_std=3000.0,  # Tightened from 5000
             min_trade_count_avg=2.0,
             max_dd_breach_rate=0.40,
             max_consecutive_loss_rate=0.25,
@@ -629,8 +679,15 @@ def get_foundation_config() -> CurriculumStageConfig:
         ),
         composite_scoring=CompositeScoringConfig(
             enabled=True,
-            promotion_threshold=0.55,
+            promotion_threshold=0.68,  # Raised from 0.65 - needs real competence
             demotion_threshold=0.25,
+            # Hard floors must match or exceed traditional thresholds
+            hard_floors={
+                "win_rate": 0.38,       # Raised from 0.35
+                "max_drawdown": 0.25,   # Tightened from 0.30
+                "dd_breach_rate": 0.35, # Tightened from 0.40
+                "profit_factor": 0.70,  # NEW: Must show some profitability sense
+            },
         ),
         adaptive_thresholds=AdaptiveThresholdConfig(
             enabled=True,
@@ -670,36 +727,75 @@ def get_discipline_config() -> CurriculumStageConfig:
             volatility_scale_range=(0.95, 1.10),
         ),
         rewards=RewardShaping(
-            reward_scale=8.0,
-            loss_multiplier=0.8,
-            r_multiple_bonus_threshold=1.5,
-            r_multiple_bonus_scale=0.25,
-            r_multiple_bonus_cap=0.5,
+            # ============================================================================
+            # DISCIPLINE: INTRODUCE SMALL BONUSES - BASE PnL STILL DOMINANT
+            # ============================================================================
+            # Goal: Agent learns that QUALITY wins matter. Small bonuses introduced
+            # but capped at ~25% of base reward. Breakeven: ~45-48% win rate.
+            #
+            # Math for $300 trade (0.3% of 100k):
+            #   base_reward = 0.003 * 6.0 = 0.018
+            #   max_bonus   = 0.0045 (25% of base)
+            #   Win with bonus: 0.0225, Loss: -0.018
+            #   Breakeven: 0.018 / (0.018 + 0.0225) = 44.4%
+            # ============================================================================
+            reward_scale=6.0,
+            loss_multiplier=1.0,        # SYMMETRIC - losses hurt equally
+            
+            # R-multiple bonus: SMALL - reward exceptional R trades
+            r_multiple_bonus_threshold=2.0,   # Need R > 2.0 to get any bonus
+            r_multiple_bonus_scale=0.02,      # Very small scale
+            r_multiple_bonus_cap=0.003,       # Cap at 0.003 (~17% of base)
+            
+            # MAE efficiency: Introduce lightly
             mae_efficiency_enabled=True,
-            mae_efficiency_scale=0.15,
-            mae_efficiency_threshold=2.0,
+            mae_efficiency_scale=0.001,       # Tiny - max ~6% of base
+            mae_efficiency_threshold=3.0,     # High threshold
+            
+            # Time efficiency: Light
             time_efficiency_enabled=True,
-            time_efficiency_scale=0.10,
-            optimal_trade_bars=10,
-            max_trade_bars_for_bonus=30,
-            exit_quality_enabled=False,
-            entry_quality_integration=False,
+            time_efficiency_scale=0.001,      # Tiny
+            optimal_trade_bars=12,
+            max_trade_bars_for_bonus=36,
+            
+            # Exit quality: Introduce with SMALL bonuses
+            exit_quality_enabled=True,
+            trailing_stop_bonus=0.001,        # Tiny bonus for trailing stop
+            agent_close_bonus=0.0005,         # Even smaller for manual close
+            hard_stop_penalty=0.002,          # Small penalty for hard stop
+            risk_liquidation_penalty=0.005,   # Larger for emergency close
+            
+            truncation_winner_discount=0.30,
+            truncation_loser_extra_penalty=0.15,
+            
+            # Entry quality: Light integration
+            entry_quality_integration=True,
+            entry_quality_weight=0.10,        # Reduced from 0.15
+            
+            # DD shaping: Active
             dd_shaping_enabled=True,
-            dd_threshold=0.05,
+            dd_threshold=0.04,                # Start penalty at 4% DD
             dd_penalty_scale=0.5,
-            dd_severity_exponent=1.2,
+            dd_severity_exponent=1.3,
             dd_severity_cap=1.0,
-            streak_modifier_enabled=False,
+            
+            # Streaks: SMALL modifiers
+            streak_modifier_enabled=True,
+            win_streak_bonus_per_win=0.0005,  # Tiny: 5 wins = 0.0025 bonus
+            loss_streak_penalty_per_loss=0.001, # Small: 3 losses = 0.003 penalty
+            
+            # Anti-churn: Active
             anti_churn_enabled=True,
             daily_trade_soft_limit=25,
-            churn_penalty_per_trade=0.01,
-            hard_block_penalty=0.03,
+            churn_penalty_per_trade=0.002,
+            
+            hard_block_penalty=0.02,
             soft_block_penalty=0.01,
             per_step_shaping_enabled=False,
             exploration_bonus=0.0,
             directional_accuracy_weight=1.0,
             min_reward=-3.0,
-            max_reward=4.0,
+            max_reward=3.0,
         ),
         constraints=TradingConstraints(
             max_positions=1,
@@ -728,20 +824,20 @@ def get_discipline_config() -> CurriculumStageConfig:
             max_risk_per_trade_pct=0.008,
         ),
         competence=CompetenceThresholds(
-            min_episodes=150,
-            min_timesteps=200_000,
-            min_win_rate=0.38,
-            min_profit_factor=0.75,
-            max_avg_drawdown=0.18,
-            min_avg_pnl=-200.0,
-            min_avg_r_multiple=0.02,
-            min_entropy=0.12,
-            max_win_rate_std=0.22,
-            max_pnl_std=5000.0,
-            min_trade_count_avg=2.5,
-            max_dd_breach_rate=0.30,
-            max_consecutive_loss_rate=0.20,
-            evaluation_window=75,
+            min_episodes=200,  # Raised from 150 - need more experience
+            min_timesteps=300_000,  # Raised from 200_000
+            min_win_rate=0.42,  # RAISED from 0.38 - need consistent winning
+            min_profit_factor=0.90,  # RAISED from 0.75 - need near-breakeven minimum
+            max_avg_drawdown=0.12,  # TIGHTENED from 0.18
+            min_avg_pnl=-50.0,  # CRITICAL: Raised from -200 - stop promoting losers!
+            min_avg_r_multiple=0.05,  # RAISED from 0.02 - must have positive expectancy
+            min_entropy=0.10,  # Slightly reduced
+            max_win_rate_std=0.18,  # TIGHTENED from 0.22 - need consistency
+            max_pnl_std=2500.0,  # TIGHTENED from 5000
+            min_trade_count_avg=3.5,  # Raised from 2.5 - need trading activity
+            max_dd_breach_rate=0.20,  # TIGHTENED from 0.30
+            max_consecutive_loss_rate=0.15,  # TIGHTENED from 0.20
+            evaluation_window=100,  # Raised from 75 - need longer track record
         ),
         max_steps_per_episode=1800,
         include_memory_features=True,
@@ -789,8 +885,15 @@ def get_discipline_config() -> CurriculumStageConfig:
         ),
         composite_scoring=CompositeScoringConfig(
             enabled=True,
-            promotion_threshold=0.60,
-            demotion_threshold=0.30,
+            promotion_threshold=0.70,  # RAISED from 0.65 - need real competence
+            demotion_threshold=0.35,  # Raised from 0.30 - quicker to demote poor performance
+            hard_floors={
+                "win_rate": 0.42,       # Match min_win_rate (raised)
+                "max_drawdown": 0.12,   # Match max_avg_drawdown (tightened)
+                "dd_breach_rate": 0.20, # Match max_dd_breach_rate (tightened)
+                "profit_factor": 0.85,  # NEW: Must be near-profitable
+                "r_multiple": -0.05,    # NEW: R-multiple can't be too negative
+            },
         ),
         adaptive_thresholds=AdaptiveThresholdConfig(
             enabled=True,
@@ -835,43 +938,68 @@ def get_market_structure_config() -> CurriculumStageConfig:
             volatility_scale_range=(0.90, 1.15),
         ),
         rewards=RewardShaping(
-            reward_scale=10.0,
-            loss_multiplier=1.0,
-            r_multiple_bonus_threshold=1.5,
-            r_multiple_bonus_scale=0.30,
-            r_multiple_bonus_cap=0.6,
+            # ============================================================================
+            # MARKET_STRUCTURE: MODERATE BONUSES - QUALITY STARTS TO MATTER
+            # ============================================================================
+            # Goal: Agent learns to adapt to different market conditions.
+            # Bonuses now ~30% of base max. Must be actually profitable to advance.
+            #
+            # Math for $300 trade (0.3% of 100k):
+            #   base_reward = 0.003 * 7.0 = 0.021
+            #   max_bonus   = 0.006 (30% of base)
+            #   Breakeven: ~44%
+            # ============================================================================
+            reward_scale=7.0,
+            loss_multiplier=1.0,        # Symmetric
+            
+            # R-multiple bonus: Growing
+            r_multiple_bonus_threshold=1.8,
+            r_multiple_bonus_scale=0.025,
+            r_multiple_bonus_cap=0.004,       # ~19% of base
+            
+            # MAE efficiency
             mae_efficiency_enabled=True,
-            mae_efficiency_scale=0.25,
-            mae_efficiency_threshold=2.0,
+            mae_efficiency_scale=0.0015,      # ~7% of base
+            mae_efficiency_threshold=2.5,
+            
+            # Time efficiency
             time_efficiency_enabled=True,
-            time_efficiency_scale=0.15,
-            optimal_trade_bars=8,
-            max_trade_bars_for_bonus=24,
+            time_efficiency_scale=0.0015,
+            optimal_trade_bars=10,
+            max_trade_bars_for_bonus=32,
+            
+            # Exit quality: Growing importance
             exit_quality_enabled=True,
-            trailing_stop_bonus=0.10,
-            agent_close_bonus=0.03,
-            hard_stop_penalty=0.10,
-            risk_liquidation_penalty=0.20,
+            trailing_stop_bonus=0.0015,
+            agent_close_bonus=0.001,
+            hard_stop_penalty=0.003,
+            risk_liquidation_penalty=0.006,
+            
             truncation_winner_discount=0.25,
             truncation_loser_extra_penalty=0.10,
+            
             entry_quality_integration=True,
-            entry_quality_weight=0.15,
+            entry_quality_weight=0.12,
+            
             dd_shaping_enabled=True,
-            dd_threshold=0.03,
-            dd_penalty_scale=0.8,
+            dd_threshold=0.035,
+            dd_penalty_scale=0.6,
             dd_severity_exponent=1.3,
-            dd_severity_cap=1.2,
+            dd_severity_cap=1.0,
+            
             streak_modifier_enabled=True,
-            win_streak_bonus_per_win=0.015,
-            loss_streak_penalty_per_loss=0.02,
+            win_streak_bonus_per_win=0.0008,
+            loss_streak_penalty_per_loss=0.0015,
+            
             anti_churn_enabled=True,
-            daily_trade_soft_limit=18,
-            churn_penalty_per_trade=0.015,
-            hard_block_penalty=0.06,
-            soft_block_penalty=0.02,
+            daily_trade_soft_limit=20,
+            churn_penalty_per_trade=0.003,
+            
+            hard_block_penalty=0.025,
+            soft_block_penalty=0.012,
             per_step_shaping_enabled=False,
-            min_reward=-4.0,
-            max_reward=5.0,
+            min_reward=-3.5,
+            max_reward=3.5,
         ),
         constraints=TradingConstraints(
             max_positions=1,
@@ -963,8 +1091,15 @@ def get_market_structure_config() -> CurriculumStageConfig:
         ),
         composite_scoring=CompositeScoringConfig(
             enabled=True,
-            promotion_threshold=0.65,
-            demotion_threshold=0.32,
+            promotion_threshold=0.70,  # Raised for quality
+            demotion_threshold=0.35,
+            hard_floors={
+                "win_rate": 0.47,       # Match min_win_rate
+                "max_drawdown": 0.10,   # Match max_avg_drawdown
+                "dd_breach_rate": 0.15, # Match max_dd_breach_rate
+                "profit_factor": 0.95,  # ADDED: Must be near-profitable
+                "r_multiple": 0.02,     # ADDED: Positive expectancy required
+            },
         ),
         adaptive_thresholds=AdaptiveThresholdConfig(
             enabled=True,
@@ -1013,45 +1148,66 @@ def get_economic_logic_config() -> CurriculumStageConfig:
             volatility_scale_range=(0.88, 1.20),
         ),
         rewards=RewardShaping(
-            reward_scale=10.0,
+            # ============================================================================
+            # ECONOMIC_LOGIC: GROWING BONUSES - EFFICIENCY MATTERS MORE
+            # ============================================================================
+            # Goal: Agent learns economic reasoning. Must exploit market structure.
+            # Bonuses ~35% of base max. Agent must show positive edge.
+            #
+            # Math for $300 trade (0.3% of 100k):
+            #   base_reward = 0.003 * 8.0 = 0.024
+            #   max_bonus   = 0.0084 (35% of base)
+            #   Breakeven: ~42%
+            # ============================================================================
+            reward_scale=8.0,
             loss_multiplier=1.0,
-            r_multiple_bonus_threshold=1.5,
-            r_multiple_bonus_scale=0.30,
-            r_multiple_bonus_cap=0.6,
+            
+            r_multiple_bonus_threshold=1.6,
+            r_multiple_bonus_scale=0.03,
+            r_multiple_bonus_cap=0.005,       # ~21% of base
+            
             mae_efficiency_enabled=True,
-            mae_efficiency_scale=0.25,
-            mae_efficiency_threshold=2.0,
+            mae_efficiency_scale=0.002,       # ~8% of base
+            mae_efficiency_threshold=2.2,
+            
             time_efficiency_enabled=True,
-            time_efficiency_scale=0.15,
-            optimal_trade_bars=8,
-            max_trade_bars_for_bonus=24,
+            time_efficiency_scale=0.002,
+            optimal_trade_bars=10,
+            max_trade_bars_for_bonus=28,
+            
             exit_quality_enabled=True,
-            trailing_stop_bonus=0.15,
-            agent_close_bonus=0.05,
-            hard_stop_penalty=0.15,
-            risk_liquidation_penalty=0.25,
+            trailing_stop_bonus=0.002,
+            agent_close_bonus=0.001,
+            hard_stop_penalty=0.004,
+            risk_liquidation_penalty=0.008,
+            
             truncation_winner_discount=0.30,
             truncation_loser_extra_penalty=0.15,
+            
             entry_quality_integration=True,
-            entry_quality_weight=0.20,
+            entry_quality_weight=0.15,
+            
             dd_shaping_enabled=True,
-            dd_threshold=0.025,
-            dd_penalty_scale=1.0,
+            dd_threshold=0.03,
+            dd_penalty_scale=0.8,
             dd_severity_exponent=1.4,
-            dd_severity_cap=1.3,
+            dd_severity_cap=1.2,
+            
             streak_modifier_enabled=True,
-            win_streak_bonus_per_win=0.02,
-            loss_streak_penalty_per_loss=0.025,
+            win_streak_bonus_per_win=0.001,
+            loss_streak_penalty_per_loss=0.002,
+            
             anti_churn_enabled=True,
-            daily_trade_soft_limit=14,
-            churn_penalty_per_trade=0.018,
-            hard_block_penalty=0.08,
-            soft_block_penalty=0.025,
+            daily_trade_soft_limit=16,
+            churn_penalty_per_trade=0.004,
+            
+            hard_block_penalty=0.03,
+            soft_block_penalty=0.015,
             per_step_shaping_enabled=True,
-            holding_cost_per_bar=0.0003,
-            opportunity_bonus_scale=0.005,
-            min_reward=-4.5,
-            max_reward=5.0,
+            holding_cost_per_bar=0.0002,
+            opportunity_bonus_scale=0.003,
+            min_reward=-4.0,
+            max_reward=4.0,
         ),
         constraints=TradingConstraints(
             max_positions=1,
@@ -1144,8 +1300,15 @@ def get_economic_logic_config() -> CurriculumStageConfig:
         ),
         composite_scoring=CompositeScoringConfig(
             enabled=True,
-            promotion_threshold=0.68,
-            demotion_threshold=0.35,
+            promotion_threshold=0.72,  # Raised for quality
+            demotion_threshold=0.38,
+            hard_floors={
+                "win_rate": 0.50,       # Match min_win_rate
+                "max_drawdown": 0.07,   # Match max_avg_drawdown
+                "dd_breach_rate": 0.10, # Match max_dd_breach_rate
+                "profit_factor": 1.1,   # ADDED: Must be profitable
+                "r_multiple": 0.05,     # ADDED: Positive expectancy required
+            },
         ),
         adaptive_thresholds=AdaptiveThresholdConfig(
             enabled=True,
@@ -1193,45 +1356,66 @@ def get_professional_config() -> CurriculumStageConfig:
             volatility_scale_range=(0.85, 1.25),
         ),
         rewards=RewardShaping(
-            reward_scale=10.0,
+            # ============================================================================
+            # PROFESSIONAL: SUBSTANTIAL BONUSES - EXCELLENCE REWARDED
+            # ============================================================================
+            # Goal: Real prop firm conditions. Agent must show professional discipline.
+            # Bonuses ~40% of base max. Only consistently profitable agents advance.
+            #
+            # Math for $300 trade (0.3% of 100k):
+            #   base_reward = 0.003 * 9.0 = 0.027
+            #   max_bonus   = 0.0108 (40% of base)
+            #   Breakeven: ~41%
+            # ============================================================================
+            reward_scale=9.0,
             loss_multiplier=1.0,
+            
             r_multiple_bonus_threshold=1.5,
-            r_multiple_bonus_scale=0.30,
-            r_multiple_bonus_cap=0.6,
+            r_multiple_bonus_scale=0.035,
+            r_multiple_bonus_cap=0.006,       # ~22% of base
+            
             mae_efficiency_enabled=True,
-            mae_efficiency_scale=0.25,
+            mae_efficiency_scale=0.0025,      # ~9% of base
             mae_efficiency_threshold=2.0,
+            
             time_efficiency_enabled=True,
-            time_efficiency_scale=0.15,
+            time_efficiency_scale=0.0025,
             optimal_trade_bars=8,
             max_trade_bars_for_bonus=24,
+            
             exit_quality_enabled=True,
-            trailing_stop_bonus=0.15,
-            agent_close_bonus=0.05,
-            hard_stop_penalty=0.15,
-            risk_liquidation_penalty=0.30,
+            trailing_stop_bonus=0.0025,
+            agent_close_bonus=0.0012,
+            hard_stop_penalty=0.005,
+            risk_liquidation_penalty=0.01,
+            
             truncation_winner_discount=0.30,
             truncation_loser_extra_penalty=0.15,
+            
             entry_quality_integration=True,
-            entry_quality_weight=0.20,
+            entry_quality_weight=0.18,
+            
             dd_shaping_enabled=True,
-            dd_threshold=0.02,
+            dd_threshold=0.025,
             dd_penalty_scale=1.0,
             dd_severity_exponent=1.5,
-            dd_severity_cap=1.5,
+            dd_severity_cap=1.3,
+            
             streak_modifier_enabled=True,
-            win_streak_bonus_per_win=0.02,
-            loss_streak_penalty_per_loss=0.03,
+            win_streak_bonus_per_win=0.0012,
+            loss_streak_penalty_per_loss=0.0025,
+            
             anti_churn_enabled=True,
-            daily_trade_soft_limit=10,
-            churn_penalty_per_trade=0.02,
-            hard_block_penalty=0.10,
-            soft_block_penalty=0.03,
+            daily_trade_soft_limit=12,
+            churn_penalty_per_trade=0.005,
+            
+            hard_block_penalty=0.035,
+            soft_block_penalty=0.018,
             per_step_shaping_enabled=True,
-            holding_cost_per_bar=0.0005,
-            opportunity_bonus_scale=0.01,
-            min_reward=-5.0,
-            max_reward=5.0,
+            holding_cost_per_bar=0.0003,
+            opportunity_bonus_scale=0.006,
+            min_reward=-4.5,
+            max_reward=4.5,
         ),
         constraints=TradingConstraints(
             max_positions=1,
@@ -1325,8 +1509,15 @@ def get_professional_config() -> CurriculumStageConfig:
         ),
         composite_scoring=CompositeScoringConfig(
             enabled=True,
-            promotion_threshold=0.72,
-            demotion_threshold=0.38,
+            promotion_threshold=0.76,  # Raised for quality
+            demotion_threshold=0.40,
+            hard_floors={
+                "win_rate": 0.52,       # Match min_win_rate
+                "max_drawdown": 0.05,   # Match max_avg_drawdown
+                "dd_breach_rate": 0.05, # Match max_dd_breach_rate
+                "profit_factor": 1.2,   # ADDED: Must be clearly profitable
+                "r_multiple": 0.08,     # ADDED: Good risk/reward required
+            },
         ),
         adaptive_thresholds=AdaptiveThresholdConfig(
             enabled=True,
@@ -1374,43 +1565,65 @@ def get_adaptive_config() -> CurriculumStageConfig:
             volatility_scale_range=(0.82, 1.30),
         ),
         rewards=RewardShaping(
-            reward_scale=10.0,
-            loss_multiplier=1.05,
-            r_multiple_bonus_threshold=1.5,
-            r_multiple_bonus_scale=0.30,
-            r_multiple_bonus_cap=0.6,
+            # ============================================================================
+            # ADAPTIVE: HIGH BONUSES - EXCELLENCE STRONGLY REWARDED
+            # ============================================================================
+            # Goal: Agent learns to adapt to regime changes. Quality matters most.
+            # Bonuses ~45% of base max. Loss multiplier > 1.0 (losses hurt MORE).
+            #
+            # Math for $300 trade (0.3% of 100k):
+            #   base_reward = 0.003 * 9.5 = 0.0285
+            #   max_bonus   = 0.0128 (45% of base)
+            #   Loss penalty = 0.003 * 9.5 * 1.02 = 0.029 (slightly worse)
+            #   Breakeven: ~42%
+            # ============================================================================
+            reward_scale=9.5,
+            loss_multiplier=1.02,           # Losses hurt slightly MORE
+            
+            r_multiple_bonus_threshold=1.4,
+            r_multiple_bonus_scale=0.04,
+            r_multiple_bonus_cap=0.007,       # ~25% of base
+            
             mae_efficiency_enabled=True,
-            mae_efficiency_scale=0.25,
-            mae_efficiency_threshold=2.0,
+            mae_efficiency_scale=0.003,       # ~11% of base
+            mae_efficiency_threshold=1.8,
+            
             time_efficiency_enabled=True,
-            time_efficiency_scale=0.15,
+            time_efficiency_scale=0.003,
             optimal_trade_bars=8,
-            max_trade_bars_for_bonus=24,
+            max_trade_bars_for_bonus=22,
+            
             exit_quality_enabled=True,
-            trailing_stop_bonus=0.15,
-            agent_close_bonus=0.05,
-            hard_stop_penalty=0.15,
-            risk_liquidation_penalty=0.30,
+            trailing_stop_bonus=0.003,
+            agent_close_bonus=0.0015,
+            hard_stop_penalty=0.006,
+            risk_liquidation_penalty=0.012,
+            
             truncation_winner_discount=0.30,
             truncation_loser_extra_penalty=0.15,
+            
             entry_quality_integration=True,
             entry_quality_weight=0.20,
+            
             dd_shaping_enabled=True,
             dd_threshold=0.02,
-            dd_penalty_scale=1.0,
+            dd_penalty_scale=1.2,
             dd_severity_exponent=1.5,
-            dd_severity_cap=1.5,
+            dd_severity_cap=1.4,
+            
             streak_modifier_enabled=True,
-            win_streak_bonus_per_win=0.02,
-            loss_streak_penalty_per_loss=0.03,
+            win_streak_bonus_per_win=0.0015,
+            loss_streak_penalty_per_loss=0.003,
+            
             anti_churn_enabled=True,
             daily_trade_soft_limit=10,
-            churn_penalty_per_trade=0.02,
-            hard_block_penalty=0.10,
-            soft_block_penalty=0.03,
+            churn_penalty_per_trade=0.006,
+            
+            hard_block_penalty=0.04,
+            soft_block_penalty=0.02,
             per_step_shaping_enabled=True,
-            holding_cost_per_bar=0.0005,
-            opportunity_bonus_scale=0.01,
+            holding_cost_per_bar=0.0003,
+            opportunity_bonus_scale=0.008,
             min_reward=-5.0,
             max_reward=5.0,
         ),
@@ -1506,8 +1719,15 @@ def get_adaptive_config() -> CurriculumStageConfig:
         ),
         composite_scoring=CompositeScoringConfig(
             enabled=True,
-            promotion_threshold=0.75,
-            demotion_threshold=0.40,
+            promotion_threshold=0.78,  # Raised for quality
+            demotion_threshold=0.42,
+            hard_floors={
+                "win_rate": 0.55,       # Match min_win_rate
+                "max_drawdown": 0.04,   # Match max_avg_drawdown
+                "dd_breach_rate": 0.03, # Match max_dd_breach_rate
+                "profit_factor": 1.3,   # ADDED: Strong profitability required
+                "r_multiple": 0.10,     # ADDED: Strong risk/reward required
+            },
         ),
         adaptive_thresholds=AdaptiveThresholdConfig(
             enabled=True,
@@ -1555,42 +1775,64 @@ def get_specialist_config() -> CurriculumStageConfig:
             volatility_scale_range=(0.80, 1.35),
         ),
         rewards=RewardShaping(
+            # ============================================================================
+            # SPECIALIST: MAXIMUM BONUSES - ELITE PERFORMANCE REWARDED
+            # ============================================================================
+            # Goal: Agent develops specialized edge in specific conditions.
+            # Bonuses ~50% of base max. Losses penalized more than gains rewarded.
+            #
+            # Math for $300 trade (0.3% of 100k):
+            #   base_reward = 0.003 * 10.0 = 0.030
+            #   max_bonus   = 0.015 (50% of base)
+            #   Loss penalty = 0.003 * 10.0 * 1.03 = 0.031 (losses hurt MORE)
+            #   Breakeven: ~42%
+            # ============================================================================
             reward_scale=10.0,
-            loss_multiplier=1.0,
-            r_multiple_bonus_threshold=1.5,
-            r_multiple_bonus_scale=0.30,
-            r_multiple_bonus_cap=0.6,
+            loss_multiplier=1.03,           # Losses hurt 3% more
+            
+            r_multiple_bonus_threshold=1.3,
+            r_multiple_bonus_scale=0.045,
+            r_multiple_bonus_cap=0.008,       # ~27% of base
+            
             mae_efficiency_enabled=True,
-            mae_efficiency_scale=0.25,
-            mae_efficiency_threshold=2.0,
+            mae_efficiency_scale=0.0035,      # ~12% of base
+            mae_efficiency_threshold=1.7,
+            
             time_efficiency_enabled=True,
-            time_efficiency_scale=0.15,
-            optimal_trade_bars=8,
-            max_trade_bars_for_bonus=24,
+            time_efficiency_scale=0.0035,
+            optimal_trade_bars=7,
+            max_trade_bars_for_bonus=20,
+            
             exit_quality_enabled=True,
-            trailing_stop_bonus=0.15,
-            agent_close_bonus=0.05,
-            hard_stop_penalty=0.15,
-            risk_liquidation_penalty=0.30,
+            trailing_stop_bonus=0.0035,
+            agent_close_bonus=0.0018,
+            hard_stop_penalty=0.007,
+            risk_liquidation_penalty=0.014,
+            
             truncation_winner_discount=0.30,
             truncation_loser_extra_penalty=0.15,
+            
             entry_quality_integration=True,
-            entry_quality_weight=0.20,
+            entry_quality_weight=0.22,
+            
             dd_shaping_enabled=True,
-            dd_threshold=0.02,
-            dd_penalty_scale=1.0,
+            dd_threshold=0.018,
+            dd_penalty_scale=1.3,
             dd_severity_exponent=1.5,
             dd_severity_cap=1.5,
+            
             streak_modifier_enabled=True,
-            win_streak_bonus_per_win=0.02,
-            loss_streak_penalty_per_loss=0.03,
+            win_streak_bonus_per_win=0.0018,
+            loss_streak_penalty_per_loss=0.0035,
+            
             anti_churn_enabled=True,
-            daily_trade_soft_limit=10,
-            churn_penalty_per_trade=0.02,
-            hard_block_penalty=0.10,
-            soft_block_penalty=0.03,
+            daily_trade_soft_limit=8,
+            churn_penalty_per_trade=0.007,
+            
+            hard_block_penalty=0.045,
+            soft_block_penalty=0.022,
             per_step_shaping_enabled=True,
-            holding_cost_per_bar=0.0005,
+            holding_cost_per_bar=0.0004,
             opportunity_bonus_scale=0.01,
             min_reward=-5.0,
             max_reward=5.0,
@@ -1688,8 +1930,15 @@ def get_specialist_config() -> CurriculumStageConfig:
         ),
         composite_scoring=CompositeScoringConfig(
             enabled=True,
-            promotion_threshold=0.78,
-            demotion_threshold=0.42,
+            promotion_threshold=0.82,  # Raised for quality
+            demotion_threshold=0.45,
+            hard_floors={
+                "win_rate": 0.57,       # Match min_win_rate
+                "max_drawdown": 0.035,  # Match max_avg_drawdown
+                "dd_breach_rate": 0.02, # Match max_dd_breach_rate
+                "profit_factor": 1.4,   # ADDED: Excellent profitability required
+                "r_multiple": 0.12,     # ADDED: Excellent risk/reward required
+            },
         ),
         adaptive_thresholds=AdaptiveThresholdConfig(
             enabled=True,
@@ -1737,43 +1986,66 @@ def get_live_ready_config() -> CurriculumStageConfig:
             volatility_scale_range=(0.78, 1.40),
         ),
         rewards=RewardShaping(
+            # ============================================================================
+            # LIVE_READY: ELITE CONFIGURATION - PROFESSIONAL EXCELLENCE
+            # ============================================================================
+            # Goal: Agent is ready for live trading. No excuses.
+            # Bonuses ~50% of base max. Losses penalized 5% more than gains rewarded.
+            # This is the harshest reward structure - only truly skilled agents survive.
+            #
+            # Math for $300 trade (0.3% of 100k):
+            #   base_reward = 0.003 * 10.0 = 0.030
+            #   max_bonus   = 0.015 (50% of base)
+            #   Loss penalty = 0.003 * 10.0 * 1.05 = 0.0315 (losses hurt MORE)
+            #   Breakeven: ~43%
+            # ============================================================================
             reward_scale=10.0,
-            loss_multiplier=1.0,
-            r_multiple_bonus_threshold=1.5,
-            r_multiple_bonus_scale=0.30,
-            r_multiple_bonus_cap=0.6,
+            loss_multiplier=1.05,           # Losses hurt 5% more than gains help
+            
+            r_multiple_bonus_threshold=1.2,   # Lower threshold for elite agents
+            r_multiple_bonus_scale=0.05,
+            r_multiple_bonus_cap=0.01,        # ~33% of base
+            
             mae_efficiency_enabled=True,
-            mae_efficiency_scale=0.25,
-            mae_efficiency_threshold=2.0,
+            mae_efficiency_scale=0.004,       # ~13% of base
+            mae_efficiency_threshold=1.5,     # Elite efficiency required
+            
             time_efficiency_enabled=True,
-            time_efficiency_scale=0.15,
-            optimal_trade_bars=8,
-            max_trade_bars_for_bonus=24,
+            time_efficiency_scale=0.004,
+            optimal_trade_bars=6,             # Quick execution rewarded
+            max_trade_bars_for_bonus=18,
+            
             exit_quality_enabled=True,
-            trailing_stop_bonus=0.15,
-            agent_close_bonus=0.05,
-            hard_stop_penalty=0.15,
-            risk_liquidation_penalty=0.30,
+            trailing_stop_bonus=0.004,
+            agent_close_bonus=0.002,
+            hard_stop_penalty=0.008,
+            risk_liquidation_penalty=0.016,
+            
             truncation_winner_discount=0.30,
             truncation_loser_extra_penalty=0.15,
+            
             entry_quality_integration=True,
-            entry_quality_weight=0.20,
+            entry_quality_weight=0.25,        # High importance
+            
             dd_shaping_enabled=True,
-            dd_threshold=0.02,
-            dd_penalty_scale=1.0,
-            dd_severity_exponent=1.5,
+            dd_threshold=0.015,               # Very tight DD sensitivity
+            dd_penalty_scale=1.5,             # Harsh DD penalty
+            dd_severity_exponent=1.6,
             dd_severity_cap=1.5,
+            
             streak_modifier_enabled=True,
-            win_streak_bonus_per_win=0.02,
-            loss_streak_penalty_per_loss=0.03,
+            win_streak_bonus_per_win=0.002,
+            loss_streak_penalty_per_loss=0.004,
+            
             anti_churn_enabled=True,
-            daily_trade_soft_limit=10,
-            churn_penalty_per_trade=0.02,
-            hard_block_penalty=0.10,
-            soft_block_penalty=0.03,
+            daily_trade_soft_limit=8,
+            churn_penalty_per_trade=0.008,
+            
+            hard_block_penalty=0.05,
+            soft_block_penalty=0.025,
             per_step_shaping_enabled=True,
             holding_cost_per_bar=0.0005,
-            opportunity_bonus_scale=0.01,
+            opportunity_bonus_scale=0.012,
             min_reward=-5.0,
             max_reward=5.0,
         ),
@@ -1872,8 +2144,15 @@ def get_live_ready_config() -> CurriculumStageConfig:
         ),
         composite_scoring=CompositeScoringConfig(
             enabled=True,
-            promotion_threshold=0.85,  # High bar for terminal stage
-            demotion_threshold=0.45,
+            promotion_threshold=0.88,  # Very high bar for terminal stage
+            demotion_threshold=0.50,
+            hard_floors={
+                "win_rate": 0.58,       # Match min_win_rate - FINAL STAGE
+                "max_drawdown": 0.03,   # Match max_avg_drawdown - STRICT
+                "dd_breach_rate": 0.01, # Match max_dd_breach_rate - VERY STRICT
+                "profit_factor": 1.5,   # ADDED: Outstanding profitability required
+                "r_multiple": 0.15,     # ADDED: Outstanding risk/reward required
+            },
         ),
         adaptive_thresholds=AdaptiveThresholdConfig(
             enabled=True,

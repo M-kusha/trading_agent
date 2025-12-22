@@ -83,12 +83,13 @@ if TYPE_CHECKING:
 
 try:
     from envs.curriculum_manager import CurriculumManager as _CurriculumManager
-    from envs.curriculum_config import CurriculumStage, CurriculumStageConfig
+    from envs.curriculum_config import CurriculumStage, CurriculumStageConfig, DataDifficulty
     CURRICULUM_AVAILABLE = True
 except Exception:
     _CurriculumManager = None  # type: ignore
     CurriculumStage = None  # type: ignore
     CurriculumStageConfig = None  # type: ignore
+    DataDifficulty = None  # type: ignore
     CURRICULUM_AVAILABLE = False
 
 try:
@@ -528,6 +529,11 @@ class PropFirmTradingEnv(gym.Env):
         self._episode_latency_bars = 0
         self._episode_vol_scale = 1.0
 
+        # Data difficulty settings (curriculum-based filtering)
+        self._data_difficulty: Optional[Any] = None  # DataDifficulty when set
+        self._valid_start_indices: Optional[np.ndarray] = None  # Pre-computed valid episode starts
+        self._volatility_percentiles: Optional[np.ndarray] = None  # Rolling volatility percentile per bar
+
     # ---------------------------
     # Curriculum wiring
     # ---------------------------
@@ -595,6 +601,492 @@ class PropFirmTradingEnv(gym.Env):
         except Exception:
             # Never let curriculum override application break training
             return
+
+    # ---------------------------
+    # Setters for Curriculum Integration
+    # ---------------------------
+    
+    def set_execution_params(self, difficulty: Any) -> None:
+        """
+        Set execution difficulty parameters from curriculum stage.
+        
+        Args:
+            difficulty: ExecutionDifficulty dataclass or dict with execution params
+        """
+        if difficulty is None:
+            return
+        
+        try:
+            # Map from curriculum ExecutionDifficulty to env's ExecutionConfig
+            exec_cfg = self.config.execution
+            
+            if hasattr(difficulty, "base_spread_points"):
+                exec_cfg.base_spread_points = float(difficulty.base_spread_points)
+            if hasattr(difficulty, "max_spread_points"):
+                exec_cfg.max_spread_points = float(difficulty.max_spread_points)
+            if hasattr(difficulty, "slippage_points_sigma"):
+                exec_cfg.slippage_points_sigma = float(difficulty.slippage_points_sigma)
+            if hasattr(difficulty, "max_slippage_points"):
+                exec_cfg.max_slippage_points = float(difficulty.max_slippage_points)
+            if hasattr(difficulty, "commission_per_lot"):
+                exec_cfg.commission_per_lot = float(difficulty.commission_per_lot)
+            if hasattr(difficulty, "latency_bars"):
+                exec_cfg.latency_bars = int(difficulty.latency_bars)
+            
+            # Domain randomization ranges
+            if hasattr(difficulty, "spread_mult_range"):
+                self.config.spread_mult_range = tuple(difficulty.spread_mult_range)
+            if hasattr(difficulty, "slippage_mult_range"):
+                self.config.slippage_mult_range = tuple(difficulty.slippage_mult_range)
+            if hasattr(difficulty, "latency_randomization_range"):
+                self.config.latency_bars_range = tuple(difficulty.latency_randomization_range)
+            if hasattr(difficulty, "volatility_scale_range"):
+                self.config.volatility_scale_range = tuple(difficulty.volatility_scale_range)
+            if hasattr(difficulty, "enable_randomization"):
+                self.config.domain_randomization_enabled = bool(difficulty.enable_randomization)
+                
+        except Exception as e:
+            logger.warning(f"Failed to apply execution params: {e}")
+    
+    def set_constraints(self, constraints: Any) -> None:
+        """
+        Set trading constraints from curriculum stage.
+        
+        Args:
+            constraints: TradingConstraints dataclass or dict with constraint params
+        """
+        if constraints is None:
+            return
+        
+        try:
+            cfg = self.config
+            
+            # Position limits
+            if hasattr(constraints, "max_positions"):
+                cfg.max_positions = int(constraints.max_positions)
+            
+            # Trade limits
+            if hasattr(constraints, "max_trades_per_day"):
+                cfg.max_trades_per_day = int(constraints.max_trades_per_day)
+            if hasattr(constraints, "max_trades_per_session"):
+                cfg.max_trades_per_session = int(constraints.max_trades_per_session)
+            if hasattr(constraints, "max_consecutive_losses"):
+                cfg.max_consecutive_losses = int(constraints.max_consecutive_losses)
+            
+            # Timing
+            if hasattr(constraints, "min_minutes_between_entries"):
+                cfg.min_minutes_between_entries = int(constraints.min_minutes_between_entries)
+            if hasattr(constraints, "min_minutes_after_loss"):
+                cfg.min_minutes_after_loss = int(constraints.min_minutes_after_loss)
+            
+            # Drawdown limits
+            if hasattr(constraints, "daily_drawdown_limit"):
+                cfg.daily_drawdown_limit = float(constraints.daily_drawdown_limit)
+            if hasattr(constraints, "max_drawdown_limit"):
+                cfg.max_drawdown_limit = float(constraints.max_drawdown_limit)
+            if hasattr(constraints, "daily_dd_safety_buffer"):
+                cfg.daily_dd_safety_buffer = float(constraints.daily_dd_safety_buffer)
+            if hasattr(constraints, "max_dd_safety_buffer"):
+                cfg.max_dd_safety_buffer = float(constraints.max_dd_safety_buffer)
+            if hasattr(constraints, "emergency_close_threshold"):
+                cfg.emergency_close_threshold = float(constraints.emergency_close_threshold)
+            
+            # Entry quality gate
+            if hasattr(constraints, "entry_quality_gate_enabled"):
+                cfg.entry_quality_gate_enabled = bool(constraints.entry_quality_gate_enabled)
+            if hasattr(constraints, "entry_quality_threshold"):
+                cfg.entry_quality_threshold = float(constraints.entry_quality_threshold)
+            
+            # Stop loss / trailing
+            if hasattr(constraints, "hard_stop_loss_eur"):
+                cfg.hard_stop_loss_eur = float(constraints.hard_stop_loss_eur)
+            if hasattr(constraints, "soft_stop_loss_eur"):
+                cfg.soft_stop_loss_eur = float(constraints.soft_stop_loss_eur)
+            if hasattr(constraints, "trailing_activation_eur"):
+                cfg.trailing_activation_eur = float(constraints.trailing_activation_eur)
+            if hasattr(constraints, "trailing_retrace_pct"):
+                cfg.trailing_retrace_pct = float(constraints.trailing_retrace_pct)
+            if hasattr(constraints, "time_decay_hours"):
+                cfg.time_decay_hours = float(constraints.time_decay_hours)
+            
+            # Risk per trade
+            if hasattr(constraints, "risk_per_trade_pct"):
+                cfg.risk_per_trade_pct = float(constraints.risk_per_trade_pct)
+            if hasattr(constraints, "max_risk_per_trade_pct"):
+                cfg.max_risk_per_trade_pct = float(constraints.max_risk_per_trade_pct)
+                
+        except Exception as e:
+            logger.warning(f"Failed to apply constraints: {e}")
+    
+    def set_reward_config(self, reward_shaping: Any) -> None:
+        """
+        Set reward configuration from curriculum stage.
+        
+        CRITICAL: This syncs the curriculum's RewardShaping to the env's RewardConfig.
+        This must be called when curriculum stage changes to ensure proper reward signals.
+        
+        Args:
+            reward_shaping: RewardShaping dataclass from curriculum config
+        """
+        if reward_shaping is None:
+            return
+        
+        try:
+            rcfg = self.config.reward
+            
+            # Core reward scaling - CRITICAL for proper learning signal
+            if hasattr(reward_shaping, "reward_scale"):
+                rcfg.reward_scale = float(reward_shaping.reward_scale)
+                self.config.reward_scale = float(reward_shaping.reward_scale)  # Legacy sync
+            if hasattr(reward_shaping, "loss_multiplier"):
+                rcfg.loss_multiplier = float(reward_shaping.loss_multiplier)
+            
+            # R-multiple bonuses
+            if hasattr(reward_shaping, "r_multiple_bonus_threshold"):
+                rcfg.r_multiple_bonus_threshold = float(reward_shaping.r_multiple_bonus_threshold)
+            if hasattr(reward_shaping, "r_multiple_bonus_scale"):
+                rcfg.r_multiple_bonus_scale = float(reward_shaping.r_multiple_bonus_scale)
+            if hasattr(reward_shaping, "r_multiple_bonus_cap"):
+                rcfg.r_multiple_bonus_cap = float(reward_shaping.r_multiple_bonus_cap)
+            
+            # MAE efficiency
+            if hasattr(reward_shaping, "mae_efficiency_enabled"):
+                rcfg.mae_efficiency_enabled = bool(reward_shaping.mae_efficiency_enabled)
+            if hasattr(reward_shaping, "mae_efficiency_scale"):
+                rcfg.mae_efficiency_scale = float(reward_shaping.mae_efficiency_scale)
+            if hasattr(reward_shaping, "mae_efficiency_threshold"):
+                rcfg.mae_efficiency_threshold = float(reward_shaping.mae_efficiency_threshold)
+            
+            # Time efficiency
+            if hasattr(reward_shaping, "time_efficiency_enabled"):
+                rcfg.time_efficiency_enabled = bool(reward_shaping.time_efficiency_enabled)
+            if hasattr(reward_shaping, "time_efficiency_scale"):
+                rcfg.time_efficiency_scale = float(reward_shaping.time_efficiency_scale)
+            if hasattr(reward_shaping, "optimal_trade_bars"):
+                rcfg.optimal_trade_bars = int(reward_shaping.optimal_trade_bars)
+            if hasattr(reward_shaping, "max_trade_bars_for_bonus"):
+                rcfg.max_trade_bars_for_bonus = int(reward_shaping.max_trade_bars_for_bonus)
+            
+            # Exit quality
+            if hasattr(reward_shaping, "exit_quality_enabled"):
+                rcfg.exit_quality_enabled = bool(reward_shaping.exit_quality_enabled)
+            if hasattr(reward_shaping, "trailing_stop_bonus"):
+                rcfg.trailing_stop_bonus = float(reward_shaping.trailing_stop_bonus)
+            if hasattr(reward_shaping, "agent_close_bonus"):
+                rcfg.agent_close_bonus = float(reward_shaping.agent_close_bonus)
+            if hasattr(reward_shaping, "hard_stop_penalty"):
+                rcfg.hard_stop_penalty = float(reward_shaping.hard_stop_penalty)
+            if hasattr(reward_shaping, "risk_liquidation_penalty"):
+                rcfg.risk_liquidation_penalty = float(reward_shaping.risk_liquidation_penalty)
+            
+            # Entry quality
+            if hasattr(reward_shaping, "entry_quality_integration"):
+                rcfg.entry_quality_integration = bool(reward_shaping.entry_quality_integration)
+            if hasattr(reward_shaping, "entry_quality_weight"):
+                rcfg.entry_quality_weight = float(reward_shaping.entry_quality_weight)
+            
+            # Truncation handling
+            if hasattr(reward_shaping, "truncation_winner_discount"):
+                rcfg.truncation_winner_discount = float(reward_shaping.truncation_winner_discount)
+            if hasattr(reward_shaping, "truncation_loser_extra_penalty"):
+                rcfg.truncation_loser_extra_penalty = float(reward_shaping.truncation_loser_extra_penalty)
+            
+            # Drawdown shaping
+            if hasattr(reward_shaping, "dd_shaping_enabled"):
+                rcfg.dd_shaping_enabled = bool(reward_shaping.dd_shaping_enabled)
+            if hasattr(reward_shaping, "dd_threshold"):
+                rcfg.dd_threshold = float(reward_shaping.dd_threshold)
+            if hasattr(reward_shaping, "dd_penalty_scale"):
+                rcfg.dd_penalty_scale = float(reward_shaping.dd_penalty_scale)
+            if hasattr(reward_shaping, "dd_severity_exponent"):
+                rcfg.dd_severity_exponent = float(reward_shaping.dd_severity_exponent)
+            if hasattr(reward_shaping, "dd_severity_cap"):
+                rcfg.dd_severity_cap = float(reward_shaping.dd_severity_cap)
+            
+            # Streak modifiers
+            if hasattr(reward_shaping, "streak_modifier_enabled"):
+                rcfg.streak_modifier_enabled = bool(reward_shaping.streak_modifier_enabled)
+            if hasattr(reward_shaping, "win_streak_bonus_per_win"):
+                rcfg.win_streak_bonus_per_win = float(reward_shaping.win_streak_bonus_per_win)
+            if hasattr(reward_shaping, "loss_streak_penalty_per_loss"):
+                rcfg.loss_streak_penalty_per_loss = float(reward_shaping.loss_streak_penalty_per_loss)
+            
+            # Anti-churn
+            if hasattr(reward_shaping, "anti_churn_enabled"):
+                rcfg.anti_churn_enabled = bool(reward_shaping.anti_churn_enabled)
+            if hasattr(reward_shaping, "daily_trade_soft_limit"):
+                rcfg.daily_trade_soft_limit = int(reward_shaping.daily_trade_soft_limit)
+            if hasattr(reward_shaping, "churn_penalty_per_trade"):
+                rcfg.churn_penalty_per_trade = float(reward_shaping.churn_penalty_per_trade)
+            
+            # Block penalties
+            if hasattr(reward_shaping, "hard_block_penalty"):
+                rcfg.hard_block_penalty = float(reward_shaping.hard_block_penalty)
+            if hasattr(reward_shaping, "soft_block_penalty"):
+                rcfg.soft_block_penalty = float(reward_shaping.soft_block_penalty)
+            
+            # Per-step shaping
+            if hasattr(reward_shaping, "per_step_shaping_enabled"):
+                rcfg.per_step_shaping_enabled = bool(reward_shaping.per_step_shaping_enabled)
+            if hasattr(reward_shaping, "holding_cost_per_bar"):
+                rcfg.holding_cost_per_bar = float(reward_shaping.holding_cost_per_bar)
+            
+            # Reward clipping
+            if hasattr(reward_shaping, "min_reward"):
+                rcfg.min_reward = float(reward_shaping.min_reward)
+            if hasattr(reward_shaping, "max_reward"):
+                rcfg.max_reward = float(reward_shaping.max_reward)
+            
+            # Keep legacy sync consistent
+            self.config.sync_reward_from_legacy()
+            
+            logger.debug(f"Applied reward config: scale={rcfg.reward_scale}, loss_mult={rcfg.loss_multiplier}")
+            
+        except Exception as e:
+            logger.warning(f"Failed to apply reward config: {e}")
+
+    # ---------------------------
+    # Data Difficulty (Curriculum)
+    # ---------------------------
+
+    def set_data_difficulty(self, difficulty: Any) -> None:
+        """
+        Set data difficulty filtering for curriculum-based learning.
+        
+        Args:
+            difficulty: DataDifficulty config specifying which market conditions to train on.
+                        Early stages use easier conditions (clear trends, lower volatility).
+        """
+        self._data_difficulty = difficulty
+        self._valid_start_indices = None  # Force recomputation
+        self._volatility_percentiles = None
+        
+        if difficulty is not None:
+            self._precompute_data_difficulty_indices()
+
+    def _precompute_data_difficulty_indices(self) -> None:
+        """
+        Pre-compute valid episode starting indices based on data difficulty settings.
+        
+        This avoids expensive per-reset filtering by caching valid positions.
+        """
+        if self._data_difficulty is None:
+            self._valid_start_indices = None
+            return
+
+        difficulty = self._data_difficulty
+        inst = self.instruments[0]
+        primary_tf = self.config.primary_timeframe
+        df = self.data.get(inst, {}).get(primary_tf)
+        
+        if df is None or len(df) < 200:
+            self._valid_start_indices = None
+            return
+
+        n_bars = len(df)
+        buffer = 120
+        max_end = n_bars - self.config.max_steps_per_episode - buffer
+        
+        if max_end <= buffer:
+            self._valid_start_indices = None
+            return
+
+        # Initialize all indices as valid
+        valid_mask = np.ones(n_bars, dtype=bool)
+
+        # Apply volatility filter
+        vol_range = getattr(difficulty, "volatility_percentile_range", (0.0, 1.0))
+        if vol_range != (0.0, 1.0):
+            self._compute_volatility_percentiles(df)
+            if self._volatility_percentiles is not None:
+                valid_mask &= (self._volatility_percentiles >= vol_range[0])
+                valid_mask &= (self._volatility_percentiles <= vol_range[1])
+
+        # Apply trend clarity filter
+        min_trend = getattr(difficulty, "min_trend_clarity", 0.0)
+        if min_trend > 0.0:
+            trend_clarity = self._compute_trend_clarity(df)
+            valid_mask &= (trend_clarity >= min_trend)
+
+        # Apply session filters
+        if isinstance(df.index, pd.DatetimeIndex):
+            try:
+                hours = np.asarray(df.index.hour, dtype=np.int32)
+                if hours is not None:
+                    session_mask = np.zeros(n_bars, dtype=bool)
+                    
+                    # Session hours (approximate, Europe/Berlin perspective)
+                    # Asian: 00:00 - 08:00
+                    # London: 08:00 - 16:00
+                    # NY: 14:00 - 22:00
+                    # Overlap (London/NY): 14:00 - 16:00
+                    
+                    if getattr(difficulty, "include_asian_session", True):
+                        session_mask |= (hours < 8)
+                    if getattr(difficulty, "include_london_session", True):
+                        session_mask |= ((hours >= 8) & (hours < 16))
+                    if getattr(difficulty, "include_ny_session", True):
+                        session_mask |= ((hours >= 14) & (hours < 22))
+                    if getattr(difficulty, "include_overlap_sessions", True):
+                        session_mask |= ((hours >= 14) & (hours < 16))
+                    
+                    # If at least one session enabled, apply filter
+                    if session_mask.any():
+                        valid_mask &= session_mask
+            except Exception:
+                pass  # Skip session filtering if hours not available
+
+        # Apply market open/close filter
+        if getattr(difficulty, "exclude_market_open_close", False):
+            try:
+                if isinstance(df.index, pd.DatetimeIndex):
+                    hours = np.asarray(df.index.hour, dtype=np.int32)
+                    # Exclude first/last hour of major sessions
+                    open_close_mask = ~(
+                        (hours == 0) | (hours == 8) | (hours == 14) |  # Opens
+                        (hours == 7) | (hours == 15) | (hours == 21)   # Closes
+                    )
+                    valid_mask &= open_close_mask
+            except Exception:
+                pass
+
+        # Restrict to valid start range
+        range_mask = np.zeros(n_bars, dtype=bool)
+        range_mask[buffer:max_end] = True
+        valid_mask &= range_mask
+
+        # Get valid indices
+        valid_indices = np.where(valid_mask)[0]
+        
+        if len(valid_indices) == 0:
+            # Fallback: use all indices in valid range
+            logger.warning(
+                f"DataDifficulty filter found 0 valid indices with settings: "
+                f"volatility_range={self._data_difficulty.volatility_percentile_range}, "
+                f"min_trend_clarity={self._data_difficulty.min_trend_clarity}, "
+                f"sessions=(asia={getattr(self._data_difficulty, 'include_asian_session', True)}, "
+                f"london={getattr(self._data_difficulty, 'include_london_session', True)}, "
+                f"ny={getattr(self._data_difficulty, 'include_ny_session', True)}). "
+                f"Falling back to full dataset ({max_end - buffer} bars)."
+            )
+            self._valid_start_indices = np.arange(buffer, max_end)
+        else:
+            self._valid_start_indices = valid_indices
+            logger.debug(f"DataDifficulty filter: {len(valid_indices)} valid start indices out of {max_end - buffer}")
+
+    def _compute_volatility_percentiles(self, df: pd.DataFrame) -> None:
+        """Compute rolling volatility percentile for each bar."""
+        try:
+            if "close" not in df.columns and "Close" not in df.columns:
+                self._volatility_percentiles = None
+                return
+            
+            close_col = "close" if "close" in df.columns else "Close"
+            close = np.asarray(df[close_col].values, dtype=np.float64)
+            
+            # Rolling ATR-like volatility (20-bar)
+            window = 20
+            if len(close) < window + 1:
+                self._volatility_percentiles = None
+                return
+            
+            returns = np.abs(np.diff(close) / (close[:-1] + 1e-10))
+            vol = np.zeros(len(close))
+            vol[0] = 0.5  # Default percentile for first bar
+            
+            for i in range(1, len(returns)):
+                start = max(0, i - window)
+                vol[i] = np.std(returns[start:i]) if i > start else 0.0
+            
+            # Convert to percentile (expanding window)
+            percentiles = np.zeros(len(close))
+            for i in range(1, len(close)):
+                # Percentile rank within all bars up to this point
+                percentiles[i] = np.mean(vol[:i+1] <= vol[i])
+            
+            self._volatility_percentiles = percentiles
+        except Exception:
+            self._volatility_percentiles = None
+
+    def _compute_trend_clarity(self, df: pd.DataFrame) -> np.ndarray:
+        """
+        Compute trend clarity for each bar.
+        
+        Uses a simple measure: abs(SMA slope) normalized by volatility.
+        High values = clear trend, low values = choppy/ranging.
+        """
+        try:
+            close_col = "close" if "close" in df.columns else "Close"
+            if close_col not in df.columns:
+                return np.ones(len(df))  # Default: all clear
+            
+            close = np.asarray(df[close_col].values, dtype=np.float64)
+            n = len(close)
+            clarity = np.zeros(n)
+            
+            window = 20
+            for i in range(window, n):
+                segment = close[i-window:i]
+                seg_mean = float(np.mean(segment))
+                slope = (segment[-1] - segment[0]) / (window * (seg_mean + 1e-10))
+                vol = float(np.std(np.diff(segment))) / (seg_mean + 1e-10)
+                
+                # Clarity = trend strength / noise
+                clarity[i] = min(1.0, abs(slope) / (vol + 1e-10))
+            
+            # First bars get median clarity
+            clarity[:window] = np.median(clarity[window:]) if n > window else 0.5
+            
+            return clarity
+        except Exception:
+            return np.ones(len(df))
+
+    def _sample_episode_start_with_difficulty(self, buffer: int, max_start: int) -> int:
+        """
+        Sample episode starting position respecting data difficulty settings.
+        
+        Args:
+            buffer: Minimum starting index (lookback buffer)
+            max_start: Maximum starting index
+            
+        Returns:
+            Starting bar index for this episode
+        """
+        if self._valid_start_indices is None or len(self._valid_start_indices) == 0:
+            # No difficulty filtering - use uniform random
+            if max_start > buffer:
+                return int(self.np_random.integers(buffer, max_start))
+            return min(buffer, max(self._min_data_len - 2, 0))
+
+        # Filter to valid range
+        valid_in_range = self._valid_start_indices[
+            (self._valid_start_indices >= buffer) & 
+            (self._valid_start_indices < max_start)
+        ]
+        
+        if len(valid_in_range) == 0:
+            # Fallback to any valid index
+            if len(self._valid_start_indices) > 0:
+                return int(self.np_random.choice(self._valid_start_indices))
+            if max_start > buffer:
+                return int(self.np_random.integers(buffer, max_start))
+            return min(buffer, max(self._min_data_len - 2, 0))
+
+        # Apply recency weighting if configured
+        if (self._data_difficulty is not None and 
+            getattr(self._data_difficulty, "prefer_recent_data", False)):
+            
+            weight = getattr(self._data_difficulty, "recent_data_weight", 1.0)
+            if weight > 1.0:
+                # Exponential weighting toward recent data
+                positions = np.arange(len(valid_in_range))
+                weights = np.exp(weight * positions / len(positions))
+                weights /= weights.sum()
+                idx = self.np_random.choice(len(valid_in_range), p=weights)
+                return int(valid_in_range[idx])
+
+        # Uniform random from valid indices
+        return int(self.np_random.choice(valid_in_range))
 
     def _curriculum_step_metadata(self) -> Dict[str, Any]:
         if not self.curriculum:
@@ -967,7 +1459,20 @@ class PropFirmTradingEnv(gym.Env):
             self.peak_balance = max(self.peak_balance, float(self.balance))
 
     def _calc_dds(self) -> Tuple[float, float]:
-        current_dd = (self.peak_balance - self.equity) / max(self.peak_balance, 1.0)
+        """Calculate current and daily drawdowns.
+        
+        For FTMO-style prop firms:
+        - Static DD (trailing_drawdown=False): vs INITIAL balance (never increases)
+        - Trailing DD (trailing_drawdown=True): vs peak equity (ratchets up)
+        - Daily DD: always vs day_start_balance
+        """
+        if bool(self.config.trailing_drawdown):
+            # Trailing: drawdown measured from peak equity
+            current_dd = (self.peak_balance - self.equity) / max(self.peak_balance, 1.0)
+        else:
+            # Static: drawdown measured from INITIAL balance (FTMO standard)
+            current_dd = (self.config.initial_balance - self.equity) / max(self.config.initial_balance, 1.0)
+        
         current_daily_dd = (self.day_start_balance - self.equity) / max(self.day_start_balance, 1.0)
         current_dd = max(0.0, float(current_dd))
         current_daily_dd = max(0.0, float(current_daily_dd))
@@ -1525,10 +2030,21 @@ class PropFirmTradingEnv(gym.Env):
         self._apply_domain_randomization()
         self._episode_execution_cfg = self._build_episode_execution_config()
         self._exec = ExecutionModel(self._episode_execution_cfg, self.np_random)
+        
+        # Apply domain randomization to execution model
+        # This is CRITICAL - without this call, spread/slippage randomization is ignored!
+        self._exec.set_episode_randomization(
+            spread_mult=self._episode_spread_mult,
+            slippage_mult=self._episode_slip_mult,
+        )
 
         buffer = 120
         max_start = max(buffer, self._min_data_len - self.config.max_steps_per_episode - buffer)
-        if max_start > buffer:
+        
+        # Use data difficulty sampling if enabled, otherwise uniform random
+        if self._data_difficulty is not None:
+            self.current_step = self._sample_episode_start_with_difficulty(buffer, max_start)
+        elif max_start > buffer:
             self.current_step = int(self.np_random.integers(buffer, max_start))
         else:
             self.current_step = min(buffer, max(self._min_data_len - 2, 0))
@@ -1862,10 +2378,11 @@ class PropFirmTradingEnv(gym.Env):
         }
         info.update(self._curriculum_step_metadata())
 
-        # Add full episode stats + curriculum logging on episode end
+        # Add full episode stats on episode end
+        # NOTE: Curriculum recording is handled ONLY by CurriculumEnvWrapper
+        # to avoid double-counting episodes
         if terminated or truncated:
             info["episode_stats"] = self.get_episode_stats()
-            self._curriculum_on_episode_end(info)
 
         return obs, reward, terminated, truncated, info
 

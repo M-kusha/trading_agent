@@ -254,6 +254,21 @@ class CurriculumEnvWrapper(gym.Wrapper):
             except Exception as e:
                 logger.warning(f"Failed to set constraints: {e}")
         
+        # CRITICAL: Apply reward configuration from curriculum stage
+        # This ensures that when stage changes, the reward config is properly updated.
+        # Without this, the agent might use Foundation's lenient loss_multiplier in Discipline stage!
+        if hasattr(self.env, "set_reward_config"):
+            try:
+                reward_shaping = self._get_effective_reward_shaping()
+                self.env.set_reward_config(reward_shaping)  # type: ignore[attr-defined]
+                if self.verbose:
+                    logger.info(
+                        f"Applied reward config for {stage.name}: "
+                        f"scale={reward_shaping.reward_scale}, loss_mult={reward_shaping.loss_multiplier}"
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to set reward config: {e}")
+        
         # Apply data difficulty
         if self.apply_data_difficulty and hasattr(self.env, "set_data_difficulty"):
             try:

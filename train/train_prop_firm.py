@@ -326,7 +326,8 @@ def slice_data_by_index(
         for tf, df in tfs.items():
             s = max(0, int(start))
             e = min(int(end), len(df))
-            out[inst][tf] = df.iloc[s:e].reset_index(drop=True)
+            # IMPORTANT: Use .copy() to prevent data leakage between folds
+            out[inst][tf] = df.iloc[s:e].copy().reset_index(drop=True)
     return out
 
 
@@ -396,10 +397,11 @@ def create_eval_vec_env(
             # Note: No Monitor wrapper for eval (we don't need logging)
             if use_action_masking and MASKABLE_AVAILABLE and ActionMasker is not None:
                 env = ActionMasker(env, _mask_fn)
+            # Seed the environment
             try:
                 env.reset(seed=seed)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Could not seed env with seed={seed}: {e}")
             return env
         return _init
     
@@ -717,11 +719,11 @@ class VecEpisodeTradingCallback(BaseCallback):
         
         # Timing for FPS calculation
         self._start_time: Optional[float] = None
+        self._last_metrics_save: float = 0.0  # For metrics save throttling
         
         # Memory system integration (lazy initialization)
         self._unified_memory: Optional[Any] = None
         self._memory_init_attempted: bool = False
-        self._episode_trades_buffer: List[Dict[str, Any]] = []  # Accumulate trades within episode
 
     def _on_training_start(self) -> None:
         env = self.training_env
@@ -729,6 +731,7 @@ class VecEpisodeTradingCallback(BaseCallback):
         self._cur_rewards = [0.0 for _ in range(self._n_envs)]
         self._cur_lens = [0 for _ in range(self._n_envs)]
         self._start_time = time.time()  # Initialize FPS tracking
+        self._last_metrics_save = self._start_time  # Initialize metrics save throttle
     def _on_rollout_end(self) -> None:
         """Capture PPO diagnostics after each rollout (before update)."""
         # SB3 stores training stats in model.logger.name_to_value
@@ -910,8 +913,11 @@ class VecEpisodeTradingCallback(BaseCallback):
             self._cur_rewards[i] = 0.0
             self._cur_lens[i] = 0
 
-            # Save metrics every episode for dashboard
-            self._save_live_metrics()
+            # Save metrics with throttling (max 1Hz to avoid disk thrashing)
+            now = time.time()
+            if now - self._last_metrics_save >= 1.0:
+                self._save_live_metrics()
+                self._last_metrics_save = now
 
         # Periodic logging based on timesteps
         if self.num_timesteps - self._last_log >= self.log_interval_steps:
@@ -1767,6 +1773,8 @@ class CurriculumTrainingCallback(BaseCallback):
     
     Extends VecEpisodeTradingCallback with curriculum stage tracking,
     automatic progression, LR warmup, and automatic checkpointing.
+    
+    Supports goal-based training termination when curriculum goals are met.
     """
     
     def __init__(
@@ -1778,6 +1786,13 @@ class CurriculumTrainingCallback(BaseCallback):
         verbose: int = 1,
         enable_lr_warmup: bool = True,
         enable_checkpoints: bool = True,
+        # Goal-based stopping parameters
+        goal_based_stopping: bool = False,
+        max_hours: Optional[float] = None,
+        plateau_stop: bool = True,
+        plateau_threshold_episodes: int = 500,
+        max_demotions_from_same_stage: int = 5,
+        mastery_confirmation_episodes: int = 100,
     ):
         super().__init__(verbose)
         self.curriculum_manager = curriculum_manager
@@ -1786,6 +1801,14 @@ class CurriculumTrainingCallback(BaseCallback):
         self.save_path = Path(save_path)
         self.enable_lr_warmup = enable_lr_warmup
         self.enable_checkpoints = enable_checkpoints
+        
+        # Goal-based stopping
+        self.goal_based_stopping = goal_based_stopping
+        self.max_hours = max_hours
+        self.plateau_stop = plateau_stop
+        self.plateau_threshold_episodes = plateau_threshold_episodes
+        self.max_demotions_from_same_stage = max_demotions_from_same_stage
+        self.mastery_confirmation_episodes = mastery_confirmation_episodes
         
         self._last_log = 0
         self._last_metrics_save: float = 0.0  # Time-based metrics saving
@@ -1815,12 +1838,16 @@ class CurriculumTrainingCallback(BaseCallback):
         # Stage tracking
         self._stage_history: List[Dict[str, Any]] = []
         self._start_time: Optional[float] = None
-        self._last_stage: Optional[str] = None
         self._base_lr: Optional[float] = None
         
         # Register transition callback
         if self.curriculum_manager is not None:
             self.curriculum_manager.on_transition_callback = self._on_stage_transition
+    
+    @property
+    def episodes_done(self) -> int:
+        """Number of completed episodes."""
+        return len(self._ep_rewards)
     
     def _on_stage_transition(
         self,
@@ -1856,16 +1883,13 @@ class CurriculumTrainingCallback(BaseCallback):
         self._cur_rewards = [0.0] * self._n_envs
         self._cur_lens = [0] * self._n_envs
         self._start_time = time.time()
+        self.training_start_time = self._start_time  # For goal-based stopping
         
         self.save_path.mkdir(parents=True, exist_ok=True)
         
         # Store base learning rate
         if self.model is not None:
             self._base_lr = float(self.model.learning_rate) if not callable(self.model.learning_rate) else None
-        
-        # Initialize stage tracking
-        if self.curriculum_manager is not None:
-            self._last_stage = self.curriculum_manager.current_stage.name
         
         # Save initial metrics file so dashboard sees data immediately
         self._save_live_metrics()
@@ -1985,6 +2009,26 @@ class CurriculumTrainingCallback(BaseCallback):
         if now - self._last_metrics_save >= 1.0:
             self._save_live_metrics()
             self._last_metrics_save = now
+
+        # Goal-based stopping check (only if enabled)
+        if self.goal_based_stopping and self.curriculum_manager is not None:
+            # Check periodically (after each episode completion is enough)
+            if self.episodes_done > 0 and self.episodes_done % 10 == 0:
+                should_stop, reason = self.curriculum_manager.should_stop_training(
+                    max_timesteps=None,  # Let SB3 handle max timesteps
+                    max_episodes=None,
+                    max_hours=self.max_hours,
+                    start_time=self.training_start_time,
+                    plateau_stop=self.plateau_stop,
+                    plateau_threshold_episodes=self.plateau_threshold_episodes,
+                    max_demotions_from_same_stage=self.max_demotions_from_same_stage,
+                    mastery_confirmation_episodes=self.mastery_confirmation_episodes,
+                )
+                if should_stop:
+                    logger.info(f"🎯 Goal-based stopping triggered: {reason}")
+                    self._log_progress()  # Final log
+                    self._save_live_metrics()  # Final save
+                    return False  # Stop training
 
         return True
     
@@ -2341,10 +2385,13 @@ def create_curriculum_env(
     base_env = PropFirmTradingEnv(data, base_config)
     
     # Wrap with curriculum
+    # CRITICAL: apply_reward_shaping=False because PropFirmTradingEnv already
+    # has complete reward shaping via RewardConfig. Enabling wrapper shaping
+    # causes double reward modification and corrupts learning signal.
     env = CurriculumEnvWrapper(
         env=base_env,
         manager=curriculum_manager,
-        apply_reward_shaping=True,
+        apply_reward_shaping=False,  # FIXED: Was True, causing double shaping
         apply_execution_difficulty=True,
         apply_constraints=True,
         apply_data_difficulty=True,
@@ -2433,12 +2480,27 @@ def train_curriculum_agent(
     start_stage: str = "FOUNDATION",
     resume_path: Optional[str] = None,
     frame_stack: int = 1,
+    # Goal-based stopping parameters
+    goal_based_stopping: bool = False,
+    max_hours: Optional[float] = None,
+    plateau_threshold_episodes: int = 500,
+    max_demotions_from_same_stage: int = 5,
+    mastery_confirmation_episodes: int = 100,
 ) -> BaseAlgorithm:
     """
     Train with curriculum learning - progressive difficulty stages.
     
     The agent starts at FOUNDATION and earns progression to harder stages
     by demonstrating statistical competence (not just time or luck).
+    
+    Goal-Based Stopping:
+        When goal_based_stopping=True, training will continue until:
+        - Agent achieves MASTERY stage and stays for mastery_confirmation_episodes, OR
+        - Safety caps hit: max_hours exceeded, OR
+        - Plateau detected: no stage progression for plateau_threshold_episodes, OR
+        - Repeated failures: demoted max_demotions_from_same_stage times from same stage
+        
+        Set total_timesteps high (e.g., 50M) as a safety cap when using goal-based stopping.
     """
     if not CURRICULUM_AVAILABLE or CurriculumStage is None or CurriculumManager is None:
         raise RuntimeError("Curriculum system not available. Check imports.")
@@ -2521,6 +2583,13 @@ def train_curriculum_agent(
             total_timesteps=total_timesteps,
             log_interval_steps=50_000,
             save_path=str(save_dir),
+            # Goal-based stopping settings
+            goal_based_stopping=goal_based_stopping,
+            max_hours=max_hours,
+            plateau_stop=True,
+            plateau_threshold_episodes=plateau_threshold_episodes,
+            max_demotions_from_same_stage=max_demotions_from_same_stage,
+            mastery_confirmation_episodes=mastery_confirmation_episodes,
         ),
         CheckpointCallback(
             save_freq=checkpoint_freq,
@@ -2604,6 +2673,29 @@ def main() -> None:
         help="Starting curriculum stage (FOUNDATION, DISCIPLINE, MARKET_STRUCTURE, etc.)",
     )
     parser.add_argument("--resume-curriculum", type=str, default=None, help="Resume curriculum from state file")
+    parser.add_argument(
+        "--goal-based",
+        action="store_true",
+        help="Train until MASTERY achieved (not fixed timesteps). Set --timesteps high as safety cap.",
+    )
+    parser.add_argument(
+        "--max-hours",
+        type=float,
+        default=None,
+        help="Maximum training time in hours (goal-based stopping)",
+    )
+    parser.add_argument(
+        "--plateau-episodes",
+        type=int,
+        default=500,
+        help="Episodes without stage progress to trigger plateau stop (goal-based)",
+    )
+    parser.add_argument(
+        "--mastery-episodes",
+        type=int,
+        default=100,
+        help="Episodes at MASTERY to confirm completion (goal-based)",
+    )
 
     parser.add_argument("--timesteps", type=int, default=10_000_000, help="Total training timesteps")
     default_n_envs = 2 if platform.system() == "Windows" else 4
@@ -2722,6 +2814,13 @@ def main() -> None:
         
         logger.info("=" * 70)
         logger.info("CURRICULUM LEARNING MODE")
+        if args.goal_based:
+            logger.info("🎯 GOAL-BASED STOPPING ENABLED")
+            logger.info(f"   Training until MASTERY achieved ({args.mastery_episodes} episodes to confirm)")
+            logger.info(f"   Safety cap: {args.timesteps:,} timesteps")
+            if args.max_hours:
+                logger.info(f"   Max hours: {args.max_hours}")
+            logger.info(f"   Plateau threshold: {args.plateau_episodes} episodes")
         logger.info("=" * 70)
         
         train_curriculum_agent(
@@ -2745,6 +2844,11 @@ def main() -> None:
             start_stage=args.start_stage,
             resume_path=args.resume_curriculum,
             frame_stack=max(1, int(args.frame_stack)),
+            # Goal-based stopping
+            goal_based_stopping=args.goal_based,
+            max_hours=args.max_hours,
+            plateau_threshold_episodes=args.plateau_episodes,
+            mastery_confirmation_episodes=args.mastery_episodes,
         )
     else:
         # Standard propfirm training (default)

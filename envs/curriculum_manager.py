@@ -38,7 +38,7 @@ from dataclasses import dataclass, field, asdict, fields
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Deque, Dict, List, Optional, Tuple, Set
+from typing import Any, Callable, ClassVar, Deque, Dict, List, Optional, Tuple, Set
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -47,21 +47,20 @@ from envs.curriculum_config import (
     CurriculumStage,
     CurriculumStageConfig,
     CompetenceThresholds,
-    DataDifficulty,
-    TransitionSettings,
     TradingSkill,
     SkillRequirements,
-    EntropyTargets,
     CompositeScoringConfig,
     AdaptiveThresholdConfig,
     RecoveryProtocolConfig,
-    MixedStageSamplingConfig,
-    ReviewSessionConfig,
     MIN_EVALUATION_EPISODES,
     get_stage_config,
     get_next_stage,
     get_previous_stage,
     get_stage_progression,
+    # NOTE: DataDifficulty, TransitionSettings, EntropyTargets, 
+    # MixedStageSamplingConfig, ReviewSessionConfig are accessed via 
+    # CurriculumStageConfig attributes (e.g., stage_config.mixed_stage_sampling)
+    # rather than as direct type annotations, so they're not imported here.
 )
 
 logger = logging.getLogger("curriculum_manager")
@@ -103,6 +102,9 @@ def _safe_int(x: Any, default: int = 0) -> int:
 
 
 def _clamp(v: float, lo: float, hi: float) -> float:
+    """Clamp value to range [lo, hi], handling NaN/inf safely."""
+    if math.isnan(v) or math.isinf(v):
+        return (lo + hi) / 2.0  # Return midpoint for invalid values
     return max(lo, min(hi, v))
 
 
@@ -275,6 +277,12 @@ class LearningVelocity:
     # Minimum samples for rate calculation
     min_samples: int = 20
     
+    # Metrics where LOWER is better (inverted direction)
+    LOWER_IS_BETTER: ClassVar[set] = {
+        "max_drawdown", "daily_drawdown", "avg_mae", "consecutive_losses",
+        "hard_stop_exits", "risk_liquidation_exits",
+    }
+    
     def update(self, metrics: Dict[str, float]) -> None:
         """Update velocity tracking with new metrics."""
         any_improving = False
@@ -297,8 +305,14 @@ class LearningVelocity:
                 else:
                     normalized_slope = slope
                 
+                # For "lower is better" metrics, negate slope for storage
+                # (so positive means improvement regardless of direction)
+                if name in self.LOWER_IS_BETTER:
+                    normalized_slope = -normalized_slope
+                
                 self.improvement_rates[name] = float(normalized_slope)
                 
+                # Check if this metric is improving
                 if normalized_slope > self.plateau_threshold:
                     any_improving = True
         
@@ -568,6 +582,25 @@ class RecoveryProtocolState:
             "trigger_reason": self.trigger_reason,
             "is_active": self.is_active(),
         }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "RecoveryProtocolState":
+        """Restore state from dictionary."""
+        focus_skill = None
+        if data.get("focus_skill"):
+            try:
+                focus_skill = TradingSkill(data["focus_skill"])
+            except (ValueError, KeyError):
+                pass
+        
+        return cls(
+            triggered=data.get("triggered", False),
+            focus_skill=focus_skill,
+            reward_modifications=data.get("reward_modifications", {}),
+            constraint_modifications=data.get("constraint_modifications", {}),
+            episodes_remaining=data.get("episodes_remaining", 0),
+            trigger_reason=data.get("trigger_reason", ""),
+        )
 
 
 @dataclass
@@ -591,6 +624,31 @@ class ReviewSessionState:
             "home_stage": self.home_stage.name if self.home_stage else None,
             "is_active": self.is_active(),
         }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ReviewSessionState":
+        """Restore state from dictionary."""
+        review_stage = None
+        if data.get("review_stage"):
+            try:
+                review_stage = CurriculumStage[data["review_stage"]]
+            except KeyError:
+                pass
+        
+        home_stage = None
+        if data.get("home_stage"):
+            try:
+                home_stage = CurriculumStage[data["home_stage"]]
+            except KeyError:
+                pass
+        
+        return cls(
+            episodes_since_review=data.get("episodes_since_review", 0),
+            in_review=data.get("in_review", False),
+            review_stage=review_stage,
+            review_episodes_remaining=data.get("review_episodes_remaining", 0),
+            home_stage=home_stage,
+        )
 
 
 @dataclass
@@ -894,6 +952,18 @@ def compute_composite_score(
         if stats.dd_breach_rate > config.hard_floors["dd_breach_rate"]:
             meets_floors = False
             hard_floor_failures.append("dd_breach_rate")
+    
+    # NEW: Check profit_factor hard floor
+    if "profit_factor" in config.hard_floors:
+        if stats.mean_profit_factor < config.hard_floors["profit_factor"]:
+            meets_floors = False
+            hard_floor_failures.append("profit_factor")
+    
+    # NEW: Check r_multiple hard floor
+    if "r_multiple" in config.hard_floors:
+        if stats.mean_r_multiple < config.hard_floors["r_multiple"]:
+            meets_floors = False
+            hard_floor_failures.append("r_multiple")
     
     # Determine promotion/demotion status
     promotion_ready = meets_floors and (total_score >= config.promotion_threshold)
@@ -1271,6 +1341,8 @@ class CurriculumManager:
         Sample a stage for the next episode.
         
         Used for mixed-stage training to prevent catastrophic forgetting.
+        Uses the configured weights: current_stage_weight, recent_stages_weight,
+        and foundation_weight to determine sampling probabilities.
         """
         config = self.stage_config.mixed_stage_sampling
         
@@ -1279,9 +1351,22 @@ class CurriculumManager:
         
         r = self._rng.random()
         
-        if r < config.current_stage_weight:
+        # Normalize weights to sum to 1.0 (in case they don't)
+        total_weight = (
+            config.current_stage_weight +
+            config.recent_stages_weight +
+            config.foundation_weight
+        )
+        if total_weight <= 0:
             return self.current_stage
-        elif r < config.current_stage_weight + config.recent_stages_weight:
+        
+        current_prob = config.current_stage_weight / total_weight
+        recent_prob = config.recent_stages_weight / total_weight
+        # foundation_prob = config.foundation_weight / total_weight  # remainder
+        
+        if r < current_prob:
+            return self.current_stage
+        elif r < current_prob + recent_prob:
             # Sample from recent stages
             min_stage = max(0, self.current_stage.value - config.recent_stage_depth)
             if min_stage >= self.current_stage.value:
@@ -1289,6 +1374,7 @@ class CurriculumManager:
             stage_idx = self._rng.integers(min_stage, self.current_stage.value)
             return CurriculumStage(stage_idx)
         else:
+            # Foundation stage (using foundation_weight)
             return CurriculumStage.FOUNDATION
     
     # -------------------------------------------------------------------------
@@ -1384,8 +1470,19 @@ class CurriculumManager:
         record_to_stage = effective_stage if effective_stage is not None else self.current_stage
         
         # Fill curriculum metadata
-        metrics.stage_name = metrics.stage_name or record_to_stage.name
-        metrics.stage_epoch = metrics.stage_epoch or self._current_stage_epoch
+        # FIX: When effective_stage is provided, always use record_to_stage.name
+        # (don't keep the pre-set stage_name from record_episode_from_info)
+        if effective_stage is not None:
+            metrics.stage_name = record_to_stage.name
+        else:
+            metrics.stage_name = metrics.stage_name or record_to_stage.name
+        
+        # FIX: Use the epoch counter for the stage we're recording to, not current_stage
+        if record_to_stage == self.current_stage:
+            metrics.stage_epoch = metrics.stage_epoch or self._current_stage_epoch
+        else:
+            metrics.stage_epoch = self._stage_epoch_counter.get(record_to_stage, 0)
+        
         metrics.global_episode_idx = metrics.global_episode_idx or (self.total_episodes + 1)
         metrics.policy_entropy = self._current_entropy
         if not metrics.timestamp:
@@ -1414,7 +1511,7 @@ class CurriculumManager:
                 "win_rate": metrics.win_rate,
                 "profit_factor": metrics.profit_factor,
                 "avg_pnl": metrics.total_pnl,
-                "drawdown": metrics.max_drawdown,
+                "max_drawdown": metrics.max_drawdown,  # FIX: Key must match LOWER_IS_BETTER
             })
         
         # Transition tick
@@ -1477,7 +1574,16 @@ class CurriculumManager:
         agent_closes = _safe_int(exit_dist.get("agent_close", 0), 0)
         hard_stops = _safe_int(exit_dist.get("hard_stop", 0), 0)
         risk_liquidations = _safe_int(exit_dist.get("risk_liquidation", 0), 0)
-        other_exits = trade_count - trailing_stops - agent_closes - hard_stops - risk_liquidations
+        raw_other_exits = trade_count - trailing_stops - agent_closes - hard_stops - risk_liquidations
+        
+        # Always log warning if exit distribution is inconsistent (data integrity issue)
+        if raw_other_exits < 0:
+            logger.warning(
+                f"Exit distribution inconsistent: trade_count={trade_count}, "
+                f"sum_exits={trade_count - raw_other_exits} (trailing={trailing_stops}, "
+                f"agent={agent_closes}, hard={hard_stops}, risk={risk_liquidations})"
+            )
+        other_exits = max(0, raw_other_exits)
         
         metrics = EpisodeMetrics(
             total_pnl=total_pnl,
@@ -1501,7 +1607,7 @@ class CurriculumManager:
             agent_close_exits=agent_closes,
             hard_stop_exits=hard_stops,
             risk_liquidation_exits=risk_liquidations,
-            other_exits=max(0, other_exits),
+            other_exits=other_exits,  # Already clamped to >= 0 above
             episode_length=_safe_int(episode_length, 0),
             episode_reward=_safe_float(episode_reward, 0.0),
             termination_reason=termination_reason,
@@ -1826,13 +1932,19 @@ class CurriculumManager:
             results["checks"]["skills"] = skill_results
             all_passed = all_passed and skill_passed
         
-        # Composite score check
+        # Composite score check - ADDITIONAL requirement, NOT an override
+        # The composite score provides a holistic view but does NOT bypass traditional checks
         if self._composite_score and self.stage_config.composite_scoring.enabled:
             results["composite_score"] = self._composite_score.to_dict()
-            # Composite can override traditional checks if all hard floors pass
-            if self._composite_score.promotion_ready and not all_passed:
-                results["composite_override"] = True
-                all_passed = self._composite_score.promotion_ready
+            # Composite must ALSO pass - it's an AND, not an OR
+            composite_passed = self._composite_score.promotion_ready
+            results["checks"]["composite_score"] = {
+                "required": self.stage_config.composite_scoring.promotion_threshold,
+                "actual": self._composite_score.total_score,
+                "passed": composite_passed,
+                "meets_hard_floors": self._composite_score.meets_hard_floors,
+            }
+            all_passed = all_passed and composite_passed
         
         results["promotion_ready"] = all_passed
         results["stats"] = asdict(stats)
@@ -2176,6 +2288,101 @@ class CurriculumManager:
         return list(dict.fromkeys(recs))
     
     # -------------------------------------------------------------------------
+    # Goal-Based Training Termination
+    # -------------------------------------------------------------------------
+    
+    def should_stop_training(
+        self,
+        *,
+        max_timesteps: Optional[int] = None,
+        max_episodes: Optional[int] = None,
+        max_hours: Optional[float] = None,
+        start_time: Optional[float] = None,
+        plateau_stop: bool = True,
+        plateau_threshold_episodes: int = 500,
+        max_demotions_from_same_stage: int = 5,
+        mastery_confirmation_episodes: int = 100,
+    ) -> Tuple[bool, str]:
+        """
+        Check if training should stop based on curriculum goals.
+        
+        Use this instead of fixed timesteps for goal-oriented training.
+        Training stops when:
+        1. Agent reaches MASTERY stage AND maintains it for confirmation episodes
+        2. Safety caps are hit (max_timesteps, max_episodes, max_hours)
+        3. Learning has plateaued for too long (optional)
+        4. Agent has been demoted from the same stage too many times
+        
+        Args:
+            max_timesteps: Safety cap on total timesteps (None = no cap)
+            max_episodes: Safety cap on total episodes (None = no cap)
+            max_hours: Safety cap on training hours (None = no cap)
+            start_time: Training start time from time.time() for hours cap
+            plateau_stop: Whether to stop on extended plateau
+            plateau_threshold_episodes: Episodes of no improvement before plateau stop
+            max_demotions_from_same_stage: Stop if repeatedly failing same stage
+            mastery_confirmation_episodes: Episodes to confirm MASTERY is stable
+            
+        Returns:
+            (should_stop, reason): Tuple of bool and explanation string
+        """
+        # 1. Check if MASTERY achieved and confirmed
+        if self.stage_config.is_terminal:
+            # At terminal stage - check if stable
+            if self.stage_episodes >= mastery_confirmation_episodes:
+                # Check we're still meeting criteria (not about to be demoted)
+                meets_demotion, _ = self.check_demotion_criteria()
+                if not meets_demotion:
+                    return True, f"GOAL_ACHIEVED: Reached {self.current_stage.name} and maintained for {self.stage_episodes} episodes"
+        
+        # 2. Safety caps
+        if max_timesteps is not None and self.total_timesteps >= max_timesteps:
+            return True, f"MAX_TIMESTEPS: Reached {self.total_timesteps:,} timesteps"
+        
+        if max_episodes is not None and self.total_episodes >= max_episodes:
+            return True, f"MAX_EPISODES: Reached {self.total_episodes:,} episodes"
+        
+        if max_hours is not None and start_time is not None:
+            import time
+            elapsed_hours = (time.time() - start_time) / 3600.0
+            if elapsed_hours >= max_hours:
+                return True, f"MAX_HOURS: Training ran for {elapsed_hours:.1f} hours"
+        
+        # 3. Plateau detection
+        if plateau_stop and self._learning_velocity.is_plateaued(plateau_threshold_episodes):
+            return True, f"PLATEAU: No improvement for {self._learning_velocity.plateau_episodes} episodes"
+        
+        # 4. Repeated failure at same stage
+        for stage, count in self._demotion_analyzer.stage_failure_counts.items():
+            if count >= max_demotions_from_same_stage:
+                return True, f"REPEATED_FAILURE: Demoted from {stage.name} {count} times"
+        
+        return False, "TRAINING"
+    
+    def get_training_status(self) -> Dict[str, Any]:
+        """
+        Get current training status for goal-based training.
+        
+        Returns dict with progress info for logging/dashboard.
+        """
+        progression = get_stage_progression()
+        stage_idx = progression.index(self.current_stage)
+        
+        return {
+            "current_stage": self.current_stage.name,
+            "stage_index": stage_idx,
+            "total_stages": len(progression),
+            "progress_pct": (stage_idx / max(len(progression) - 1, 1)) * 100,
+            "is_terminal": self.stage_config.is_terminal,
+            "stage_episodes": self.stage_episodes,
+            "total_episodes": self.total_episodes,
+            "total_timesteps": self.total_timesteps,
+            "plateau_episodes": self._learning_velocity.plateau_episodes,
+            "is_plateaued": self._learning_velocity.is_plateaued(),
+            "demotion_counts": {s.name: c for s, c in self._demotion_analyzer.stage_failure_counts.items()},
+        }
+
+    # -------------------------------------------------------------------------
     # Persistence
     # -------------------------------------------------------------------------
     
@@ -2277,6 +2484,16 @@ class CurriculumManager:
         demotion_data = state.get("demotion_analyzer", {})
         if demotion_data:
             manager._demotion_analyzer.load_from_dict(demotion_data)
+        
+        # Restore recovery state (FIXED: was missing)
+        recovery_data = state.get("recovery_state", {})
+        if recovery_data:
+            manager._recovery_state = RecoveryProtocolState.from_dict(recovery_data)
+        
+        # Restore review state (FIXED: was missing)
+        review_data = state.get("review_state", {})
+        if review_data:
+            manager._review_state = ReviewSessionState.from_dict(review_data)
         
         # Restore learning velocity
         velocity_data = state.get("learning_velocity", {})
