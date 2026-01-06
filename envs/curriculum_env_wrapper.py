@@ -56,15 +56,24 @@ from envs.curriculum_manager import (
     SkillAssessment,
     RecoveryProtocolState,
 )
+# DUP-2 FIX: Use shared utilities instead of local duplicates
+from envs.shared_utils import clamp, safe_float, get_envs_logger
 
-logger = logging.getLogger("curriculum_env_wrapper")
+logger = get_envs_logger("curriculum_env_wrapper")
 
 
+# DEPRECATED: Use shared_utils.clamp() instead
 def _clamp(v: float, lo: float, hi: float) -> float:
-    return max(lo, min(hi, v))
+    return clamp(v, lo, hi)
 
 
+# DEPRECATED: Use shared_utils.safe_float() instead
 def _safe_float(x: Any, default: float = 0.0) -> float:
+    return safe_float(x, default)
+
+
+def _safe_float_impl(x: Any, default: float = 0.0) -> float:
+    """Legacy implementation - kept for reference during transition."""
     try:
         if x is None:
             return default
@@ -102,7 +111,7 @@ class CurriculumEnvWrapper(gym.Wrapper):
         self,
         env: gym.Env,
         manager: CurriculumManager,
-        apply_reward_shaping: bool = False,  # Default False: env already shapes rewards
+        apply_reward_shaping: bool = False,  # DEPRECATED: Always False. Reward shaping is done in env.
         apply_execution_difficulty: bool = True,
         apply_constraints: bool = True,
         apply_data_difficulty: bool = True,
@@ -115,11 +124,10 @@ class CurriculumEnvWrapper(gym.Wrapper):
         Args:
             env: Base trading environment to wrap
             manager: CurriculumManager instance for progression tracking
-            apply_reward_shaping: Whether to apply ADDITIONAL stage-specific reward shaping.
-                                  Default is False because PropFirmTradingEnv already applies
-                                  comprehensive reward shaping in _compute_trade_reward().
-                                  Setting this to True would cause DOUBLE reward shaping!
-                                  Only enable if using a base env without built-in reward shaping.
+            apply_reward_shaping: DEPRECATED - Always ignored. Reward shaping is handled
+                                  exclusively by PropFirmTradingEnv._compute_trade_reward().
+                                  Curriculum stages modify rewards via env.set_reward_config().
+                                  This parameter is kept only for backward compatibility.
             apply_execution_difficulty: Whether to apply execution difficulty settings
             apply_constraints: Whether to apply trading constraints
             apply_data_difficulty: Whether to apply data difficulty filtering
@@ -128,8 +136,21 @@ class CurriculumEnvWrapper(gym.Wrapper):
         """
         super().__init__(env)
         
+        # AUDIT FIX (CRIT-1): apply_reward_shaping REMOVED - it caused DOUBLE reward shaping.
+        # Reward shaping is now ONLY in PropFirmTradingEnv._compute_trade_reward().
+        # Curriculum stages modify rewards via env.set_reward_config().
+        if apply_reward_shaping:
+            import warnings
+            warnings.warn(
+                "apply_reward_shaping=True is DEPRECATED and IGNORED. "
+                "Reward shaping is handled by PropFirmTradingEnv. "
+                "Curriculum stages modify rewards via env.set_reward_config().",
+                DeprecationWarning,
+                stacklevel=2
+            )
+        
         self.manager = manager
-        self.apply_reward_shaping = apply_reward_shaping
+        self.apply_reward_shaping = False  # Always False - wrapper does NOT shape rewards
         self.apply_execution_difficulty = apply_execution_difficulty
         self.apply_constraints = apply_constraints
         self.apply_data_difficulty = apply_data_difficulty
@@ -609,8 +630,10 @@ class CurriculumEnvWrapper(gym.Wrapper):
         self._episode_raw_reward += raw_reward
         self._step_raw_rewards.append(raw_reward)
         
-        # Apply reward shaping
-        shaped_reward = self._shape_reward(raw_reward, info, terminated, truncated)
+        # AUDIT FIX (CRIT-1): NO wrapper reward shaping.
+        # Reward shaping is done ONLY by PropFirmTradingEnv._compute_trade_reward().
+        # Wrapper passes through raw_reward unchanged.
+        shaped_reward = raw_reward  # Pass-through, no double shaping
         self._episode_reward += shaped_reward
         self._step_rewards.append(shaped_reward)
         
@@ -620,9 +643,9 @@ class CurriculumEnvWrapper(gym.Wrapper):
         # Augment info
         info = self._augment_info(info, raw_reward=raw_reward, shaped_reward=shaped_reward)
         
-        # Handle episode end
+        # Handle episode end - returns modified info with episode_stats
         if terminated or truncated:
-            self._on_episode_end(info)
+            info = self._on_episode_end(info)
         
         return obs, shaped_reward, terminated, truncated, info
     
@@ -664,51 +687,61 @@ class CurriculumEnvWrapper(gym.Wrapper):
         
         return info
     
-    def _on_episode_end(self, info: Dict[str, Any]) -> None:
-        """Handle end of episode: record metrics and check for stage transitions."""
-        # Get episode stats from base environment
-        episode_stats = {}
+    def _on_episode_end(self, info: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle end of episode: record metrics and check for stage transitions.
+        
+        Returns the modified info dict with episode_stats included.
+        """
+        # Get episode stats from base environment (authoritative source)
+        base_episode_stats = {}
         if hasattr(self.env, "get_episode_stats"):
             try:
-                episode_stats = self.env.get_episode_stats() or {}  # type: ignore[attr-defined]
+                base_episode_stats = self.env.get_episode_stats() or {}  # type: ignore[attr-defined]
             except Exception as e:
                 logger.warning(f"Failed to get episode stats: {e}")
         
-        # Merge with info
-        merged_info = {**episode_stats, **info}
+        # Ensure episode_stats exists in info
+        if "episode_stats" not in info:
+            info["episode_stats"] = {}
         
-        # Add our tracked exit quality distribution
-        merged_info["episode_stats"] = merged_info.get("episode_stats", {})
-        merged_info["episode_stats"]["exit_quality_distribution"] = {
-            "trailing_stop": self._episode_trailing_stops,
-            "agent_close": self._episode_agent_closes,
-            "hard_stop": self._episode_hard_stops,
-            "risk_liquidation": self._episode_risk_liquidations,
-            "other": self._episode_other_exits,
-        }
+        # Merge base env's episode_stats into info's episode_stats
+        # This includes the authoritative exit_quality_distribution from actual trade results
+        for k, v in base_episode_stats.items():
+            if k not in info["episode_stats"]:
+                info["episode_stats"][k] = v
         
-        # Add computed averages
+        # Fallback: if base env didn't provide exit_quality_distribution, use our tracking
+        if not info["episode_stats"].get("exit_quality_distribution"):
+            info["episode_stats"]["exit_quality_distribution"] = {
+                "trailing_stop": self._episode_trailing_stops,
+                "agent_close": self._episode_agent_closes,
+                "hard_stop": self._episode_hard_stops,
+                "risk_liquidation": self._episode_risk_liquidations,
+                "other": self._episode_other_exits,
+            }
+        
+        # Add computed averages (from wrapper tracking)
         if self._episode_entry_qualities:
-            merged_info["episode_stats"]["avg_entry_quality"] = float(np.mean(self._episode_entry_qualities))
+            info["episode_stats"]["avg_entry_quality"] = float(np.mean(self._episode_entry_qualities))
         if self._episode_r_multiples:
-            merged_info["episode_stats"]["avg_r_multiple"] = float(np.mean(self._episode_r_multiples))
+            info["episode_stats"]["avg_r_multiple"] = float(np.mean(self._episode_r_multiples))
         if self._episode_maes:
-            merged_info["episode_stats"]["avg_mae"] = float(np.mean(self._episode_maes))
+            info["episode_stats"]["avg_mae"] = float(np.mean(self._episode_maes))
         if self._episode_mfes:
-            merged_info["episode_stats"]["avg_mfe"] = float(np.mean(self._episode_mfes))
+            info["episode_stats"]["avg_mfe"] = float(np.mean(self._episode_mfes))
         if self._episode_bars_held:
-            merged_info["episode_stats"]["avg_bars_held"] = float(np.mean(self._episode_bars_held))
+            info["episode_stats"]["avg_bars_held"] = float(np.mean(self._episode_bars_held))
         
         # Add reward breakdown
-        merged_info["episode_stats"]["raw_reward"] = self._episode_raw_reward
-        merged_info["episode_stats"]["shaped_reward"] = self._episode_reward
-        merged_info["episode_stats"]["shaping_contribution"] = self._episode_shaped_reward
-        merged_info["episode_stats"]["entropy_penalty_total"] = self._episode_entropy_penalty
+        info["episode_stats"]["raw_reward"] = self._episode_raw_reward
+        info["episode_stats"]["shaped_reward"] = self._episode_reward
+        info["episode_stats"]["shaping_contribution"] = self._episode_shaped_reward
+        info["episode_stats"]["entropy_penalty_total"] = self._episode_entropy_penalty
         
         # Record to manager with the effective stage used for this episode
         # This ensures mixed-stage samples get recorded to the correct stage's history
         self.manager.record_episode_from_info(
-            info=merged_info,
+            info=info,
             episode_reward=self._episode_reward,
             episode_length=self._episode_timesteps,
             effective_stage=self._effective_stage,
@@ -728,6 +761,8 @@ class CurriculumEnvWrapper(gym.Wrapper):
                     self.stage_change_callback(old_stage, new_stage)
                 except Exception as e:
                     logger.warning(f"Stage change callback error: {e}")
+        
+        return info
     
     # -------------------------------------------------------------------------
     # Additional Interface Methods

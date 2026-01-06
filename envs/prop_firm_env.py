@@ -101,9 +101,69 @@ except Exception:
     PPO_OBS_VERSION = "5.0"
     OBS_BUILDER_AVAILABLE = False
 
+
+def validate_observation_version(saved_version: str, saved_size: int) -> None:
+    """
+    Validate that saved model's observation version matches current builder.
+    
+    AUDIT FIX (CRIT-4): Prevents silent policy corruption when observation
+    layout changes between training and inference.
+    
+    Args:
+        saved_version: PPO_OBS_VERSION from saved model metadata
+        saved_size: Observation size from saved model's observation space
+        
+    Raises:
+        ValueError: If version or size mismatch detected
+    """
+    if saved_size != PPO_OBS_SIZE:
+        raise ValueError(
+            f"Observation SIZE MISMATCH! Model trained with {saved_size}-dim observations, "
+            f"but current PPOObservationBuilder produces {PPO_OBS_SIZE}-dim. "
+            f"This will cause silent policy corruption. Retrain model or rollback builder."
+        )
+    
+    # Compare major.minor version (ignore patch)
+    def parse_version(v: str) -> tuple:
+        parts = v.split(".")
+        return tuple(int(p) for p in parts[:2])
+    
+    try:
+        saved_major_minor = parse_version(saved_version)
+        current_major_minor = parse_version(PPO_OBS_VERSION)
+        
+        if saved_major_minor != current_major_minor:
+            raise ValueError(
+                f"Observation VERSION MISMATCH! Model trained with v{saved_version}, "
+                f"current builder is v{PPO_OBS_VERSION}. Feature layout may have changed. "
+                f"Retrain model or downgrade builder."
+            )
+    except Exception as e:
+        if "MISMATCH" in str(e):
+            raise
+        # If version parsing fails, just warn
+        import warnings
+        warnings.warn(
+            f"Could not parse observation versions (saved={saved_version}, current={PPO_OBS_VERSION}). "
+            f"Proceeding but policy may be corrupted if layout changed.",
+            UserWarning
+        )
+
+
 import logging
-logger = logging.getLogger("prop_firm_env")
-logging.basicConfig(level=logging.INFO)
+# MED-3 FIX: Use standardized envs logging pattern
+from envs.shared_utils import (
+    get_envs_logger,
+    safe_float as _safe_float,
+    safe_int as _safe_int,
+    clamp as _clamp,
+    direction_sign,
+    TIMEFRAME_MINUTES,
+    DEFAULT_PRIMARY_TIMEFRAME,
+    timeframe_to_minutes,
+)
+
+logger = get_envs_logger("prop_firm_env")
 
 from envs.execution_model import ExecutionConfig, ExecutionModel
 
@@ -182,10 +242,15 @@ class RewardConfig:
 
     # Exit quality modifiers
     exit_quality_enabled: bool = True
-    trailing_stop_bonus: float = 0.15
-    agent_close_bonus: float = 0.05
+    trailing_stop_bonus: float = 0.25  # INCREASED from 0.15 - strongly reward letting winners run
+    agent_close_bonus: float = 0.0  # REMOVED - don't reward cutting winners short
     hard_stop_penalty: float = 0.15
     risk_liquidation_penalty: float = 0.30
+    
+    # Premature close penalty (penalize agent_close that leaves profit on table)
+    premature_close_capture_threshold: float = 0.7  # If captured < 70% of MFE, penalize
+    premature_close_penalty_scale: float = 0.25  # Scale factor for penalty
+    premature_close_penalty_cap: float = 0.15  # Maximum penalty
 
     # Truncation handling
     truncation_winner_discount: float = 0.30
@@ -211,6 +276,16 @@ class RewardConfig:
     anti_churn_enabled: bool = True
     daily_trade_soft_limit: int = 10
     churn_penalty_per_trade: float = 0.02
+
+    # Trade activity consistency (NEW)
+    # Encourages consistent trade counts across episodes
+    activity_consistency_enabled: bool = True
+    target_trades_per_1k_steps: float = 40.0  # Default ~80 trades per 2000-step episode
+    # Stage-specific targets: early stages allow more exploration, later enforce discipline
+    # Key = stage index (0=Foundation, 7=LiveReady), Value = trades per 1k steps
+    stage_activity_targets: Optional[Dict[int, float]] = None  # If None, use target_trades_per_1k_steps
+    activity_deviation_penalty_scale: float = 0.1  # Penalty for deviating from target
+    min_trades_penalty: float = 0.3  # Penalty if < 20% of target trades
 
     # Blocked action penalties
     hard_block_penalty: float = 0.10
@@ -292,15 +367,17 @@ class PropFirmConfig:
     max_steps_per_episode: int = 2000
     gamma: float = 0.95
 
-    # Reward configuration
+    # Reward configuration (PRIMARY - use this)
     reward: RewardConfig = field(default_factory=RewardConfig)
 
-    # Legacy reward params
-    reward_scale: float = 10.0
-    risk_penalty_scale: float = 2.0
-    quality_bonus_scale: float = 0.5
-    blocked_action_penalty: float = 0.02
-    hard_block_penalty: float = 0.02
+    # DEPRECATED Legacy reward params - use `reward.xxx` instead
+    # These are kept for backward compatibility and will be removed in v2.0
+    # ARCH-3 FIX: Added deprecation notice
+    reward_scale: float = 10.0  # DEPRECATED: use reward.reward_scale
+    risk_penalty_scale: float = 2.0  # DEPRECATED: use reward.dd_penalty_scale
+    quality_bonus_scale: float = 0.5  # DEPRECATED: unused
+    blocked_action_penalty: float = 0.02  # DEPRECATED: use reward.soft_block_penalty
+    hard_block_penalty: float = 0.02  # DEPRECATED: use reward.hard_block_penalty
 
     # Execution anti-cheat
     execution: ExecutionConfig = field(default_factory=ExecutionConfig)
@@ -316,14 +393,49 @@ class PropFirmConfig:
     size_buckets: Tuple[float, ...] = (0.35, 0.60, 0.85, 1.10)
 
     def sync_reward_from_legacy(self) -> None:
-        # Keep RewardConfig in sync with legacy knobs
+        """
+        DEPRECATED: Legacy sync from old scalar fields to RewardConfig.
+        
+        WARNING: This overwrites any curriculum/stage reward overrides.
+        Only call at init/load time, NEVER after applying curriculum config.
+        Use sync_legacy_from_reward() after curriculum updates instead.
+        
+        This method will be removed in v2.0. Access reward fields directly:
+        - config.reward.reward_scale instead of config.reward_scale
+        - config.reward.dd_penalty_scale instead of config.risk_penalty_scale
+        """
+        import warnings
+        warnings.warn(
+            "sync_reward_from_legacy() is deprecated. "
+            "Use config.reward.xxx fields directly instead of legacy scalars.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self.reward.reward_scale = float(self.reward_scale)
         self.reward.dd_penalty_scale = float(self.risk_penalty_scale)
         self.reward.hard_block_penalty = float(self.hard_block_penalty)
         self.reward.soft_block_penalty = float(self.blocked_action_penalty)
 
+    def sync_legacy_from_reward(self) -> None:
+        """
+        Sync legacy scalar fields FROM RewardConfig (reverse direction).
+        
+        Call this after applying curriculum reward overrides to keep
+        legacy fields consistent for external inspection/serialization.
+        """
+        self.reward_scale = float(self.reward.reward_scale)
+        self.risk_penalty_scale = float(self.reward.dd_penalty_scale)
+        self.hard_block_penalty = float(self.reward.hard_block_penalty)
+        self.blocked_action_penalty = float(self.reward.soft_block_penalty)
+
     def __post_init__(self) -> None:
-        self.sync_reward_from_legacy()
+        # AUDIT FIX (HIGH-1): REMOVED automatic sync_reward_from_legacy() call.
+        # This was overwriting curriculum reward settings.
+        # Legacy fields are now synced FROM RewardConfig via sync_legacy_from_reward()
+        # after curriculum applies stage config.
+        # 
+        # If you need legacy field -> RewardConfig sync, call sync_reward_from_legacy()
+        # explicitly BEFORE curriculum configuration.
 
         try:
             policy = load_risk_policy()
@@ -366,9 +478,12 @@ class PropFirmConfig:
                 self.allow_weekend_holding = sess.get("allow_weekend_holding", self.allow_weekend_holding)
                 self.final_exit_window_minutes = sess.get("final_exit_window_minutes", self.final_exit_window_minutes)
 
-            self.sync_reward_from_legacy()
-        except Exception:
-            pass
+            # AUDIT FIX (HIGH-1): REMOVED sync_reward_from_legacy() call.
+            # Curriculum stages now control reward settings exclusively.
+        except Exception as e:
+            # AUDIT FIX (HIGH-1): Log config sync failures
+            import logging
+            logging.getLogger(__name__).warning(f"sync_from_yaml() failed: {type(e).__name__}: {e}")
 
 
 @dataclass
@@ -398,6 +513,7 @@ class TradeResult:
     entry_quality: float
     direction: str
     lot_size: float
+    total_fees: float = 0.0  # Entry + exit fees for consistent MFE/net_pnl comparisons
 
 
 class PropFirmTradingEnv(gym.Env):
@@ -421,10 +537,15 @@ class PropFirmTradingEnv(gym.Env):
         self._pending_stage_apply: bool = False
         self._last_stage_name: str = ""
         self._last_stage_epoch: int = 0
+        self._curriculum_stage_idx: int = 0  # Stage index for stage-specific reward settings
         if curriculum_manager is not None and CURRICULUM_AVAILABLE:
             self.curriculum = curriculum_manager
             self._last_stage_name = getattr(self.curriculum.current_stage, "name", "")
             self._last_stage_epoch = int(getattr(self.curriculum, "current_stage_epoch", 0))
+            # Initialize stage index
+            current_stage = getattr(self.curriculum, "current_stage", None)
+            if current_stage is not None:
+                self._curriculum_stage_idx = getattr(current_stage, "value", 0)
 
         self.data = data_dict
         self.instruments = [i for i in self.config.instruments if i in self.data]
@@ -436,8 +557,10 @@ class PropFirmTradingEnv(gym.Env):
         # Keep obs size consistent with builder contract
         try:
             self.config.observation_size = int(PPO_OBS_SIZE)
-        except Exception:
-            pass
+        except Exception as e:
+            # AUDIT FIX (HIGH-1): Log observation size sync failures
+            import logging
+            logging.getLogger(__name__).debug(f"Could not sync observation_size: {e}")
 
         self._K = int(len(self.config.size_buckets))
         self._ACTION_HOLD = 0
@@ -458,7 +581,10 @@ class PropFirmTradingEnv(gym.Env):
         else:
             print("[OBS] PPOObservationBuilder not available -> fallback observation")
 
-        self._min_data_len = self._get_min_data_length()
+        # FIXED: Use primary timeframe length for episode boundaries, not min across all TFs
+        # Higher timeframes (D1, H4) are only used for context, not for episode progression
+        self._primary_data_len = self._get_primary_data_length()
+        self._min_data_len = self._primary_data_len  # Backward compat alias
 
         # Runtime / account
         self.balance = float(self.config.initial_balance)
@@ -517,8 +643,7 @@ class PropFirmTradingEnv(gym.Env):
         self._quote_cache_ask: float = 0.0
 
         # Reward tracking state
-        self._opportunity_history: List[float] = []
-        self._action_history: List[int] = []
+        # AUDIT FIX: Removed _opportunity_history and _action_history (dead code - never used)
         self._avg_vol: Optional[float] = None
         self._episode_trade_results: List[TradeResult] = []
         self._last_reward_components: Dict[str, float] = {}
@@ -573,6 +698,14 @@ class PropFirmTradingEnv(gym.Env):
             if stage_cfg is None:
                 return
 
+            # Track current stage index for stage-specific reward calculations
+            current_stage = getattr(self.curriculum, "current_stage", None)
+            if current_stage is not None:
+                # Use stage value as index (0=Foundation, 7=LiveReady)
+                self._curriculum_stage_idx = getattr(current_stage, "value", 0)
+            else:
+                self._curriculum_stage_idx = 0
+
             # Common patterns:
             # - env_overrides: { "risk_per_trade_pct": 0.001, "domain_randomization_enabled": False, ...}
             # - reward_overrides: { "reward_scale": 6.0, ... }
@@ -596,10 +729,13 @@ class PropFirmTradingEnv(gym.Env):
             if isinstance(execution_overrides, dict):
                 self._apply_overrides_to_object(self.config.execution, execution_overrides)
 
-            # keep legacy sync consistent
-            self.config.sync_reward_from_legacy()
-        except Exception:
-            # Never let curriculum override application break training
+            # Sync legacy fields FROM RewardConfig (not the other way around!)
+            # This ensures curriculum reward overrides are NOT overwritten.
+            self.config.sync_legacy_from_reward()
+        except Exception as e:
+            # AUDIT FIX (HIGH-1): Log curriculum override failures
+            import logging
+            logging.getLogger(__name__).warning(f"_sync_curriculum_stage_overrides() failed: {type(e).__name__}: {e}")
             return
 
     # ---------------------------
@@ -837,8 +973,9 @@ class PropFirmTradingEnv(gym.Env):
             if hasattr(reward_shaping, "max_reward"):
                 rcfg.max_reward = float(reward_shaping.max_reward)
             
-            # Keep legacy sync consistent
-            self.config.sync_reward_from_legacy()
+            # Sync legacy fields FROM RewardConfig (not the reverse!)
+            # This ensures curriculum reward overrides are preserved.
+            self.config.sync_legacy_from_reward()
             
             logger.debug(f"Applied reward config: scale={rcfg.reward_scale}, loss_mult={rcfg.loss_multiplier}")
             
@@ -860,6 +997,7 @@ class PropFirmTradingEnv(gym.Env):
         self._data_difficulty = difficulty
         self._valid_start_indices = None  # Force recomputation
         self._volatility_percentiles = None
+        self._difficulty_cache_hash: Optional[int] = None
         
         if difficulty is not None:
             self._precompute_data_difficulty_indices()
@@ -869,7 +1007,25 @@ class PropFirmTradingEnv(gym.Env):
         Pre-compute valid episode starting indices based on data difficulty settings.
         
         This avoids expensive per-reset filtering by caching valid positions.
+        Uses hash-based caching to skip redundant computation when settings unchanged.
         """
+        # Compute config hash to detect if recomputation needed
+        if self._data_difficulty is not None:
+            d = self._data_difficulty
+            config_hash = hash((
+                getattr(d, 'volatility_percentile_range', (0.0, 1.0)),
+                getattr(d, 'min_trend_clarity', 0.0),
+                getattr(d, 'include_asian_session', True),
+                getattr(d, 'include_london_session', True),
+                getattr(d, 'include_ny_session', True),
+                getattr(d, 'avoid_session_boundaries', False),
+            ))
+            
+            # Skip if already computed with same settings
+            if self._difficulty_cache_hash == config_hash and self._valid_start_indices is not None:
+                return
+            
+            self._difficulty_cache_hash = config_hash
         if self._data_difficulty is None:
             self._valid_start_indices = None
             return
@@ -974,8 +1130,31 @@ class PropFirmTradingEnv(gym.Env):
             self._valid_start_indices = valid_indices
             logger.debug(f"DataDifficulty filter: {len(valid_indices)} valid start indices out of {max_end - buffer}")
 
+    def _resolve_column(self, df: pd.DataFrame, col_lower: str) -> str:
+        """
+        Resolve column name to handle both lowercase and uppercase OHLC columns.
+        
+        Checks for lowercase first (more common), then titlecase/uppercase.
+        Returns the resolved column name or raises KeyError if not found.
+        """
+        if col_lower in df.columns:
+            return col_lower
+        col_title = col_lower.capitalize()  # e.g., "close" -> "Close"
+        if col_title in df.columns:
+            return col_title
+        col_upper = col_lower.upper()  # e.g., "close" -> "CLOSE"
+        if col_upper in df.columns:
+            return col_upper
+        raise KeyError(f"Column '{col_lower}' not found in any case variant (tried: {col_lower}, {col_title}, {col_upper})")
+
     def _compute_volatility_percentiles(self, df: pd.DataFrame) -> None:
-        """Compute rolling volatility percentile for each bar."""
+        """
+        Compute volatility percentile for each bar.
+        
+        Uses O(n log n) rank-based algorithm instead of O(n²) expanding window.
+        For data difficulty filtering, global percentile ranking is statistically
+        equivalent and much faster than exact expanding window percentile.
+        """
         try:
             if "close" not in df.columns and "Close" not in df.columns:
                 self._volatility_percentiles = None
@@ -992,17 +1171,24 @@ class PropFirmTradingEnv(gym.Env):
             
             returns = np.abs(np.diff(close) / (close[:-1] + 1e-10))
             vol = np.zeros(len(close))
-            vol[0] = 0.5  # Default percentile for first bar
+            vol[0] = 0.0  # First bar has no volatility data
             
             for i in range(1, len(returns)):
                 start = max(0, i - window)
                 vol[i] = np.std(returns[start:i]) if i > start else 0.0
             
-            # Convert to percentile (expanding window)
-            percentiles = np.zeros(len(close))
-            for i in range(1, len(close)):
-                # Percentile rank within all bars up to this point
-                percentiles[i] = np.mean(vol[:i+1] <= vol[i])
+            # O(n log n) global percentile using scipy rankdata
+            # This replaces the O(n²) expanding window loop
+            from scipy.stats import rankdata
+            
+            n = len(close)
+            # rankdata returns 1-based ranks; divide by n for percentile [0, 1]
+            # method='average' handles ties appropriately
+            full_ranks = rankdata(vol, method='average')
+            percentiles = full_ranks / n
+            
+            # First bar gets default 0.5 (median assumption for unknown)
+            percentiles[0] = 0.5
             
             self._volatility_percentiles = percentiles
         except Exception:
@@ -1101,8 +1287,13 @@ class PropFirmTradingEnv(gym.Env):
 
     def _curriculum_on_episode_end(self, info: Dict[str, Any]) -> None:
         """
-        Records the episode into CurriculumManager and triggers promote/demote decisions.
-        Applies the NEW stage on the next reset (clean boundary).
+        Augments episode info with curriculum metadata.
+        
+        AUDIT FIX (CRIT-3): Episode recording is now ONLY done by CurriculumEnvWrapper.
+        This method only adds metadata - it does NOT record episodes to the manager.
+        This prevents double episode counting that was causing 2x promotion speed.
+        
+        The wrapper calls manager.record_episode_from_info() in its _on_episode_end().
         """
         if not self.curriculum:
             return
@@ -1112,31 +1303,21 @@ class PropFirmTradingEnv(gym.Env):
             if "episode_stats" not in info:
                 info["episode_stats"] = self.get_episode_stats()
 
-            # Record + possibly transition
-            self.curriculum.record_episode_from_info(
-                info=info,
-                episode_reward=float(self._episode_return),
-                episode_length=int(self.episode_step),
-            )
+            # REMOVED: Episode recording moved to CurriculumEnvWrapper
+            # The wrapper is the single source of truth for episode recording.
+            # self.curriculum.record_episode_from_info(...)  # REMOVED - causes double counting
+            # changed, new_stage = self.curriculum.update()  # REMOVED - wrapper handles this
 
+            # Only add metadata for dashboard (no recording/transition logic)
+            info["curriculum"] = self.curriculum.get_progress_report()
+            
+            # Track if stage changed (wrapper will handle actual transition)
             old_stage = getattr(self.curriculum.current_stage, "name", "")
             old_epoch = int(getattr(self.curriculum, "current_stage_epoch", 0))
-
-            changed, new_stage = self.curriculum.update()
-
-            # Update metadata for dashboard
-            info["curriculum"] = self.curriculum.get_progress_report()
-
-            if changed and new_stage is not None:
-                new_stage_name = getattr(new_stage, "name", str(new_stage))
-                info["curriculum_transition"] = {
-                    "from_stage": old_stage,
-                    "to_stage": new_stage_name,
-                    "from_epoch": old_epoch,
-                    "to_epoch": int(getattr(self.curriculum, "current_stage_epoch", 0)),
-                }
-                # Apply stage overrides on NEXT reset (avoids mixing stages within an episode)
-                self._pending_stage_apply = True
+            info["curriculum_metadata"] = {
+                "stage": old_stage,
+                "epoch": old_epoch,
+            }
         except Exception:
             return
 
@@ -1145,11 +1326,58 @@ class PropFirmTradingEnv(gym.Env):
     # ---------------------------
 
     def _get_min_data_length(self) -> int:
+        """
+        DEPRECATED: Get minimum data length across ALL timeframes.
+        
+        WARNING: This method is DEPRECATED and should NOT be used.
+        It returns the minimum bar count across ALL timeframes, which means
+        if you have D1 (252 bars) and M15 (50,000 bars), it returns 252.
+        This causes 99.5% of training data to be UNUSED.
+        
+        Use _get_primary_data_length() instead, which correctly returns
+        the primary timeframe bar count.
+        
+        AUDIT FIX (CRIT-2): This method now emits DeprecationWarning.
+        """
+        import warnings
+        warnings.warn(
+            "_get_min_data_length() is DEPRECATED. Use _get_primary_data_length() instead. "
+            "This method returns min across ALL TFs, which can cause 99%+ of data to be unused.",
+            DeprecationWarning,
+            stacklevel=2
+        )
         m = float("inf")
         for inst in self.instruments:
             for _, df in self.data.get(inst, {}).items():
                 m = min(m, len(df))
         return int(m) if m != float("inf") else 0
+
+    def _get_primary_data_length(self) -> int:
+        """
+        Get data length for PRIMARY timeframe only.
+        
+        CRITICAL: Episode boundaries should be based on the primary trading timeframe,
+        not the minimum across all timeframes. Higher TFs (D1, H4) are only used for
+        context features and have far fewer bars - using their length would cause
+        99%+ of episodes to terminate instantly when the episode start index
+        (sampled from primary TF range) exceeds the higher TF bar count.
+        """
+        inst = self.instruments[0] if self.instruments else None
+        if not inst:
+            return self._get_min_data_length()
+        
+        primary_tf = self.config.primary_timeframe
+        df = self.data.get(inst, {}).get(primary_tf)
+        
+        if df is not None and len(df) > 0:
+            return len(df)
+        
+        # Fallback: use min across all TFs for this instrument
+        inst_data = self.data.get(inst, {})
+        if inst_data:
+            return min(len(df) for df in inst_data.values())
+        
+        return self._get_min_data_length()
 
     def _decode_action(self, action_id: int) -> Tuple[str, float]:
         """
@@ -1215,13 +1443,9 @@ class PropFirmTradingEnv(gym.Env):
     # ---------------------------
 
     def _tf_minutes(self) -> int:
-        tf = (self.config.primary_timeframe or "M15").upper().strip()
-        mapping = {
-            "M1": 1, "M2": 2, "M3": 3, "M5": 5, "M10": 10, "M15": 15, "M30": 30,
-            "H1": 60, "H2": 120, "H4": 240, "H6": 360, "H8": 480, "H12": 720,
-            "D1": 1440,
-        }
-        return int(mapping.get(tf, 15))
+        """Get minutes per bar for primary timeframe. MED-2 FIX: Use shared constants."""
+        tf = (self.config.primary_timeframe or DEFAULT_PRIMARY_TIMEFRAME).upper().strip()
+        return timeframe_to_minutes(tf)
 
     def _get_bar_dt(self, instrument: str) -> Optional[datetime]:
         return self._get_bar_dt_at(instrument, self.current_step)
@@ -1356,7 +1580,11 @@ class PropFirmTradingEnv(gym.Env):
         if df is None or df.empty:
             return 0.0
         idx = int(np.clip(self.current_step, 0, len(df) - 1))
-        return float(df["close"].iloc[idx])
+        try:
+            close_col = self._resolve_column(df, "close")
+            return float(df[close_col].iloc[idx])
+        except KeyError:
+            return 0.0
 
     def _get_ohlcv(self, instrument: str, lookback: int = 120) -> Dict[str, Any]:
         key = (instrument, int(self.current_step))
@@ -1377,14 +1605,31 @@ class PropFirmTradingEnv(gym.Env):
         end = min(self.current_step + 1, len(df))
         start = max(0, end - lb)
 
+        # Resolve column names to handle both lowercase and uppercase variants
+        try:
+            open_col = self._resolve_column(df, "open")
+            high_col = self._resolve_column(df, "high")
+            low_col = self._resolve_column(df, "low")
+            close_col = self._resolve_column(df, "close")
+        except KeyError as e:
+            logger.warning(f"Missing OHLC column: {e}")
+            self._ohlcv_cache[lb] = {}
+            return {}
+
         out = {
-            "open": df["open"].iloc[start:end].to_numpy(dtype=np.float64, copy=False),
-            "high": df["high"].iloc[start:end].to_numpy(dtype=np.float64, copy=False),
-            "low": df["low"].iloc[start:end].to_numpy(dtype=np.float64, copy=False),
-            "close": df["close"].iloc[start:end].to_numpy(dtype=np.float64, copy=False),
+            "open": df[open_col].iloc[start:end].to_numpy(dtype=np.float64, copy=False),
+            "high": df[high_col].iloc[start:end].to_numpy(dtype=np.float64, copy=False),
+            "low": df[low_col].iloc[start:end].to_numpy(dtype=np.float64, copy=False),
+            "close": df[close_col].iloc[start:end].to_numpy(dtype=np.float64, copy=False),
         }
-        if "volume" in df.columns:
-            out["volume"] = df["volume"].iloc[start:end].to_numpy(dtype=np.float64, copy=False)
+        # Check volume with case variants
+        vol_col = None
+        for v in ["volume", "Volume", "VOLUME"]:
+            if v in df.columns:
+                vol_col = v
+                break
+        if vol_col:
+            out["volume"] = df[vol_col].iloc[start:end].to_numpy(dtype=np.float64, copy=False)
         else:
             out["volume"] = np.ones(end - start, dtype=np.float64)
 
@@ -1489,6 +1734,9 @@ class PropFirmTradingEnv(gym.Env):
         risk_eur = max(float(result.initial_risk_eur), 1e-6)
         mae = abs(float(result.mae))
         mfe = float(result.mfe)
+        total_fees = float(result.total_fees)
+        # Gross PnL (before fees) for consistent MFE comparison
+        gross_pnl = net_pnl + total_fees
         bars_held = int(result.bars_held)
         close_reason = result.close_reason
         entry_quality = float(result.entry_quality)
@@ -1552,7 +1800,24 @@ class PropFirmTradingEnv(gym.Env):
             if close_reason == CloseReason.TRAILING_STOP:
                 exit_modifier = cfg.trailing_stop_bonus
             elif close_reason == CloseReason.AGENT_CLOSE:
+                # Agent close gets NO bonus anymore (was 0.05)
+                # Instead, penalize agent_close if it left profit on the table
                 exit_modifier = cfg.agent_close_bonus if net_pnl > 0 else 0.0
+                if net_pnl > 0 and mfe > 0:
+                    # Capture ratio uses GROSS values for consistency:
+                    # MFE is gross (peak unrealized PnL before fees)
+                    # gross_pnl is net_pnl + total_fees (to compare apples to apples)
+                    capture_ratio = gross_pnl / mfe if mfe > 0 else 1.0
+                    # If capture_ratio < threshold, we closed way too early
+                    if capture_ratio < cfg.premature_close_capture_threshold:
+                        # Penalty scales with how much profit we left behind
+                        left_on_table = 1.0 - capture_ratio
+                        premature_close_penalty = min(
+                            left_on_table * cfg.premature_close_penalty_scale, 
+                            cfg.premature_close_penalty_cap
+                        )
+                        reward_components["premature_close_penalty"] = -premature_close_penalty
+                        reward -= premature_close_penalty
             elif close_reason == CloseReason.HARD_STOP:
                 exit_modifier = -cfg.hard_stop_penalty
             elif close_reason == CloseReason.RISK_LIQUIDATION:
@@ -1601,10 +1866,15 @@ class PropFirmTradingEnv(gym.Env):
                     reward_components["loss_streak_penalty"] = -streak_pen
                     reward -= streak_pen
 
-        # 9) Anti-churn penalty
+        # 9) Anti-churn penalty (SOFTER EXPONENTIAL to discourage overtrading)
+        # Using base 1.5 instead of 2.0 to prevent gradient explosion while still penalizing
+        # 6 excess trades: 1.5^6 ≈ 11x vs 2^6 = 64x (much softer)
         if cfg.anti_churn_enabled and self.daily_trades > cfg.daily_trade_soft_limit:
             excess = self.daily_trades - cfg.daily_trade_soft_limit
-            churn_pen = excess * cfg.churn_penalty_per_trade
+            # Softer exponential growth: 1.5^excess - 1
+            # Cap at 8 excess trades: 1.5^8 ≈ 25x (was 63x with base 2)
+            excess_factor = min(1.5 ** min(excess, 8) - 1, 25.0)
+            churn_pen = excess_factor * cfg.churn_penalty_per_trade
             reward_components["churn_penalty"] = -churn_pen
             reward -= churn_pen
 
@@ -1671,6 +1941,7 @@ class PropFirmTradingEnv(gym.Env):
         exit_fill, exit_fee, _ = self._exec.fill_exit(mid, pos.direction, pos.lot_size, vol_proxy)
         realized_pnl = float(self._realize_pnl_on_exit(pos, exit_fill, exit_fee))
         net_trade_pnl = float(realized_pnl - entry_fee)
+        total_fees = float(entry_fee + exit_fee)
 
         # Accounting
         self.balance += realized_pnl
@@ -1707,6 +1978,7 @@ class PropFirmTradingEnv(gym.Env):
             entry_quality=entry_quality,
             direction=pos.direction,
             lot_size=pos.lot_size,
+            total_fees=total_fees,
         )
 
         self._episode_trade_results.append(result)
@@ -1742,6 +2014,22 @@ class PropFirmTradingEnv(gym.Env):
         if d in ("bearish", "short"):
             return -1.0
         return 0.0
+
+    def _get_step_entry_quality(self, inst: str, target: str) -> float:
+        """
+        Get entry quality with per-step caching.
+        Avoids redundant computation of the expensive _compute_smart_entry_quality.
+        """
+        cache_key = f"{inst}_{target}"
+        cache = getattr(self, "_step_entry_quality_cache", None)
+        if cache is not None and cache_key in cache:
+            return cache[cache_key]
+        
+        quality = self._compute_smart_entry_quality(inst, target)
+        
+        if cache is not None:
+            cache[cache_key] = quality
+        return quality
 
     def _compute_smart_entry_quality(self, inst: str, target: str) -> float:
         if target not in ("long", "short"):
@@ -2011,8 +2299,7 @@ class PropFirmTradingEnv(gym.Env):
         self.episode_bars = 0
         self._episode_return = 0.0
 
-        self._opportunity_history = []
-        self._action_history = []
+        # AUDIT FIX: Removed _opportunity_history and _action_history (dead code - never used)
         self._avg_vol = None
         self._episode_trade_results = []
         self._last_reward_components = {}
@@ -2066,6 +2353,9 @@ class PropFirmTradingEnv(gym.Env):
 
         inst = self.instruments[0]
         dt = self._get_bar_dt(inst)
+        
+        # Cache entry quality at step start (computed once, reused for gating and info)
+        self._step_entry_quality_cache: Dict[str, float] = {}
         self._maybe_roll_day_session(dt)
 
         intent, size_mult = self._decode_action(int(action))
@@ -2145,14 +2435,31 @@ class PropFirmTradingEnv(gym.Env):
             if intent == "close" and self.pending_exit is None:
                 self.pending_exit = {"fill_step": self.current_step + fill_delay, "reason": CloseReason.AGENT_CLOSE.value}
 
-        # Execute forced close
+        # Handle forced closes
+        # Split into two categories for execution realism:
+        # 1. CRITICAL (immediate): RISK_LIQUIDATION, EMERGENCY_CLOSE - broker/risk systems act instantly
+        # 2. DELAYED (realistic latency): All other forced closes go through pending_exit
         if forced_close_now and self.position is not None:
-            close_result = self._close_position_now(reason=close_reason_str, dt=dt, mid=mid, vol_proxy=vol_proxy)
-            trade_closed = True
-            current_dd, current_daily_dd = self._calc_dds()
-            reward += self._compute_trade_reward(close_result, current_dd)
+            # Critical liquidations execute immediately (no latency)
+            critical_reasons = {
+                CloseReason.RISK_LIQUIDATION.value,
+                CloseReason.EMERGENCY_CLOSE.value,
+            }
+            
+            if close_reason_str in critical_reasons:
+                # Immediate execution for critical risk events
+                close_result = self._close_position_now(reason=close_reason_str, dt=dt, mid=mid, vol_proxy=vol_proxy)
+                trade_closed = True
+                current_dd, current_daily_dd = self._calc_dds()
+                reward += self._compute_trade_reward(close_result, current_dd)
+            else:
+                # Non-critical forced closes use delayed execution (consistent with agent closes)
+                # This includes: HARD_STOP, TIME_DECAY, TRAILING_STOP, HARD_CLOSE, WEEKEND_FLATTEN, DAILY_LIMIT_SAFETY
+                if self.pending_exit is None:
+                    self.pending_exit = {"fill_step": self.current_step + fill_delay, "reason": close_reason_str}
+                    forced_close_now = False  # Don't execute yet
 
-        # Execute scheduled exit
+        # Execute scheduled exit (both agent closes AND delayed forced closes)
         if (not trade_closed) and self.position is not None and self.pending_exit is not None:
             if self.current_step >= int(self.pending_exit["fill_step"]):
                 reason = str(self.pending_exit.get("reason", CloseReason.AGENT_CLOSE.value))
@@ -2215,7 +2522,7 @@ class PropFirmTradingEnv(gym.Env):
 
         # Attempt new entry
         attempted_entry = (self.position is None and self.pending_entry is None and intent in ("long", "short"))
-        entry_quality = self._compute_smart_entry_quality(inst, intent) if intent in ("long", "short") else 0.5
+        entry_quality = self._get_step_entry_quality(inst, intent) if intent in ("long", "short") else 0.5
 
         entry_allowed = hard_ok
         block_reason = hard_block
@@ -2283,8 +2590,12 @@ class PropFirmTradingEnv(gym.Env):
 
         # Flatten on truncation
         if truncated and not terminated and self.position is not None:
+            # AUDIT FIX (HIGH-6): Re-fetch fresh market data for truncation close.
+            # The mid/vol_proxy from step start may be stale after position updates.
+            mid_now = self._get_price_mid(inst)
+            vol_now = self._atr_vol_proxy(inst)
             close_result = self._close_position_now(
-                reason=CloseReason.EPISODE_TRUNCATE.value, dt=dt, mid=mid, vol_proxy=vol_proxy
+                reason=CloseReason.EPISODE_TRUNCATE.value, dt=dt, mid=mid_now, vol_proxy=vol_now
             )
             trade_closed = True
             current_dd, current_daily_dd = self._calc_dds()
@@ -2315,9 +2626,40 @@ class PropFirmTradingEnv(gym.Env):
                 if (not trade_closed) and (not did_risk_liquidate_this_step):
                     reward -= 1.0
 
-        # Compute qualities once (reuse)
-        q_long = self._compute_smart_entry_quality(inst, "long")
-        q_short = self._compute_smart_entry_quality(inst, "short")
+        # Episode-end activity consistency check (NEW)
+        # Penalizes extreme over/under-trading relative to episode length
+        # Uses stage-specific targets if configured, otherwise falls back to default
+        reward_cfg = self.config.reward
+        if (terminated or truncated) and reward_cfg.activity_consistency_enabled:
+            episode_steps = max(self.episode_step, 1)
+            actual_trades = self.total_trades
+            
+            # Get stage-specific target if available
+            target_per_1k = reward_cfg.target_trades_per_1k_steps  # Default
+            if reward_cfg.stage_activity_targets is not None:
+                stage_idx = getattr(self, '_curriculum_stage_idx', 0)
+                target_per_1k = reward_cfg.stage_activity_targets.get(
+                    stage_idx, reward_cfg.target_trades_per_1k_steps
+                )
+            
+            expected_trades = (episode_steps / 1000.0) * target_per_1k
+            
+            if expected_trades > 0:
+                trade_ratio = actual_trades / expected_trades
+                
+                # Penalize severe under-trading (< 20% of expected)
+                if trade_ratio < 0.2:
+                    under_trade_penalty = reward_cfg.min_trades_penalty
+                    reward -= under_trade_penalty
+                # Penalize moderate deviation from target (both over and under)
+                elif abs(trade_ratio - 1.0) > 0.5:  # More than 50% deviation
+                    deviation = abs(trade_ratio - 1.0) - 0.5
+                    deviation_penalty = min(deviation * reward_cfg.activity_deviation_penalty_scale, 0.2)
+                    reward -= deviation_penalty
+
+        # Compute qualities using step cache (computed once per step, reused)
+        q_long = self._get_step_entry_quality(inst, "long")
+        q_short = self._get_step_entry_quality(inst, "short")
 
         # Per-step shaping (if enabled)
         bars_in_pos = (self.episode_bars - self.position.entry_bar) if self.position else 0
@@ -2639,8 +2981,9 @@ class PropFirmTradingEnv(gym.Env):
         vol_state = "low" if vol_proxy < 0.3 else ("high" if vol_proxy > 0.7 else "normal")
         zone_type = "good" if vol_state == "normal" else ("bad" if vol_state == "high" else "hot")
 
-        q_long = self._compute_smart_entry_quality(instrument, "long")
-        q_short = self._compute_smart_entry_quality(instrument, "short")
+        # Use step cache if available (called from step()), fallback to direct compute
+        q_long = self._get_step_entry_quality(instrument, "long")
+        q_short = self._get_step_entry_quality(instrument, "short")
 
         return {
             "trading_mode": mode,

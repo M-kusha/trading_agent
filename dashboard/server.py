@@ -1,21 +1,17 @@
 #!/usr/bin/env python3
 """
-PropFirm PPO Training Dashboard Server v2.1
-===========================================
-
-Fixes vs v2.0:
-- Normalizes promotion gate keys (e.g. "insufficient data" -> "data_sufficiency")
-- Computes strict promotion readiness to prevent UI contradictions:
-    strict_ready = composite_score.promotion_ready AND all prerequisites passed
-- Normalizes stage_history entries so UI doesn't show "Stage —"
-- Exposes requirements_by_stage from envs.curriculum_config (optional source of truth)
-- Adds GET /api/requirements endpoint
+PropFirm PPO Training Dashboard Server v2.2
+- Keeps v2.1 behavior
+- Preserves unknown/new promotion check fields (future-proof)
+- Tightens structure, reduces duplication
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
+import logging
 import sys
 import threading
 import time
@@ -24,15 +20,12 @@ from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, TYPE_CHECKING
-import argparse
-import logging
 
 # Ensure project root is importable (dashboard/ is typically one level below root)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-# Web framework - conditional import
 WEB_AVAILABLE = False
 if TYPE_CHECKING:
     from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -49,28 +42,23 @@ try:
 except ImportError:
     print("[Dashboard] FastAPI/uvicorn not installed. Run: pip install fastapi uvicorn websockets")
 
-# Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("dashboard")
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# CONFIGURATION
-# ═══════════════════════════════════════════════════════════════════════════════
-
+# ───────────────────────────────────────────────────────────────────────────────
+# CONFIG
+# ───────────────────────────────────────────────────────────────────────────────
 @dataclass
 class DashboardConfig:
     host: str = "0.0.0.0"
     port: int = 8765
     metrics_file: str = "logs/training/live_metrics.json"
+    alerts_log_file: str = "logs/audit/alerts.jsonl"
     update_interval: float = 0.5
-    file_poll_interval: float = 0.1
     max_history_points: int = 500
+    max_alert_history: int = 1000
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# THRESHOLDS FOR STATUS COLORS
-# ═══════════════════════════════════════════════════════════════════════════════
 
 @dataclass
 class MetricThresholds:
@@ -115,26 +103,22 @@ def get_status_color(value: float, good_threshold: float, ok_threshold: float, h
 def get_range_status(value: float, good_min: float, good_max: float) -> str:
     if good_min <= value <= good_max:
         return "good"
-    if abs(value - (good_min + good_max) / 2) < abs(good_max - good_min):
-        return "ok"
-    return "bad"
+    mid = (good_min + good_max) / 2
+    # "ok" if relatively close to target band, else bad
+    return "ok" if abs(value - mid) <= (good_max - good_min) else "bad"
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# CURRICULUM REQUIREMENTS EXPORT (optional source of truth)
-# ═══════════════════════════════════════════════════════════════════════════════
-
+# ───────────────────────────────────────────────────────────────────────────────
+# REQUIREMENTS EXPORT (optional)
+# ───────────────────────────────────────────────────────────────────────────────
 def _safe_asdict(obj: Any) -> Any:
-    if obj is None:
-        return None
-    if isinstance(obj, (str, int, float, bool)):
+    if obj is None or isinstance(obj, (str, int, float, bool)):
         return obj
     if isinstance(obj, (list, tuple)):
         return [_safe_asdict(x) for x in obj]
     if isinstance(obj, dict):
         return {str(k): _safe_asdict(v) for k, v in obj.items()}
     try:
-        # is_dataclass returns True for both types and instances, but asdict only works on instances
         if is_dataclass(obj) and not isinstance(obj, type):
             return _safe_asdict(asdict(obj))
     except Exception:
@@ -149,24 +133,18 @@ def _safe_asdict(obj: Any) -> Any:
 
 def _extract_stage_requirements(stage_cfg: Any) -> Dict[str, Any]:
     cfg_dict = _safe_asdict(stage_cfg) if stage_cfg is not None else {}
-    competence = {}
-    if isinstance(cfg_dict, dict) and isinstance(cfg_dict.get("competence"), dict):
-        competence = cfg_dict.get("competence", {})  # type: ignore
+    competence = cfg_dict.get("competence", {}) if isinstance(cfg_dict, dict) else {}
 
     skill_requirements = {}
+    entropy_targets = {}
+    composite = {}
+    promotion_criteria: Dict[str, Any] = {}
+
     if isinstance(cfg_dict, dict):
         skill_requirements = cfg_dict.get("skill_requirements") or cfg_dict.get("skills") or cfg_dict.get("skill_thresholds") or {}
-
-    entropy_targets = {}
-    if isinstance(cfg_dict, dict):
         entropy_targets = cfg_dict.get("entropy_targets") or cfg_dict.get("entropy") or {}
-
-    composite = {}
-    if isinstance(cfg_dict, dict):
         composite = cfg_dict.get("composite_scoring") or cfg_dict.get("composite") or cfg_dict.get("composite_score") or {}
 
-    # Flatten easy numeric thresholds
-    promotion_criteria: Dict[str, Any] = {}
     if isinstance(competence, dict):
         for k, v in competence.items():
             if isinstance(v, (int, float, bool, str)) or v is None:
@@ -207,10 +185,7 @@ def get_requirements_by_stage() -> Dict[str, Any]:
                 if stage_idx is not None:
                     cfg = get_stage_config(stage_idx)
 
-            stages_out[stage_name] = {
-                "stage_index": stage_idx,
-                "requirements": _extract_stage_requirements(cfg),
-            }
+            stages_out[stage_name] = {"stage_index": stage_idx, "requirements": _extract_stage_requirements(cfg)}
 
         payload["available"] = True
         payload["source"] = "envs.curriculum_config.get_stage_config"
@@ -222,10 +197,9 @@ def get_requirements_by_stage() -> Dict[str, Any]:
         return payload
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ───────────────────────────────────────────────────────────────────────────────
 # METRICS READER
-# ═══════════════════════════════════════════════════════════════════════════════
-
+# ───────────────────────────────────────────────────────────────────────────────
 class MetricsReader:
     def __init__(self, metrics_file: str, max_history: int = 500):
         self.metrics_file = Path(metrics_file)
@@ -245,46 +219,42 @@ class MetricsReader:
         }
         self._lock = threading.Lock()
 
+    @staticmethod
+    def _is_nan(x: float) -> bool:
+        return x != x
+
     def _safe_float(self, val: Any, default: float = 0.0) -> float:
         if val is None:
             return default
         try:
             f = float(val)
-            if f != f:
-                return default
-            return f
+            return default if self._is_nan(f) else f
         except (TypeError, ValueError):
             return default
 
     def _safe_int(self, val: Any, default: int = 0) -> int:
-        try:
-            return int(self._safe_float(val, float(default)))
-        except Exception:
-            return default
+        return int(self._safe_float(val, float(default)))
 
-    def _safe_list(self, val: Any, default: Optional[List] = None) -> List:
-        if default is None:
-            default = []
-        return val if isinstance(val, list) else default
+    def _safe_list(self, val: Any) -> List[Any]:
+        return val if isinstance(val, list) else []
 
-    def _safe_dict(self, val: Any, default: Optional[Dict] = None) -> Dict:
-        if default is None:
-            default = {}
-        return val if isinstance(val, dict) else default
+    def _safe_dict(self, val: Any) -> Dict[str, Any]:
+        return val if isinstance(val, dict) else {}
 
     def _safe_bool(self, val: Any, default: bool = False) -> bool:
         return val if isinstance(val, bool) else default
 
     def _append_history(self, key: str, value: float) -> None:
-        if key in self._history:
-            self._history[key].append(value)
-            if len(self._history[key]) > self.max_history:
-                self._history[key] = self._history[key][-self.max_history:]
+        if key not in self._history:
+            return
+        self._history[key].append(value)
+        if len(self._history[key]) > self.max_history:
+            self._history[key] = self._history[key][-self.max_history:]
 
     def read_metrics(self) -> Dict[str, Any]:
         with self._lock:
             if not self.metrics_file.exists():
-                return self._get_empty_metrics("Waiting for training to start...")
+                return self._empty("Waiting for training to start...")
 
             try:
                 mtime = self.metrics_file.stat().st_mtime
@@ -295,20 +265,17 @@ class MetricsReader:
                     raw = json.load(f)
 
                 self._last_modified = mtime
-                processed = self._process_metrics(raw)
+                processed = self._process(raw)
                 self._last_data = processed
                 return processed
 
-            except json.JSONDecodeError as e:
-                if self._last_data:
-                    return self._last_data
-                logger.debug(f"JSON decode error: {e}")
-                return self._get_empty_metrics("Reading metrics...")
+            except json.JSONDecodeError:
+                return self._last_data if self._last_data else self._empty("Reading metrics...")
             except Exception as e:
-                logger.warning(f"Error reading metrics: {e}")
-                return self._last_data if self._last_data else self._get_empty_metrics(str(e))
+                logger.warning(f"Error reading metrics: {type(e).__name__}: {e}")
+                return self._last_data if self._last_data else self._empty(str(e))
 
-    def _get_empty_metrics(self, message: str = "") -> Dict[str, Any]:
+    def _empty(self, message: str = "") -> Dict[str, Any]:
         return {
             "status": "waiting",
             "message": message,
@@ -327,39 +294,45 @@ class MetricsReader:
             "recent_pnls": [],
             "recent_win_rates": [],
             "recent_drawdowns": [],
+            "recent_r_multiples": [],
             "stage_history": [],
             "requirements_by_stage": get_requirements_by_stage(),
         }
 
-    def _normalize_promotion_key(self, k: str) -> str:
+    # ──────────────── normalization helpers ────────────────
+    def _normalize_key(self, k: str) -> str:
         k0 = (k or "").strip()
         if not k0:
             return k0
-        k1 = k0.lower().strip().replace(" ", "_").replace("-", "_")
-
-        # Canonicalize common gates
+        k1 = k0.lower().replace(" ", "_").replace("-", "_")
         if k1 in ("min_episodes", "episodes", "stage_episodes"):
             return "min_episodes"
         if k1 in ("min_timesteps", "timesteps", "stage_timesteps"):
             return "min_timesteps"
         if k1 in ("insufficient_data", "sufficient_data", "data_sufficiency", "data_sufficient", "insufficientdata"):
             return "data_sufficiency"
-
-        # Keep as-is (snake-ish)
         return k1
 
     def _normalize_promotion_checks(self, checks: Dict[str, Any]) -> Dict[str, Any]:
         out: Dict[str, Any] = {}
         for k, v in (checks or {}).items():
-            nk = self._normalize_promotion_key(str(k))
             if not isinstance(v, dict):
                 continue
-            out[nk] = {
+            nk = self._normalize_key(str(k))
+
+            base = {
                 "required": v.get("required"),
                 "actual": v.get("actual"),
                 "passed": bool(v.get("passed", False)),
                 "original_key": k,
             }
+
+            # preserve all extra fields (future-proof)
+            for fk, fv in v.items():
+                if fk not in base:
+                    base[fk] = fv
+
+            out[nk] = base
         return out
 
     def _normalize_stage_history(self, hist: Any) -> List[Dict[str, Any]]:
@@ -373,9 +346,7 @@ class MetricsReader:
             stage_name = e.get("stage_name") or e.get("stage_label") or e.get("stage_str")
             stage_index = e.get("stage_index")
             if stage_val is None and stage_index is None and stage_name is None:
-                # Sometimes called "from_stage"/"to_stage"
                 stage_val = e.get("to_stage") or e.get("stage_to") or e.get("current_stage")
-
             out.append({
                 "stage": stage_val,
                 "stage_index": stage_index,
@@ -387,15 +358,14 @@ class MetricsReader:
             })
         return out
 
-    def _process_metrics(self, raw: Dict[str, Any]) -> Dict[str, Any]:
-        # ─────────────────────────────────────────────────────────────
-        # PROGRESS
-        # ─────────────────────────────────────────────────────────────
-        progress_section = raw.get("progress", {})
-        timesteps = self._safe_int(progress_section.get("timesteps", raw.get("timesteps", 0)))
-        total_timesteps = self._safe_int(progress_section.get("total_timesteps", raw.get("total_timesteps", 1)))
-        progress_pct = self._safe_float(progress_section.get("progress_pct", raw.get("progress_pct", 0)))
-        total_episodes = self._safe_int(progress_section.get("total_episodes", raw.get("total_episodes", 0)))
+    # ──────────────── core processing ────────────────
+    def _process(self, raw: Dict[str, Any]) -> Dict[str, Any]:
+        # Progress
+        p = self._safe_dict(raw.get("progress", {}))
+        timesteps = self._safe_int(p.get("timesteps", raw.get("timesteps", 0)))
+        total_timesteps = self._safe_int(p.get("total_timesteps", raw.get("total_timesteps", 1)))
+        progress_pct = self._safe_float(p.get("progress_pct", raw.get("progress_pct", 0)))
+        total_episodes = self._safe_int(p.get("total_episodes", raw.get("total_episodes", 0)))
 
         progress = {
             "timesteps": timesteps,
@@ -405,23 +375,21 @@ class MetricsReader:
             "eta_seconds": self._estimate_eta(timesteps, total_timesteps, raw),
         }
 
-        # ─────────────────────────────────────────────────────────────
-        # LEARNING METRICS (PPO)
-        # ─────────────────────────────────────────────────────────────
-        learning_section = raw.get("learning", {})
-        mean_reward = self._safe_float(learning_section.get("mean_reward", raw.get("mean_reward", 0)))
-        total_pnl = self._safe_float(learning_section.get("total_pnl", raw.get("total_pnl", 0)))
+        # Learning
+        l = self._safe_dict(raw.get("learning", {}))
+        mean_reward = self._safe_float(l.get("mean_reward", raw.get("mean_reward", 0)))
+        total_pnl = self._safe_float(l.get("total_pnl", raw.get("total_pnl", 0)))
 
-        approx_kl = self._safe_float(learning_section.get("kl_divergence", learning_section.get("approx_kl", raw.get("approx_kl", 0))))
-        clip_fraction = self._safe_float(learning_section.get("clip_fraction", raw.get("clip_fraction", 0)))
-        entropy = self._safe_float(learning_section.get("entropy", raw.get("entropy", 0)))
-        explained_variance = self._safe_float(learning_section.get("explained_variance", raw.get("explained_variance", 0)))
-        value_loss = self._safe_float(learning_section.get("value_loss", raw.get("value_loss", 0)))
-        policy_loss = self._safe_float(learning_section.get("policy_loss", raw.get("policy_loss", 0)))
-        learning_rate = self._safe_float(learning_section.get("learning_rate", raw.get("learning_rate", 3e-4)))
-        fps = self._safe_float(learning_section.get("fps", raw.get("fps", 0)))
-        n_updates = self._safe_int(learning_section.get("n_updates", raw.get("n_updates", 0)))
-        clip_range = self._safe_float(learning_section.get("clip_range", raw.get("clip_range", 0.2)))
+        approx_kl = self._safe_float(l.get("kl_divergence", l.get("approx_kl", raw.get("approx_kl", 0))))
+        clip_fraction = self._safe_float(l.get("clip_fraction", raw.get("clip_fraction", 0)))
+        entropy = self._safe_float(l.get("entropy", raw.get("entropy", 0)))
+        explained_variance = self._safe_float(l.get("explained_variance", raw.get("explained_variance", 0)))
+        value_loss = self._safe_float(l.get("value_loss", raw.get("value_loss", 0)))
+        policy_loss = self._safe_float(l.get("policy_loss", raw.get("policy_loss", 0)))
+        learning_rate = self._safe_float(l.get("learning_rate", raw.get("learning_rate", 3e-4)))
+        fps = self._safe_float(l.get("fps", raw.get("fps", 0)))
+        n_updates = self._safe_int(l.get("n_updates", raw.get("n_updates", 0)))
+        clip_range = self._safe_float(l.get("clip_range", raw.get("clip_range", 0.2)))
 
         self._append_history("entropy", entropy)
         self._append_history("explained_variance", explained_variance)
@@ -451,25 +419,20 @@ class MetricsReader:
             "clip_range": clip_range,
         }
 
-        # ─────────────────────────────────────────────────────────────
-        # TRADING METRICS
-        # ─────────────────────────────────────────────────────────────
-        trading_section = raw.get("trading", {})
-        mean_win_rate_raw = trading_section.get("mean_win_rate", raw.get("mean_win_rate", 0))
-        mean_win_rate = self._safe_float(mean_win_rate_raw)
+        # Trading
+        t = self._safe_dict(raw.get("trading", {}))
+        mean_win_rate = self._safe_float(t.get("mean_win_rate", raw.get("mean_win_rate", 0)))
         if 0 < mean_win_rate < 1:
             mean_win_rate *= 100
 
-        max_drawdown_raw = trading_section.get("max_drawdown", raw.get("max_drawdown", 0))
-        max_drawdown = self._safe_float(max_drawdown_raw)
+        max_drawdown = self._safe_float(t.get("max_drawdown", raw.get("max_drawdown", 0)))
         if 0 < max_drawdown < 1:
             max_drawdown *= 100
 
-        mean_trades = self._safe_float(trading_section.get("mean_trades", raw.get("mean_trades", 0)))
-        total_trades = self._safe_int(trading_section.get("total_trades", raw.get("total_trades", 0)))
+        mean_trades = self._safe_float(t.get("mean_trades", raw.get("mean_trades", 0)))
+        total_trades = self._safe_int(t.get("total_trades", raw.get("total_trades", 0)))
 
-        self._append_history("win_rates", mean_win_rate)
-        self._append_history("drawdowns", max_drawdown)
+        # Note: win_rates, drawdowns, r_multiples history is populated from recent_* arrays below
         self._append_history("trades_per_episode", mean_trades)
 
         trading = {
@@ -482,13 +445,11 @@ class MetricsReader:
             "total_trades": total_trades,
         }
 
-        # ─────────────────────────────────────────────────────────────
-        # QUALITY METRICS
-        # ─────────────────────────────────────────────────────────────
-        quality_section = raw.get("quality", {})
-        mean_r_multiple = self._safe_float(quality_section.get("mean_r_multiple", raw.get("mean_r_multiple", 0)))
-        mean_profit_factor = self._safe_float(quality_section.get("mean_profit_factor", raw.get("mean_profit_factor", 0)))
-        mean_entry_quality = self._safe_float(quality_section.get("mean_entry_quality", raw.get("mean_entry_quality", 0.5)))
+        # Quality
+        q = self._safe_dict(raw.get("quality", {}))
+        mean_r_multiple = self._safe_float(q.get("mean_r_multiple", raw.get("mean_r_multiple", 0)))
+        mean_profit_factor = self._safe_float(q.get("mean_profit_factor", raw.get("mean_profit_factor", 0)))
+        mean_entry_quality = self._safe_float(q.get("mean_entry_quality", raw.get("mean_entry_quality", 0.5)))
 
         self._append_history("r_multiples", mean_r_multiple)
 
@@ -501,33 +462,34 @@ class MetricsReader:
             "mean_entry_quality_status": get_status_color(mean_entry_quality, THRESHOLDS.eq_good, THRESHOLDS.eq_ok, True),
         }
 
-        # ─────────────────────────────────────────────────────────────
-        # EXIT DISTRIBUTION
-        # ─────────────────────────────────────────────────────────────
-        exit_stats_section = raw.get("exit_stats", {})
-        exit_distribution = self._safe_dict(exit_stats_section.get("distribution", raw.get("exit_reason_distribution", {})))
-        exit_stats = {"distribution": exit_distribution}
+        # Exit distribution
+        exit_stats = self._safe_dict(raw.get("exit_stats", {}))
+        exit_distribution = self._safe_dict(exit_stats.get("distribution", raw.get("exit_reason_distribution", {})))
+        exit_stats_out = {"distribution": exit_distribution}
 
-        # ─────────────────────────────────────────────────────────────
-        # CURRICULUM
-        # ─────────────────────────────────────────────────────────────
+        # Curriculum (pass-through + normalized checks)
         curriculum_progress = self._safe_dict(raw.get("curriculum_progress", {}))
         curriculum_detail = self._safe_dict(raw.get("curriculum_detail", {}))
-        processed_curriculum_progress = self._process_curriculum_progress(curriculum_progress)
+        processed_cp = self._process_curriculum_progress(curriculum_progress)
 
-        # ─────────────────────────────────────────────────────────────
-        # RECENT DATA FOR CHARTS
-        # ─────────────────────────────────────────────────────────────
+        # Recent series
         recent_rewards = self._safe_list(raw.get("recent_rewards", []))[-100:]
         recent_pnls = self._safe_list(raw.get("recent_pnls", []))[-100:]
         recent_win_rates = self._safe_list(raw.get("recent_win_rates", []))[-100:]
         recent_drawdowns = self._safe_list(raw.get("recent_drawdowns", []))[-100:]
         recent_r_multiples = self._safe_list(raw.get("recent_r_multiples", []))[-100:]
 
+        # Append recent values to history arrays for slope/volatility calculations
         for r in recent_rewards[-10:]:
             self._append_history("rewards", self._safe_float(r))
-        for p in recent_pnls[-10:]:
-            self._append_history("pnls", self._safe_float(p))
+        for p2 in recent_pnls[-10:]:
+            self._append_history("pnls", self._safe_float(p2))
+        for wr in recent_win_rates[-10:]:
+            self._append_history("win_rates", self._safe_float(wr))
+        for dd in recent_drawdowns[-10:]:
+            self._append_history("drawdowns", self._safe_float(dd))
+        for rm in recent_r_multiples[-10:]:
+            self._append_history("r_multiples", self._safe_float(rm))
 
         stage_history = self._normalize_stage_history(raw.get("stage_history", []))
 
@@ -542,15 +504,14 @@ class MetricsReader:
             "learning": learning,
             "trading": trading,
             "quality": quality,
-            "exit_stats": exit_stats,
+            "exit_stats": exit_stats_out,
 
             "curriculum_stage": raw.get("curriculum_stage", "N/A"),
             "curriculum_stage_idx": raw.get("curriculum_stage_idx", 0),
-            "curriculum_progress": processed_curriculum_progress,
+            "curriculum_progress": processed_cp,
             "curriculum_detail": curriculum_detail,
             "stage_history": stage_history,
 
-            # Optional source-of-truth per-stage requirements (safe fallback if unavailable)
             "requirements_by_stage": get_requirements_by_stage(),
 
             "recent_rewards": recent_rewards,
@@ -562,133 +523,125 @@ class MetricsReader:
             "history": {k: v[-50:] for k, v in self._history.items()},
         }
 
-    def _process_curriculum_progress(self, curriculum_progress: Dict[str, Any]) -> Dict[str, Any]:
-        if not curriculum_progress:
+    def _process_curriculum_progress(self, cp: Dict[str, Any]) -> Dict[str, Any]:
+        if not cp:
             return {}
 
-        result: Dict[str, Any] = {}
+        out: Dict[str, Any] = {
+            "current_stage": cp.get("current_stage", ""),
+            "stage_index": cp.get("stage_index", 0),
+            "stage_epoch": cp.get("stage_epoch", 0),
+            "stage_episodes": cp.get("stage_episodes", 0),
+            "stage_timesteps": cp.get("stage_timesteps", 0),
+            "total_episodes": cp.get("total_episodes", 0),
+            "total_timesteps": cp.get("total_timesteps", 0),
+            "is_in_transition": cp.get("is_in_transition", False),
+            "reward_blend_factor": cp.get("reward_blend_factor", 1.0),
+            "lr_multiplier": cp.get("lr_multiplier", 1.0),
+            "rolling_stats": self._safe_dict(cp.get("rolling_stats", {})),
+        }
 
-        # Basic fields
-        result["current_stage"] = curriculum_progress.get("current_stage", "")
-        result["stage_index"] = curriculum_progress.get("stage_index", 0)
-        result["stage_epoch"] = curriculum_progress.get("stage_epoch", 0)
-        result["stage_episodes"] = curriculum_progress.get("stage_episodes", 0)
-        result["stage_timesteps"] = curriculum_progress.get("stage_timesteps", 0)
-        result["total_episodes"] = curriculum_progress.get("total_episodes", 0)
-        result["total_timesteps"] = curriculum_progress.get("total_timesteps", 0)
-        result["is_in_transition"] = curriculum_progress.get("is_in_transition", False)
-        result["reward_blend_factor"] = curriculum_progress.get("reward_blend_factor", 1.0)
-        result["lr_multiplier"] = curriculum_progress.get("lr_multiplier", 1.0)
+        # Checks
+        raw_checks = self._safe_dict(cp.get("promotion_checks", {}))
+        out["promotion_checks"] = self._normalize_promotion_checks(raw_checks)
 
-        # Rolling stats
-        result["rolling_stats"] = self._safe_dict(curriculum_progress.get("rolling_stats", {}))
-
-        # Promotion checks (normalized)
-        raw_checks = self._safe_dict(curriculum_progress.get("promotion_checks", {}))
-        promotion_checks = self._normalize_promotion_checks(raw_checks)
-        result["promotion_checks"] = promotion_checks
-
-        # Compute prerequisites (prevents “insufficient data” confusion)
+        # Prerequisites block (UI friendliness)
         prereq_keys = ["min_episodes", "min_timesteps", "data_sufficiency"]
         prereqs = []
         for k in prereq_keys:
-            c = promotion_checks.get(k)
+            c = out["promotion_checks"].get(k)
             if c and c.get("required") is not None:
                 prereqs.append({"key": k, "passed": bool(c.get("passed", False)), "required": c.get("required"), "actual": c.get("actual")})
-        prereq_passed = sum(1 for p in prereqs if p["passed"])
-        result["prerequisites"] = {
-            "total": len(prereqs),
-            "passed": prereq_passed,
-            "all_passed": (len(prereqs) > 0 and prereq_passed == len(prereqs)),
-            "items": prereqs,
-        }
+        passed = sum(1 for p in prereqs if p["passed"])
+        out["prerequisites"] = {"total": len(prereqs), "passed": passed, "all_passed": (len(prereqs) > 0 and passed == len(prereqs)), "items": prereqs}
 
-        # v2.0 Components
-        skill_assessment = curriculum_progress.get("skill_assessment")
-        if isinstance(skill_assessment, dict):
-            result["skill_assessment"] = {
-                "scores": self._safe_dict(skill_assessment.get("scores", {})),
-                "confidence": self._safe_dict(skill_assessment.get("confidence", {})),
-                "weakest_skills": self._safe_list(skill_assessment.get("weakest_skills", [])),
-                "strongest_skills": self._safe_list(skill_assessment.get("strongest_skills", [])),
-                "requirements_met": self._safe_bool(skill_assessment.get("requirements_met", False)),
+        # Pass-through components used by UI
+        if isinstance(cp.get("skill_assessment"), dict):
+            sa = cp["skill_assessment"]
+            out["skill_assessment"] = {
+                "scores": self._safe_dict(sa.get("skill_scores", sa.get("scores", {}))),
+                "confidence": self._safe_dict(sa.get("skill_confidence", sa.get("confidence", {}))),
+                "weakest_skills": self._safe_list(sa.get("weakest_skills", [])),
+                "strongest_skills": self._safe_list(sa.get("strongest_skills", [])),
+                "weighted_average": self._safe_float(sa.get("weighted_average", 0)),
+                "requirements_met": self._safe_bool(sa.get("requirements_met", False)),
             }
 
-        composite_score = curriculum_progress.get("composite_score")
-        if isinstance(composite_score, dict):
-            base_ready = self._safe_bool(composite_score.get("promotion_ready", False))
-            hard_floors = self._safe_bool(composite_score.get("meets_hard_floors", False))
-            strict_ready = bool(base_ready and result["prerequisites"]["all_passed"])
-
-            result["composite_score"] = {
-                "total_score": self._safe_float(composite_score.get("total_score", 0)),
+        if isinstance(cp.get("composite_score"), dict):
+            cs = cp["composite_score"]
+            base_ready = self._safe_bool(cs.get("promotion_ready", False))
+            hard_floors = self._safe_bool(cs.get("meets_hard_floors", False))
+            strict_ready = bool(base_ready and out["prerequisites"]["all_passed"])
+            out["composite_score"] = {
+                "total_score": self._safe_float(cs.get("total_score", 0)),
                 "meets_hard_floors": hard_floors,
-                "promotion_ready": base_ready,                 # what curriculum says
-                "promotion_ready_strict": strict_ready,        # what UI should treat as final truth
-                "components": self._safe_dict(composite_score.get("components", {})),
+                "promotion_ready": base_ready,
+                "promotion_ready_strict": strict_ready,
+                "components": self._safe_dict(cs.get("components", {})),
             }
 
-        learning_velocity = curriculum_progress.get("learning_velocity")
-        if isinstance(learning_velocity, dict):
-            result["learning_velocity"] = {
-                "improvement_rate": self._safe_float(learning_velocity.get("improvement_rate", 0)),
-                "is_plateaued": self._safe_bool(learning_velocity.get("is_plateaued", False)),
-                "plateau_episodes": self._safe_int(learning_velocity.get("plateau_episodes", 0)),
-                "per_metric_slopes": self._safe_dict(learning_velocity.get("per_metric_slopes", {})),
-                "window_size": self._safe_int(learning_velocity.get("window_size", 100)),
+        if isinstance(cp.get("learning_velocity"), dict):
+            lv = cp["learning_velocity"]
+            out["learning_velocity"] = {
+                "improvement_rate": self._safe_float(lv.get("average_improvement", lv.get("improvement_rate", 0))),
+                "is_plateaued": self._safe_bool(lv.get("is_plateaued", False)),
+                "plateau_episodes": self._safe_int(lv.get("plateau_episodes", 0)),
+                "per_metric_slopes": self._safe_dict(lv.get("improvement_rates", lv.get("per_metric_slopes", {}))),
+                "window_size": self._safe_int(lv.get("window_size", 100)),
             }
 
-        recovery_protocol = curriculum_progress.get("recovery_protocol")
-        if isinstance(recovery_protocol, dict):
-            result["recovery_protocol"] = {
-                "is_active": self._safe_bool(recovery_protocol.get("is_active", False)),
-                "focus_skill": recovery_protocol.get("focus_skill"),
-                "episodes_remaining": self._safe_int(recovery_protocol.get("episodes_remaining", 0)),
-                "trigger_reason": recovery_protocol.get("trigger_reason", ""),
+        if isinstance(cp.get("recovery_protocol"), dict):
+            rp = cp["recovery_protocol"]
+            out["recovery_protocol"] = {
+                "is_active": self._safe_bool(rp.get("is_active", False)),
+                "focus_skill": rp.get("focus_skill"),
+                "episodes_remaining": self._safe_int(rp.get("episodes_remaining", 0)),
+                "trigger_reason": rp.get("trigger_reason", ""),
             }
 
-        review_session = curriculum_progress.get("review_session")
-        if isinstance(review_session, dict):
-            result["review_session"] = {
-                "is_active": self._safe_bool(review_session.get("is_active", False)),
-                "review_stage": self._safe_int(review_session.get("review_stage", 0)),
-                "home_stage": self._safe_int(review_session.get("home_stage", 0)),
-                "episodes_remaining": self._safe_int(review_session.get("episodes_remaining", 0)),
+        if isinstance(cp.get("review_session"), dict):
+            rs = cp["review_session"]
+            out["review_session"] = {
+                "is_active": self._safe_bool(rs.get("is_active", False)),
+                "review_stage": self._safe_int(rs.get("review_stage", 0)),
+                "home_stage": self._safe_int(rs.get("home_stage", 0)),
+                "episodes_remaining": self._safe_int(rs.get("episodes_remaining", 0)),
             }
 
-        demotion_analysis = curriculum_progress.get("demotion_analysis")
-        if isinstance(demotion_analysis, dict):
-            result["demotion_analysis"] = {
-                "total_demotions": self._safe_int(demotion_analysis.get("total_demotions", 0)),
-                "repeated_failures": self._safe_int(demotion_analysis.get("repeated_failures", 0)),
-                "common_failure_reasons": self._safe_list(demotion_analysis.get("common_failure_reasons", [])),
-                "weak_skills": self._safe_list(demotion_analysis.get("weak_skills", [])),
+        if isinstance(cp.get("demotion_analysis"), dict):
+            da = cp["demotion_analysis"]
+            out["demotion_analysis"] = {
+                "total_demotions": self._safe_int(da.get("total_demotions", 0)),
+                "repeated_failures": self._safe_int(da.get("repeated_failures", 0)),
+                "common_failure_reasons": self._safe_list(da.get("common_failure_reasons", [])),
+                "weak_skills": self._safe_list(da.get("weak_skills", [])),
             }
 
-        adaptive_thresholds = curriculum_progress.get("adaptive_thresholds")
-        if isinstance(adaptive_thresholds, dict):
-            result["adaptive_thresholds"] = {
-                "relaxation_amount": self._safe_float(adaptive_thresholds.get("relaxation_amount", 0)),
-                "max_relaxation": self._safe_float(adaptive_thresholds.get("max_relaxation", 0)),
-                "relaxed_metrics": self._safe_list(adaptive_thresholds.get("relaxed_metrics", [])),
+        if isinstance(cp.get("adaptive_thresholds"), dict):
+            at = cp["adaptive_thresholds"]
+            out["adaptive_thresholds"] = {
+                "relaxation_amount": self._safe_float(at.get("relaxation_amount", 0)),
+                "max_relaxation": self._safe_float(at.get("max_relaxation", 0)),
+                "relaxed_metrics": self._safe_list(at.get("relaxed_metrics", [])),
             }
 
-        entropy_status = curriculum_progress.get("entropy_status")
-        if isinstance(entropy_status, dict):
-            result["entropy_status"] = {
-                "current": self._safe_float(entropy_status.get("current", 0)),
-                "min_target": self._safe_float(entropy_status.get("min_target", 0)),
-                "max_target": self._safe_float(entropy_status.get("max_target", 1)),
-                "penalty": self._safe_float(entropy_status.get("penalty", 0)),
+        if isinstance(cp.get("entropy_status"), dict):
+            es = cp["entropy_status"]
+            out["entropy_status"] = {
+                "current": self._safe_float(es.get("current", 0)),
+                "min_target": self._safe_float(es.get("min_target", 0)),
+                "max_target": self._safe_float(es.get("max_target", 1)),
+                "penalty": self._safe_float(es.get("penalty", 0)),
             }
 
-        result["blockers"] = self._safe_list(curriculum_progress.get("blockers", []))
-        result["recommendations"] = self._safe_list(curriculum_progress.get("recommendations", []))
-        result["estimated_episodes_to_promotion"] = curriculum_progress.get("estimated_episodes_to_promotion")
+        out["blockers"] = self._safe_list(cp.get("blockers", []))
+        out["recommendations"] = self._safe_list(cp.get("recommendations", []))
+        out["estimated_episodes_to_promotion"] = cp.get("estimated_episodes_to_promotion")
+        out["phase_info"] = cp.get("phase_info", {})  # UI uses it if available
 
-        return result
+        return out
 
-    def _estimate_eta(self, current: int, total: int, raw: Dict) -> float:
+    def _estimate_eta(self, current: int, total: int, raw: Dict[str, Any]) -> float:
         fps = self._safe_float(raw.get("fps", raw.get("learning", {}).get("fps", 0)))
         if fps <= 0 or current <= 0:
             return -1
@@ -696,15 +649,14 @@ class MetricsReader:
         return remaining / fps
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# FASTAPI APPLICATION
-# ═══════════════════════════════════════════════════════════════════════════════
-
+# ───────────────────────────────────────────────────────────────────────────────
+# FASTAPI
+# ───────────────────────────────────────────────────────────────────────────────
 if WEB_AVAILABLE:
     app = FastAPI(
-        title="PropFirm PPO Training Dashboard v2.1",
+        title="PropFirm PPO Training Dashboard v2.2",
         description="Real-time monitoring for PPO trading agent with Curriculum Learning v2.x",
-        version="2.1.0",
+        version="2.2.0",
     )
 
     app.add_middleware(
@@ -734,16 +686,14 @@ if WEB_AVAILABLE:
 
     @app.get("/api/metrics")
     async def get_metrics():
-        reader = get_metrics_reader()
-        return JSONResponse(reader.read_metrics())
+        return JSONResponse(get_metrics_reader().read_metrics())
 
     @app.get("/api/health")
     async def health_check():
-        reader = get_metrics_reader()
-        metrics = reader.read_metrics()
+        metrics = get_metrics_reader().read_metrics()
         return {
             "status": "healthy",
-            "version": "2.1.0",
+            "version": "2.2.0",
             "training_active": metrics.get("status") == "active",
             "metrics_file": str(_config.metrics_file),
             "connected_clients": len(_connected_clients),
@@ -755,8 +705,7 @@ if WEB_AVAILABLE:
 
     @app.get("/api/curriculum")
     async def get_curriculum():
-        reader = get_metrics_reader()
-        metrics = reader.read_metrics()
+        metrics = get_metrics_reader().read_metrics()
         return JSONResponse({
             "curriculum_stage": metrics.get("curriculum_stage", "N/A"),
             "curriculum_stage_idx": metrics.get("curriculum_stage_idx", 0),
@@ -768,6 +717,102 @@ if WEB_AVAILABLE:
     @app.get("/api/requirements")
     async def get_requirements():
         return JSONResponse(get_requirements_by_stage())
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # ALERT LOGGING API
+    # ─────────────────────────────────────────────────────────────────────────
+    from fastapi import Request
+
+    @app.post("/api/alerts/log")
+    async def log_alert(request: Request):
+        """Log an alert to the audit file for persistence."""
+        try:
+            alert_data = await request.json()
+            alert_log_path = Path(_config.alerts_log_file)
+            alert_log_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Add server timestamp
+            log_entry = {
+                "timestamp": datetime.now().isoformat(),
+                "logged_at_epoch": time.time(),
+                **alert_data
+            }
+            
+            # Append to JSONL file
+            with open(alert_log_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(log_entry) + "\n")
+            
+            logger.info(f"Alert logged: [{alert_data.get('severity', 'unknown')}] {alert_data.get('title', 'untitled')}")
+            return JSONResponse({"status": "ok", "logged": True})
+        except Exception as e:
+            logger.error(f"Failed to log alert: {e}")
+            return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+
+    @app.get("/api/alerts/history")
+    async def get_alert_history(limit: int = 100, severity: Optional[str] = None):
+        """Retrieve recent alerts from the log file."""
+        try:
+            alert_log_path = Path(_config.alerts_log_file)
+            if not alert_log_path.exists():
+                return JSONResponse({"alerts": [], "total": 0})
+            
+            alerts = []
+            with open(alert_log_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                        if severity and entry.get("severity") != severity:
+                            continue
+                        alerts.append(entry)
+                    except json.JSONDecodeError:
+                        continue
+            
+            # Return most recent first
+            alerts = alerts[-min(limit, _config.max_alert_history):]
+            alerts.reverse()
+            
+            return JSONResponse({"alerts": alerts, "total": len(alerts)})
+        except Exception as e:
+            logger.error(f"Failed to read alert history: {e}")
+            return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+
+    @app.get("/api/alerts/stats")
+    async def get_alert_stats():
+        """Get alert statistics."""
+        try:
+            alert_log_path = Path(_config.alerts_log_file)
+            if not alert_log_path.exists():
+                return JSONResponse({"total": 0, "by_severity": {}, "by_metric": {}})
+            
+            total = 0
+            by_severity = {"critical": 0, "warning": 0, "info": 0}
+            by_metric = {}
+            
+            with open(alert_log_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                        total += 1
+                        sev = entry.get("severity", "info")
+                        by_severity[sev] = by_severity.get(sev, 0) + 1
+                        metric = entry.get("metric", "unknown")
+                        by_metric[metric] = by_metric.get(metric, 0) + 1
+                    except json.JSONDecodeError:
+                        continue
+            
+            return JSONResponse({
+                "total": total,
+                "by_severity": by_severity,
+                "by_metric": dict(sorted(by_metric.items(), key=lambda x: -x[1])[:20])
+            })
+        except Exception as e:
+            return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket):
@@ -786,27 +831,10 @@ if WEB_AVAILABLE:
         except WebSocketDisconnect:
             logger.info("Client disconnected normally")
         except Exception as e:
-            logger.warning(f"WebSocket error: {e}")
+            logger.warning(f"WebSocket error: {type(e).__name__}: {e}")
         finally:
             _connected_clients.discard(websocket)
             logger.info(f"Client removed. Total: {len(_connected_clients)}")
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# SERVER MANAGEMENT
-# ═══════════════════════════════════════════════════════════════════════════════
-
-_server_thread: Optional[threading.Thread] = None
-_server_running: bool = False
-
-
-def _run_server(host: str, port: int):
-    if not WEB_AVAILABLE:
-        logger.error("FastAPI/uvicorn not available")
-        return
-    config = uvicorn.Config(app, host=host, port=port, log_level="warning", access_log=False)
-    server = uvicorn.Server(config)
-    server.run()
 
 
 def start_dashboard_server(
@@ -815,62 +843,48 @@ def start_dashboard_server(
     metrics_file: str = "logs/training/live_metrics.json",
     background: bool = True,
 ) -> Optional[threading.Thread]:
-    global _server_thread, _server_running, _config, _metrics_reader
-
     if not WEB_AVAILABLE:
         logger.error("Cannot start server: FastAPI/uvicorn not installed")
         return None
 
-    if _server_running and _server_thread and _server_thread.is_alive():
-        logger.info(f"Dashboard already running at http://localhost:{_config.port}")
-        return _server_thread
-
+    global _config, _metrics_reader
     _config = DashboardConfig(host=host, port=port, metrics_file=metrics_file)
     _metrics_reader = MetricsReader(metrics_file)
 
     print()
     print("=" * 70)
-    print("  🚀 PROPFIRM PPO TRAINING DASHBOARD v2.1")
+    print("  🚀 PROPFIRM PPO TRAINING DASHBOARD v2.2")
     print("=" * 70)
     print(f"  📊 Open http://localhost:{port} in your browser")
     print(f"  📁 Reading metrics from: {metrics_file}")
-    print("  ✨ Fixes: strict promotion readiness • normalized gates • requirements export")
     print("=" * 70)
     print()
 
-    if background:
-        _server_thread = threading.Thread(target=_run_server, args=(host, port), daemon=True, name="DashboardServer")
-        _server_thread.start()
-        _server_running = True
-        time.sleep(0.5)
-        return _server_thread
+    def _run():
+        import uvicorn
+        config = uvicorn.Config(app, host=host, port=port, log_level="warning", access_log=False)
+        uvicorn.Server(config).run()
 
-    _run_server(host, port)
+    if background:
+        t = threading.Thread(target=_run, daemon=True, name="DashboardServer")
+        t.start()
+        time.sleep(0.5)
+        return t
+
+    _run()
     return None
 
 
-def stop_dashboard_server():
-    global _server_running
-    _server_running = False
-    logger.info("Dashboard server stopping...")
-
-
 def main():
-    parser = argparse.ArgumentParser(
-        description="PropFirm PPO Training Dashboard Server v2.1",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  python server.py
-  python server.py --port 8080
-  python server.py --metrics-file custom.json
-        """,
-    )
+    parser = argparse.ArgumentParser(description="PropFirm PPO Training Dashboard Server v2.2")
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind to")
     parser.add_argument("--port", type=int, default=8765, help="Port to listen on")
     parser.add_argument("--metrics-file", default="logs/training/live_metrics.json", help="Path to live_metrics.json")
-
     args = parser.parse_args()
+
+    if not WEB_AVAILABLE:
+        raise SystemExit("FastAPI/uvicorn not installed. Run: pip install fastapi uvicorn websockets")
+
     start_dashboard_server(host=args.host, port=args.port, metrics_file=args.metrics_file, background=False)
 
 

@@ -63,70 +63,89 @@ from envs.curriculum_config import (
     # rather than as direct type annotations, so they're not imported here.
 )
 
-logger = logging.getLogger("curriculum_manager")
+# DUP-2 FIX: Use shared utilities for common functions
+from envs.shared_utils import (
+    safe_float as _sf,
+    safe_int as _si,
+    clamp as _cl,
+    wilson_interval as _wi,
+    mean_ci_normal as _mci,
+    get_envs_logger,
+    iso_timestamp,
+)
+
+logger = get_envs_logger("curriculum_manager")
 
 STATE_VERSION = "2.0"
 DEFAULT_TZ = "Europe/Berlin"
 
 
 # =============================================================================
-# Utility Functions
+# Utility Functions (Aliases to shared_utils for backward compatibility)
 # =============================================================================
 
 def _now_iso(tz: str = DEFAULT_TZ) -> str:
     try:
         return datetime.now(tz=ZoneInfo(tz)).isoformat()
     except Exception:
-        return datetime.now().isoformat()
+        return iso_timestamp()
 
 
+# DEPRECATED: Use envs.shared_utils.safe_float() directly
 def _safe_float(x: Any, default: float = 0.0) -> float:
-    try:
-        if x is None:
-            return default
-        v = float(x)
-        if math.isnan(v) or math.isinf(v):
-            return default
-        return v
-    except Exception:
-        return default
+    return _sf(x, default)
 
 
+# DEPRECATED: Use envs.shared_utils.safe_int() directly
 def _safe_int(x: Any, default: int = 0) -> int:
-    try:
-        if x is None:
-            return default
-        return int(x)
-    except Exception:
-        return default
+    return _si(x, default)
 
 
+# DEPRECATED: Use envs.shared_utils.clamp() directly
 def _clamp(v: float, lo: float, hi: float) -> float:
     """Clamp value to range [lo, hi], handling NaN/inf safely."""
-    if math.isnan(v) or math.isinf(v):
-        return (lo + hi) / 2.0  # Return midpoint for invalid values
-    return max(lo, min(hi, v))
+    return _cl(v, lo, hi)
 
 
+# DEPRECATED: Use envs.shared_utils.wilson_interval() directly
 def _wilson_interval(k: int, n: int, z: float = 1.96) -> Tuple[float, float]:
     """
     Wilson score confidence interval for a Bernoulli proportion.
     Returns (low, high). For promotion we usually use the LOWER bound.
     """
-    if n <= 0:
-        return 0.0, 0.0
-    phat = k / n
-    denom = 1.0 + (z * z) / n
-    center = (phat + (z * z) / (2.0 * n)) / denom
-    radius = (z / denom) * math.sqrt((phat * (1.0 - phat) / n) + (z * z) / (4.0 * n * n))
-    return _clamp(center - radius, 0.0, 1.0), _clamp(center + radius, 0.0, 1.0)
+    return _wi(k, n, z)
 
 
+# DEPRECATED: Use envs.shared_utils.mean_ci_normal() directly
 def _mean_ci_normal(mean: float, std: float, n: int, z: float = 1.96) -> Tuple[float, float]:
-    if n <= 1:
-        return mean, mean
-    se = std / math.sqrt(max(n, 1))
-    return mean - z * se, mean + z * se
+    return _mci(mean, std, n, z)
+
+
+# =============================================================================
+# Safe Stage Progression Helpers
+# =============================================================================
+# These helpers ensure stage sampling/review work correctly even if
+# CurriculumStage enum values are reordered or non-contiguous.
+
+def _get_progression() -> List[CurriculumStage]:
+    """Get the canonical stage progression list."""
+    return get_stage_progression()
+
+
+def _stage_to_index(stage: CurriculumStage) -> int:
+    """Convert a stage to its index in the progression (0-based)."""
+    prog = _get_progression()
+    try:
+        return prog.index(stage)
+    except ValueError:
+        return 0
+
+
+def _index_to_stage(idx: int) -> CurriculumStage:
+    """Convert a progression index to a stage (clamped to valid range)."""
+    prog = _get_progression()
+    idx = max(0, min(idx, len(prog) - 1))
+    return prog[idx]
 
 
 def _linear_regression_slope(y: np.ndarray) -> float:
@@ -211,12 +230,13 @@ class RollingStats:
     # Performance stats
     mean_pnl: float = 0.0
     std_pnl: float = 0.0
-    mean_win_rate: float = 0.0
+    mean_win_rate: float = 0.0      # Episode-averaged win rate
     std_win_rate: float = 0.0
     mean_trade_count: float = 0.0
     total_trades: int = 0
     total_wins: int = 0
     total_losses: int = 0
+    win_rate_trade_weighted: float = 0.0  # Trade-pooled: total_wins / total_trades
 
     # Risk stats
     mean_drawdown: float = 0.0
@@ -336,8 +356,10 @@ class LearningVelocity:
         return {
             "improvement_rates": dict(self.improvement_rates),
             "plateau_episodes": self.plateau_episodes,
+            "plateau_threshold": self.plateau_threshold,
             "average_improvement": self.get_average_improvement(),
-            "is_plateaued": self.is_plateaued(),
+            # Note: is_plateaued should be checked with stage-specific threshold externally
+            "is_plateaued_default": self.is_plateaued(),
         }
 
 
@@ -361,8 +383,16 @@ class SkillAssessment:
         cls,
         episodes: List[EpisodeMetrics],
         stats: RollingStats,
+        bars_per_trading_day: int = 96,
     ) -> "SkillAssessment":
-        """Compute skill assessment from episode history."""
+        """Compute skill assessment from episode history.
+        
+        Args:
+            episodes: List of episode metrics
+            stats: Rolling statistics
+            bars_per_trading_day: Bars per trading day for patience calculation
+                                  (default 96 for M15 = 4 bars/hour * 24 hours)
+        """
         scores: Dict[TradingSkill, float] = {}
         confidence: Dict[TradingSkill, float] = {}
         
@@ -393,17 +423,42 @@ class SkillAssessment:
         scores[TradingSkill.DRAWDOWN_CONTROL] = 1.0 - stats.dd_breach_rate
         confidence[TradingSkill.DRAWDOWN_CONTROL] = base_conf
         
-        # Patience: inverse of average trades per episode (normalized)
-        avg_trades = stats.mean_trade_count
-        # Assume 5-10 trades per episode is optimal
-        if avg_trades <= 5:
-            patience_score = 0.9
-        elif avg_trades <= 10:
-            patience_score = 0.7
-        elif avg_trades <= 15:
-            patience_score = 0.5
+        # Patience: trades per trading day (normalized from episode data)
+        # Delta Force discipline: quality over quantity
+        # 
+        # Normalization: Use actual episode length from metrics instead of 
+        # hardcoded M15/2000 bars assumption. This makes the calculation
+        # robust to different timeframes and episode lengths.
+        avg_trades_per_episode = stats.mean_trade_count
+        
+        # Compute average episode length in bars from the episodes
+        episode_lengths = [e.episode_length for e in episodes if e.episode_length > 0]
+        if episode_lengths:
+            avg_episode_bars = float(np.mean(episode_lengths))
         else:
-            patience_score = max(0.2, 1.0 - (avg_trades - 15) / 20)
+            avg_episode_bars = 2000.0  # Default fallback
+        
+        # Convert to trading days (at least 10 days minimum for stability)
+        est_trading_days_per_episode = max(10.0, avg_episode_bars / bars_per_trading_day)
+        
+        # Convert to trades per day
+        trades_per_day = avg_trades_per_episode / est_trading_days_per_episode
+        
+        # Target: 0.3-0.5 trades/day for selective, high-conviction entries
+        # (roughly 1 trade every 2-3 days)
+        if trades_per_day <= 0.3:
+            patience_score = 1.0      # Excellent discipline (1 trade/3 days)
+        elif trades_per_day <= 0.5:
+            patience_score = 0.85     # Good discipline (1 trade/2 days)
+        elif trades_per_day <= 0.75:
+            patience_score = 0.65     # Acceptable (~1 trade every 1.3 days)
+        elif trades_per_day <= 1.0:
+            patience_score = 0.45     # Needs improvement (daily trading)
+        elif trades_per_day <= 1.5:
+            patience_score = 0.25     # Poor discipline (1.5 trades/day)
+        else:
+            # Severe penalty for overtrading - drops fast to 0
+            patience_score = max(0.0, 0.25 - (trades_per_day - 1.5) / 3.0)
         scores[TradingSkill.PATIENCE] = patience_score
         confidence[TradingSkill.PATIENCE] = base_conf
         
@@ -504,10 +559,23 @@ class SkillAssessment:
             else:
                 results["passed_all"] = False
         
-        # If not requiring all skills, check weighted average
+        # If not requiring all skills, check weighted average using requirements.skill_weights
         if not requirements.require_all_skills:
-            meets_weighted = self.weighted_average >= requirements.weighted_threshold
-            results["weighted_average"] = self.weighted_average
+            # Compute weighted average using stage-configured skill_weights (not confidence)
+            numer = 0.0
+            denom = 0.0
+            for skill, min_score in requirements.required_skills.items():
+                s = float(self.skill_scores.get(skill, 0.0))
+                c = float(self.skill_confidence.get(skill, 0.0))
+                w = float(requirements.get_weight(skill))  # Use stage-configured weight
+                # Only include skills with sufficient confidence
+                if c >= requirements.min_confidence:
+                    numer += s * w
+                    denom += w
+            
+            weighted = (numer / denom) if denom > 0 else 0.0
+            meets_weighted = weighted >= requirements.weighted_threshold
+            results["weighted_average"] = weighted
             results["weighted_threshold"] = requirements.weighted_threshold
             results["meets_weighted"] = meets_weighted
             results["overall_passed"] = meets_weighted or results["passed_all"]
@@ -928,11 +996,15 @@ def compute_composite_score(
         cl_score = 1.0 if stats.consecutive_loss_breach_rate <= 0.05 else 0.5
     components["consecutive_loss_rate"] = max(0, cl_score)
     
-    # Compute weighted composite
+    # Compute weighted composite (normalized by weight sum for stable scale)
+    weight_sum = sum(config.weights.values())
+    if weight_sum <= 0:
+        weight_sum = 1.0  # Avoid division by zero
+    
     total_score = sum(
         components.get(name, 0.5) * weight
         for name, weight in config.weights.items()
-    )
+    ) / weight_sum  # Normalize to [0, 1] range
     
     # Check hard floors
     hard_floor_failures: List[str] = []
@@ -987,17 +1059,28 @@ def compute_adjusted_thresholds(
     base: CompetenceThresholds,
     velocity: LearningVelocity,
     config: AdaptiveThresholdConfig,
+    composite_score: Optional["CompositeScore"] = None,
+    promotion_threshold: float = 0.7,
 ) -> CompetenceThresholds:
     """
     Compute adjusted thresholds based on learning velocity.
     
-    Slightly relaxes thresholds if agent is plateaued but close to promotion.
+    Slightly relaxes thresholds if agent is plateaued AND close to promotion.
+    The proximity check prevents wasting relaxation on agents that are nowhere
+    near promotion anyway.
     """
     if not config.enabled:
         return base
     
     if velocity.plateau_episodes < config.plateau_episodes_threshold:
         return base  # No adjustment needed
+    
+    # PROXIMITY CHECK: Only relax if agent is reasonably close to promotion
+    # This prevents wasting relaxation on agents that are far from ready.
+    if composite_score is not None:
+        proximity_margin = 0.15  # Must be within 15% of promotion threshold
+        if composite_score.total_score < (promotion_threshold - proximity_margin):
+            return base  # Too far from promotion, don't relax
     
     # Calculate relaxation factor
     # Linear buildup from 0 to max_relaxation over relaxation_buildup_episodes
@@ -1067,6 +1150,8 @@ class CurriculumManager:
         tz: str = DEFAULT_TZ,
         on_transition_callback: Optional[Callable] = None,
         rng_seed: Optional[int] = None,
+        validation_evaluator: Optional[Callable[[CurriculumStageConfig], Dict[str, Any]]] = None,
+        bars_per_trading_day: int = 96,  # M15 default; override for other timeframes
     ) -> None:
         self.current_stage = initial_stage
         self.max_history_size = max_history_size
@@ -1075,6 +1160,8 @@ class CurriculumManager:
         self.verbose = verbose
         self.tz = tz
         self.on_transition_callback = on_transition_callback
+        self.validation_evaluator = validation_evaluator
+        self.bars_per_trading_day = bars_per_trading_day
         
         # Random number generator for mixed-stage sampling
         self._rng = np.random.default_rng(rng_seed)
@@ -1182,8 +1269,10 @@ class CurriculumManager:
             self._lr_warmup_steps_remaining = 0
             self._lr_warmup_factor = 1.0
         
-        # Reset learning velocity for new stage
+        # Reset learning velocity for new stage and wire stage config thresholds
         self._learning_velocity = LearningVelocity()
+        at = new_config.adaptive_thresholds
+        self._learning_velocity.plateau_threshold = float(at.plateau_improvement_threshold)
         
         # Check if recovery protocol should be triggered (for demotions)
         if reason == "demotion" and demoted_from_stage is not None:
@@ -1219,10 +1308,17 @@ class CurriculumManager:
     
     @property
     def competence_thresholds(self) -> CompetenceThresholds:
-        """Get thresholds, possibly adjusted for plateau."""
+        """Get thresholds, possibly adjusted for plateau (with proximity check)."""
         base = self.stage_config.competence
         config = self.stage_config.adaptive_thresholds
-        return compute_adjusted_thresholds(base, self._learning_velocity, config)
+        promotion_threshold = self.stage_config.composite_scoring.promotion_threshold
+        return compute_adjusted_thresholds(
+            base, 
+            self._learning_velocity, 
+            config,
+            composite_score=self._composite_score,
+            promotion_threshold=promotion_threshold,
+        )
     
     @property
     def current_stage_epoch(self) -> int:
@@ -1231,6 +1327,11 @@ class CurriculumManager:
     @property
     def is_in_transition(self) -> bool:
         return self._lr_warmup_active or self._reward_blend_remaining > 0
+    
+    def is_learning_plateaued(self) -> bool:
+        """Check if learning has plateaued using stage-configured threshold."""
+        threshold = self.stage_config.adaptive_thresholds.plateau_episodes_threshold
+        return self._learning_velocity.is_plateaued(threshold)
     
     @property
     def reward_blend_factor(self) -> float:
@@ -1367,12 +1468,13 @@ class CurriculumManager:
         if r < current_prob:
             return self.current_stage
         elif r < current_prob + recent_prob:
-            # Sample from recent stages
-            min_stage = max(0, self.current_stage.value - config.recent_stage_depth)
-            if min_stage >= self.current_stage.value:
+            # Sample from recent stages using progression index (not .value)
+            cur_idx = _stage_to_index(self.current_stage)
+            min_idx = max(0, cur_idx - config.recent_stage_depth)
+            if min_idx >= cur_idx:
                 return self.current_stage
-            stage_idx = self._rng.integers(min_stage, self.current_stage.value)
-            return CurriculumStage(stage_idx)
+            sampled_idx = int(self._rng.integers(min_idx, cur_idx))
+            return _index_to_stage(sampled_idx)
         else:
             # Foundation stage (using foundation_weight)
             return CurriculumStage.FOUNDATION
@@ -1392,7 +1494,10 @@ class CurriculumManager:
         if not config.enabled:
             return None
         
-        if self.current_stage.value < config.min_stage_for_review.value:
+        # Use progression index for comparison (not .value)
+        cur_idx = _stage_to_index(self.current_stage)
+        min_review_idx = _stage_to_index(config.min_stage_for_review)
+        if cur_idx < min_review_idx:
             return None
         
         # Handle active review
@@ -1412,11 +1517,12 @@ class CurriculumManager:
         self._review_state.episodes_since_review += 1
         
         if self._review_state.episodes_since_review >= config.review_frequency:
-            # Start review
-            min_review_stage = max(0, self.current_stage.value - config.review_depth)
-            if min_review_stage < self.current_stage.value:
-                review_stage_idx = self._rng.integers(min_review_stage, self.current_stage.value)
-                review_stage = CurriculumStage(review_stage_idx)
+            # Start review using progression indices (not .value)
+            cur_idx = _stage_to_index(self.current_stage)
+            min_review_idx = max(0, cur_idx - config.review_depth)
+            if min_review_idx < cur_idx:
+                review_stage_idx = int(self._rng.integers(min_review_idx, cur_idx))
+                review_stage = _index_to_stage(review_stage_idx)
                 
                 self._review_state.in_review = True
                 self._review_state.review_stage = review_stage
@@ -1569,21 +1675,52 @@ class CurriculumManager:
             hit_max_consec = "consecutive" in termination_reason.lower()
         
         # Parse exit quality distribution
+        # CloseReason enum values from prop_firm_env.py:
+        #   GOOD: trailing_stop, agent_close
+        #   BAD: hard_stop, emergency_close, risk_liquidation
+        #   NEUTRAL: time_decay, hard_close, weekend_flatten, daily_limit_safety, episode_truncate_flatten
         exit_dist = ep_stats.get("exit_quality_distribution", {}) or {}
+        
+        # Define known exit types for robust parsing
+        GOOD_EXITS = {"trailing_stop", "agent_close"}
+        BAD_EXITS = {"hard_stop", "emergency_close", "risk_liquidation"}
+        NEUTRAL_EXITS = {"time_decay", "hard_close", "weekend_flatten", 
+                        "daily_limit_safety", "episode_truncate_flatten", "episode_truncate"}
+        
         trailing_stops = _safe_int(exit_dist.get("trailing_stop", 0), 0)
         agent_closes = _safe_int(exit_dist.get("agent_close", 0), 0)
-        hard_stops = _safe_int(exit_dist.get("hard_stop", 0), 0)
-        risk_liquidations = _safe_int(exit_dist.get("risk_liquidation", 0), 0)
-        raw_other_exits = trade_count - trailing_stops - agent_closes - hard_stops - risk_liquidations
         
-        # Always log warning if exit distribution is inconsistent (data integrity issue)
+        # Hard stop includes emergency close (both are risk management failures)
+        hard_stops = _safe_int(exit_dist.get("hard_stop", 0), 0) + _safe_int(exit_dist.get("emergency_close", 0), 0)
+        
+        risk_liquidations = _safe_int(exit_dist.get("risk_liquidation", 0), 0)
+        
+        # Neutral exits (not bad, but not demonstrating exit skill)
+        neutral_exits = sum(
+            _safe_int(exit_dist.get(key, 0), 0) 
+            for key in NEUTRAL_EXITS
+        )
+        
+        # Handle any unrecognized exit types (future-proofing)
+        known_keys = GOOD_EXITS | BAD_EXITS | NEUTRAL_EXITS
+        unknown_exits = sum(
+            _safe_int(count, 0) 
+            for key, count in exit_dist.items() 
+            if key not in known_keys
+        )
+        if unknown_exits > 0:
+            logger.debug(f"Found {unknown_exits} exits with unrecognized types, treating as neutral")
+        
+        tracked_exits = trailing_stops + agent_closes + hard_stops + risk_liquidations + neutral_exits + unknown_exits
+        raw_other_exits = trade_count - tracked_exits
+        
+        # Safety: if raw_other_exits is negative, it means exit_dist double-counted something
+        # In this case, trust exit_dist totals
         if raw_other_exits < 0:
-            logger.warning(
-                f"Exit distribution inconsistent: trade_count={trade_count}, "
-                f"sum_exits={trade_count - raw_other_exits} (trailing={trailing_stops}, "
-                f"agent={agent_closes}, hard={hard_stops}, risk={risk_liquidations})"
-            )
-        other_exits = max(0, raw_other_exits)
+            logger.debug(f"Exit count mismatch: trade_count={trade_count}, tracked={tracked_exits}")
+            raw_other_exits = 0
+        
+        other_exits = raw_other_exits + neutral_exits + unknown_exits  # Include neutral in 'other' for skill assessment
         
         metrics = EpisodeMetrics(
             total_pnl=total_pnl,
@@ -1673,8 +1810,11 @@ class CurriculumManager:
         max_drawdown_seen = float(np.max(drawdowns)) if len(drawdowns) else 0.0
         dd_breach_rate = float(np.mean(dd_breaches)) if len(dd_breaches) else 0.0
         
-        pf_pos = profit_factors[profit_factors > 0]
-        mean_profit_factor = float(np.mean(pf_pos)) if pf_pos.size else 0.0
+        # Profit factor: Handle zero-trade episodes properly.
+        # Previously filtered out zeros which inflates PF unfairly.
+        # Now: Include zeros as 0.0 (penalizes idle episodes) OR require min trades.
+        # Using floor of 0.0 for episodes without trades (they contribute nothing).
+        mean_profit_factor = float(np.mean(profit_factors)) if len(profit_factors) else 0.0
         
         mean_r_multiple = float(np.mean(r_multiples)) if len(r_multiples) else 0.0
         mean_entry_quality = float(np.mean(entry_qualities)) if len(entry_qualities) else 0.5
@@ -1734,6 +1874,7 @@ class CurriculumManager:
             total_trades=total_trades,
             total_wins=total_wins,
             total_losses=total_losses,
+            win_rate_trade_weighted=float(total_wins / max(total_trades, 1)),  # Trade-pooled win rate
             mean_drawdown=mean_drawdown,
             max_drawdown_seen=max_drawdown_seen,
             dd_breach_rate=dd_breach_rate,
@@ -1759,8 +1900,10 @@ class CurriculumManager:
         self._rolling_stats = stats
         self._rolling_stats_dirty = False
         
-        # Update skill assessment
-        self._skill_assessment = SkillAssessment.from_episode_results(window, stats)
+        # Update skill assessment (pass configurable bars_per_trading_day)
+        self._skill_assessment = SkillAssessment.from_episode_results(
+            window, stats, bars_per_trading_day=self.bars_per_trading_day
+        )
         
         # Update composite score
         self._composite_score = compute_composite_score(
@@ -1914,14 +2057,16 @@ class CurriculumManager:
         }
         all_passed = all_passed and passed
         
-        # Entropy check
+        # Entropy check - use EntropyTargets.min_entropy for single source of truth
+        # (same threshold used for penalties and promotion gating)
         entropy_targets = self.stage_config.entropy_targets
-        if entropy_targets.use_in_promotion and thresholds.min_entropy > 0 and stats.mean_entropy >= 0:
-            passed = stats.mean_entropy >= thresholds.min_entropy
+        if entropy_targets.use_in_promotion and entropy_targets.min_entropy > 0 and stats.mean_entropy >= 0:
+            passed = stats.mean_entropy >= entropy_targets.min_entropy
             results["checks"]["entropy"] = {
-                "required": thresholds.min_entropy,
+                "required": entropy_targets.min_entropy,
                 "actual": stats.mean_entropy,
                 "passed": passed,
+                "note": "Using EntropyTargets.min_entropy (same as penalty threshold)",
             }
             all_passed = all_passed and passed
         
@@ -2045,6 +2190,24 @@ class CurriculumManager:
         meets_criteria, results = self.check_promotion_criteria()
         if not meets_criteria:
             return False, None
+        
+        # Holdout validation gate (if enabled and evaluator provided)
+        val_cfg = self.stage_config.validation
+        if val_cfg.enabled:
+            if self.validation_evaluator is None:
+                if self.verbose:
+                    logger.warning("Validation enabled but no validation_evaluator provided; skipping validation gate.")
+            else:
+                try:
+                    val_result = self.validation_evaluator(self.stage_config)
+                    # Expect val_result: {"passed": bool, "performance_ratio": float, ...}
+                    results["validation"] = val_result
+                    if not val_result.get("passed", False):
+                        if self.verbose:
+                            logger.info(f"Validation failed; blocking promotion. Details: {val_result}")
+                        return False, None
+                except Exception as e:
+                    logger.warning(f"Validation evaluator error: {e}; skipping validation gate.")
         
         old_stage = self.current_stage
         self.current_stage = next_stage
@@ -2280,8 +2443,8 @@ class CurriculumManager:
                     weak = self._skill_assessment.weakest_skills[0].value
                     recs.append(f"Focus on improving {weak.replace('_', ' ')}")
         
-        # Add velocity-based recommendation
-        if self._learning_velocity.is_plateaued():
+        # Add velocity-based recommendation (use stage-configured threshold)
+        if self.is_learning_plateaued():
             recs.append("Learning has plateaued - consider adjusting strategy or hyperparameters")
         
         # Deduplicate
@@ -2430,6 +2593,14 @@ class CurriculumManager:
         path = Path(path)
         with open(path, "r", encoding="utf-8") as f:
             state = json.load(f)
+        
+        # Version compatibility check
+        loaded_version = state.get("version", "1.0")
+        if loaded_version != STATE_VERSION:
+            logger.warning(
+                f"Loading checkpoint from v{loaded_version} (current: v{STATE_VERSION}). "
+                f"New features (recovery_state, review_state, learning_velocity) may use defaults."
+            )
         
         tz = state.get("tz", DEFAULT_TZ)
         current_stage = CurriculumStage[state["current_stage"]]

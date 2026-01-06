@@ -65,8 +65,8 @@ class ExecutionConfig:
     slippage_vol_factor: float = 2.0          # How much volatility affects slippage
     
     # Order size impact (larger orders get worse fills)
-    size_impact_enabled: bool = False         # Enable size-based slippage
-    size_impact_factor: float = 0.1           # Slippage multiplier per lot
+    size_impact_enabled: bool = True          # Enable size-based slippage (realistic fills)
+    size_impact_factor: float = 0.08          # Slippage multiplier per lot (calibrated for XAUUSD)
     
     # Quote staleness (simulate delayed quotes)
     quote_staleness_enabled: bool = False     # Enable stale quotes
