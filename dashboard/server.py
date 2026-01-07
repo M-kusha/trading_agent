@@ -68,8 +68,8 @@ class MetricThresholds:
     drawdown_ok: float = 6.0
     ev_good: float = 0.5
     ev_ok: float = 0.2
-    entropy_good_min: float = -9.0
-    entropy_good_max: float = -5.0
+    entropy_good_min: float = 0.25  # PPO entropy is positive
+    entropy_good_max: float = 0.85  # Typical healthy range 0.3-0.8
     kl_good: float = 0.015
     kl_ok: float = 0.025
     clip_good_min: float = 0.05

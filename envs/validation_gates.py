@@ -1,0 +1,907 @@
+# envs/validation_gates.py
+"""
+Validation Gates for Curriculum Progression
+============================================
+
+Phase 3: Reliability under distribution shift.
+
+Makes validation a FIRST-CLASS gate for promotion, not optional.
+Maintains fixed validation scenarios that test generalization:
+- Different volatility conditions
+- Different spread/slippage levels
+- Different start dates
+- Stress conditions (adversarial)
+
+Promotion requires:
+1. Performance ratio threshold (train vs validation)
+2. Safety threshold (DD breaches near zero)
+3. No catastrophic behavior (overtrading, liquidation spikes)
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field, asdict
+from enum import Enum
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
+
+from envs.shared_utils import (
+    safe_float as _sf,
+    clamp as _clamp,
+    get_envs_logger,
+    iso_timestamp,
+)
+
+
+logger = get_envs_logger("validation_gates")
+
+
+# =============================================================================
+# Unified Performance Scoring
+# =============================================================================
+
+def compute_performance_score(
+    mean_win_rate: float,
+    mean_profit_factor: float,
+    mean_r_multiple: float,
+) -> float:
+    """
+    Compute a unified performance score.
+    
+    This SAME function must be used for both training baseline and validation
+    scenarios to ensure performance_ratio is meaningful.
+    
+    Components:
+    - Win rate normalized to ~1.0 at 50% (capped to [0, 1.5])
+    - Profit factor capped and normalized (capped to [0, 1.5])
+    - R-multiple shifted to positive range (capped to [0, 1.5])
+    """
+    # Cap each component individually BEFORE averaging to prevent unbounded values
+    wr_component = _clamp(mean_win_rate / 0.5, 0.0, 1.5)           # Normalize: 50% WR -> 1.0
+    pf_component = _clamp(mean_profit_factor / 1.5, 0.0, 1.5)      # Cap at 1.5
+    rm_component = _clamp((mean_r_multiple + 0.5) / 1.0, 0.0, 1.5) # Shift and normalize
+    components = [wr_component, pf_component, rm_component]
+    return _clamp(float(np.mean(components)), 0.0, 1.5)
+
+
+def _get_episode_value(ep: Dict[str, Any], *keys: str, default: float = 0.0) -> float:
+    """
+    Get a value from an episode dict, trying multiple possible key names.
+    
+    This handles metric naming drift across different parts of the codebase:
+    - total_pnl vs pnl vs episode_pnl
+    - avg_r_multiple vs mean_r_multiple vs r_multiple
+    - profit_factor vs pf
+    """
+    for key in keys:
+        if key in ep and ep[key] is not None:
+            return _sf(ep[key], default)
+    return default
+
+
+# =============================================================================
+# Validation Scenario Types
+# =============================================================================
+
+class ValidationScenarioType(Enum):
+    """Types of validation scenarios."""
+    STANDARD = "standard"           # Normal conditions, different dates
+    HIGH_VOLATILITY = "high_vol"    # High ATR periods
+    LOW_VOLATILITY = "low_vol"      # Low ATR periods
+    WIDE_SPREAD = "wide_spread"     # Elevated transaction costs
+    HIGH_SLIPPAGE = "high_slip"     # Increased execution uncertainty
+    TREND_REGIME = "trend"          # Strong trending periods
+    RANGE_REGIME = "range"          # Sideways/choppy periods
+    NEWS_PERIODS = "news"           # Around major economic releases
+    STRESS_TEST = "stress"          # Adversarial conditions
+
+
+@dataclass
+class ValidationScenario:
+    """Definition of a validation scenario."""
+    name: str
+    scenario_type: ValidationScenarioType
+    description: str
+    
+    # Data selection
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    symbol: str = "XAUUSD"
+    
+    # Environment modifications
+    spread_multiplier: float = 1.0      # Multiply base spread
+    slippage_multiplier: float = 1.0    # Multiply base slippage
+    volatility_filter: Optional[str] = None  # "high", "low", or None
+    trend_filter: Optional[str] = None       # "trending", "ranging", or None
+    
+    # Expected difficulty (for weighting)
+    difficulty: float = 1.0  # 1.0 = normal, higher = harder
+    
+    # Minimum requirements
+    min_episodes: int = 10
+    min_trades: int = 50
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "type": self.scenario_type.value,
+            "description": self.description,
+            "symbol": self.symbol,
+            "start_date": self.start_date,
+            "end_date": self.end_date,
+            "spread_multiplier": self.spread_multiplier,
+            "slippage_multiplier": self.slippage_multiplier,
+            "difficulty": self.difficulty,
+        }
+
+
+# =============================================================================
+# Predefined Validation Scenarios
+# =============================================================================
+
+def get_default_validation_scenarios() -> List[ValidationScenario]:
+    """Get the default suite of validation scenarios."""
+    return [
+        # Standard validation (different date range)
+        ValidationScenario(
+            name="standard_validation",
+            scenario_type=ValidationScenarioType.STANDARD,
+            description="Standard conditions, held-out date range",
+            difficulty=1.0,
+        ),
+        
+        # High volatility stress
+        ValidationScenario(
+            name="high_volatility",
+            scenario_type=ValidationScenarioType.HIGH_VOLATILITY,
+            description="High ATR periods only",
+            volatility_filter="high",
+            difficulty=1.3,
+        ),
+        
+        # Wide spread stress
+        ValidationScenario(
+            name="wide_spreads",
+            scenario_type=ValidationScenarioType.WIDE_SPREAD,
+            description="Spreads 2x normal",
+            spread_multiplier=2.0,
+            difficulty=1.4,
+        ),
+        
+        # High slippage stress
+        ValidationScenario(
+            name="high_slippage",
+            scenario_type=ValidationScenarioType.HIGH_SLIPPAGE,
+            description="Slippage 2x normal",
+            slippage_multiplier=2.0,
+            difficulty=1.3,
+        ),
+        
+        # Ranging market
+        ValidationScenario(
+            name="ranging_market",
+            scenario_type=ValidationScenarioType.RANGE_REGIME,
+            description="Low ADX, sideways periods",
+            trend_filter="ranging",
+            difficulty=1.2,
+        ),
+        
+        # Combined stress test
+        ValidationScenario(
+            name="stress_test",
+            scenario_type=ValidationScenarioType.STRESS_TEST,
+            description="Wide spreads + high slippage + high vol",
+            spread_multiplier=1.5,
+            slippage_multiplier=1.5,
+            volatility_filter="high",
+            difficulty=2.0,
+        ),
+    ]
+
+
+# =============================================================================
+# Validation Results
+# =============================================================================
+
+@dataclass
+class ScenarioResult:
+    """Results from running one validation scenario."""
+    scenario_name: str
+    scenario_type: str
+    
+    # Episode stats
+    episodes_run: int = 0
+    total_trades: int = 0
+    
+    # Performance metrics
+    mean_win_rate: float = 0.0
+    mean_profit_factor: float = 0.0
+    mean_pnl: float = 0.0
+    mean_r_multiple: float = 0.0
+    
+    # Risk metrics
+    max_drawdown_seen: float = 0.0
+    dd_breach_count: int = 0
+    dd_breach_rate: float = 0.0
+    
+    # Behavior metrics
+    mean_trade_count: float = 0.0
+    liquidation_count: int = 0
+    liquidation_rate: float = 0.0
+    
+    # Computed scores
+    performance_score: float = 0.0  # Composite performance
+    safety_score: float = 0.0       # Safety/risk score
+    behavior_score: float = 0.0     # No catastrophic behavior
+    
+    # Pass/fail
+    passed: bool = False
+    failure_reasons: List[str] = field(default_factory=list)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class ValidationGateResult:
+    """Aggregate result from all validation scenarios."""
+    timestamp: str = field(default_factory=iso_timestamp)
+    stage_name: str = ""
+    stage_epoch: int = 0
+    
+    # Scenario results
+    scenario_results: Dict[str, ScenarioResult] = field(default_factory=dict)
+    
+    # Aggregate metrics
+    scenarios_passed: int = 0
+    scenarios_total: int = 0
+    pass_rate: float = 0.0
+    
+    # Weighted scores
+    weighted_performance: float = 0.0
+    weighted_safety: float = 0.0
+    weighted_behavior: float = 0.0
+    
+    # Performance ratio (validation vs training)
+    performance_ratio: float = 0.0
+    
+    # Final verdict
+    gate_passed: bool = False
+    gate_confidence: float = 0.0
+    blocking_reasons: List[str] = field(default_factory=list)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "timestamp": self.timestamp,
+            "stage_name": self.stage_name,
+            "stage_epoch": self.stage_epoch,
+            "scenarios_passed": self.scenarios_passed,
+            "scenarios_total": self.scenarios_total,
+            "pass_rate": self.pass_rate,
+            "weighted_performance": self.weighted_performance,
+            "weighted_safety": self.weighted_safety,
+            "weighted_behavior": self.weighted_behavior,
+            "performance_ratio": self.performance_ratio,
+            "gate_passed": self.gate_passed,
+            "gate_confidence": self.gate_confidence,
+            "blocking_reasons": self.blocking_reasons,
+            "scenario_results": {k: v.to_dict() for k, v in self.scenario_results.items()},
+        }
+
+
+# =============================================================================
+# Validation Gate Checker
+# =============================================================================
+
+@dataclass
+class ValidationGateConfig:
+    """Configuration for validation gating."""
+    # Enable/disable validation gating
+    enabled: bool = True
+    
+    # Minimum requirements
+    min_scenarios_passed: int = 4         # Out of 6 default scenarios
+    min_pass_rate: float = 0.67           # At least 67% of scenarios
+    
+    # Performance ratio thresholds
+    # validation_performance / training_performance must exceed this
+    min_performance_ratio: float = 0.7    # Val can be 30% worse than train
+    target_performance_ratio: float = 0.85  # Ideal: val within 15% of train
+    
+    # Safety thresholds
+    max_dd_breach_rate: float = 0.05      # Max 5% episodes with DD breach
+    max_liquidation_rate: float = 0.02    # Max 2% liquidations
+    min_weighted_safety: float = 0.7      # Minimum weighted safety score
+    
+    # Behavior thresholds
+    max_trade_count_ratio: float = 2.0    # Val trades / train trades
+    min_trade_count_ratio: float = 0.5    # Don't under-trade in val
+    
+    # Training stats completeness requirements
+    require_training_stats: bool = True   # Block if training stats missing
+    min_training_confidence: float = 0.3  # Minimum confidence in training stats
+    
+    # Stage-specific adjustments
+    early_stage_relaxation: float = 0.8   # Relax thresholds for early stages
+    late_stage_strictness: float = 1.2    # Tighten for late stages
+
+
+class ValidationGateChecker:
+    """
+    Checks validation performance as a promotion gate.
+    
+    For a promotion to proceed:
+    1. Agent must pass minimum scenarios
+    2. Performance ratio (val/train) must meet threshold
+    3. Safety metrics (DD breaches, liquidations) must be acceptable
+    4. No catastrophic behavior patterns
+    """
+    
+    def __init__(
+        self,
+        config: Optional[ValidationGateConfig] = None,
+        scenarios: Optional[List[ValidationScenario]] = None,
+    ):
+        self.config = config or ValidationGateConfig()
+        self.scenarios = scenarios or get_default_validation_scenarios()
+        
+        # Cache for results
+        self._last_result: Optional[ValidationGateResult] = None
+    
+    def evaluate_scenario(
+        self,
+        scenario: ValidationScenario,
+        episodes: List[Dict[str, Any]],
+        training_stats: Dict[str, Any],
+    ) -> ScenarioResult:
+        """
+        Evaluate a single validation scenario.
+        
+        Args:
+            scenario: The scenario definition
+            episodes: List of episode results from validation run
+            training_stats: Reference training statistics for comparison
+            
+        Returns:
+            ScenarioResult with pass/fail determination
+        """
+        result = ScenarioResult(
+            scenario_name=scenario.name,
+            scenario_type=scenario.scenario_type.value,
+        )
+        
+        if not episodes:
+            result.failure_reasons.append("No episodes")
+            return result
+        
+        result.episodes_run = len(episodes)
+        
+        # Aggregate episode metrics
+        win_rates = []
+        profit_factors = []
+        pnls = []
+        r_multiples = []
+        trade_counts = []
+        drawdowns = []
+        dd_breaches = 0
+        liquidations = 0
+        
+        for ep in episodes:
+            # Use fallback keys to handle metric naming variations
+            win_rates.append(_get_episode_value(ep, "win_rate", "wr", default=0.0))
+            profit_factors.append(_get_episode_value(
+                ep, "profit_factor", "pf", "mean_profit_factor", default=0.0
+            ))
+            pnls.append(_get_episode_value(
+                ep, "total_pnl", "pnl", "episode_pnl", "net_pnl", default=0.0
+            ))
+            r_multiples.append(_get_episode_value(
+                ep, "avg_r_multiple", "mean_r_multiple", "r_multiple", default=0.0
+            ))
+            trade_counts.append(_get_episode_value(
+                ep, "trade_count", "trades", "num_trades", default=0.0
+            ))
+            drawdowns.append(_get_episode_value(
+                ep, "max_drawdown", "drawdown", "dd", default=0.0
+            ))
+            
+            if ep.get("dd_breach", False):
+                dd_breaches += 1
+            if ep.get("risk_liquidation_exits", 0) > 0:
+                liquidations += 1
+        
+        result.total_trades = int(sum(trade_counts))
+        result.mean_win_rate = float(np.mean(win_rates)) if win_rates else 0.0
+        result.mean_profit_factor = float(np.mean(profit_factors)) if profit_factors else 0.0
+        result.mean_pnl = float(np.mean(pnls)) if pnls else 0.0
+        result.mean_r_multiple = float(np.mean(r_multiples)) if r_multiples else 0.0
+        result.mean_trade_count = float(np.mean(trade_counts)) if trade_counts else 0.0
+        result.max_drawdown_seen = float(max(drawdowns)) if drawdowns else 0.0
+        result.dd_breach_count = dd_breaches
+        result.dd_breach_rate = dd_breaches / max(len(episodes), 1)
+        result.liquidation_count = liquidations
+        result.liquidation_rate = liquidations / max(len(episodes), 1)
+        
+        # Check minimum requirements
+        if result.episodes_run < scenario.min_episodes:
+            result.failure_reasons.append(
+                f"Insufficient episodes ({result.episodes_run} < {scenario.min_episodes})"
+            )
+        
+        if result.total_trades < scenario.min_trades:
+            result.failure_reasons.append(
+                f"Insufficient trades ({result.total_trades} < {scenario.min_trades})"
+            )
+        
+        # Compute scores
+        
+        # Performance score: use unified scoring function
+        result.performance_score = compute_performance_score(
+            result.mean_win_rate,
+            result.mean_profit_factor,
+            result.mean_r_multiple,
+        )
+        
+        # Safety score: based on DD and liquidations
+        dd_penalty = result.dd_breach_rate * 2  # Each 1% breach costs 2%
+        liq_penalty = result.liquidation_rate * 5  # Liquidations are severe
+        result.safety_score = _clamp(1.0 - dd_penalty - liq_penalty, 0.0, 1.0)
+        
+        # Behavior score: check for catastrophic patterns
+        train_trade_count = training_stats.get("mean_trade_count")
+        
+        behavior_ok = True
+        # Only check trade ratio if training trade count is available and meaningful
+        if train_trade_count is not None and _sf(train_trade_count, 0.0) > 1.0:
+            trade_ratio = result.mean_trade_count / _sf(train_trade_count, 1.0)
+            
+            if trade_ratio > self.config.max_trade_count_ratio:
+                result.failure_reasons.append(
+                    f"Overtrading in validation ({trade_ratio:.1f}x training)"
+                )
+                behavior_ok = False
+            if trade_ratio < self.config.min_trade_count_ratio:
+                result.failure_reasons.append(
+                    f"Under-trading in validation ({trade_ratio:.1f}x training)"
+                )
+                behavior_ok = False
+        else:
+            # Training trade count unavailable - log warning but don't fail
+            logger.debug(f"Skipping trade ratio check: training trade count unavailable")
+        
+        result.behavior_score = 1.0 if behavior_ok else 0.5
+        
+        # Check safety thresholds
+        if result.dd_breach_rate > self.config.max_dd_breach_rate:
+            result.failure_reasons.append(
+                f"DD breach rate too high ({result.dd_breach_rate:.1%} > {self.config.max_dd_breach_rate:.1%})"
+            )
+        
+        if result.liquidation_rate > self.config.max_liquidation_rate:
+            result.failure_reasons.append(
+                f"Liquidation rate too high ({result.liquidation_rate:.1%} > {self.config.max_liquidation_rate:.1%})"
+            )
+        
+        # Final pass determination
+        result.passed = len(result.failure_reasons) == 0
+        
+        return result
+    
+    def evaluate_all(
+        self,
+        validation_results: Dict[str, List[Dict[str, Any]]],  # scenario_name -> episodes
+        training_stats: Dict[str, Any],
+        stage_name: str = "",
+        stage_epoch: int = 0,
+        stage_index: int = 0,
+    ) -> ValidationGateResult:
+        """
+        Evaluate all validation scenarios and compute gate result.
+        
+        Args:
+            validation_results: Dict mapping scenario name to list of episode results
+            training_stats: Training statistics for comparison
+            stage_name: Current curriculum stage
+            stage_epoch: Current stage epoch
+            stage_index: Stage index for threshold adjustment
+            
+        Returns:
+            ValidationGateResult with aggregate determination
+        """
+        result = ValidationGateResult(
+            stage_name=stage_name,
+            stage_epoch=stage_epoch,
+        )
+        
+        if not self.config.enabled:
+            result.gate_passed = True
+            result.gate_confidence = 0.5
+            result.blocking_reasons.append("Validation gating disabled")
+            self._last_result = result
+            return result
+        
+        # Apply stage-based threshold adjustment
+        if stage_index <= 2:  # Early stages (EXPLORER, EXPERIMENTER, TREND_STUDENT)
+            threshold_mult = self.config.early_stage_relaxation
+        elif stage_index >= 8:  # Late stages (PROFESSIONAL, LIVE_READY)
+            threshold_mult = self.config.late_stage_strictness
+        else:
+            threshold_mult = 1.0
+        
+        # Evaluate each scenario
+        scenario_weights = []
+        for scenario in self.scenarios:
+            scenario_name = scenario.name
+            episodes = validation_results.get(scenario_name, [])
+            
+            scenario_result = self.evaluate_scenario(scenario, episodes, training_stats)
+            result.scenario_results[scenario_name] = scenario_result
+            
+            if scenario_result.passed:
+                result.scenarios_passed += 1
+            
+            # Weight by difficulty for aggregation
+            scenario_weights.append((scenario_result, scenario.difficulty))
+        
+        result.scenarios_total = len(self.scenarios)
+        result.pass_rate = result.scenarios_passed / max(result.scenarios_total, 1)
+        
+        # Compute weighted aggregates
+        total_weight = sum(w for _, w in scenario_weights)
+        if total_weight > 0:
+            result.weighted_performance = sum(
+                r.performance_score * w for r, w in scenario_weights
+            ) / total_weight
+            result.weighted_safety = sum(
+                r.safety_score * w for r, w in scenario_weights
+            ) / total_weight
+            result.weighted_behavior = sum(
+                r.behavior_score * w for r, w in scenario_weights
+            ) / total_weight
+        
+        # Compute performance ratio (validation vs training)
+        # CRITICAL: Use the SAME scoring function for train and validation
+        train_perf = compute_performance_score(
+            _sf(training_stats.get("mean_win_rate"), 0.5),
+            _sf(training_stats.get("mean_profit_factor"), 1.0),
+            _sf(training_stats.get("mean_r_multiple"), 0.0),
+        )
+        
+        if train_perf > 0:
+            result.performance_ratio = result.weighted_performance / train_perf
+        else:
+            result.performance_ratio = 1.0
+        
+        # Gate determination
+        adjusted_min_pass_rate = self.config.min_pass_rate * threshold_mult
+        adjusted_min_perf_ratio = self.config.min_performance_ratio * threshold_mult
+        
+        blocking = []
+        
+        if result.scenarios_passed < self.config.min_scenarios_passed:
+            blocking.append(
+                f"Too few scenarios passed ({result.scenarios_passed}/{self.config.min_scenarios_passed})"
+            )
+        
+        if result.pass_rate < adjusted_min_pass_rate:
+            blocking.append(
+                f"Pass rate too low ({result.pass_rate:.0%} < {adjusted_min_pass_rate:.0%})"
+            )
+        
+        # Check for empty scenarios - this is critical in prop mode
+        no_data_scenarios = [
+            name for name, sr in result.scenario_results.items()
+            if sr.episodes_run == 0
+        ]
+        if no_data_scenarios and stage_index >= 6:  # Prop stages require data
+            blocking.append(
+                f"Missing validation data for scenarios: {', '.join(no_data_scenarios)}"
+            )
+        
+        if result.performance_ratio < adjusted_min_perf_ratio:
+            blocking.append(
+                f"Performance degradation too large (ratio={result.performance_ratio:.2f} < {adjusted_min_perf_ratio:.2f})"
+            )
+        
+        # Apply threshold_mult to safety check for consistency
+        adjusted_min_safety = self.config.min_weighted_safety * threshold_mult
+        if result.weighted_safety < adjusted_min_safety:
+            blocking.append(
+                f"Safety score too low ({result.weighted_safety:.2f} < {adjusted_min_safety:.2f})"
+            )
+        
+        result.blocking_reasons = blocking
+        result.gate_passed = len(blocking) == 0
+        
+        # Confidence based on sample size and consistency
+        total_episodes = sum(sr.episodes_run for sr in result.scenario_results.values())
+        sample_confidence = min(1.0, total_episodes / 100)
+        # Clamp consistency_confidence to [0, 1] - std can exceed 1.0 in rare cases
+        consistency_confidence = _clamp(
+            1.0 - float(np.std([
+                sr.performance_score for sr in result.scenario_results.values()
+            ])) if result.scenario_results else 0.5,
+            0.0,
+            1.0,
+        )
+        
+        result.gate_confidence = (sample_confidence + consistency_confidence) / 2
+        
+        self._last_result = result
+        return result
+    
+    def get_recommendations(self) -> List[str]:
+        """Get recommendations based on last validation result."""
+        if not self._last_result:
+            return ["Run validation first"]
+        
+        recs = []
+        result = self._last_result
+        
+        # Analyze failure patterns
+        perf_failures = []
+        safety_failures = []
+        behavior_failures = []
+        
+        for name, sr in result.scenario_results.items():
+            if not sr.passed:
+                for reason in sr.failure_reasons:
+                    if "DD" in reason or "liquidation" in reason.lower():
+                        safety_failures.append((name, reason))
+                    elif "trading" in reason.lower():
+                        behavior_failures.append((name, reason))
+                    else:
+                        perf_failures.append((name, reason))
+        
+        if safety_failures:
+            recs.append(
+                f"Improve risk management: {len(safety_failures)} scenarios had safety issues"
+            )
+        
+        if behavior_failures:
+            recs.append(
+                f"Address behavioral drift: {len(behavior_failures)} scenarios had trading pattern issues"
+            )
+        
+        if result.performance_ratio < 0.8:
+            recs.append(
+                f"Reduce overfitting: validation performance is {result.performance_ratio:.0%} of training"
+            )
+        
+        # Scenario-specific recommendations
+        stress = result.scenario_results.get("stress_test")
+        if stress and not stress.passed:
+            recs.append("Focus on robustness: failing stress test scenario")
+        
+        wide_spread = result.scenario_results.get("wide_spreads")
+        if wide_spread and not wide_spread.passed:
+            recs.append("Improve cost efficiency: underperforming with wider spreads")
+        
+        return recs
+
+
+# =============================================================================
+# Stress Test Framework
+# =============================================================================
+
+@dataclass
+class StressTestConfig:
+    """Configuration for adversarial stress testing."""
+    enabled: bool = True
+    
+    # Spread stress
+    spread_multipliers: List[float] = field(default_factory=lambda: [1.0, 1.5, 2.0, 3.0])
+    
+    # Slippage stress
+    slippage_multipliers: List[float] = field(default_factory=lambda: [1.0, 1.5, 2.0, 3.0])
+    
+    # Latency simulation (bars of delay)
+    latency_delays: List[int] = field(default_factory=lambda: [0, 1, 2])
+    
+    # Gap injection (skip random bars)
+    gap_probabilities: List[float] = field(default_factory=lambda: [0.0, 0.01, 0.05])
+    
+    # Session shift (hours)
+    session_shifts: List[int] = field(default_factory=lambda: [0, -2, 2])
+    
+    # Minimum episodes per stress level
+    min_episodes_per_level: int = 5
+    
+    # Pass criteria
+    max_performance_degradation: float = 0.5  # Can lose up to 50% perf
+    must_remain_profitable: bool = False      # Optional: require positive PnL
+
+
+@dataclass
+class StressTestResult:
+    """Result from stress testing."""
+    stress_type: str
+    stress_level: float
+    
+    episodes_run: int = 0
+    mean_win_rate: float = 0.0
+    mean_pnl: float = 0.0
+    performance_vs_baseline: float = 1.0
+    
+    passed: bool = True
+    degradation_graceful: bool = True
+    failure_reason: str = ""
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+class StressTestRunner:
+    """
+    Run adversarial stress tests on the policy.
+    
+    Tests:
+    - Widen spreads progressively
+    - Increase slippage
+    - Add execution latency
+    - Inject missing ticks/gaps
+    - Shift session boundaries
+    
+    Tracks how performance degrades - should be GRACEFUL, not catastrophic.
+    """
+    
+    def __init__(self, config: Optional[StressTestConfig] = None):
+        self.config = config or StressTestConfig()
+        self._results: List[StressTestResult] = []
+    
+    def get_stress_scenarios(self) -> List[Dict[str, Any]]:
+        """Generate all stress test scenarios."""
+        scenarios = []
+        
+        # Spread stress
+        for mult in self.config.spread_multipliers:
+            scenarios.append({
+                "name": f"spread_{mult}x",
+                "type": "spread",
+                "level": mult,
+                "spread_multiplier": mult,
+            })
+        
+        # Slippage stress
+        for mult in self.config.slippage_multipliers:
+            scenarios.append({
+                "name": f"slippage_{mult}x",
+                "type": "slippage",
+                "level": mult,
+                "slippage_multiplier": mult,
+            })
+        
+        # Latency stress
+        for delay in self.config.latency_delays:
+            if delay > 0:
+                scenarios.append({
+                    "name": f"latency_{delay}bars",
+                    "type": "latency",
+                    "level": delay,
+                    "latency_bars": delay,
+                })
+        
+        # Gap injection
+        for prob in self.config.gap_probabilities:
+            if prob > 0:
+                scenarios.append({
+                    "name": f"gaps_{prob*100:.0f}pct",
+                    "type": "gaps",
+                    "level": prob,
+                    "gap_probability": prob,
+                })
+        
+        return scenarios
+    
+    def evaluate_stress_result(
+        self,
+        scenario: Dict[str, Any],
+        episodes: List[Dict[str, Any]],
+        baseline_stats: Dict[str, Any],
+    ) -> StressTestResult:
+        """
+        Evaluate results from a stress scenario.
+        
+        Key metric: Is degradation GRACEFUL or CATASTROPHIC?
+        """
+        result = StressTestResult(
+            stress_type=scenario["type"],
+            stress_level=scenario["level"],
+            episodes_run=len(episodes),
+        )
+        
+        if not episodes:
+            result.passed = False
+            result.failure_reason = "No episodes"
+            return result
+        
+        # Compute metrics
+        win_rates = [_sf(ep.get("win_rate"), 0.0) for ep in episodes]
+        pnls = [_sf(ep.get("total_pnl"), 0.0) for ep in episodes]
+        
+        result.mean_win_rate = float(np.mean(win_rates))
+        result.mean_pnl = float(np.mean(pnls))
+        
+        # Compare to baseline
+        baseline_wr = _sf(baseline_stats.get("mean_win_rate"), 0.5)
+        if baseline_wr > 0:
+            result.performance_vs_baseline = result.mean_win_rate / baseline_wr
+        else:
+            result.performance_vs_baseline = 1.0
+        
+        # Check degradation
+        max_allowed_degradation = self.config.max_performance_degradation
+        
+        # Scale allowed degradation by stress level
+        # Higher stress = more degradation allowed
+        stress_level = scenario["level"]
+        if scenario["type"] in ["spread", "slippage"]:
+            # Multiplicative stress: allow (level-1)*20% extra degradation
+            adjusted_max = max_allowed_degradation * (1 + (stress_level - 1) * 0.2)
+        else:
+            adjusted_max = max_allowed_degradation
+        
+        if result.performance_vs_baseline < (1 - adjusted_max):
+            result.degradation_graceful = False
+            result.failure_reason = (
+                f"Catastrophic degradation: {result.performance_vs_baseline:.0%} of baseline "
+                f"(min allowed: {(1-adjusted_max):.0%})"
+            )
+            result.passed = False
+        
+        # Optional: must remain profitable
+        if self.config.must_remain_profitable and result.mean_pnl < 0:
+            result.passed = False
+            result.failure_reason = f"Unprofitable under stress: PnL={result.mean_pnl:.4f}"
+        
+        return result
+    
+    def get_robustness_score(self, results: List[StressTestResult]) -> float:
+        """
+        Compute overall robustness score from stress test results.
+        
+        Score is based on:
+        - How many stress levels passed
+        - How gracefully performance degraded
+        """
+        if not results:
+            return 0.5
+        
+        passed_count = sum(1 for r in results if r.passed)
+        pass_rate = passed_count / len(results)
+        
+        # Average performance retention
+        perf_retention = float(np.mean([r.performance_vs_baseline for r in results]))
+        
+        # Graceful degradation bonus
+        graceful_count = sum(1 for r in results if r.degradation_graceful)
+        graceful_rate = graceful_count / len(results)
+        
+        # Weighted score
+        score = pass_rate * 0.4 + perf_retention * 0.4 + graceful_rate * 0.2
+        
+        return _clamp(score, 0.0, 1.0)
+    
+    def get_summary(self, results: List[StressTestResult]) -> Dict[str, Any]:
+        """Get summary of stress test results."""
+        return {
+            "total_scenarios": len(results),
+            "passed": sum(1 for r in results if r.passed),
+            "graceful_degradation": sum(1 for r in results if r.degradation_graceful),
+            "robustness_score": self.get_robustness_score(results),
+            "by_type": {
+                t: {
+                    "passed": sum(1 for r in results if r.stress_type == t and r.passed),
+                    "total": sum(1 for r in results if r.stress_type == t),
+                    "avg_retention": float(np.mean([
+                        r.performance_vs_baseline 
+                        for r in results if r.stress_type == t
+                    ])) if any(r.stress_type == t for r in results) else 0.0,
+                }
+                for t in set(r.stress_type for r in results)
+            },
+            "results": [r.to_dict() for r in results],
+        }

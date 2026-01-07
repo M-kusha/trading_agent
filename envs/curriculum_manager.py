@@ -74,10 +74,32 @@ from envs.shared_utils import (
     iso_timestamp,
 )
 
+# Phase 1-4 hardening modules
+from envs.curriculum_invariants import (
+    CurriculumInvariantChecker,
+    reconcile_trade_accounting,
+    AntiGamingChecker,
+    InvariantViolation,
+)
+from envs.validation_gates import (
+    ValidationGateChecker,
+    ValidationGateConfig,
+    StressTestRunner,
+    StressTestConfig,
+)
+from envs.regime_skill_assessment import (
+    RegimeSkillAssessment,
+    TradeWithRegime,
+)
+
 logger = get_envs_logger("curriculum_manager")
 
-STATE_VERSION = "2.0"
+STATE_VERSION = "2.1"  # Bumped for Phase 1-4 additions
 DEFAULT_TZ = "Europe/Berlin"
+
+# Limits for persistence
+DEMOTION_HISTORY_LIMIT = 200
+MIN_TRADES_FOR_WILSON_GATE_DEFAULT = 30
 
 
 # =============================================================================
@@ -87,7 +109,8 @@ DEFAULT_TZ = "Europe/Berlin"
 def _now_iso(tz: str = DEFAULT_TZ) -> str:
     try:
         return datetime.now(tz=ZoneInfo(tz)).isoformat()
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Timezone fallback for {tz}: {e}")
         return iso_timestamp()
 
 
@@ -148,6 +171,15 @@ def _index_to_stage(idx: int) -> CurriculumStage:
     return prog[idx]
 
 
+def _foundation_stage() -> CurriculumStage:
+    """Get the foundation stage (first stage in progression).
+    
+    This avoids hard-coding CurriculumStage.EXPLORER, making the manager
+    resilient to any stage naming scheme in curriculum_config.py.
+    """
+    return _get_progression()[0]
+
+
 def _linear_regression_slope(y: np.ndarray) -> float:
     """Compute slope of linear regression for trend detection."""
     if len(y) < 2:
@@ -156,7 +188,8 @@ def _linear_regression_slope(y: np.ndarray) -> float:
     try:
         coeffs = np.polyfit(x, y, 1)
         return float(coeffs[0])
-    except Exception:
+    except Exception as e:
+        logger.debug(f"Linear regression failed: {e}")
         return 0.0
 
 
@@ -265,6 +298,7 @@ class RollingStats:
     # Entropy stats
     mean_entropy: float = -1.0
     std_entropy: float = 0.0
+    entropy_samples: int = 0  # Number of valid entropy samples (for gating)
 
     # Exit quality stats
     trailing_stop_rate: float = 0.0
@@ -303,9 +337,17 @@ class LearningVelocity:
         "hard_stop_exits", "risk_liquidation_exits",
     }
     
+    def has_sufficient_samples(self) -> bool:
+        """True if at least one metric has enough samples to compute an improvement rate."""
+        for hist in self.metric_history.values():
+            if len(hist) >= self.min_samples:
+                return True
+        return False
+    
     def update(self, metrics: Dict[str, float]) -> None:
         """Update velocity tracking with new metrics."""
         any_improving = False
+        has_rate_estimates = False  # Track if ANY metric has enough samples
         
         for name, value in metrics.items():
             if name not in self.metric_history:
@@ -315,6 +357,7 @@ class LearningVelocity:
             
             # Compute improvement rate via linear regression
             if len(self.metric_history[name]) >= self.min_samples:
+                has_rate_estimates = True  # We can compute at least one slope
                 y = np.array(list(self.metric_history[name]), dtype=np.float64)
                 slope = _linear_regression_slope(y)
                 
@@ -336,8 +379,12 @@ class LearningVelocity:
                 if normalized_slope > self.plateau_threshold:
                     any_improving = True
         
-        # Update plateau counter
-        if any_improving:
+        # Update plateau counter ONLY if we have enough data to measure improvement
+        # Don't count early episodes as "plateaued" when we can't compute slopes yet
+        if not has_rate_estimates:
+            # Not enough data yet - don't increment plateau (stay at 0 or current)
+            pass
+        elif any_improving:
             self.plateau_episodes = 0
         else:
             self.plateau_episodes += 1
@@ -358,6 +405,7 @@ class LearningVelocity:
             "plateau_episodes": self.plateau_episodes,
             "plateau_threshold": self.plateau_threshold,
             "average_improvement": self.get_average_improvement(),
+            "has_sufficient_samples": self.has_sufficient_samples(),
             # Note: is_plateaued should be checked with stage-specific threshold externally
             "is_plateaued_default": self.is_plateaued(),
         }
@@ -439,26 +487,34 @@ class SkillAssessment:
             avg_episode_bars = 2000.0  # Default fallback
         
         # Convert to trading days (at least 10 days minimum for stability)
-        est_trading_days_per_episode = max(10.0, avg_episode_bars / bars_per_trading_day)
+        # Use actual episode length (min 1 day) - don't inflate short episodes
+        # Previously hardcoded to max(10.0, ...) which masked overtrading in short episodes
+        est_trading_days_per_episode = max(1.0, avg_episode_bars / bars_per_trading_day)
         
         # Convert to trades per day
         trades_per_day = avg_trades_per_episode / est_trading_days_per_episode
         
-        # Target: 0.3-0.5 trades/day for selective, high-conviction entries
-        # (roughly 1 trade every 2-3 days)
-        if trades_per_day <= 0.3:
-            patience_score = 1.0      # Excellent discipline (1 trade/3 days)
-        elif trades_per_day <= 0.5:
-            patience_score = 0.85     # Good discipline (1 trade/2 days)
-        elif trades_per_day <= 0.75:
-            patience_score = 0.65     # Acceptable (~1 trade every 1.3 days)
+        # RECALIBRATED: More realistic for intraday gold trading
+        # Target: 1-2 trades/day is acceptable for quality setups
+        # Previous: 0.3-0.5 trades/day was too strict (unrealistic)
+        # 
+        # M15 on gold can legitimately have 2-3 quality setups per day
+        # during London/NY overlap. The key is quality over quantity.
+        if trades_per_day <= 0.5:
+            patience_score = 1.0      # Exceptional discipline (1 trade/2 days)
         elif trades_per_day <= 1.0:
-            patience_score = 0.45     # Needs improvement (daily trading)
+            patience_score = 0.90     # Excellent (daily trading)
         elif trades_per_day <= 1.5:
-            patience_score = 0.25     # Poor discipline (1.5 trades/day)
+            patience_score = 0.75     # Good (~1.5 trades/day)
+        elif trades_per_day <= 2.0:
+            patience_score = 0.60     # Acceptable (2 trades/day)
+        elif trades_per_day <= 3.0:
+            patience_score = 0.40     # Needs improvement
+        elif trades_per_day <= 4.0:
+            patience_score = 0.20     # Poor discipline
         else:
-            # Severe penalty for overtrading - drops fast to 0
-            patience_score = max(0.0, 0.25 - (trades_per_day - 1.5) / 3.0)
+            # Severe penalty for extreme overtrading (>4/day = churning)
+            patience_score = max(0.0, 0.20 - (trades_per_day - 4.0) / 5.0)
         scores[TradingSkill.PATIENCE] = patience_score
         confidence[TradingSkill.PATIENCE] = base_conf
         
@@ -618,6 +674,28 @@ class DemotionRecord:
             "stats_snapshot": self.stats_snapshot,
             "global_episode": self.global_episode,
         }
+    
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "DemotionRecord":
+        """Restore record from dict safely (backward/forward compatible)."""
+        from_stage = _foundation_stage()
+        to_stage = _foundation_stage()
+        try:
+            if d.get("from_stage"):
+                from_stage = CurriculumStage[d["from_stage"]]
+            if d.get("to_stage"):
+                to_stage = CurriculumStage[d["to_stage"]]
+        except Exception as e:
+            logger.debug(f"Could not parse stage names from demotion record: {e}")
+        return cls(
+            from_stage=from_stage,
+            to_stage=to_stage,
+            timestamp=str(d.get("timestamp", "")),
+            failure_reasons=list(d.get("failure_reasons", []) or []),
+            skill_assessment=d.get("skill_assessment", None),
+            stats_snapshot=d.get("stats_snapshot", None),
+            global_episode=_safe_int(d.get("global_episode", 0), 0),
+        )
 
 
 @dataclass
@@ -659,7 +737,7 @@ class RecoveryProtocolState:
             try:
                 focus_skill = TradingSkill(data["focus_skill"])
             except (ValueError, KeyError):
-                pass
+                logger.debug(f"Unknown focus_skill in recovery state: {data.get('focus_skill')}")
         
         return cls(
             triggered=data.get("triggered", False),
@@ -679,6 +757,7 @@ class ReviewSessionState:
     review_stage: Optional[CurriculumStage] = None
     review_episodes_remaining: int = 0
     home_stage: Optional[CurriculumStage] = None
+    return_to_home_latch: bool = False  # One-episode latch after review ends
     
     def is_active(self) -> bool:
         return self.in_review and self.review_episodes_remaining > 0
@@ -690,6 +769,7 @@ class ReviewSessionState:
             "review_stage": self.review_stage.name if self.review_stage else None,
             "review_episodes_remaining": self.review_episodes_remaining,
             "home_stage": self.home_stage.name if self.home_stage else None,
+            "return_to_home_latch": self.return_to_home_latch,
             "is_active": self.is_active(),
         }
     
@@ -701,14 +781,14 @@ class ReviewSessionState:
             try:
                 review_stage = CurriculumStage[data["review_stage"]]
             except KeyError:
-                pass
+                logger.debug(f"Unknown review_stage: {data.get('review_stage')}")
         
         home_stage = None
         if data.get("home_stage"):
             try:
                 home_stage = CurriculumStage[data["home_stage"]]
             except KeyError:
-                pass
+                logger.debug(f"Unknown home_stage: {data.get('home_stage')}")
         
         return cls(
             episodes_since_review=data.get("episodes_since_review", 0),
@@ -716,6 +796,7 @@ class ReviewSessionState:
             review_stage=review_stage,
             review_episodes_remaining=data.get("review_episodes_remaining", 0),
             home_stage=home_stage,
+            return_to_home_latch=bool(data.get("return_to_home_latch", False)),
         )
 
 
@@ -889,7 +970,7 @@ class DemotionAnalyzer:
             try:
                 focus_skill = TradingSkill(rec["focus_skill"])
             except ValueError:
-                pass
+                logger.debug(f"Unknown focus_skill in recommendation: {rec.get('focus_skill')}")
         
         # Override with config if specified
         if config.focus_skill:
@@ -913,6 +994,8 @@ class DemotionAnalyzer:
             "demotion_count": len(self.demotion_history),
             "stage_failure_counts": {s.name: c for s, c in self.stage_failure_counts.items()},
             "recent_demotions": [d.to_dict() for d in self.demotion_history[-5:]],
+            # Full history (bounded) for proper restoration
+            "demotion_history": [d.to_dict() for d in self.demotion_history[-DEMOTION_HISTORY_LIMIT:]],
         }
     
     def load_from_dict(self, data: Dict[str, Any]) -> None:
@@ -923,7 +1006,16 @@ class DemotionAnalyzer:
                 stage = CurriculumStage[stage_name]
                 self.stage_failure_counts[stage] = count
             except KeyError:
-                pass
+                logger.debug(f"Unknown stage name in failure counts: {stage_name}")
+        
+        # Restore demotion history - prefer full history, fall back to recent_demotions
+        self.demotion_history = []
+        history_data = data.get("demotion_history") or data.get("recent_demotions") or []
+        for d in history_data[-DEMOTION_HISTORY_LIMIT:]:
+            try:
+                self.demotion_history.append(DemotionRecord.from_dict(d))
+            except Exception as e:
+                logger.debug(f"Skipping malformed demotion record: {e}")
 
 
 # =============================================================================
@@ -1100,7 +1192,9 @@ def compute_adjusted_thresholds(
     
     if "min_avg_pnl" in config.relaxable_metrics:
         if base.min_avg_pnl < 0:
-            adjusted.min_avg_pnl = base.min_avg_pnl * (1 + relax_factor)  # Make less negative
+            # FIX: To make a negative number "less negative", multiply by (1 - factor)
+            # e.g., -100 * (1 - 0.2) = -80 (closer to 0, easier threshold)
+            adjusted.min_avg_pnl = base.min_avg_pnl * (1 - relax_factor)
         else:
             adjusted.min_avg_pnl = base.min_avg_pnl * (1 - relax_factor * 0.3)
     
@@ -1117,6 +1211,15 @@ def compute_adjusted_thresholds(
     for metric in config.never_relax:
         if hasattr(base, metric) and hasattr(adjusted, metric):
             setattr(adjusted, metric, getattr(base, metric))
+    
+    # CLAMP all thresholds to valid domains to prevent pathological configs
+    adjusted.min_win_rate = _clamp(adjusted.min_win_rate, 0.0, 1.0)
+    adjusted.min_profit_factor = max(0.0, adjusted.min_profit_factor)
+    adjusted.min_trade_count_avg = max(0.0, adjusted.min_trade_count_avg)
+    adjusted.max_win_rate_std = max(0.0, adjusted.max_win_rate_std)
+    adjusted.max_pnl_std = max(0.0, adjusted.max_pnl_std)
+    adjusted.max_avg_drawdown = _clamp(adjusted.max_avg_drawdown, 0.0, 1.0)
+    adjusted.max_dd_breach_rate = _clamp(adjusted.max_dd_breach_rate, 0.0, 1.0)
     
     return adjusted
 
@@ -1142,7 +1245,7 @@ class CurriculumManager:
     
     def __init__(
         self,
-        initial_stage: CurriculumStage = CurriculumStage.FOUNDATION,
+        initial_stage: Optional[CurriculumStage] = None,
         max_history_size: int = 1000,
         auto_promote: bool = True,
         auto_demote: bool = True,
@@ -1153,6 +1256,9 @@ class CurriculumManager:
         validation_evaluator: Optional[Callable[[CurriculumStageConfig], Dict[str, Any]]] = None,
         bars_per_trading_day: int = 96,  # M15 default; override for other timeframes
     ) -> None:
+        # Use foundation stage if not specified (avoids hard-coding EXPLORER)
+        if initial_stage is None:
+            initial_stage = _foundation_stage()
         self.current_stage = initial_stage
         self.max_history_size = max_history_size
         self.auto_promote = auto_promote
@@ -1209,6 +1315,29 @@ class CurriculumManager:
         self._recovery_state = RecoveryProtocolState()
         self._review_state = ReviewSessionState()
         self._composite_score: Optional[CompositeScore] = None
+        
+        # Phase 1-4 hardening components (v2.1)
+        self._invariant_checker = CurriculumInvariantChecker(verbose=verbose)
+        self._anti_gaming_checker = AntiGamingChecker()
+        self._validation_gate = ValidationGateChecker()
+        self._stress_tester = StressTestRunner()
+        self._regime_assessment: Optional[RegimeSkillAssessment] = None
+        
+        # Episode-end call tracking (Phase 1.2: ensure single call per episode)
+        self._last_episode_end_idx: int = -1
+        
+        # True idempotency tracking: track processed episode IDs (bounded to avoid memory leak)
+        self._processed_episode_ids: Deque[int] = deque(maxlen=5000)
+        self._processed_episode_id_set: Set[int] = set()
+        
+        # Review tick latch: prevents double-ticking review counters within same episode
+        self._review_tick_episode: int = -1
+        
+        # Effective stage caching (Phase 1.3: prevent non-determinism)
+        # Caches the effective stage per "next episode index" so multiple calls
+        # within the same episode setup return consistent results
+        self._cached_effective_stage: Optional[CurriculumStage] = None
+        self._cached_effective_stage_episode: int = -1
         
         # Current entropy (updated externally if available)
         self._current_entropy: float = -1.0
@@ -1395,6 +1524,18 @@ class CurriculumManager:
                 if self.verbose:
                     logger.info(f"LR warmup complete for stage {self.current_stage.name}")
     
+    def _seen_episode_id(self, eid: int) -> bool:
+        """Check if an episode ID has already been processed."""
+        return eid in self._processed_episode_id_set
+    
+    def _mark_episode_id(self, eid: int) -> None:
+        """Mark an episode ID as processed (bounded to prevent memory leak)."""
+        self._processed_episode_ids.append(eid)
+        self._processed_episode_id_set.add(eid)
+        # Maintain set consistency when deque overflows
+        if len(self._processed_episode_id_set) > len(self._processed_episode_ids):
+            self._processed_episode_id_set = set(self._processed_episode_ids)
+    
     def episode_transition_tick(self) -> None:
         """Update per-episode transition counters."""
         if self._transition_cooldown_remaining > 0:
@@ -1412,6 +1553,105 @@ class CurriculumManager:
                 logger.info(f"Recovery protocol complete for stage {self.current_stage.name}")
     
     # -------------------------------------------------------------------------
+    # Deterministic Episode End (Phase 1.2)
+    # -------------------------------------------------------------------------
+    
+    def on_episode_end(
+        self,
+        metrics: EpisodeMetrics,
+        timesteps: int = 0,
+        effective_stage: Optional[CurriculumStage] = None,
+        check_transitions: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Single entry point for episode completion. Ensures deterministic handling.
+        
+        This method:
+        1. Records the episode (with invariant checking)
+        2. Advances all counters exactly once
+        3. Checks for transitions if enabled
+        4. Returns the resulting state
+        
+        MUST be called exactly once per episode to maintain counter integrity.
+        Calling multiple times for the same episode is a no-op (idempotent).
+        
+        Args:
+            metrics: Episode metrics
+            timesteps: Timesteps in episode
+            effective_stage: Stage actually trained on (for mixed-stage)
+            check_transitions: Whether to check for promotion/demotion
+            
+        Returns:
+            Dict with episode results and any transition information
+        """
+        result: Dict[str, Any] = {
+            "episode_idx": self.total_episodes + 1,
+            "stage": self.current_stage.name,
+            "stage_epoch": self._current_stage_epoch,
+            "promoted": False,
+            "demoted": False,
+            "transition_to": None,
+            "invariant_violations": [],
+        }
+        
+        # True idempotency check using episode ID (not just sequential counter)
+        # Use global_episode_idx from metrics if available, otherwise fall back to sequential
+        episode_id = int(metrics.global_episode_idx) if metrics.global_episode_idx > 0 else (self.total_episodes + 1)
+        
+        if self._seen_episode_id(episode_id):
+            logger.debug(f"on_episode_end: duplicate episode_id={episode_id}, skipping")
+            result["skipped"] = True
+            result["skip_reason"] = f"duplicate_episode_id:{episode_id}"
+            return result
+        
+        # Fallback idempotency check (sequential counter)
+        next_idx = self.total_episodes + 1
+        if next_idx <= self._last_episode_end_idx:
+            logger.warning(
+                f"on_episode_end called for episode {next_idx} but already processed "
+                f"up to {self._last_episode_end_idx}. Skipping to maintain counter integrity."
+            )
+            result["skipped"] = True
+            return result
+        
+        # Run invariant checker on incoming metrics
+        violations = self._invariant_checker.check_episode(
+            metrics=asdict(metrics),
+            stage_name=self.current_stage.name,
+            stage_epoch=self._current_stage_epoch,
+            episode_idx=next_idx,
+        )
+        result["invariant_violations"] = [str(v) for v in violations]
+        
+        # Record episode (this handles counters and history)
+        self.record_episode(metrics, timesteps=timesteps, effective_stage=effective_stage)
+        
+        # Mark as processed (both systems)
+        self._last_episode_end_idx = self.total_episodes
+        self._mark_episode_id(episode_id)
+        
+        # Check transitions if enabled and not in cooldown
+        if check_transitions and self._transition_cooldown_remaining <= 0:
+            # Check promotion first
+            if self.auto_promote:
+                promoted, new_stage = self.try_promote()
+                result["promoted"] = promoted
+                if promoted:
+                    result["transition_to"] = new_stage.name if new_stage else None
+            
+            # Check demotion if not promoted
+            if not result["promoted"] and self.auto_demote:
+                demoted, new_stage = self.try_demote()
+                result["demoted"] = demoted
+                if demoted:
+                    result["transition_to"] = new_stage.name if new_stage else None
+        
+        result["stage_after"] = self.current_stage.name
+        result["cooldown_remaining"] = self._transition_cooldown_remaining
+        
+        return result
+    
+    # -------------------------------------------------------------------------
     # Entropy Management
     # -------------------------------------------------------------------------
     
@@ -1420,7 +1660,15 @@ class CurriculumManager:
         self._current_entropy = entropy
     
     def get_entropy_penalty(self) -> float:
-        """Get entropy penalty based on current entropy and targets."""
+        """Get entropy penalty based on current entropy and targets.
+        
+        NOTE: This is currently UNUSED. Entropy control is done via PPO's ent_coef
+        in train_prop_firm.py (_apply_entropy_schedule). This method exists as a
+        hook for reward-shaping based entropy control if needed in the future.
+        
+        If you enable this, DO NOT also use ent_coef control (double-control causes
+        instability). Apply as: shaped_reward = env_reward - get_entropy_penalty()
+        """
         if self._current_entropy < 0:
             return 0.0  # Entropy not available
         
@@ -1476,8 +1724,8 @@ class CurriculumManager:
             sampled_idx = int(self._rng.integers(min_idx, cur_idx))
             return _index_to_stage(sampled_idx)
         else:
-            # Foundation stage (using foundation_weight)
-            return CurriculumStage.FOUNDATION
+            # Foundation stage (using foundation_weight) - use _foundation_stage()
+            return _foundation_stage()
     
     # -------------------------------------------------------------------------
     # Review Sessions
@@ -1488,6 +1736,9 @@ class CurriculumManager:
         Check if a review session should be triggered.
         
         Returns the stage to review, or None if no review needed.
+        
+        NOTE: This method uses a per-episode latch to prevent double-ticking
+        of review counters if called multiple times within the same episode.
         """
         config = self.stage_config.review_session
         
@@ -1500,21 +1751,37 @@ class CurriculumManager:
         if cur_idx < min_review_idx:
             return None
         
+        # Prevent double-ticking within the same episode
+        next_ep = self.total_episodes + 1
+        already_ticked = (self._review_tick_episode == next_ep)
+        if not already_ticked:
+            self._review_tick_episode = next_ep
+        
+        # Check return-to-home latch (one episode after review ends)
+        if getattr(self._review_state, 'return_to_home_latch', False):
+            self._review_state.return_to_home_latch = False
+            # Return current_stage to ensure predictable post-review behavior
+            return self.current_stage
+        
         # Handle active review
         if self._review_state.in_review:
-            self._review_state.review_episodes_remaining -= 1
+            # Only decrement if we haven't already ticked this episode
+            if not already_ticked:
+                self._review_state.review_episodes_remaining -= 1
             if self._review_state.review_episodes_remaining <= 0:
-                # End review, return to home stage
+                # End review, set latch to return home for next episode
                 self._review_state.in_review = False
                 self._review_state.episodes_since_review = 0
+                self._review_state.return_to_home_latch = True  # Will return home next call
                 if self.verbose:
                     home_name = self._review_state.home_stage.name if self._review_state.home_stage else "current"
                     logger.info(f"Review session complete, returning to {home_name}")
-                return None
+                return self.current_stage  # Return home stage NOW, not None
             return self._review_state.review_stage
         
-        # Check if review should start
-        self._review_state.episodes_since_review += 1
+        # Check if review should start (only tick counter if not already ticked)
+        if not already_ticked:
+            self._review_state.episodes_since_review += 1
         
         if self._review_state.episodes_since_review >= config.review_frequency:
             # Start review using progression indices (not .value)
@@ -1541,14 +1808,44 @@ class CurriculumManager:
         Get the effective stage for the current episode.
         
         Considers review sessions and mixed-stage sampling.
-        """
-        # Check review session first
-        review_stage = self.check_review_session()
-        if review_stage is not None:
-            return review_stage
         
-        # Then mixed-stage sampling
-        return self.sample_training_stage()
+        IMPORTANT: Results are cached per episode to ensure determinism.
+        Multiple calls within the same episode setup will return the same stage.
+        Cache is cleared after episode is recorded.
+        """
+        # Check cache first - prevents non-determinism from multiple calls
+        next_ep = self.total_episodes + 1
+        if (self._cached_effective_stage_episode == next_ep 
+            and self._cached_effective_stage is not None):
+            return self._cached_effective_stage
+        
+        # Compute effective stage (exactly once per episode)
+        stage: CurriculumStage
+        
+        # One-episode latch: after review ends, return to home/current stage once
+        # This must be checked BEFORE check_review_session to avoid immediate mixed-stage sampling
+        if getattr(self._review_state, 'return_to_home_latch', False):
+            self._review_state.return_to_home_latch = False
+            stage = self._review_state.home_stage or self.current_stage
+        else:
+            # Check review session first
+            review_stage = self.check_review_session()
+            if review_stage is not None:
+                stage = review_stage
+            else:
+                # Then mixed-stage sampling
+                stage = self.sample_training_stage()
+        
+        # Cache result
+        self._cached_effective_stage = stage
+        self._cached_effective_stage_episode = next_ep
+        
+        return stage
+    
+    def _clear_effective_stage_cache(self) -> None:
+        """Clear the effective stage cache after episode is recorded."""
+        self._cached_effective_stage = None
+        self._cached_effective_stage_episode = -1
     
     # -------------------------------------------------------------------------
     # Episode Recording
@@ -1611,6 +1908,9 @@ class CurriculumManager:
         self.total_episodes += 1
         self._rolling_stats_dirty = True
         
+        # Clear effective stage cache now that episode is recorded
+        self._clear_effective_stage_cache()
+        
         # Update learning velocity (only for current stage episodes)
         if record_to_stage == self.current_stage:
             self._learning_velocity.update({
@@ -1649,7 +1949,18 @@ class CurriculumManager:
         winning_trades = _safe_int(ep_stats.get("winning_trades", info.get("winning_trades", 0)), 0)
         losing_trades = _safe_int(ep_stats.get("losing_trades", info.get("losing_trades", 0)), 0)
         
-        if (winning_trades == 0 and losing_trades == 0) and trade_count > 0:
+        # TRADE ACCOUNTING RECONCILIATION (Issue #4 fix)
+        # Ensure wins + losses <= trade_count and log if inconsistent
+        computed_sum = winning_trades + losing_trades
+        if computed_sum > trade_count and trade_count > 0:
+            # Warn and reconcile: use wins+losses as the source of truth
+            logger.warning(
+                f"Trade accounting mismatch: wins({winning_trades})+losses({losing_trades})={computed_sum} > "
+                f"trade_count({trade_count}). Using wins+losses as denominator."
+            )
+            trade_count = computed_sum
+        elif (winning_trades == 0 and losing_trades == 0) and trade_count > 0:
+            # Estimate from win_rate if we have trades but no win/loss breakdown
             approx_wins = int(round(win_rate * trade_count))
             winning_trades = max(0, min(trade_count, approx_wins))
             losing_trades = max(0, trade_count - winning_trades)
@@ -1795,11 +2106,11 @@ class CurriculumManager:
         consec_loss_breaches = np.array([bool(m.hit_max_consecutive_losses) for m in window], dtype=np.bool_)
         entropies = np.array([m.policy_entropy for m in window if m.policy_entropy >= 0], dtype=np.float64)
         
-        # Basic stats
+        # Basic stats (use ddof=1 for sample std - proper for CI calculation)
         mean_pnl = float(np.mean(pnls))
-        std_pnl = float(np.std(pnls))
+        std_pnl = float(np.std(pnls, ddof=1)) if len(pnls) > 1 else 0.0
         mean_win_rate = float(np.mean(win_rates))
-        std_win_rate = float(np.std(win_rates))
+        std_win_rate = float(np.std(win_rates, ddof=1)) if len(win_rates) > 1 else 0.0
         mean_trade_count = float(np.mean(trade_counts))
         
         total_trades = int(np.sum(trade_counts))
@@ -1837,14 +2148,16 @@ class CurriculumManager:
         
         # Wilson confidence intervals for trade-level win rate
         # Note: This uses pooled trades across episodes for statistical power.
-        # Comparing wilson_low against thresholds.min_win_rate is conservative:
-        # if you need X% episode-level win rate, requiring X% Wilson lower bound
-        # on pooled trades is stricter (small-sample episodes have wider intervals).
-        wl_n = max(total_wins + total_losses, 0)
+        # FIX: Use max(total_trades, total_wins + total_losses) to account for breakevens
+        # (total_trades may include breakevens not counted in wins+losses)
+        wl_n = max(total_trades, total_wins + total_losses, 0)
         win_low, win_high = _wilson_interval(total_wins, wl_n, z=1.96) if wl_n > 0 else (0.0, 0.0)
         
         # Mean PnL CI
         ci_low, ci_high = _mean_ci_normal(mean_pnl, std_pnl, n=len(window), z=1.96)
+        
+        # Entropy stats - track sample count for gating
+        entropy_samples = len(entropies)
         
         # Entropy stats
         mean_entropy = float(np.mean(entropies)) if len(entropies) > 0 else -1.0
@@ -1891,6 +2204,7 @@ class CurriculumManager:
             pnl_mean_ci_high=float(ci_high),
             mean_entropy=mean_entropy,
             std_entropy=std_entropy,
+            entropy_samples=entropy_samples,
             trailing_stop_rate=trailing_stop_rate,
             agent_close_rate=agent_close_rate,
             hard_stop_rate=hard_stop_rate,
@@ -2006,12 +2320,27 @@ class CurriculumManager:
             "passed": passed_mean,
         }
         
-        passed_wilson = stats.win_rate_wilson_low >= thresholds.min_win_rate
+        # Wilson bound gate: use separate threshold if provided; otherwise default slightly lower
+        wilson_required = getattr(thresholds, "min_win_rate_wilson_low", None)
+        if wilson_required is None:
+            wilson_required = max(0.0, float(thresholds.min_win_rate) - 0.05)
+        
+        # If we don't have enough pooled trades, skip Wilson gating to avoid false negatives
+        min_trades_for_wilson = getattr(thresholds, "min_trades_for_wilson_gate", MIN_TRADES_FOR_WILSON_GATE_DEFAULT)
+        pooled_trades_for_wilson = max(stats.total_wins + stats.total_losses, 0)
+        if pooled_trades_for_wilson < int(min_trades_for_wilson):
+            passed_wilson = True  # Skip - insufficient data for reliable Wilson bound
+            wilson_note = f"Skipped Wilson gate (pooled_trades={pooled_trades_for_wilson} < {int(min_trades_for_wilson)})"
+        else:
+            passed_wilson = stats.win_rate_wilson_low >= float(wilson_required)
+            wilson_note = "Trade-level 95% Wilson lower bound"
+        
         results["checks"]["win_rate_wilson_low"] = {
-            "required": thresholds.min_win_rate,
+            "required": float(wilson_required),
             "actual": stats.win_rate_wilson_low,
             "passed": passed_wilson,
-            "note": "Trade-level 95% Wilson lower bound",
+            "note": wilson_note,
+            "pooled_trades": pooled_trades_for_wilson,
         }
         all_passed = all_passed and passed_mean and passed_wilson
         
@@ -2059,14 +2388,24 @@ class CurriculumManager:
         
         # Entropy check - use EntropyTargets.min_entropy for single source of truth
         # (same threshold used for penalties and promotion gating)
+        # FIX: Only gate on entropy if we have sufficient samples (≥80% of window)
         entropy_targets = self.stage_config.entropy_targets
+        min_entropy_samples = int(stats.window_size * 0.8)  # Require 80% coverage
+        has_sufficient_entropy_samples = stats.entropy_samples >= min_entropy_samples
+        
         if entropy_targets.use_in_promotion and entropy_targets.min_entropy > 0 and stats.mean_entropy >= 0:
-            passed = stats.mean_entropy >= entropy_targets.min_entropy
+            if has_sufficient_entropy_samples:
+                passed = stats.mean_entropy >= entropy_targets.min_entropy
+            else:
+                # Insufficient samples - skip gating (pass by default)
+                passed = True
             results["checks"]["entropy"] = {
                 "required": entropy_targets.min_entropy,
                 "actual": stats.mean_entropy,
                 "passed": passed,
-                "note": "Using EntropyTargets.min_entropy (same as penalty threshold)",
+                "entropy_samples": stats.entropy_samples,
+                "min_samples_required": min_entropy_samples,
+                "note": "Skipped due to insufficient samples" if not has_sufficient_entropy_samples else "Using EntropyTargets.min_entropy",
             }
             all_passed = all_passed and passed
         
@@ -2079,17 +2418,65 @@ class CurriculumManager:
         
         # Composite score check - ADDITIONAL requirement, NOT an override
         # The composite score provides a holistic view but does NOT bypass traditional checks
+        # NOTE: self._composite_score is computed against BASE thresholds (in get_rolling_stats)
+        # If thresholds are relaxed, we re-compute against EFFECTIVE thresholds for the gate
         if self._composite_score and self.stage_config.composite_scoring.enabled:
-            results["composite_score"] = self._composite_score.to_dict()
-            # Composite must ALSO pass - it's an AND, not an OR
-            composite_passed = self._composite_score.promotion_ready
+            # If thresholds were relaxed, compute composite against effective thresholds
+            if thresholds != base_thresholds:
+                effective_composite = compute_composite_score(
+                    stats,
+                    thresholds,  # effective/adjusted thresholds
+                    self.stage_config.composite_scoring,
+                )
+                results["composite_score"] = effective_composite.to_dict()
+                results["composite_score_base"] = self._composite_score.to_dict()
+                composite_passed = effective_composite.promotion_ready
+                composite_actual = effective_composite.total_score
+                composite_meets_floors = effective_composite.meets_hard_floors
+            else:
+                # No relaxation - use cached composite
+                results["composite_score"] = self._composite_score.to_dict()
+                composite_passed = self._composite_score.promotion_ready
+                composite_actual = self._composite_score.total_score
+                composite_meets_floors = self._composite_score.meets_hard_floors
+            
             results["checks"]["composite_score"] = {
                 "required": self.stage_config.composite_scoring.promotion_threshold,
-                "actual": self._composite_score.total_score,
+                "actual": composite_actual,
                 "passed": composite_passed,
-                "meets_hard_floors": self._composite_score.meets_hard_floors,
+                "meets_hard_floors": composite_meets_floors,
             }
             all_passed = all_passed and composite_passed
+        
+        # Phase 2: Anti-gaming checks
+        # Run anti-gaming analysis to detect degenerate strategies
+        gaming_results = self._anti_gaming_checker.run_all_checks(asdict(stats))
+        aggregate_gaming, gaming_concerns = self._anti_gaming_checker.get_aggregate_gaming_score(gaming_results)
+        
+        results["anti_gaming"] = {
+            "aggregate_score": aggregate_gaming,
+            "concerns": gaming_concerns,
+            "checks": {name: r.gaming_score for name, r in gaming_results.items()},
+        }
+        
+        # Block promotion if significant gaming detected (score > 0.6)
+        if aggregate_gaming > 0.6:
+            results["checks"]["anti_gaming"] = {
+                "required": "< 0.6",
+                "actual": aggregate_gaming,
+                "passed": False,
+                "concerns": gaming_concerns,
+            }
+            all_passed = False
+        elif aggregate_gaming > 0.3:
+            # Warning level - don't block but flag
+            results["checks"]["anti_gaming"] = {
+                "required": "< 0.6",
+                "actual": aggregate_gaming,
+                "passed": True,
+                "warning": True,
+                "concerns": gaming_concerns,
+            }
         
         results["promotion_ready"] = all_passed
         results["stats"] = asdict(stats)
@@ -2102,7 +2489,8 @@ class CurriculumManager:
         if not config.allow_demotion:
             return False, {"reason": "demotion_disabled"}
         
-        if self.current_stage == CurriculumStage.FOUNDATION:
+        # Can't demote below foundation stage (Stage 0)
+        if _stage_to_index(self.current_stage) == 0:
             return False, {"reason": "at_foundation"}
         
         thresholds = self.stage_config.competence
@@ -2339,16 +2727,33 @@ class CurriculumManager:
         progression = get_stage_progression()
         stage_idx = progression.index(self.current_stage)
         
-        # Identify promotion blockers
+        # Identify promotion blockers with correct gap calculation
+        # For "min_*" metrics: gap = required - actual (need to increase)
+        # For "max_*" metrics: gap = actual - required (need to decrease)
         blockers = []
         for check_name, check_data in promotion_results.get("checks", {}).items():
             if isinstance(check_data, dict) and not check_data.get("passed", True):
-                gap = check_data.get("required", 0) - check_data.get("actual", 0)
+                required = check_data.get("required", 0)
+                actual = check_data.get("actual", 0)
+                
+                # Determine if this is a "max" metric (lower is better)
+                is_max_metric = any(kw in check_name.lower() for kw in [
+                    "max_", "std", "breach", "drawdown", "loss"
+                ])
+                
+                if is_max_metric:
+                    # For max metrics: violation = actual - required (positive = bad)
+                    gap = actual - required
+                else:
+                    # For min metrics: violation = required - actual (positive = shortfall)
+                    gap = required - actual
+                
                 blockers.append({
                     "metric": check_name,
                     "gap": gap,
-                    "required": check_data.get("required"),
-                    "actual": check_data.get("actual"),
+                    "required": required,
+                    "actual": actual,
+                    "is_max_metric": is_max_metric,
                 })
         blockers.sort(key=lambda x: abs(x.get("gap", 0)), reverse=True)
         
@@ -2390,6 +2795,9 @@ class CurriculumManager:
             "demotion_risk": meets_demotion,
             "demotion_checks": demotion_results.get("checks", {}),
             
+            # Anti-gaming (Phase 2)
+            "anti_gaming": promotion_results.get("anti_gaming", {}),
+            
             # Estimates
             "estimated_episodes_to_promotion": estimated_episodes,
             "recommendations": recommendations,
@@ -2402,6 +2810,9 @@ class CurriculumManager:
             "recovery_protocol": self._recovery_state.to_dict(),
             "review_session": self._review_state.to_dict(),
             "demotion_analysis": self._demotion_analyzer.to_dict(),
+            
+            # Phase 2.1 hardening
+            "invariant_summary": self._invariant_checker.get_summary(),
             
             # Transition state
             "is_in_transition": self.is_in_transition,
@@ -2578,7 +2989,26 @@ class CurriculumManager:
             "learning_velocity": {
                 "plateau_episodes": self._learning_velocity.plateau_episodes,
                 "improvement_rates": self._learning_velocity.improvement_rates,
+                "metric_history": {
+                    k: list(v)[-100:] for k, v in self._learning_velocity.metric_history.items()
+                } if hasattr(self._learning_velocity, 'metric_history') else {},
             },
+            # Transition counters (prevents behavior change on resume)
+            "transition_cooldown_remaining": self._transition_cooldown_remaining,
+            "reward_blend_remaining": self._reward_blend_remaining,
+            "lr_warmup_active": self._lr_warmup_active,
+            "lr_warmup_steps_remaining": self._lr_warmup_steps_remaining,
+            "lr_warmup_factor": self._lr_warmup_factor,
+            # Episode tracking
+            "last_episode_end_idx": self._last_episode_end_idx,
+            # True idempotency tracking (bounded list of processed episode IDs)
+            "processed_episode_ids": list(self._processed_episode_ids),
+            # Current entropy state
+            "current_entropy": self._current_entropy,
+            # Review tick latch
+            "review_tick_episode": self._review_tick_episode,
+            # RNG state for reproducible mixed-stage sampling
+            "rng_state": self._rng.bit_generator.state,
             "saved_at": _now_iso(self.tz),
         }
         
@@ -2614,20 +3044,20 @@ class CurriculumManager:
             try:
                 manager._stage_timesteps_total[CurriculumStage[stage_name]] = _safe_int(timesteps, 0)
             except KeyError:
-                pass
+                logger.debug(f"Unknown stage in timesteps_total: {stage_name}")
         
         for stage_name, episodes in (state.get("stage_episodes_total", {}) or {}).items():
             try:
                 manager._stage_episodes_total[CurriculumStage[stage_name]] = _safe_int(episodes, 0)
             except KeyError:
-                pass
+                logger.debug(f"Unknown stage in episodes_total: {stage_name}")
         
         # Restore epoch counters
         for stage_name, epoch in (state.get("stage_epoch_counter", {}) or {}).items():
             try:
                 manager._stage_epoch_counter[CurriculumStage[stage_name]] = _safe_int(epoch, 0)
             except KeyError:
-                pass
+                logger.debug(f"Unknown stage in epoch_counter: {stage_name}")
         
         manager._current_stage_epoch = _safe_int(
             state.get("current_stage_epoch", manager._current_stage_epoch),
@@ -2642,11 +3072,13 @@ class CurriculumManager:
             try:
                 stage = CurriculumStage[stage_name]
             except KeyError:
+                logger.debug(f"Unknown stage in history: {stage_name}")
                 continue
             for ep_data in (episodes_data or []):
                 try:
                     manager._history[stage].append(EpisodeMetrics.from_dict(ep_data))
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"Skipping malformed episode in history: {e}")
                     continue
         
         manager._transitions = state.get("transitions", []) or []
@@ -2671,6 +3103,41 @@ class CurriculumManager:
         if velocity_data:
             manager._learning_velocity.plateau_episodes = velocity_data.get("plateau_episodes", 0)
             manager._learning_velocity.improvement_rates = velocity_data.get("improvement_rates", {})
+            # Restore metric history if available
+            metric_history = velocity_data.get("metric_history", {})
+            if metric_history and hasattr(manager._learning_velocity, 'metric_history'):
+                for k, v in metric_history.items():
+                    manager._learning_velocity.metric_history[k] = deque(v, maxlen=100)
+        
+        # Restore transition counters (prevents behavior change on resume)
+        manager._transition_cooldown_remaining = _safe_int(state.get("transition_cooldown_remaining", 0), 0)
+        manager._reward_blend_remaining = _safe_int(state.get("reward_blend_remaining", 0), 0)
+        manager._lr_warmup_active = bool(state.get("lr_warmup_active", False))
+        manager._lr_warmup_steps_remaining = _safe_int(state.get("lr_warmup_steps_remaining", 0), 0)
+        manager._lr_warmup_factor = _safe_float(state.get("lr_warmup_factor", 1.0), 1.0)
+        
+        # Restore episode tracking
+        manager._last_episode_end_idx = _safe_int(state.get("last_episode_end_idx", -1), -1)
+        
+        # Restore true idempotency tracking
+        processed_ids = state.get("processed_episode_ids", [])
+        if processed_ids:
+            manager._processed_episode_ids = deque(processed_ids, maxlen=5000)
+            manager._processed_episode_id_set = set(manager._processed_episode_ids)
+        
+        # Restore current entropy state
+        manager._current_entropy = _safe_float(state.get("current_entropy", -1.0), -1.0)
+        
+        # Restore review tick latch
+        manager._review_tick_episode = _safe_int(state.get("review_tick_episode", -1), -1)
+        
+        # Restore RNG state for reproducible mixed-stage sampling
+        rng_state = state.get("rng_state")
+        if rng_state is not None:
+            try:
+                manager._rng.bit_generator.state = rng_state
+            except Exception as e:
+                logger.warning(f"Could not restore RNG state: {e}")
         
         manager._rolling_stats_dirty = True
         

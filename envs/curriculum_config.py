@@ -180,14 +180,31 @@ def get_threshold_for_metric(metric: str) -> Optional[str]:
 
 
 class CurriculumStage(IntEnum):
-    FOUNDATION = 0
-    DISCIPLINE = 1
-    MARKET_STRUCTURE = 2
-    ECONOMIC_LOGIC = 3
-    PROFESSIONAL = 4
-    ADAPTIVE = 5
-    SPECIALIST = 6
-    LIVE_READY = 7
+    """
+    10-Stage Curriculum: "First Grade to University"
+    
+    PHASE 0: DISCOVERY (Stages 0-1) - Pure exploration, learn market patterns
+    PHASE 1: FOUNDATION (Stages 2-4) - One concept per stage
+    PHASE 2: DEVELOPMENT (Stages 5-7) - Combine skills into strategies
+    PHASE 3: MASTERY (Stages 8-9) - Prop firm constraints, live-ready
+    """
+    # Phase 0: DISCOVERY - "Kindergarten"
+    EXPLORER = 0           # Pure observation, no penalties
+    EXPERIMENTER = 1       # Light outcome signals
+    
+    # Phase 1: FOUNDATION - "Elementary School"
+    TREND_STUDENT = 2      # Learn trend alignment
+    SESSION_STUDENT = 3    # Learn session awareness
+    TIMING_STUDENT = 4     # Learn entry quality
+    
+    # Phase 2: DEVELOPMENT - "High School"
+    INTEGRATOR = 5         # Combine trend + session + entry
+    RISK_MANAGER = 6       # Add risk control
+    STRATEGIST = 7         # Full strategy formation
+    
+    # Phase 3: MASTERY - "University"
+    PROFESSIONAL = 8       # Prop firm constraints
+    LIVE_READY = 9         # Live execution robustness
 
 
 class TradingSkill(Enum):
@@ -579,8 +596,8 @@ class ReviewSessionConfig:
     # How many stages back to review
     review_depth: int = 2
     
-    # Minimum stage to trigger reviews (no reviews in foundation)
-    min_stage_for_review: CurriculumStage = CurriculumStage.MARKET_STRUCTURE
+    # Minimum stage to trigger reviews (no reviews in early discovery)
+    min_stage_for_review: CurriculumStage = CurriculumStage.INTEGRATOR
 
 
 @dataclass
@@ -649,48 +666,58 @@ class CurriculumStageConfig:
 # Stage Factory Functions
 # =============================================================================
 # 
-# 3-PHASE PROP FIRM REALITY CURRICULUM
-# =====================================
+# 4-PHASE "FIRST GRADE TO UNIVERSITY" CURRICULUM
+# ===============================================
 # 
-# PHASE 1: SURVIVAL (Stages 0-2)
-#   - Focus: Don't blow up. Learn risk management.
-#   - Rewards: Base PnL + DD penalties + anti-churn ONLY
-#   - Market: Easy (low vol, clear trends, no slippage)
-#   - Promotion: DD breach rate < 10%, survive without blowing up
+# PHASE 0: DISCOVERY (Stages 0-1) - "Kindergarten"
+#   - Focus: Pure exploration, learn market patterns
+#   - Rewards: HIGH exploration bonus, minimal penalties
+#   - Entropy: HIGH (0.50-0.60) - MUST explore
+#   - Goal: Don't develop "don't trade" habit
 #
-# PHASE 2: PROFITABILITY (Stages 3-5)
-#   - Focus: Make money. Agent discovers what works.
-#   - Rewards: ALL enabled (entry, exit, R-multiple, MAE, time)
-#   - Market: Normal → Hard (progressive difficulty)
-#   - Promotion: profit_factor > 1.2, positive R-multiple
+# PHASE 1: FOUNDATION (Stages 2-4) - "Elementary School"  
+#   - Focus: ONE concept per stage (trend, session, timing)
+#   - Rewards: Gradual introduction of profit incentives
+#   - Entropy: MODERATE-HIGH (0.30-0.40) - still exploring
+#   - Goal: Learn WHY each concept matters
 #
-# PHASE 3: CONSISTENCY (Stages 6-7)
-#   - Focus: Stay profitable across ALL conditions.
-#   - Rewards: All + variance penalties (loss_multiplier > 1.0)
-#   - Market: Full difficulty + domain randomization
-#   - Promotion: Low PnL std, stable across regimes
+# PHASE 2: DEVELOPMENT (Stages 5-7) - "High School"
+#   - Focus: COMBINE learned concepts into strategies
+#   - Rewards: All components enabled, increasing strength
+#   - Entropy: MODERATE (0.12-0.22) - strategy forming
+#   - Goal: Build coherent trading approach
+#
+# PHASE 3: MASTERY (Stages 8-9) - "University"
+#   - Focus: Prop firm constraints, live-ready execution
+#   - Rewards: Full strength + variance penalties
+#   - Entropy: LOW (0.05-0.08) - converged strategy
+#   - Goal: Execute strategy under real constraints
 #
 # =============================================================================
 
-def get_foundation_config() -> CurriculumStageConfig:
+
+def get_explorer_config() -> CurriculumStageConfig:
     """
-    PHASE 1 - SURVIVAL: Stage 0 (FOUNDATION)
-    =========================================
-    Learn to not blow up. Pure PnL + risk signal.
+    PHASE 0 - DISCOVERY: Stage 0 (EXPLORER)
+    ========================================
+    Pure market observation. NO trading penalties.
     
-    ENABLED: Base PnL, DD shaping, light anti-churn
-    DISABLED: ALL bonuses (R-multiple, MAE, exit quality, entry quality, streaks)
-    MARKET: Very easy (no slippage, no randomization)
+    Goal: Learn market patterns WITHOUT developing "don't trade" habit.
+    
+    ENABLED: High exploration bonus, light PnL signal
+    DISABLED: All penalties (anti-churn, DD shaping, etc.)
+    MARKET: Very easy
+    ENTROPY: 0.60 minimum - MUST explore widely
     """
     return CurriculumStageConfig(
-        stage=CurriculumStage.FOUNDATION,
-        name="Foundation",
-        description="SURVIVAL Phase: Learn risk basics. No bonuses, pure PnL.",
+        stage=CurriculumStage.EXPLORER,
+        name="Explorer",
+        description="DISCOVERY Phase: Pure exploration. Learn market patterns.",
         execution=ExecutionDifficulty(
             # VERY EASY - no execution friction
-            base_spread_points=0.02,
+            base_spread_points=0.01,
             spread_mult_range=(1.0, 1.0),
-            max_spread_points=0.05,
+            max_spread_points=0.02,
             slippage_points_sigma=0.0,
             slippage_mult_range=(1.0, 1.0),
             max_slippage_points=0.0,
@@ -700,12 +727,12 @@ def get_foundation_config() -> CurriculumStageConfig:
         ),
         rewards=RewardShaping(
             # ============================================================================
-            # PHASE 1 SURVIVAL: Pure PnL + Risk Only
+            # PHASE 0 DISCOVERY: Pure exploration, NO penalties
             # ============================================================================
-            reward_scale=5.0,
-            loss_multiplier=1.0,              # Symmetric
+            reward_scale=3.0,                 # Low scale - outcomes don't matter much
+            loss_multiplier=1.0,
             
-            # ALL BONUSES DISABLED
+            # NO profit incentives yet - just observe
             r_multiple_bonus_threshold=99.0,
             r_multiple_bonus_scale=0.0,
             r_multiple_bonus_cap=0.0,
@@ -725,90 +752,91 @@ def get_foundation_config() -> CurriculumStageConfig:
             hard_stop_penalty=0.0,
             risk_liquidation_penalty=0.0,
             
-            truncation_winner_discount=0.30,
-            truncation_loser_extra_penalty=0.15,
+            truncation_winner_discount=0.10,  # Very light
+            truncation_loser_extra_penalty=0.05,
             
             entry_quality_integration=False,
             entry_quality_weight=0.0,
             
-            # DD SHAPING: ENABLED (learning risk)
-            dd_shaping_enabled=True,
-            dd_threshold=0.08,
-            dd_penalty_scale=0.5,
-            dd_severity_exponent=1.2,
-            dd_severity_cap=0.8,
+            # DD SHAPING: DISABLED - let agent explore freely
+            dd_shaping_enabled=False,
+            dd_threshold=0.50,
+            dd_penalty_scale=0.0,
+            dd_severity_exponent=1.0,
+            dd_severity_cap=0.0,
             
             streak_modifier_enabled=False,
             win_streak_bonus_per_win=0.0,
             loss_streak_penalty_per_loss=0.0,
             
-            # ANTI-CHURN: Moderate (teach patience from the start)
-            # BUGFIX: Was too lenient (30/0.01), agent learned to overtrade
-            anti_churn_enabled=True,
-            daily_trade_soft_limit=15,
-            churn_penalty_per_trade=0.03,
+            # ANTI-CHURN: DISABLED - let agent trade freely
+            anti_churn_enabled=False,
+            daily_trade_soft_limit=100,
+            churn_penalty_per_trade=0.0,
             
-            hard_block_penalty=0.01,
-            soft_block_penalty=0.005,
+            hard_block_penalty=0.0,
+            soft_block_penalty=0.0,
             per_step_shaping_enabled=False,
             holding_cost_per_bar=0.0,
-            exploration_bonus=0.0,
-            directional_accuracy_weight=1.0,
-            min_reward=-2.5,
-            max_reward=2.5,
+            
+            # EXPLORATION BONUS: HIGH - encourage trying everything
+            exploration_bonus=0.05,
+            directional_accuracy_weight=0.5,  # Light directional signal
+            min_reward=-1.5,
+            max_reward=1.5,
         ),
         constraints=TradingConstraints(
             max_positions=1,
-            max_trades_per_day=30,
-            max_trades_per_session=15,
-            max_consecutive_losses=10,
+            max_trades_per_day=50,            # Very permissive
+            max_trades_per_session=25,
+            max_consecutive_losses=20,        # Very permissive
             enforce_session_windows=False,
             enforce_no_new_trades_window=False,
             enforce_weekend_block=False,
             enforce_hard_close=False,
-            min_minutes_between_entries=1,
-            min_minutes_after_loss=2,
-            daily_drawdown_limit=0.30,
-            max_drawdown_limit=0.30,
+            min_minutes_between_entries=0,
+            min_minutes_after_loss=0,
+            daily_drawdown_limit=0.50,        # Very loose
+            max_drawdown_limit=0.50,
             daily_dd_safety_buffer=0.0,
             max_dd_safety_buffer=0.0,
-            emergency_close_threshold=0.25,
+            emergency_close_threshold=0.45,
             entry_quality_gate_enabled=False,
             entry_quality_threshold=0.0,
-            hard_stop_loss_eur=500.0,
-            soft_stop_loss_eur=300.0,
-            trailing_activation_eur=100.0,
-            trailing_retrace_pct=0.40,
-            time_decay_hours=12.0,
-            risk_per_trade_pct=0.005,
-            max_risk_per_trade_pct=0.01,
+            hard_stop_loss_eur=1000.0,
+            soft_stop_loss_eur=800.0,
+            trailing_activation_eur=200.0,
+            trailing_retrace_pct=0.50,
+            time_decay_hours=24.0,
+            risk_per_trade_pct=0.01,
+            max_risk_per_trade_pct=0.02,
         ),
         competence=CompetenceThresholds(
-            # SURVIVAL PHASE: Focus on NOT blowing up
-            min_episodes=150,
-            min_timesteps=150_000,
-            min_win_rate=0.35,              # Can be low
-            min_profit_factor=0.6,          # Can lose money
-            max_avg_drawdown=0.20,          # KEY: Don't blow up
-            min_avg_pnl=-500.0,             # Acceptable to lose
-            min_avg_r_multiple=-0.20,
-            min_entropy=0.15,
-            max_win_rate_std=0.25,
-            max_pnl_std=6000.0,             # Permissive
-            min_trade_count_avg=2.0,
-            max_dd_breach_rate=0.30,        # KEY METRIC
-            max_consecutive_loss_rate=0.25,
+            # DISCOVERY: Just need to explore
+            min_episodes=100,
+            min_timesteps=100_000,
+            min_win_rate=0.0,                 # No performance requirements
+            min_profit_factor=0.0,
+            max_avg_drawdown=0.50,            # Very loose
+            min_avg_pnl=-5000.0,              # Can lose money
+            min_avg_r_multiple=-1.0,
+            min_entropy=0.60,  # AUDIT FIX: Must match entropy_targets.min_entropy
+            max_win_rate_std=1.0,             # Ignore variance
+            max_pnl_std=50000.0,
+            min_trade_count_avg=5.0,          # Must be trading
+            max_dd_breach_rate=1.0,           # Ignore DD breaches
+            max_consecutive_loss_rate=1.0,
             evaluation_window=50,
         ),
         max_steps_per_episode=1500,
         include_memory_features=False,
         include_world_model_features=False,
         include_expert_signals=True,
-        allow_demotion=False,
+        allow_demotion=False,                 # Can't demote from Stage 0
         data_difficulty=DataDifficulty(
-            # EASY MARKET: Low volatility, clear trends
-            volatility_percentile_range=(0.0, 0.40),
-            min_trend_clarity=0.4,
+            # EASY MARKET: Clear patterns to observe
+            volatility_percentile_range=(0.0, 0.30),
+            min_trend_clarity=0.5,
             include_asian_session=True,
             include_london_session=True,
             include_ny_session=True,
@@ -825,39 +853,31 @@ def get_foundation_config() -> CurriculumStageConfig:
             reward_blend_enabled=False,
             reward_blend_episodes=0,
             checkpoint_on_transition=True,
-            transition_cooldown_episodes=30,
+            transition_cooldown_episodes=20,
         ),
         skill_requirements=SkillRequirements(
-            required_skills={
-                TradingSkill.DRAWDOWN_CONTROL: 0.40,
-            },
-            min_confidence=0.4,
+            # No skill requirements - just explore
+            required_skills={},
+            min_confidence=0.0,
             require_all_skills=False,
-            weighted_threshold=0.35,
+            weighted_threshold=0.0,
         ),
         entropy_targets=EntropyTargets(
-            # BUGFIX: Raised min_entropy from 0.30 to 0.50 to prevent collapse
-            # For 10-action space, max entropy=2.3, healthy range is 0.5-1.5
-            min_entropy=0.50,
-            max_entropy=1.20,
-            low_entropy_penalty_scale=0.15,  # Stronger penalty for collapse
-            high_entropy_penalty_scale=0.02,
+            # HIGH entropy required - MUST explore
+            min_entropy=0.60,
+            max_entropy=1.50,
+            low_entropy_penalty_scale=0.20,   # Strong penalty for not exploring
+            high_entropy_penalty_scale=0.0,   # No penalty for too much exploration
             use_in_promotion=True,
         ),
         composite_scoring=CompositeScoringConfig(
             enabled=True,
-            promotion_threshold=0.60,
-            demotion_threshold=0.20,
-            hard_floors={
-                "win_rate": 0.32,
-                "max_drawdown": 0.20,
-                "dd_breach_rate": 0.30,
-            },
+            promotion_threshold=0.40,         # Easy promotion
+            demotion_threshold=0.0,           # No demotion
+            hard_floors={},                   # No hard requirements
         ),
         adaptive_thresholds=AdaptiveThresholdConfig(
-            enabled=True,
-            plateau_episodes_threshold=100,
-            max_relaxation=0.15,
+            enabled=False,
         ),
         recovery_protocol=RecoveryProtocolConfig(
             enabled=False,
@@ -871,46 +891,45 @@ def get_foundation_config() -> CurriculumStageConfig:
     )
 
 
-def get_discipline_config() -> CurriculumStageConfig:
+def get_experimenter_config() -> CurriculumStageConfig:
     """
-    PHASE 1 - SURVIVAL: Stage 1 (DISCIPLINE)
-    =========================================
-    Continue learning to survive. Tighter DD limits, stronger anti-churn.
+    PHASE 0 - DISCOVERY: Stage 1 (EXPERIMENTER)
+    ============================================
+    Light outcome signals. Learn that trades have consequences.
     
-    ENABLED: Base PnL, DD shaping (stronger), anti-churn (stronger)
-    DISABLED: ALL bonuses
-    MARKET: Easy with slight randomization
+    Goal: Start associating actions with outcomes, still exploring freely.
+    
+    ENABLED: Light PnL signal, very light DD awareness, exploration bonus
+    DISABLED: Anti-churn, most penalties
+    MARKET: Very easy
+    ENTROPY: 0.50 minimum - still high exploration
     """
     return CurriculumStageConfig(
-        stage=CurriculumStage.DISCIPLINE,
-        name="Discipline",
-        description="Learn patience. Strong anti-churn, quality over quantity.",
+        stage=CurriculumStage.EXPERIMENTER,
+        name="Experimenter",
+        description="DISCOVERY Phase: Light outcome signals. Actions have consequences.",
         execution=ExecutionDifficulty(
-            base_spread_points=0.08,
-            spread_mult_range=(0.95, 1.10),
-            max_spread_points=0.15,
-            slippage_points_sigma=0.01,
-            slippage_mult_range=(0.9, 1.2),
-            max_slippage_points=0.05,
+            base_spread_points=0.02,
+            spread_mult_range=(1.0, 1.0),
+            max_spread_points=0.05,
+            slippage_points_sigma=0.0,
+            slippage_mult_range=(1.0, 1.0),
+            max_slippage_points=0.0,
             commission_per_lot=0.0,
             latency_bars=0,
-            enable_randomization=True,
-            spread_randomization_range=(0.95, 1.08),
-            slippage_randomization_range=(0.95, 1.10),
-            latency_randomization_range=(0, 0),
-            volatility_scale_range=(0.95, 1.08),
+            enable_randomization=False,
         ),
         rewards=RewardShaping(
             # ============================================================================
-            # PHASE 1 SURVIVAL: Stage 1 - Tighter risk, stronger anti-churn
+            # PHASE 0 DISCOVERY: Light outcome signals
             # ============================================================================
-            reward_scale=5.5,
+            reward_scale=4.0,                 # Slightly higher than Stage 0
             loss_multiplier=1.0,
             
-            # ALL BONUSES DISABLED
-            r_multiple_bonus_threshold=99.0,
-            r_multiple_bonus_scale=0.0,
-            r_multiple_bonus_cap=0.0,
+            # TINY profit incentive - just a hint
+            r_multiple_bonus_threshold=2.0,
+            r_multiple_bonus_scale=0.01,
+            r_multiple_bonus_cap=0.02,
             
             mae_efficiency_enabled=False,
             mae_efficiency_scale=0.0,
@@ -919,7 +938,7 @@ def get_discipline_config() -> CurriculumStageConfig:
             time_efficiency_enabled=False,
             time_efficiency_scale=0.0,
             optimal_trade_bars=12,
-            max_trade_bars_for_bonus=36,
+            max_trade_bars_for_bonus=48,
             
             exit_quality_enabled=False,
             trailing_stop_bonus=0.0,
@@ -927,80 +946,81 @@ def get_discipline_config() -> CurriculumStageConfig:
             hard_stop_penalty=0.0,
             risk_liquidation_penalty=0.0,
             
-            truncation_winner_discount=0.30,
-            truncation_loser_extra_penalty=0.15,
+            truncation_winner_discount=0.15,
+            truncation_loser_extra_penalty=0.08,
             
             entry_quality_integration=False,
             entry_quality_weight=0.0,
             
-            # DD SHAPING: Stronger than Stage 0
+            # DD SHAPING: VERY LIGHT - just awareness
             dd_shaping_enabled=True,
-            dd_threshold=0.06,
-            dd_penalty_scale=0.7,
-            dd_severity_exponent=1.3,
-            dd_severity_cap=1.0,
+            dd_threshold=0.15,
+            dd_penalty_scale=0.2,
+            dd_severity_exponent=1.0,
+            dd_severity_cap=0.3,
             
             streak_modifier_enabled=False,
             win_streak_bonus_per_win=0.0,
             loss_streak_penalty_per_loss=0.0,
             
-            # ANTI-CHURN: Strong (building patience habit)
-            # BUGFIX: Was too lenient, raised penalty significantly
-            anti_churn_enabled=True,
-            daily_trade_soft_limit=12,
-            churn_penalty_per_trade=0.04,
+            # ANTI-CHURN: Still disabled
+            anti_churn_enabled=False,
+            daily_trade_soft_limit=50,
+            churn_penalty_per_trade=0.0,
             
-            hard_block_penalty=0.02,
-            soft_block_penalty=0.01,
+            hard_block_penalty=0.0,
+            soft_block_penalty=0.0,
             per_step_shaping_enabled=False,
             holding_cost_per_bar=0.0,
-            exploration_bonus=0.0,
-            directional_accuracy_weight=1.0,
-            min_reward=-3.0,
-            max_reward=3.0,
+            
+            # EXPLORATION BONUS: Still high
+            exploration_bonus=0.04,
+            directional_accuracy_weight=0.7,
+            min_reward=-2.0,
+            max_reward=2.0,
         ),
         constraints=TradingConstraints(
             max_positions=1,
-            max_trades_per_day=20,
-            max_trades_per_session=10,
-            max_consecutive_losses=8,
+            max_trades_per_day=40,
+            max_trades_per_session=20,
+            max_consecutive_losses=15,
             enforce_session_windows=False,
             enforce_no_new_trades_window=False,
             enforce_weekend_block=False,
             enforce_hard_close=False,
-            min_minutes_between_entries=2,
-            min_minutes_after_loss=3,
-            daily_drawdown_limit=0.20,
-            max_drawdown_limit=0.25,
+            min_minutes_between_entries=0,
+            min_minutes_after_loss=0,
+            daily_drawdown_limit=0.40,
+            max_drawdown_limit=0.40,
             daily_dd_safety_buffer=0.0,
             max_dd_safety_buffer=0.0,
-            emergency_close_threshold=0.20,
+            emergency_close_threshold=0.35,
             entry_quality_gate_enabled=False,
             entry_quality_threshold=0.0,
-            hard_stop_loss_eur=400.0,
-            soft_stop_loss_eur=250.0,
-            trailing_activation_eur=100.0,
-            trailing_retrace_pct=0.40,
-            time_decay_hours=10.0,
-            risk_per_trade_pct=0.005,
-            max_risk_per_trade_pct=0.01,
+            hard_stop_loss_eur=800.0,
+            soft_stop_loss_eur=600.0,
+            trailing_activation_eur=150.0,
+            trailing_retrace_pct=0.45,
+            time_decay_hours=18.0,
+            risk_per_trade_pct=0.008,
+            max_risk_per_trade_pct=0.015,
         ),
         competence=CompetenceThresholds(
-            # SURVIVAL PHASE: Tighter than Stage 0
-            min_episodes=175,
+            # DISCOVERY: Explore + light performance awareness
+            min_episodes=150,
             min_timesteps=200_000,
-            min_win_rate=0.37,
-            min_profit_factor=0.70,
-            max_avg_drawdown=0.15,          # Tighter
-            min_avg_pnl=-300.0,
-            min_avg_r_multiple=-0.15,
-            min_entropy=0.12,
-            max_win_rate_std=0.22,
-            max_pnl_std=5500.0,
-            min_trade_count_avg=2.5,
-            max_dd_breach_rate=0.20,        # KEY: Tighter
-            max_consecutive_loss_rate=0.20,
-            evaluation_window=60,
+            min_win_rate=0.25,                # Very low bar
+            min_profit_factor=0.3,            # Can lose money
+            max_avg_drawdown=0.35,            # Loose
+            min_avg_pnl=-3000.0,
+            min_avg_r_multiple=-0.5,
+            min_entropy=0.50,  # AUDIT FIX: Must match entropy_targets.min_entropy
+            max_win_rate_std=0.50,
+            max_pnl_std=30000.0,
+            min_trade_count_avg=5.0,
+            max_dd_breach_rate=0.50,
+            max_consecutive_loss_rate=0.40,
+            evaluation_window=50,
         ),
         max_steps_per_episode=1500,
         include_memory_features=False,
@@ -1008,9 +1028,8 @@ def get_discipline_config() -> CurriculumStageConfig:
         include_expert_signals=True,
         allow_demotion=True,
         data_difficulty=DataDifficulty(
-            # Still easy market
-            volatility_percentile_range=(0.0, 0.50),
-            min_trend_clarity=0.3,
+            volatility_percentile_range=(0.0, 0.35),
+            min_trend_clarity=0.45,
             include_asian_session=True,
             include_london_session=True,
             include_ny_session=True,
@@ -1027,34 +1046,420 @@ def get_discipline_config() -> CurriculumStageConfig:
             reward_blend_enabled=True,
             reward_blend_episodes=10,
             checkpoint_on_transition=True,
-            transition_cooldown_episodes=30,
+            transition_cooldown_episodes=25,
         ),
         skill_requirements=SkillRequirements(
-            required_skills={
-                TradingSkill.DRAWDOWN_CONTROL: 0.45,
-                TradingSkill.PATIENCE: 0.40,
-            },
-            min_confidence=0.4,
+            required_skills={},
+            min_confidence=0.0,
             require_all_skills=False,
-            weighted_threshold=0.40,
+            weighted_threshold=0.0,
         ),
         entropy_targets=EntropyTargets(
-            # BUGFIX: Raised min_entropy from 0.25 to 0.40 to prevent collapse
-            min_entropy=0.40,
-            max_entropy=1.00,
-            low_entropy_penalty_scale=0.12,  # Stronger penalty
-            high_entropy_penalty_scale=0.03,
+            min_entropy=0.50,
+            max_entropy=1.30,
+            low_entropy_penalty_scale=0.18,
+            high_entropy_penalty_scale=0.01,
             use_in_promotion=True,
         ),
         composite_scoring=CompositeScoringConfig(
             enabled=True,
-            promotion_threshold=0.62,
-            demotion_threshold=0.25,
-            hard_floors={
-                "win_rate": 0.35,
-                "max_drawdown": 0.15,
-                "dd_breach_rate": 0.20,
+            promotion_threshold=0.45,
+            demotion_threshold=0.15,
+            hard_floors={},
+        ),
+        adaptive_thresholds=AdaptiveThresholdConfig(
+            enabled=False,
+        ),
+        recovery_protocol=RecoveryProtocolConfig(
+            enabled=False,
+        ),
+        mixed_stage_sampling=MixedStageSamplingConfig(
+            enabled=False,
+        ),
+        review_session=ReviewSessionConfig(
+            enabled=False,
+        ),
+    )
+
+
+def get_trend_student_config() -> CurriculumStageConfig:
+    """
+    PHASE 1 - FOUNDATION: Stage 2 (TREND_STUDENT)
+    ==============================================
+    First concept: Learn that trading WITH trend is better.
+    
+    Goal: Discover trend alignment improves outcomes.
+    
+    ENABLED: R-multiple bonus, light DD shaping, light anti-churn
+    NEW: Directional accuracy weight increased
+    ENTROPY: 0.40 minimum - still exploring
+    """
+    return CurriculumStageConfig(
+        stage=CurriculumStage.TREND_STUDENT,
+        name="Trend Student",
+        description="FOUNDATION Phase: Learn trend alignment. Trade with the trend.",
+        execution=ExecutionDifficulty(
+            base_spread_points=0.05,
+            spread_mult_range=(0.95, 1.08),
+            max_spread_points=0.12,
+            slippage_points_sigma=0.01,
+            slippage_mult_range=(0.9, 1.15),
+            max_slippage_points=0.05,
+            commission_per_lot=0.0,
+            latency_bars=0,
+            enable_randomization=True,
+            spread_randomization_range=(0.95, 1.05),
+            slippage_randomization_range=(0.95, 1.08),
+            latency_randomization_range=(0, 0),
+            volatility_scale_range=(0.95, 1.05),
+        ),
+        rewards=RewardShaping(
+            # ============================================================================
+            # PHASE 1 FOUNDATION: Learn trend alignment
+            # ============================================================================
+            reward_scale=5.0,
+            loss_multiplier=1.0,
+            
+            # R-multiple bonus - reward good trades
+            r_multiple_bonus_threshold=1.5,
+            r_multiple_bonus_scale=0.02,
+            r_multiple_bonus_cap=0.04,
+            
+            mae_efficiency_enabled=False,
+            mae_efficiency_scale=0.0,
+            mae_efficiency_threshold=99.0,
+            
+            time_efficiency_enabled=False,
+            time_efficiency_scale=0.0,
+            optimal_trade_bars=12,
+            max_trade_bars_for_bonus=36,
+            
+            exit_quality_enabled=False,
+            trailing_stop_bonus=0.0,
+            agent_close_bonus=0.0,
+            hard_stop_penalty=0.0,
+            risk_liquidation_penalty=0.0,
+            
+            truncation_winner_discount=0.20,
+            truncation_loser_extra_penalty=0.10,
+            
+            entry_quality_integration=False,
+            entry_quality_weight=0.0,
+            
+            # DD SHAPING: Light
+            dd_shaping_enabled=True,
+            dd_threshold=0.10,
+            dd_penalty_scale=0.3,
+            dd_severity_exponent=1.1,
+            dd_severity_cap=0.5,
+            
+            streak_modifier_enabled=False,
+            win_streak_bonus_per_win=0.0,
+            loss_streak_penalty_per_loss=0.0,
+            
+            # ANTI-CHURN: Light
+            anti_churn_enabled=True,
+            daily_trade_soft_limit=3,
+            churn_penalty_per_trade=0.03,
+            
+            hard_block_penalty=0.01,
+            soft_block_penalty=0.005,
+            per_step_shaping_enabled=False,
+            holding_cost_per_bar=0.0,
+            
+            # EXPLORATION: Still moderate
+            exploration_bonus=0.03,
+            directional_accuracy_weight=1.2,  # INCREASED - reward trend alignment
+            min_reward=-2.5,
+            max_reward=2.5,
+        ),
+        constraints=TradingConstraints(
+            max_positions=1,
+            max_trades_per_day=25,
+            max_trades_per_session=12,
+            max_consecutive_losses=10,
+            enforce_session_windows=False,
+            enforce_no_new_trades_window=False,
+            enforce_weekend_block=False,
+            enforce_hard_close=False,
+            min_minutes_between_entries=1,
+            min_minutes_after_loss=2,
+            daily_drawdown_limit=0.25,
+            max_drawdown_limit=0.30,
+            daily_dd_safety_buffer=0.0,
+            max_dd_safety_buffer=0.0,
+            emergency_close_threshold=0.25,
+            entry_quality_gate_enabled=False,
+            entry_quality_threshold=0.0,
+            hard_stop_loss_eur=600.0,
+            soft_stop_loss_eur=400.0,
+            trailing_activation_eur=120.0,
+            trailing_retrace_pct=0.40,
+            time_decay_hours=12.0,
+            risk_per_trade_pct=0.006,
+            max_risk_per_trade_pct=0.012,
+        ),
+        competence=CompetenceThresholds(
+            min_episodes=200,
+            min_timesteps=300_000,
+            min_win_rate=0.35,
+            min_profit_factor=0.7,
+            max_avg_drawdown=0.20,
+            min_avg_pnl=-500.0,
+            min_avg_r_multiple=-0.1,
+            min_entropy=0.40,  # AUDIT FIX: Must match entropy_targets.min_entropy
+            max_win_rate_std=0.30,
+            max_pnl_std=10000.0,
+            min_trade_count_avg=4.0,
+            max_dd_breach_rate=0.25,
+            max_consecutive_loss_rate=0.25,
+            evaluation_window=60,
+        ),
+        max_steps_per_episode=1800,
+        include_memory_features=False,
+        include_world_model_features=False,
+        include_expert_signals=True,
+        allow_demotion=True,
+        data_difficulty=DataDifficulty(
+            volatility_percentile_range=(0.0, 0.45),
+            min_trend_clarity=0.35,           # Prefer clearer trends for learning
+            include_asian_session=True,
+            include_london_session=True,
+            include_ny_session=True,
+            include_overlap_sessions=True,
+            exclude_high_impact_news=True,
+            exclude_market_open_close=True,
+            prefer_recent_data=False,
+            recent_data_weight=1.0,
+        ),
+        transition=TransitionSettings(
+            lr_warmup_enabled=True,
+            lr_warmup_factor=0.5,
+            lr_warmup_steps=8_000,
+            reward_blend_enabled=True,
+            reward_blend_episodes=15,
+            checkpoint_on_transition=True,
+            transition_cooldown_episodes=30,
+        ),
+        skill_requirements=SkillRequirements(
+            required_skills={
+                TradingSkill.TREND_ALIGNMENT: 0.35,
             },
+            min_confidence=0.4,
+            require_all_skills=False,
+            weighted_threshold=0.35,
+        ),
+        entropy_targets=EntropyTargets(
+            min_entropy=0.40,
+            max_entropy=1.00,
+            low_entropy_penalty_scale=0.15,
+            high_entropy_penalty_scale=0.02,
+            use_in_promotion=True,
+        ),
+        composite_scoring=CompositeScoringConfig(
+            enabled=True,
+            promotion_threshold=0.55,
+            demotion_threshold=0.20,
+            hard_floors={},
+        ),
+        adaptive_thresholds=AdaptiveThresholdConfig(
+            enabled=True,
+            plateau_episodes_threshold=100,
+            max_relaxation=0.12,
+        ),
+        recovery_protocol=RecoveryProtocolConfig(
+            enabled=True,
+            trigger_after_demotions=2,
+            recovery_duration_episodes=80,
+        ),
+        mixed_stage_sampling=MixedStageSamplingConfig(
+            enabled=True,
+            current_stage_weight=0.80,
+            recent_stages_weight=0.15,
+            foundation_weight=0.05,
+        ),
+        review_session=ReviewSessionConfig(
+            enabled=False,
+        ),
+    )
+
+
+def get_session_student_config() -> CurriculumStageConfig:
+    """
+    PHASE 1 - FOUNDATION: Stage 3 (SESSION_STUDENT)
+    ================================================
+    Second concept: Learn that session timing matters.
+    
+    Goal: Discover that trading during good sessions improves outcomes.
+    
+    ENABLED: Previous + Exit quality (trailing stops)
+    NEW: Session awareness in constraints
+    ENTROPY: 0.35 minimum - still exploring
+    """
+    return CurriculumStageConfig(
+        stage=CurriculumStage.SESSION_STUDENT,
+        name="Session Student",
+        description="FOUNDATION Phase: Learn session awareness. When matters.",
+        execution=ExecutionDifficulty(
+            base_spread_points=0.08,
+            spread_mult_range=(0.92, 1.12),
+            max_spread_points=0.20,
+            slippage_points_sigma=0.02,
+            slippage_mult_range=(0.9, 1.2),
+            max_slippage_points=0.08,
+            commission_per_lot=0.0,
+            latency_bars=0,
+            enable_randomization=True,
+            spread_randomization_range=(0.93, 1.08),
+            slippage_randomization_range=(0.93, 1.10),
+            latency_randomization_range=(0, 0),
+            volatility_scale_range=(0.93, 1.08),
+        ),
+        rewards=RewardShaping(
+            reward_scale=5.5,
+            loss_multiplier=1.0,
+            
+            r_multiple_bonus_threshold=1.5,
+            r_multiple_bonus_scale=0.03,
+            r_multiple_bonus_cap=0.06,
+            
+            mae_efficiency_enabled=False,
+            mae_efficiency_scale=0.0,
+            mae_efficiency_threshold=99.0,
+            
+            time_efficiency_enabled=False,
+            time_efficiency_scale=0.0,
+            optimal_trade_bars=12,
+            max_trade_bars_for_bonus=36,
+            
+            # EXIT QUALITY: NEW - Learn to hold winners
+            # AUDIT FIX: Stop rewarding premature agent_close exits
+            # Strongly prefer trailing stops, penalize discretionary exits and hard stops
+            exit_quality_enabled=True,
+            trailing_stop_bonus=0.08,    # Strong reward for trailing stop exits
+            agent_close_bonus=0.00,      # NEUTRAL - don't reward "I got scared"
+            hard_stop_penalty=0.05,      # Meaningful penalty for hitting stop loss
+            risk_liquidation_penalty=0.10,  # Strong penalty for risk liquidation
+            
+            truncation_winner_discount=0.20,
+            truncation_loser_extra_penalty=0.10,
+            
+            entry_quality_integration=False,
+            entry_quality_weight=0.0,
+            
+            dd_shaping_enabled=True,
+            dd_threshold=0.08,
+            dd_penalty_scale=0.4,
+            dd_severity_exponent=1.2,
+            dd_severity_cap=0.6,
+            
+            streak_modifier_enabled=False,
+            win_streak_bonus_per_win=0.0,
+            loss_streak_penalty_per_loss=0.0,
+            
+            anti_churn_enabled=True,
+            daily_trade_soft_limit=6,    # AUDIT FIX: 2 was too aggressive, causing constant penalty
+            churn_penalty_per_trade=0.06,  # Keep pressure on overtrading
+            
+            hard_block_penalty=0.015,
+            soft_block_penalty=0.008,
+            per_step_shaping_enabled=False,
+            holding_cost_per_bar=0.0,
+            
+            exploration_bonus=0.025,
+            directional_accuracy_weight=1.15,
+            min_reward=-2.8,
+            max_reward=2.8,
+        ),
+        constraints=TradingConstraints(
+            max_positions=1,
+            max_trades_per_day=20,
+            max_trades_per_session=10,
+            max_consecutive_losses=8,
+            enforce_session_windows=True,      # KEY: Session awareness
+            enforce_no_new_trades_window=True,
+            enforce_weekend_block=True,
+            enforce_hard_close=False,
+            min_minutes_between_entries=30,   # AUDIT FIX: 2 bars minimum (was 2 min = <1 bar)
+            min_minutes_after_loss=45,         # AUDIT FIX: 3 bars after loss (was 3 min = <1 bar)
+            daily_drawdown_limit=0.20,
+            max_drawdown_limit=0.25,
+            daily_dd_safety_buffer=0.0,
+            max_dd_safety_buffer=0.0,
+            emergency_close_threshold=0.22,
+            entry_quality_gate_enabled=False,
+            entry_quality_threshold=0.0,
+            hard_stop_loss_eur=500.0,
+            soft_stop_loss_eur=350.0,
+            trailing_activation_eur=100.0,
+            trailing_retrace_pct=0.40,
+            time_decay_hours=10.0,
+            risk_per_trade_pct=0.006,
+            max_risk_per_trade_pct=0.012,
+        ),
+        competence=CompetenceThresholds(
+            min_episodes=250,
+            min_timesteps=400_000,
+            min_win_rate=0.38,
+            min_profit_factor=0.80,
+            max_avg_drawdown=0.18,
+            min_avg_pnl=-300.0,
+            min_avg_r_multiple=-0.05,
+            min_entropy=0.35,  # AUDIT FIX: Must match entropy_targets.min_entropy
+            max_win_rate_std=0.28,
+            max_pnl_std=9000.0,
+            min_trade_count_avg=4.0,
+            max_dd_breach_rate=0.22,
+            max_consecutive_loss_rate=0.22,
+            evaluation_window=70,
+        ),
+        max_steps_per_episode=1800,
+        include_memory_features=False,
+        include_world_model_features=False,
+        include_expert_signals=True,
+        allow_demotion=True,
+        data_difficulty=DataDifficulty(
+            volatility_percentile_range=(0.0, 0.55),
+            min_trend_clarity=0.25,
+            include_asian_session=True,
+            include_london_session=True,
+            include_ny_session=True,
+            include_overlap_sessions=True,
+            exclude_high_impact_news=True,
+            exclude_market_open_close=False,
+            prefer_recent_data=False,
+            recent_data_weight=1.0,
+        ),
+        transition=TransitionSettings(
+            lr_warmup_enabled=True,
+            lr_warmup_factor=0.5,
+            lr_warmup_steps=8_000,
+            reward_blend_enabled=True,
+            reward_blend_episodes=15,
+            checkpoint_on_transition=True,
+            transition_cooldown_episodes=35,
+        ),
+        skill_requirements=SkillRequirements(
+            required_skills={
+                TradingSkill.TREND_ALIGNMENT: 0.40,
+                TradingSkill.EXIT_QUALITY: 0.30,
+            },
+            min_confidence=0.4,
+            require_all_skills=False,
+            weighted_threshold=0.38,
+        ),
+        entropy_targets=EntropyTargets(
+            min_entropy=0.35,
+            max_entropy=0.90,
+            low_entropy_penalty_scale=0.14,
+            high_entropy_penalty_scale=0.02,
+            use_in_promotion=True,
+        ),
+        composite_scoring=CompositeScoringConfig(
+            enabled=True,
+            promotion_threshold=0.55,
+            demotion_threshold=0.22,
+            hard_floors={},
         ),
         adaptive_thresholds=AdaptiveThresholdConfig(
             enabled=True,
@@ -1068,9 +1473,9 @@ def get_discipline_config() -> CurriculumStageConfig:
         ),
         mixed_stage_sampling=MixedStageSamplingConfig(
             enabled=True,
-            current_stage_weight=0.85,
-            recent_stages_weight=0.15,
-            foundation_weight=0.0,
+            current_stage_weight=0.78,
+            recent_stages_weight=0.17,
+            foundation_weight=0.05,
         ),
         review_session=ReviewSessionConfig(
             enabled=False,
@@ -1078,47 +1483,43 @@ def get_discipline_config() -> CurriculumStageConfig:
     )
 
 
-def get_market_structure_config() -> CurriculumStageConfig:
+def get_timing_student_config() -> CurriculumStageConfig:
     """
-    PHASE 1 - SURVIVAL: Stage 2 (MARKET_STRUCTURE)
-    ==============================================
-    Final survival stage. Tightest risk limits before profitability phase.
+    PHASE 1 - FOUNDATION: Stage 4 (TIMING_STUDENT)
+    ===============================================
+    Third concept: Learn entry quality improves outcomes.
     
-    ENABLED: Base PnL, DD shaping (strong), anti-churn (strong)
-    DISABLED: ALL bonuses (still pure survival)
-    MARKET: Medium difficulty
+    Goal: Discover that better entries lead to better risk/reward.
+    
+    ENABLED: Previous + Entry quality integration
+    ENTROPY: 0.30 minimum - strategy starting to form
     """
     return CurriculumStageConfig(
-        stage=CurriculumStage.MARKET_STRUCTURE,
-        name="Market Structure",
-        description="SURVIVAL Phase: Final risk mastery before profitability.",
+        stage=CurriculumStage.TIMING_STUDENT,
+        name="Timing Student",
+        description="FOUNDATION Phase: Learn entry timing. Quality entries matter.",
         execution=ExecutionDifficulty(
-            # MEDIUM difficulty
             base_spread_points=0.10,
-            spread_mult_range=(0.90, 1.20),
-            max_spread_points=0.30,
-            slippage_points_sigma=0.03,
-            slippage_mult_range=(0.85, 1.35),
-            max_slippage_points=0.15,
+            spread_mult_range=(0.90, 1.15),
+            max_spread_points=0.25,
+            slippage_points_sigma=0.02,
+            slippage_mult_range=(0.88, 1.25),
+            max_slippage_points=0.10,
             commission_per_lot=0.0,
             latency_bars=0,
             enable_randomization=True,
-            spread_randomization_range=(0.92, 1.15),
-            slippage_randomization_range=(0.90, 1.20),
+            spread_randomization_range=(0.92, 1.10),
+            slippage_randomization_range=(0.92, 1.12),
             latency_randomization_range=(0, 1),
-            volatility_scale_range=(0.92, 1.12),
+            volatility_scale_range=(0.92, 1.10),
         ),
         rewards=RewardShaping(
-            # ============================================================================
-            # PHASE 1 SURVIVAL: Stage 2 - Tightest risk before Phase 2
-            # ============================================================================
             reward_scale=6.0,
             loss_multiplier=1.0,
             
-            # ALL BONUSES STILL DISABLED
-            r_multiple_bonus_threshold=99.0,
-            r_multiple_bonus_scale=0.0,
-            r_multiple_bonus_cap=0.0,
+            r_multiple_bonus_threshold=1.5,
+            r_multiple_bonus_scale=0.04,
+            r_multiple_bonus_cap=0.08,
             
             mae_efficiency_enabled=False,
             mae_efficiency_scale=0.0,
@@ -1129,96 +1530,294 @@ def get_market_structure_config() -> CurriculumStageConfig:
             optimal_trade_bars=10,
             max_trade_bars_for_bonus=32,
             
-            exit_quality_enabled=False,
-            trailing_stop_bonus=0.0,
-            agent_close_bonus=0.0,
-            hard_stop_penalty=0.0,
-            risk_liquidation_penalty=0.0,
+            exit_quality_enabled=True,
+            trailing_stop_bonus=0.05,
+            agent_close_bonus=0.02,
+            hard_stop_penalty=0.02,
+            risk_liquidation_penalty=0.04,
             
-            truncation_winner_discount=0.25,
-            truncation_loser_extra_penalty=0.10,
+            truncation_winner_discount=0.22,
+            truncation_loser_extra_penalty=0.12,
             
-            # Entry quality: STILL DISABLED in SURVIVAL phase
-            entry_quality_integration=False,
-            entry_quality_weight=0.0,
+            # ENTRY QUALITY: NEW
+            entry_quality_integration=True,
+            entry_quality_weight=0.10,
             
-            # DD shaping: STRONG - tightest risk before Phase 2
             dd_shaping_enabled=True,
-            dd_threshold=0.03,              # Tighter than Stage 1
-            dd_penalty_scale=0.7,           # Stronger penalty
-            dd_severity_exponent=1.4,
-            dd_severity_cap=1.0,
+            dd_threshold=0.06,
+            dd_penalty_scale=0.5,
+            dd_severity_exponent=1.3,
+            dd_severity_cap=0.8,
             
-            # Streaks: DISABLED in SURVIVAL phase
             streak_modifier_enabled=False,
             win_streak_bonus_per_win=0.0,
             loss_streak_penalty_per_loss=0.0,
             
-            # Anti-churn: VERY STRONG - gate to Phase 2
-            # BUGFIX: Raised penalty to enforce patience before Phase 2
             anti_churn_enabled=True,
-            daily_trade_soft_limit=8,
-            churn_penalty_per_trade=0.05,  # Strong penalty for overtrading
+            daily_trade_soft_limit=2,
+            churn_penalty_per_trade=0.06,
             
-            hard_block_penalty=0.03,
-            soft_block_penalty=0.015,
+            hard_block_penalty=0.02,
+            soft_block_penalty=0.01,
             per_step_shaping_enabled=False,
             holding_cost_per_bar=0.0,
-            opportunity_bonus_scale=0.0,
+            
+            exploration_bonus=0.02,
+            directional_accuracy_weight=1.1,
+            min_reward=-3.0,
+            max_reward=3.0,
+        ),
+        constraints=TradingConstraints(
+            max_positions=1,
+            max_trades_per_day=18,
+            max_trades_per_session=9,
+            max_consecutive_losses=7,
+            enforce_session_windows=True,
+            enforce_no_new_trades_window=True,
+            enforce_weekend_block=True,
+            enforce_hard_close=True,
+            min_minutes_between_entries=3,
+            min_minutes_after_loss=5,
+            daily_drawdown_limit=0.15,
+            max_drawdown_limit=0.20,
+            daily_dd_safety_buffer=0.0,
+            max_dd_safety_buffer=0.0,
+            emergency_close_threshold=0.18,
+            entry_quality_gate_enabled=True,
+            entry_quality_threshold=0.25,
+            hard_stop_loss_eur=400.0,
+            soft_stop_loss_eur=280.0,
+            trailing_activation_eur=90.0,
+            trailing_retrace_pct=0.38,
+            time_decay_hours=8.0,
+            risk_per_trade_pct=0.005,
+            max_risk_per_trade_pct=0.01,
+        ),
+        competence=CompetenceThresholds(
+            min_episodes=300,
+            min_timesteps=500_000,
+            min_win_rate=0.40,
+            min_profit_factor=0.90,
+            max_avg_drawdown=0.15,
+            min_avg_pnl=-100.0,
+            min_avg_r_multiple=0.0,
+            min_entropy=0.30,  # AUDIT FIX: Must match entropy_targets.min_entropy
+            max_win_rate_std=0.25,
+            max_pnl_std=8000.0,
+            min_trade_count_avg=4.0,
+            max_dd_breach_rate=0.18,
+            max_consecutive_loss_rate=0.20,
+            evaluation_window=80,
+        ),
+        max_steps_per_episode=2000,
+        include_memory_features=True,
+        include_world_model_features=False,
+        include_expert_signals=True,
+        allow_demotion=True,
+        data_difficulty=DataDifficulty(
+            volatility_percentile_range=(0.0, 0.65),
+            min_trend_clarity=0.15,
+            include_asian_session=True,
+            include_london_session=True,
+            include_ny_session=True,
+            include_overlap_sessions=True,
+            exclude_high_impact_news=False,
+            exclude_market_open_close=False,
+            prefer_recent_data=False,
+            recent_data_weight=1.0,
+        ),
+        transition=TransitionSettings(
+            lr_warmup_enabled=True,
+            lr_warmup_factor=0.45,
+            lr_warmup_steps=10_000,
+            reward_blend_enabled=True,
+            reward_blend_episodes=20,
+            checkpoint_on_transition=True,
+            transition_cooldown_episodes=40,
+        ),
+        skill_requirements=SkillRequirements(
+            required_skills={
+                TradingSkill.TREND_ALIGNMENT: 0.45,
+                TradingSkill.EXIT_QUALITY: 0.40,
+                TradingSkill.ENTRY_TIMING: 0.35,
+            },
+            min_confidence=0.45,
+            require_all_skills=False,
+            weighted_threshold=0.42,
+        ),
+        entropy_targets=EntropyTargets(
+            min_entropy=0.30,
+            max_entropy=0.80,
+            low_entropy_penalty_scale=0.12,
+            high_entropy_penalty_scale=0.03,
+            use_in_promotion=True,
+        ),
+        composite_scoring=CompositeScoringConfig(
+            enabled=True,
+            promotion_threshold=0.58,
+            demotion_threshold=0.25,
+            hard_floors={
+                "max_drawdown": 0.15,
+            },
+        ),
+        adaptive_thresholds=AdaptiveThresholdConfig(
+            enabled=True,
+            plateau_episodes_threshold=90,
+            max_relaxation=0.10,
+        ),
+        recovery_protocol=RecoveryProtocolConfig(
+            enabled=True,
+            trigger_after_demotions=2,
+            recovery_duration_episodes=120,
+        ),
+        mixed_stage_sampling=MixedStageSamplingConfig(
+            enabled=True,
+            current_stage_weight=0.75,
+            recent_stages_weight=0.18,
+            foundation_weight=0.07,
+        ),
+        review_session=ReviewSessionConfig(
+            enabled=True,
+            review_frequency=200,
+            review_duration=40,
+            review_depth=2,
+        ),
+    )
+
+
+def get_integrator_config() -> CurriculumStageConfig:
+    """
+    PHASE 2 - DEVELOPMENT: Stage 5 (INTEGRATOR)
+    ============================================
+    Combine trend + session + entry into coherent approach.
+    
+    Goal: Integrate learned concepts. Trade in trend, in good session, with good entry.
+    
+    ENABLED: All previous + MAE efficiency
+    ENTROPY: 0.22 minimum - strategy forming
+    """
+    return CurriculumStageConfig(
+        stage=CurriculumStage.INTEGRATOR,
+        name="Integrator",
+        description="DEVELOPMENT Phase: Combine skills. Trend + Session + Entry.",
+        execution=ExecutionDifficulty(
+            base_spread_points=0.12,
+            spread_mult_range=(0.88, 1.25),
+            max_spread_points=0.35,
+            slippage_points_sigma=0.03,
+            slippage_mult_range=(0.85, 1.35),
+            max_slippage_points=0.15,
+            commission_per_lot=0.0,
+            latency_bars=1,
+            enable_randomization=True,
+            spread_randomization_range=(0.90, 1.15),
+            slippage_randomization_range=(0.88, 1.20),
+            latency_randomization_range=(0, 1),
+            volatility_scale_range=(0.90, 1.12),
+        ),
+        rewards=RewardShaping(
+            reward_scale=7.0,
+            loss_multiplier=1.0,
+            
+            r_multiple_bonus_threshold=1.4,
+            r_multiple_bonus_scale=0.06,
+            r_multiple_bonus_cap=0.10,
+            
+            # MAE EFFICIENCY: NEW
+            mae_efficiency_enabled=True,
+            mae_efficiency_scale=0.03,
+            mae_efficiency_threshold=1.8,
+            
+            time_efficiency_enabled=False,
+            time_efficiency_scale=0.0,
+            optimal_trade_bars=10,
+            max_trade_bars_for_bonus=30,
+            
+            exit_quality_enabled=True,
+            trailing_stop_bonus=0.08,
+            agent_close_bonus=0.03,
+            hard_stop_penalty=0.03,
+            risk_liquidation_penalty=0.06,
+            
+            truncation_winner_discount=0.22,
+            truncation_loser_extra_penalty=0.12,
+            
+            entry_quality_integration=True,
+            entry_quality_weight=0.15,
+            
+            dd_shaping_enabled=True,
+            dd_threshold=0.05,
+            dd_penalty_scale=0.6,
+            dd_severity_exponent=1.35,
+            dd_severity_cap=0.9,
+            
+            streak_modifier_enabled=False,
+            win_streak_bonus_per_win=0.0,
+            loss_streak_penalty_per_loss=0.0,
+            
+            anti_churn_enabled=True,
+            daily_trade_soft_limit=1,
+            churn_penalty_per_trade=0.08,
+            
+            hard_block_penalty=0.025,
+            soft_block_penalty=0.012,
+            per_step_shaping_enabled=False,
+            holding_cost_per_bar=0.0,
+            
+            exploration_bonus=0.015,
+            directional_accuracy_weight=1.05,
             min_reward=-3.5,
             max_reward=3.5,
         ),
         constraints=TradingConstraints(
             max_positions=1,
-            max_trades_per_day=15,
-            max_trades_per_session=8,
-            max_consecutive_losses=5,
+            max_trades_per_day=14,
+            max_trades_per_session=7,
+            max_consecutive_losses=6,
             enforce_session_windows=True,
             enforce_no_new_trades_window=True,
             enforce_weekend_block=True,
             enforce_hard_close=True,
             min_minutes_between_entries=5,
-            min_minutes_after_loss=10,
-            daily_drawdown_limit=0.06,      # Tighter - gate to Phase 2
-            max_drawdown_limit=0.12,        # Tighter - gate to Phase 2
-            daily_dd_safety_buffer=0.006,
-            max_dd_safety_buffer=0.012,
-            emergency_close_threshold=0.11,
-            entry_quality_gate_enabled=False,  # No entry gate in SURVIVAL
-            entry_quality_threshold=0.0,
-            hard_stop_loss_eur=280.0,
-            soft_stop_loss_eur=180.0,
-            trailing_activation_eur=100.0,
+            min_minutes_after_loss=8,
+            daily_drawdown_limit=0.10,
+            max_drawdown_limit=0.15,
+            daily_dd_safety_buffer=0.005,
+            max_dd_safety_buffer=0.01,
+            emergency_close_threshold=0.13,
+            entry_quality_gate_enabled=True,
+            entry_quality_threshold=0.35,
+            hard_stop_loss_eur=350.0,
+            soft_stop_loss_eur=230.0,
+            trailing_activation_eur=80.0,
             trailing_retrace_pct=0.35,
-            time_decay_hours=6.0,
-            risk_per_trade_pct=0.0035,
-            max_risk_per_trade_pct=0.007,
+            time_decay_hours=7.0,
+            risk_per_trade_pct=0.004,
+            max_risk_per_trade_pct=0.008,
         ),
         competence=CompetenceThresholds(
-            # GATE TO PHASE 2 - Must prove survival skills
-            min_episodes=200,
-            min_timesteps=400_000,
-            min_win_rate=0.40,              # Win rate not critical in SURVIVAL
-            min_profit_factor=0.95,         # Near break-even is fine
-            max_avg_drawdown=0.08,          # CRITICAL: Low DD required for Phase 2
-            min_avg_pnl=0.0,                # PnL doesn't matter in SURVIVAL
-            min_avg_r_multiple=0.0,         # R-multiple doesn't matter in SURVIVAL
-            min_entropy=0.20,               # Must explore
-            max_win_rate_std=0.20,          # Relaxed in SURVIVAL
-            max_pnl_std=15000.0,            # Relaxed in SURVIVAL
+            min_episodes=350,
+            min_timesteps=700_000,
+            min_win_rate=0.45,
+            min_profit_factor=1.0,
+            max_avg_drawdown=0.12,
+            min_avg_pnl=0.0,
+            min_avg_r_multiple=0.05,
+            min_entropy=0.22,  # AUDIT FIX: Must match entropy_targets.min_entropy
+            max_win_rate_std=0.22,
+            max_pnl_std=7000.0,
             min_trade_count_avg=4.0,
-            max_dd_breach_rate=0.10,        # CRITICAL: Gate to Phase 2
-            max_consecutive_loss_rate=0.15,
-            evaluation_window=100,
+            max_dd_breach_rate=0.15,
+            max_consecutive_loss_rate=0.18,
+            evaluation_window=90,
         ),
-        max_steps_per_episode=2000,
+        max_steps_per_episode=2200,
         include_memory_features=True,
         include_world_model_features=True,
         include_expert_signals=True,
         allow_demotion=True,
         data_difficulty=DataDifficulty(
-            # MEDIUM difficulty - still learning
-            volatility_percentile_range=(0.0, 0.70),  # Expanded range
+            volatility_percentile_range=(0.0, 0.75),
             min_trend_clarity=0.0,
             include_asian_session=True,
             include_london_session=True,
@@ -1232,43 +1831,43 @@ def get_market_structure_config() -> CurriculumStageConfig:
         transition=TransitionSettings(
             lr_warmup_enabled=True,
             lr_warmup_factor=0.4,
-            lr_warmup_steps=8_000,
+            lr_warmup_steps=12_000,
             reward_blend_enabled=True,
-            reward_blend_episodes=15,
+            reward_blend_episodes=25,
             checkpoint_on_transition=True,
-            transition_cooldown_episodes=40,
+            transition_cooldown_episodes=50,
         ),
         skill_requirements=SkillRequirements(
-            # SURVIVAL: Only DD control and patience matter
             required_skills={
-                TradingSkill.DRAWDOWN_CONTROL: 0.55,  # CRITICAL for Phase 2
-                TradingSkill.PATIENCE: 0.50,          # CRITICAL for Phase 2
+                TradingSkill.TREND_ALIGNMENT: 0.50,
+                TradingSkill.EXIT_QUALITY: 0.45,
+                TradingSkill.ENTRY_TIMING: 0.42,
+                TradingSkill.DRAWDOWN_CONTROL: 0.50,
             },
-            min_confidence=0.45,
-            require_all_skills=True,  # MUST have both survival skills
-            weighted_threshold=0.50,
+            min_confidence=0.5,
+            require_all_skills=False,
+            weighted_threshold=0.48,
         ),
         entropy_targets=EntropyTargets(
-            # BUGFIX: Raised min_entropy from 0.20 to 0.35 to prevent collapse
-            min_entropy=0.35,
-            max_entropy=0.85,
-            low_entropy_penalty_scale=0.12,
+            min_entropy=0.22,
+            max_entropy=0.60,
+            low_entropy_penalty_scale=0.10,
             high_entropy_penalty_scale=0.04,
             use_in_promotion=True,
         ),
         composite_scoring=CompositeScoringConfig(
             enabled=True,
-            promotion_threshold=0.65,  # Gate to Phase 2
+            promotion_threshold=0.62,
             demotion_threshold=0.28,
             hard_floors={
-                "max_drawdown": 0.08,       # CRITICAL: Gate to Phase 2
-                "dd_breach_rate": 0.10,     # CRITICAL: Gate to Phase 2
+                "max_drawdown": 0.12,
+                "profit_factor": 0.95,
             },
         ),
         adaptive_thresholds=AdaptiveThresholdConfig(
             enabled=True,
             plateau_episodes_threshold=80,
-            max_relaxation=0.10,
+            max_relaxation=0.08,
         ),
         recovery_protocol=RecoveryProtocolConfig(
             enabled=True,
@@ -1277,113 +1876,101 @@ def get_market_structure_config() -> CurriculumStageConfig:
         ),
         mixed_stage_sampling=MixedStageSamplingConfig(
             enabled=True,
-            current_stage_weight=0.80,
-            recent_stages_weight=0.15,
-            foundation_weight=0.05,
+            current_stage_weight=0.72,
+            recent_stages_weight=0.20,
+            foundation_weight=0.08,
         ),
         review_session=ReviewSessionConfig(
-            enabled=False,  # No review in SURVIVAL phase
+            enabled=True,
+            review_frequency=250,
+            review_duration=50,
+            review_depth=3,
         ),
     )
 
 
-def get_economic_logic_config() -> CurriculumStageConfig:
+def get_risk_manager_config() -> CurriculumStageConfig:
     """
-    PHASE 2 - PROFITABILITY: Stage 3 (ECONOMIC_LOGIC)
-    ==================================================
-    First profitability stage. ALL rewards enabled for the first time.
-    Agent learns to make money now that survival is mastered.
+    PHASE 2 - DEVELOPMENT: Stage 6 (RISK_MANAGER)
+    ==============================================
+    Add position sizing and risk control.
     
-    ENABLED: ALL bonuses (r-multiple, MAE, time, exit, entry, streaks)
-    MARKET: Normal difficulty (full volatility range)
-    FOCUS: Let winners run via trailing stops
+    Goal: Learn capital preservation. Manage drawdowns actively.
+    
+    ENABLED: All previous + Streak modifiers + Strong DD shaping
+    ENTROPY: 0.15 minimum - strategy solidifying
     """
     return CurriculumStageConfig(
-        stage=CurriculumStage.ECONOMIC_LOGIC,
-        name="Economic Logic",
-        description="PROFITABILITY Phase: ALL rewards enabled. Learn to make money.",
+        stage=CurriculumStage.RISK_MANAGER,
+        name="Risk Manager",
+        description="DEVELOPMENT Phase: Add risk control. Capital preservation.",
         execution=ExecutionDifficulty(
-            # NORMAL difficulty - real market conditions
             base_spread_points=0.15,
-            spread_mult_range=(0.85, 1.40),
-            max_spread_points=0.60,
+            spread_mult_range=(0.85, 1.35),
+            max_spread_points=0.50,
             slippage_points_sigma=0.04,
-            slippage_mult_range=(0.70, 1.60),
-            max_slippage_points=0.30,
-            commission_per_lot=0.0,
+            slippage_mult_range=(0.80, 1.45),
+            max_slippage_points=0.20,
+            commission_per_lot=1.0,
             latency_bars=1,
             enable_randomization=True,
-            spread_randomization_range=(0.88, 1.30),
-            slippage_randomization_range=(0.80, 1.45),
+            spread_randomization_range=(0.88, 1.20),
+            slippage_randomization_range=(0.85, 1.25),
             latency_randomization_range=(0, 2),
-            volatility_scale_range=(0.88, 1.18),
+            volatility_scale_range=(0.88, 1.15),
         ),
         rewards=RewardShaping(
-            # ============================================================================
-            # PHASE 2 PROFITABILITY: Stage 3 - ALL REWARDS ENABLED
-            # ============================================================================
-            # This is the BIG UNLOCK. Agent now gets rewarded for:
-            # - Good R-multiples (profit/risk)
-            # - Efficient entries (low MAE)
-            # - Proper exits (trailing stops)
-            # - Time efficiency
-            # - Win streaks
-            # ============================================================================
             reward_scale=8.0,
             loss_multiplier=1.0,
             
-            # R-multiple bonus: ENABLED - reward good risk/reward
-            r_multiple_bonus_threshold=1.5,
-            r_multiple_bonus_scale=0.06,
-            r_multiple_bonus_cap=0.10,
+            r_multiple_bonus_threshold=1.4,
+            r_multiple_bonus_scale=0.08,
+            r_multiple_bonus_cap=0.12,
             
-            # MAE efficiency: ENABLED - reward efficient entries
             mae_efficiency_enabled=True,
             mae_efficiency_scale=0.05,
-            mae_efficiency_threshold=1.8,
+            mae_efficiency_threshold=1.6,
             
-            # Time efficiency: ENABLED (light)
             time_efficiency_enabled=True,
             time_efficiency_scale=0.02,
-            optimal_trade_bars=10,
+            optimal_trade_bars=9,
             max_trade_bars_for_bonus=28,
             
-            # Exit quality: ENABLED - trailing stops strongly rewarded
             exit_quality_enabled=True,
-            trailing_stop_bonus=0.25,         # HIGH - reward letting winners run
-            agent_close_bonus=0.0,            # ZERO - never reward cutting winners
-            hard_stop_penalty=0.08,
-            risk_liquidation_penalty=0.15,
+            trailing_stop_bonus=0.10,
+            agent_close_bonus=0.04,
+            hard_stop_penalty=0.04,
+            risk_liquidation_penalty=0.08,
             
-            truncation_winner_discount=0.30,
-            truncation_loser_extra_penalty=0.12,
+            truncation_winner_discount=0.25,
+            truncation_loser_extra_penalty=0.15,
             
-            # Entry quality: ENABLED
             entry_quality_integration=True,
-            entry_quality_weight=0.20,
+            entry_quality_weight=0.18,
             
-            # DD shaping: Maintained from SURVIVAL
+            # DD SHAPING: Strong
             dd_shaping_enabled=True,
-            dd_threshold=0.03,
+            dd_threshold=0.04,
             dd_penalty_scale=0.8,
-            dd_severity_exponent=1.4,
+            dd_severity_exponent=1.45,
             dd_severity_cap=1.2,
             
-            # Streaks: ENABLED - reward consistency
+            # STREAKS: NEW
             streak_modifier_enabled=True,
             win_streak_bonus_per_win=0.02,
             loss_streak_penalty_per_loss=0.03,
             
-            # Anti-churn: Maintained from SURVIVAL
             anti_churn_enabled=True,
-            daily_trade_soft_limit=12,
-            churn_penalty_per_trade=0.02,
+            daily_trade_soft_limit=1,
+            churn_penalty_per_trade=0.10,
             
             hard_block_penalty=0.03,
             soft_block_penalty=0.015,
             per_step_shaping_enabled=False,
             holding_cost_per_bar=0.0,
-            opportunity_bonus_scale=0.0,
+            
+            exploration_bonus=0.01,
+            directional_accuracy_weight=1.0,
             min_reward=-4.0,
             max_reward=4.0,
         ),
@@ -1391,53 +1978,51 @@ def get_economic_logic_config() -> CurriculumStageConfig:
             max_positions=1,
             max_trades_per_day=12,
             max_trades_per_session=6,
-            max_consecutive_losses=4,
+            max_consecutive_losses=5,
             enforce_session_windows=True,
             enforce_no_new_trades_window=True,
             enforce_weekend_block=True,
             enforce_hard_close=True,
             min_minutes_between_entries=8,
-            min_minutes_after_loss=15,
+            min_minutes_after_loss=12,
             daily_drawdown_limit=0.06,
-            max_drawdown_limit=0.12,
+            max_drawdown_limit=0.10,
             daily_dd_safety_buffer=0.006,
-            max_dd_safety_buffer=0.012,
-            emergency_close_threshold=0.11,
+            max_dd_safety_buffer=0.01,
+            emergency_close_threshold=0.09,
             entry_quality_gate_enabled=True,
-            entry_quality_threshold=0.35,
-            hard_stop_loss_eur=250.0,
-            soft_stop_loss_eur=160.0,
-            trailing_activation_eur=80.0,
+            entry_quality_threshold=0.40,
+            hard_stop_loss_eur=300.0,
+            soft_stop_loss_eur=200.0,
+            trailing_activation_eur=70.0,
             trailing_retrace_pct=0.32,
-            time_decay_hours=5.0,
-            risk_per_trade_pct=0.0032,
-            max_risk_per_trade_pct=0.0065,
+            time_decay_hours=6.0,
+            risk_per_trade_pct=0.0035,
+            max_risk_per_trade_pct=0.007,
         ),
         competence=CompetenceThresholds(
-            # PROFITABILITY: Must demonstrate actual profitability
-            min_episodes=250,
-            min_timesteps=600_000,
+            min_episodes=400,
+            min_timesteps=900_000,
             min_win_rate=0.48,
-            min_profit_factor=1.15,         # Must be profitable
-            max_avg_drawdown=0.07,
-            min_avg_pnl=100.0,              # Must make money
-            min_avg_r_multiple=0.05,        # Positive expectancy
-            min_entropy=0.10,
-            max_win_rate_std=0.12,
-            max_pnl_std=9000.0,
-            min_trade_count_avg=4.5,
+            min_profit_factor=1.10,
+            max_avg_drawdown=0.08,
+            min_avg_pnl=50.0,
+            min_avg_r_multiple=0.08,
+            min_entropy=0.15,  # AUDIT FIX: Must match entropy_targets.min_entropy
+            max_win_rate_std=0.18,
+            max_pnl_std=6000.0,
+            min_trade_count_avg=4.0,
             max_dd_breach_rate=0.10,
-            max_consecutive_loss_rate=0.10,
+            max_consecutive_loss_rate=0.15,
             evaluation_window=100,
         ),
-        max_steps_per_episode=2000,
+        max_steps_per_episode=2400,
         include_memory_features=True,
         include_world_model_features=True,
         include_expert_signals=True,
         allow_demotion=True,
         data_difficulty=DataDifficulty(
-            # NORMAL difficulty - full volatility range
-            volatility_percentile_range=(0.0, 1.0),
+            volatility_percentile_range=(0.0, 0.85),
             min_trend_clarity=0.0,
             include_asian_session=True,
             include_london_session=True,
@@ -1451,26 +2036,26 @@ def get_economic_logic_config() -> CurriculumStageConfig:
         transition=TransitionSettings(
             lr_warmup_enabled=True,
             lr_warmup_factor=0.35,
-            lr_warmup_steps=12_000,
+            lr_warmup_steps=15_000,
             reward_blend_enabled=True,
-            reward_blend_episodes=25,
+            reward_blend_episodes=30,
             checkpoint_on_transition=True,
             transition_cooldown_episodes=60,
         ),
         skill_requirements=SkillRequirements(
-            # PROFITABILITY: Now care about trading skills
             required_skills={
+                TradingSkill.TREND_ALIGNMENT: 0.55,
+                TradingSkill.EXIT_QUALITY: 0.50,
+                TradingSkill.ENTRY_TIMING: 0.48,
                 TradingSkill.DRAWDOWN_CONTROL: 0.60,
                 TradingSkill.PATIENCE: 0.55,
-                TradingSkill.EXIT_QUALITY: 0.50,
-                TradingSkill.RISK_REWARD: 0.45,
             },
-            min_confidence=0.50,
+            min_confidence=0.55,
             require_all_skills=False,
             weighted_threshold=0.52,
         ),
         entropy_targets=EntropyTargets(
-            min_entropy=0.12,
+            min_entropy=0.15,
             max_entropy=0.50,
             low_entropy_penalty_scale=0.08,
             high_entropy_penalty_scale=0.05,
@@ -1478,138 +2063,119 @@ def get_economic_logic_config() -> CurriculumStageConfig:
         ),
         composite_scoring=CompositeScoringConfig(
             enabled=True,
-            promotion_threshold=0.70,
-            demotion_threshold=0.35,
+            promotion_threshold=0.68,
+            demotion_threshold=0.32,
             hard_floors={
-                "win_rate": 0.45,
                 "max_drawdown": 0.08,
-                "dd_breach_rate": 0.12,
                 "profit_factor": 1.05,
+                "dd_breach_rate": 0.10,
             },
         ),
         adaptive_thresholds=AdaptiveThresholdConfig(
             enabled=True,
-            plateau_episodes_threshold=60,
-            max_relaxation=0.08,
+            plateau_episodes_threshold=75,
+            max_relaxation=0.06,
         ),
         recovery_protocol=RecoveryProtocolConfig(
             enabled=True,
             trigger_after_demotions=2,
-            recovery_duration_episodes=200,
+            recovery_duration_episodes=180,
         ),
         mixed_stage_sampling=MixedStageSamplingConfig(
             enabled=True,
-            current_stage_weight=0.75,
-            recent_stages_weight=0.18,
-            foundation_weight=0.07,
+            current_stage_weight=0.70,
+            recent_stages_weight=0.22,
+            foundation_weight=0.08,
         ),
         review_session=ReviewSessionConfig(
             enabled=True,
-            review_frequency=400,
-            review_duration=50,
-            review_depth=2,
-        ),
-        validation=ValidationConfig(
-            enabled=True,  # Enable validation from Phase 2
-            validation_episodes=80,
-            min_performance_ratio=0.80,  # Allow 20% drop
-            max_performance_drop=0.20,
-            required_regimes=[
-                MarketRegime.TRENDING_UP,
-                MarketRegime.TRENDING_DOWN,
-                MarketRegime.RANGING,
-            ],
-            min_episodes_per_regime=15,
+            review_frequency=300,
+            review_duration=60,
+            review_depth=4,
         ),
     )
 
 
-def get_professional_config() -> CurriculumStageConfig:
+def get_strategist_config() -> CurriculumStageConfig:
     """
-    PHASE 2 - PROFITABILITY: Stage 4 (PROFESSIONAL)
-    ================================================
-    Harder market conditions. Agent must maintain profitability
-    under more difficult execution.
+    PHASE 2 - DEVELOPMENT: Stage 7 (STRATEGIST)
+    ============================================
+    Combine everything into coherent strategy.
     
-    ENABLED: ALL bonuses (same as Stage 3)
-    MARKET: Hard difficulty
-    FOCUS: Maintain profitability under adversity
+    Goal: Demonstrate consistent execution. Strategy integration.
+    
+    ENABLED: All features, full integration
+    ENTROPY: 0.12 minimum - consistent behavior expected
     """
     return CurriculumStageConfig(
-        stage=CurriculumStage.PROFESSIONAL,
-        name="Professional Trading",
-        description="PROFITABILITY Phase: Harder market, maintain profits.",
+        stage=CurriculumStage.STRATEGIST,
+        name="Strategist",
+        description="DEVELOPMENT Phase: Strategy integration. Consistent execution.",
         execution=ExecutionDifficulty(
-            # HARD difficulty - challenging execution
             base_spread_points=0.18,
-            spread_mult_range=(0.80, 1.50),
-            max_spread_points=0.80,
+            spread_mult_range=(0.80, 1.45),
+            max_spread_points=0.60,
             slippage_points_sigma=0.05,
-            slippage_mult_range=(0.65, 1.70),
-            max_slippage_points=0.35,
-            commission_per_lot=2.0,       # Introduce commission: $2/lot
+            slippage_mult_range=(0.75, 1.55),
+            max_slippage_points=0.25,
+            commission_per_lot=1.5,
             latency_bars=1,
             enable_randomization=True,
-            spread_randomization_range=(0.82, 1.40),
-            slippage_randomization_range=(0.70, 1.55),
+            spread_randomization_range=(0.85, 1.25),
+            slippage_randomization_range=(0.80, 1.35),
             latency_randomization_range=(0, 2),
-            volatility_scale_range=(0.85, 1.22),
+            volatility_scale_range=(0.85, 1.18),
         ),
         rewards=RewardShaping(
-            # ============================================================================
-            # PHASE 2 PROFITABILITY: Stage 4 - HARDER MARKET
-            # ============================================================================
-            # Same rewards as Stage 3, but market is harder.
-            # Agent must prove profitability is robust, not luck.
-            # ============================================================================
-            reward_scale=8.5,
-            loss_multiplier=1.0,
+            reward_scale=9.0,
+            loss_multiplier=1.05,
             
-            # ALL BONUSES ENABLED (same as Stage 3)
-            r_multiple_bonus_threshold=1.5,
-            r_multiple_bonus_scale=0.08,
-            r_multiple_bonus_cap=0.12,
+            r_multiple_bonus_threshold=1.3,
+            r_multiple_bonus_scale=0.10,
+            r_multiple_bonus_cap=0.15,
             
             mae_efficiency_enabled=True,
             mae_efficiency_scale=0.06,
-            mae_efficiency_threshold=1.7,
+            mae_efficiency_threshold=1.5,
             
             time_efficiency_enabled=True,
-            time_efficiency_scale=0.02,
-            optimal_trade_bars=9,
-            max_trade_bars_for_bonus=26,
+            time_efficiency_scale=0.025,
+            optimal_trade_bars=8,
+            max_trade_bars_for_bonus=25,
             
             exit_quality_enabled=True,
-            trailing_stop_bonus=0.25,
-            agent_close_bonus=0.0,            # ALWAYS ZERO
-            hard_stop_penalty=0.10,
-            risk_liquidation_penalty=0.18,
+            trailing_stop_bonus=0.12,
+            agent_close_bonus=0.05,
+            hard_stop_penalty=0.05,
+            risk_liquidation_penalty=0.10,
             
-            truncation_winner_discount=0.30,
-            truncation_loser_extra_penalty=0.14,
+            truncation_winner_discount=0.22,
+            truncation_loser_extra_penalty=0.18,
             
             entry_quality_integration=True,
-            entry_quality_weight=0.22,
+            entry_quality_weight=0.20,
             
             dd_shaping_enabled=True,
-            dd_threshold=0.025,
+            dd_threshold=0.035,
             dd_penalty_scale=0.9,
-            dd_severity_exponent=1.45,
-            dd_severity_cap=1.25,
+            dd_severity_exponent=1.5,
+            dd_severity_cap=1.3,
             
             streak_modifier_enabled=True,
             win_streak_bonus_per_win=0.025,
             loss_streak_penalty_per_loss=0.035,
             
             anti_churn_enabled=True,
-            daily_trade_soft_limit=10,
-            churn_penalty_per_trade=0.022,
+            daily_trade_soft_limit=1,
+            churn_penalty_per_trade=0.12,
             
             hard_block_penalty=0.035,
             soft_block_penalty=0.018,
             per_step_shaping_enabled=False,
             holding_cost_per_bar=0.0,
-            opportunity_bonus_scale=0.0,
+            
+            exploration_bonus=0.005,
+            directional_accuracy_weight=1.0,
             min_reward=-4.5,
             max_reward=4.5,
         ),
@@ -1623,47 +2189,45 @@ def get_professional_config() -> CurriculumStageConfig:
             enforce_weekend_block=True,
             enforce_hard_close=True,
             min_minutes_between_entries=10,
-            min_minutes_after_loss=18,
+            min_minutes_after_loss=15,
             daily_drawdown_limit=0.055,
-            max_drawdown_limit=0.11,
+            max_drawdown_limit=0.095,
             daily_dd_safety_buffer=0.007,
-            max_dd_safety_buffer=0.014,
-            emergency_close_threshold=0.10,
+            max_dd_safety_buffer=0.012,
+            emergency_close_threshold=0.085,
             entry_quality_gate_enabled=True,
-            entry_quality_threshold=0.40,
-            hard_stop_loss_eur=240.0,
-            soft_stop_loss_eur=155.0,
-            trailing_activation_eur=85.0,
-            trailing_retrace_pct=0.32,
-            time_decay_hours=5.0,
-            risk_per_trade_pct=0.003,
-            max_risk_per_trade_pct=0.006,
+            entry_quality_threshold=0.45,
+            hard_stop_loss_eur=280.0,
+            soft_stop_loss_eur=180.0,
+            trailing_activation_eur=75.0,
+            trailing_retrace_pct=0.30,
+            time_decay_hours=5.5,
+            risk_per_trade_pct=0.0032,
+            max_risk_per_trade_pct=0.0065,
         ),
         competence=CompetenceThresholds(
-            # PROFITABILITY: Higher bar with harder market
-            min_episodes=300,
-            min_timesteps=800_000,
+            min_episodes=500,
+            min_timesteps=1_100_000,
             min_win_rate=0.50,
-            min_profit_factor=1.25,
-            max_avg_drawdown=0.065,
-            min_avg_pnl=150.0,
-            min_avg_r_multiple=0.08,
-            min_entropy=0.08,
-            max_win_rate_std=0.11,
-            max_pnl_std=8500.0,
-            min_trade_count_avg=5.0,
+            min_profit_factor=1.18,
+            max_avg_drawdown=0.07,
+            min_avg_pnl=80.0,
+            min_avg_r_multiple=0.10,
+            min_entropy=0.12,  # AUDIT FIX: Must match entropy_targets.min_entropy
+            max_win_rate_std=0.16,
+            max_pnl_std=5500.0,
+            min_trade_count_avg=4.5,
             max_dd_breach_rate=0.08,
-            max_consecutive_loss_rate=0.08,
+            max_consecutive_loss_rate=0.12,
             evaluation_window=120,
         ),
-        max_steps_per_episode=2000,
+        max_steps_per_episode=2600,
         include_memory_features=True,
         include_world_model_features=True,
         include_expert_signals=True,
         allow_demotion=True,
         data_difficulty=DataDifficulty(
-            # FULL range - including difficult periods
-            volatility_percentile_range=(0.0, 1.0),
+            volatility_percentile_range=(0.0, 0.90),
             min_trend_clarity=0.0,
             include_asian_session=True,
             include_london_session=True,
@@ -1677,218 +2241,202 @@ def get_professional_config() -> CurriculumStageConfig:
         transition=TransitionSettings(
             lr_warmup_enabled=True,
             lr_warmup_factor=0.32,
-            lr_warmup_steps=12_000,
+            lr_warmup_steps=15_000,
             reward_blend_enabled=True,
-            reward_blend_episodes=25,
+            reward_blend_episodes=35,
             checkpoint_on_transition=True,
             transition_cooldown_episodes=70,
         ),
         skill_requirements=SkillRequirements(
             required_skills={
-                TradingSkill.DRAWDOWN_CONTROL: 0.65,
-                TradingSkill.PATIENCE: 0.60,
+                TradingSkill.TREND_ALIGNMENT: 0.60,
                 TradingSkill.EXIT_QUALITY: 0.55,
+                TradingSkill.ENTRY_TIMING: 0.52,
+                TradingSkill.DRAWDOWN_CONTROL: 0.65,
+                TradingSkill.PATIENCE: 0.58,
                 TradingSkill.RISK_REWARD: 0.50,
-                TradingSkill.CONSISTENCY: 0.45,
             },
-            min_confidence=0.55,
+            min_confidence=0.58,
             require_all_skills=False,
             weighted_threshold=0.55,
         ),
         entropy_targets=EntropyTargets(
-            min_entropy=0.10,
+            min_entropy=0.12,
             max_entropy=0.45,
-            low_entropy_penalty_scale=0.07,
+            low_entropy_penalty_scale=0.10,
             high_entropy_penalty_scale=0.06,
             use_in_promotion=True,
         ),
         composite_scoring=CompositeScoringConfig(
             enabled=True,
             promotion_threshold=0.72,
-            demotion_threshold=0.38,
+            demotion_threshold=0.35,
             hard_floors={
-                "win_rate": 0.47,
                 "max_drawdown": 0.07,
-                "dd_breach_rate": 0.10,
-                "profit_factor": 1.15,
+                "profit_factor": 1.12,
+                "dd_breach_rate": 0.08,
+                "win_rate": 0.48,
             },
         ),
         adaptive_thresholds=AdaptiveThresholdConfig(
             enabled=True,
-            plateau_episodes_threshold=65,
-            max_relaxation=0.08,
+            plateau_episodes_threshold=80,
+            max_relaxation=0.05,
         ),
         recovery_protocol=RecoveryProtocolConfig(
             enabled=True,
             trigger_after_demotions=2,
-            recovery_duration_episodes=220,
+            recovery_duration_episodes=200,
         ),
         mixed_stage_sampling=MixedStageSamplingConfig(
             enabled=True,
-            current_stage_weight=0.72,
-            recent_stages_weight=0.20,
+            current_stage_weight=0.68,
+            recent_stages_weight=0.24,
             foundation_weight=0.08,
         ),
         review_session=ReviewSessionConfig(
             enabled=True,
-            review_frequency=380,
-            review_duration=55,
-            review_depth=2,
-        ),
-        validation=ValidationConfig(
-            enabled=True,
-            validation_episodes=90,
-            min_performance_ratio=0.82,
-            max_performance_drop=0.18,
-            required_regimes=[
-                MarketRegime.TRENDING_UP,
-                MarketRegime.TRENDING_DOWN,
-                MarketRegime.RANGING,
-            ],
-            min_episodes_per_regime=18,
+            review_frequency=350,
+            review_duration=70,
+            review_depth=5,
         ),
     )
 
 
-def get_adaptive_config() -> CurriculumStageConfig:
+def get_professional_config() -> CurriculumStageConfig:
     """
-    PHASE 2 - PROFITABILITY: Stage 5 (ADAPTIVE) - Final Gate to Phase 3
-    ====================================================================
-    Hardest Phase 2 stage. Must prove consistent profitability
-    before moving to consistency phase.
+    PHASE 3 - MASTERY: Stage 8 (PROFESSIONAL)
+    ==========================================
+    Prop firm constraints. Real-world pressure.
     
-    ENABLED: ALL bonuses (same as Stage 3-4)
-    MARKET: Hardest Phase 2 difficulty
-    FOCUS: Gate to Phase 3 - must be consistently profitable
+    Goal: Trade under prop firm rules. Strict limits.
+    
+    ENABLED: Full prop firm constraints, tighter DD limits
+    ENTROPY: 0.08 minimum - highly consistent behavior expected
     """
     return CurriculumStageConfig(
-        stage=CurriculumStage.ADAPTIVE,
-        name="Adaptive Intelligence",
-        description="PROFITABILITY Phase: Gate to consistency. Prove robust profits.",
+        stage=CurriculumStage.PROFESSIONAL,
+        name="Professional",
+        description="MASTERY Phase: Prop firm constraints. Real trading pressure.",
         execution=ExecutionDifficulty(
-            # HARD difficulty - toughest in Phase 2
             base_spread_points=0.20,
-            spread_mult_range=(0.78, 1.55),
-            max_spread_points=1.00,
-            slippage_points_sigma=0.05,
-            slippage_mult_range=(0.60, 1.80),
-            max_slippage_points=0.40,
-            commission_per_lot=3.0,       # Commission: $3/lot
+            spread_mult_range=(0.75, 1.55),
+            max_spread_points=0.70,
+            slippage_points_sigma=0.06,
+            slippage_mult_range=(0.70, 1.65),
+            max_slippage_points=0.30,
+            commission_per_lot=2.0,
             latency_bars=1,
             enable_randomization=True,
-            spread_randomization_range=(0.80, 1.45),
-            slippage_randomization_range=(0.68, 1.65),
+            spread_randomization_range=(0.80, 1.30),
+            slippage_randomization_range=(0.75, 1.40),
             latency_randomization_range=(0, 2),
-            volatility_scale_range=(0.82, 1.28),
+            volatility_scale_range=(0.82, 1.22),
+            spread_shock_enabled=True,
+            spread_shock_probability=0.01,
+            spread_shock_multiplier=2.0,
         ),
         rewards=RewardShaping(
-            # ============================================================================
-            # PHASE 2 PROFITABILITY: Stage 5 - GATE TO PHASE 3
-            # ============================================================================
-            # Same rewards as Stage 3-4, but must prove consistency.
-            # This is the final test before variance penalties kick in.
-            # ============================================================================
-            reward_scale=9.0,
-            loss_multiplier=1.0,
+            reward_scale=10.0,
+            loss_multiplier=1.08,
             
-            # ALL BONUSES ENABLED (same as Stage 3-4)
-            r_multiple_bonus_threshold=1.4,
-            r_multiple_bonus_scale=0.10,
-            r_multiple_bonus_cap=0.14,
+            r_multiple_bonus_threshold=1.2,
+            r_multiple_bonus_scale=0.12,
+            r_multiple_bonus_cap=0.18,
             
             mae_efficiency_enabled=True,
-            mae_efficiency_scale=0.07,
-            mae_efficiency_threshold=1.6,
+            mae_efficiency_scale=0.08,
+            mae_efficiency_threshold=1.4,
             
             time_efficiency_enabled=True,
-            time_efficiency_scale=0.025,
-            optimal_trade_bars=8,
-            max_trade_bars_for_bonus=24,
+            time_efficiency_scale=0.03,
+            optimal_trade_bars=7,
+            max_trade_bars_for_bonus=22,
             
             exit_quality_enabled=True,
-            trailing_stop_bonus=0.25,
-            agent_close_bonus=0.0,            # ALWAYS ZERO
-            hard_stop_penalty=0.12,
-            risk_liquidation_penalty=0.20,
+            trailing_stop_bonus=0.15,
+            agent_close_bonus=0.06,
+            hard_stop_penalty=0.06,
+            risk_liquidation_penalty=0.12,
             
-            truncation_winner_discount=0.30,
-            truncation_loser_extra_penalty=0.15,
+            truncation_winner_discount=0.20,
+            truncation_loser_extra_penalty=0.20,
             
             entry_quality_integration=True,
-            entry_quality_weight=0.25,
+            entry_quality_weight=0.22,
             
             dd_shaping_enabled=True,
-            dd_threshold=0.022,
+            dd_threshold=0.030,
             dd_penalty_scale=1.0,
-            dd_severity_exponent=1.5,
-            dd_severity_cap=1.3,
+            dd_severity_exponent=1.55,
+            dd_severity_cap=1.35,
             
             streak_modifier_enabled=True,
             win_streak_bonus_per_win=0.03,
             loss_streak_penalty_per_loss=0.04,
             
             anti_churn_enabled=True,
-            daily_trade_soft_limit=9,
-            churn_penalty_per_trade=0.025,
+            daily_trade_soft_limit=1,
+            churn_penalty_per_trade=0.14,
             
             hard_block_penalty=0.04,
             soft_block_penalty=0.02,
             per_step_shaping_enabled=False,
             holding_cost_per_bar=0.0,
-            opportunity_bonus_scale=0.0,
-            min_reward=-4.5,
-            max_reward=4.5,
+            
+            exploration_bonus=0.0,
+            directional_accuracy_weight=1.0,
+            min_reward=-5.0,
+            max_reward=5.0,
         ),
         constraints=TradingConstraints(
             max_positions=1,
-            max_trades_per_day=9,
-            max_trades_per_session=5,
+            max_trades_per_day=8,
+            max_trades_per_session=4,
             max_consecutive_losses=4,
             enforce_session_windows=True,
             enforce_no_new_trades_window=True,
             enforce_weekend_block=True,
             enforce_hard_close=True,
             min_minutes_between_entries=12,
-            min_minutes_after_loss=20,
+            min_minutes_after_loss=18,
             daily_drawdown_limit=0.05,
-            max_drawdown_limit=0.10,
+            max_drawdown_limit=0.09,
             daily_dd_safety_buffer=0.008,
             max_dd_safety_buffer=0.015,
-            emergency_close_threshold=0.09,
+            emergency_close_threshold=0.08,
             entry_quality_gate_enabled=True,
-            entry_quality_threshold=0.42,
-            hard_stop_loss_eur=230.0,
-            soft_stop_loss_eur=150.0,
-            trailing_activation_eur=90.0,
-            trailing_retrace_pct=0.30,
-            time_decay_hours=4.5,
+            entry_quality_threshold=0.50,
+            hard_stop_loss_eur=260.0,
+            soft_stop_loss_eur=170.0,
+            trailing_activation_eur=80.0,
+            trailing_retrace_pct=0.28,
+            time_decay_hours=5.0,
             risk_per_trade_pct=0.003,
             max_risk_per_trade_pct=0.006,
         ),
         competence=CompetenceThresholds(
-            # GATE TO PHASE 3: Must be consistently profitable
-            min_episodes=350,
-            min_timesteps=1_000_000,
+            min_episodes=600,
+            min_timesteps=1_400_000,
             min_win_rate=0.52,
-            min_profit_factor=1.30,
-            max_avg_drawdown=0.055,
-            min_avg_pnl=200.0,
-            min_avg_r_multiple=0.10,
-            min_entropy=0.06,
-            max_win_rate_std=0.10,          # Starting to care about variance
-            max_pnl_std=8000.0,              # Starting to care about variance
+            min_profit_factor=1.25,
+            max_avg_drawdown=0.06,
+            min_avg_pnl=100.0,
+            min_avg_r_multiple=0.12,
+            min_entropy=0.08,  # AUDIT FIX: Must match entropy_targets.min_entropy
+            max_win_rate_std=0.14,
+            max_pnl_std=5000.0,
             min_trade_count_avg=5.0,
             max_dd_breach_rate=0.06,
-            max_consecutive_loss_rate=0.06,
-            evaluation_window=150,
+            max_consecutive_loss_rate=0.10,
+            evaluation_window=140,
         ),
-        max_steps_per_episode=2000,
+        max_steps_per_episode=2800,
         include_memory_features=True,
         include_world_model_features=True,
         include_expert_signals=True,
         allow_demotion=True,
         data_difficulty=DataDifficulty(
-            # FULL range + domain randomization
             volatility_percentile_range=(0.0, 1.0),
             min_trend_clarity=0.0,
             include_asian_session=True,
@@ -1902,64 +2450,66 @@ def get_adaptive_config() -> CurriculumStageConfig:
         ),
         transition=TransitionSettings(
             lr_warmup_enabled=True,
-            lr_warmup_factor=0.30,
-            lr_warmup_steps=15_000,
+            lr_warmup_factor=0.28,
+            lr_warmup_steps=18_000,
             reward_blend_enabled=True,
-            reward_blend_episodes=30,
+            reward_blend_episodes=40,
             checkpoint_on_transition=True,
             transition_cooldown_episodes=80,
         ),
         skill_requirements=SkillRequirements(
             required_skills={
-                TradingSkill.DRAWDOWN_CONTROL: 0.70,
-                TradingSkill.PATIENCE: 0.65,
+                TradingSkill.TREND_ALIGNMENT: 0.65,
                 TradingSkill.EXIT_QUALITY: 0.60,
+                TradingSkill.ENTRY_TIMING: 0.55,
+                TradingSkill.DRAWDOWN_CONTROL: 0.70,
+                TradingSkill.PATIENCE: 0.62,
                 TradingSkill.RISK_REWARD: 0.55,
-                TradingSkill.CONSISTENCY: 0.50,
+                TradingSkill.CONSISTENCY: 0.55,
             },
-            min_confidence=0.58,
+            min_confidence=0.62,
             require_all_skills=False,
             weighted_threshold=0.58,
         ),
         entropy_targets=EntropyTargets(
             min_entropy=0.08,
             max_entropy=0.40,
-            low_entropy_penalty_scale=0.06,
-            high_entropy_penalty_scale=0.07,
+            low_entropy_penalty_scale=0.12,
+            high_entropy_penalty_scale=0.08,
             use_in_promotion=True,
         ),
         composite_scoring=CompositeScoringConfig(
             enabled=True,
             promotion_threshold=0.75,
-            demotion_threshold=0.40,
+            demotion_threshold=0.38,
             hard_floors={
-                "win_rate": 0.50,
                 "max_drawdown": 0.06,
-                "dd_breach_rate": 0.08,
-                "profit_factor": 1.20,
+                "profit_factor": 1.18,
+                "dd_breach_rate": 0.06,
+                "win_rate": 0.50,
             },
         ),
         adaptive_thresholds=AdaptiveThresholdConfig(
             enabled=True,
-            plateau_episodes_threshold=70,
-            max_relaxation=0.07,
+            plateau_episodes_threshold=90,
+            max_relaxation=0.04,
         ),
         recovery_protocol=RecoveryProtocolConfig(
             enabled=True,
             trigger_after_demotions=2,
-            recovery_duration_episodes=250,
+            recovery_duration_episodes=220,
         ),
         mixed_stage_sampling=MixedStageSamplingConfig(
             enabled=True,
-            current_stage_weight=0.70,
-            recent_stages_weight=0.22,
-            foundation_weight=0.08,
+            current_stage_weight=0.65,
+            recent_stages_weight=0.26,
+            foundation_weight=0.09,
         ),
         review_session=ReviewSessionConfig(
             enabled=True,
-            review_frequency=350,
-            review_duration=60,
-            review_depth=2,
+            review_frequency=400,
+            review_duration=80,
+            review_depth=6,
         ),
         validation=ValidationConfig(
             enabled=True,
@@ -1977,105 +2527,95 @@ def get_adaptive_config() -> CurriculumStageConfig:
     )
 
 
-def get_specialist_config() -> CurriculumStageConfig:
+def get_live_ready_config() -> CurriculumStageConfig:
     """
-    PHASE 3 - CONSISTENCY: Stage 6 (SPECIALIST)
-    ============================================
-    First consistency stage. Variance penalties kick in.
-    losses_multiplier > 1.0 for the first time.
+    PHASE 3 - MASTERY: Stage 9 (LIVE_READY) - TERMINAL
+    ===================================================
+    Final stage. Live-ready consistency.
     
-    ENABLED: ALL bonuses (same as Phase 2)
-    NEW: loss_multiplier > 1.0 (losses hurt MORE than wins help)
-    MARKET: Full domain randomization
-    FOCUS: Consistent performance across all regimes
+    Goal: Prove consistent profitability for live deployment.
+    
+    ENABLED: All features, strictest standards
+    ENTROPY: 0.05 minimum - machine-level consistency expected
     """
     return CurriculumStageConfig(
-        stage=CurriculumStage.SPECIALIST,
-        name="Specialization",
-        description="CONSISTENCY Phase: Variance penalties. Losses hurt more.",
+        stage=CurriculumStage.LIVE_READY,
+        name="Live Ready",
+        description="MASTERY Phase: Terminal stage. Prove live-ready consistency.",
         execution=ExecutionDifficulty(
-            # FULL domain randomization
-            base_spread_points=0.20,
-            spread_mult_range=(0.75, 1.60),
-            max_spread_points=1.10,
+            base_spread_points=0.22,
+            spread_mult_range=(0.70, 1.65),
+            max_spread_points=0.80,
             slippage_points_sigma=0.06,
-            slippage_mult_range=(0.55, 1.90),
-            max_slippage_points=0.45,
-            commission_per_lot=4.0,       # Realistic commission: $4/lot
+            slippage_mult_range=(0.65, 1.75),
+            max_slippage_points=0.35,
+            commission_per_lot=3.0,
             latency_bars=1,
             enable_randomization=True,
-            spread_randomization_range=(0.78, 1.50),
-            slippage_randomization_range=(0.62, 1.75),
+            spread_randomization_range=(0.75, 1.35),
+            slippage_randomization_range=(0.70, 1.45),
             latency_randomization_range=(0, 3),
-            volatility_scale_range=(0.78, 1.35),
-            spread_shock_enabled=True,      # Enable spread shocks for robustness
-            spread_shock_probability=0.015,  # 1.5% of steps
+            volatility_scale_range=(0.80, 1.25),
+            spread_shock_enabled=True,
+            spread_shock_probability=0.015,
             spread_shock_multiplier=2.5,
         ),
         rewards=RewardShaping(
-            # ============================================================================
-            # PHASE 3 CONSISTENCY: Stage 6 - VARIANCE PENALTIES BEGIN
-            # ============================================================================
-            # Same rewards as Phase 2, BUT:
-            # - loss_multiplier > 1.0 (losses hurt MORE than wins help)
-            # - Tighter PnL variance requirements
-            # - Must be consistent, not just profitable
-            # ============================================================================
-            reward_scale=9.5,
-            loss_multiplier=1.05,           # LOSSES HURT 5% MORE - variance penalty
+            reward_scale=10.0,
+            loss_multiplier=1.10,
             
-            # ALL BONUSES ENABLED (same as Phase 2)
-            r_multiple_bonus_threshold=1.3,
-            r_multiple_bonus_scale=0.10,
-            r_multiple_bonus_cap=0.15,
+            r_multiple_bonus_threshold=1.2,
+            r_multiple_bonus_scale=0.15,
+            r_multiple_bonus_cap=0.20,
             
             mae_efficiency_enabled=True,
-            mae_efficiency_scale=0.08,
-            mae_efficiency_threshold=1.5,
+            mae_efficiency_scale=0.10,
+            mae_efficiency_threshold=1.3,
             
             time_efficiency_enabled=True,
-            time_efficiency_scale=0.025,
-            optimal_trade_bars=8,
-            max_trade_bars_for_bonus=22,
+            time_efficiency_scale=0.035,
+            optimal_trade_bars=6,
+            max_trade_bars_for_bonus=20,
             
             exit_quality_enabled=True,
-            trailing_stop_bonus=0.25,
-            agent_close_bonus=0.0,            # ALWAYS ZERO
-            hard_stop_penalty=0.12,
-            risk_liquidation_penalty=0.22,
+            trailing_stop_bonus=0.18,
+            agent_close_bonus=0.08,
+            hard_stop_penalty=0.08,
+            risk_liquidation_penalty=0.15,
             
-            truncation_winner_discount=0.30,
-            truncation_loser_extra_penalty=0.15,
+            truncation_winner_discount=0.18,
+            truncation_loser_extra_penalty=0.22,
             
             entry_quality_integration=True,
             entry_quality_weight=0.25,
             
             dd_shaping_enabled=True,
-            dd_threshold=0.020,
+            dd_threshold=0.025,
             dd_penalty_scale=1.1,
-            dd_severity_exponent=1.55,
+            dd_severity_exponent=1.6,
             dd_severity_cap=1.4,
             
-            # Streaks: STRONGER penalties for losing streaks (consistency)
             streak_modifier_enabled=True,
-            win_streak_bonus_per_win=0.03,
-            loss_streak_penalty_per_loss=0.05,   # Stronger - variance penalty
+            win_streak_bonus_per_win=0.035,
+            loss_streak_penalty_per_loss=0.045,
             
             anti_churn_enabled=True,
-            daily_trade_soft_limit=8,
-            churn_penalty_per_trade=0.028,
+            daily_trade_soft_limit=1,
+            churn_penalty_per_trade=0.16,
             
             hard_block_penalty=0.045,
             soft_block_penalty=0.022,
             per_step_shaping_enabled=False,
             holding_cost_per_bar=0.0,
-            opportunity_bonus_scale=0.0,
+            
+            exploration_bonus=0.0,
+            directional_accuracy_weight=1.0,
             min_reward=-5.0,
             max_reward=5.0,
         ),
         constraints=TradingConstraints(
             max_positions=1,
-            max_trades_per_day=8,
+            max_trades_per_day=7,
             max_trades_per_session=4,
             max_consecutive_losses=3,
             enforce_session_windows=True,
@@ -2083,47 +2623,45 @@ def get_specialist_config() -> CurriculumStageConfig:
             enforce_weekend_block=True,
             enforce_hard_close=True,
             min_minutes_between_entries=15,
-            min_minutes_after_loss=25,
-            daily_drawdown_limit=0.05,
-            max_drawdown_limit=0.10,
+            min_minutes_after_loss=20,
+            daily_drawdown_limit=0.048,
+            max_drawdown_limit=0.085,
             daily_dd_safety_buffer=0.008,
             max_dd_safety_buffer=0.015,
-            emergency_close_threshold=0.09,
+            emergency_close_threshold=0.075,
             entry_quality_gate_enabled=True,
-            entry_quality_threshold=0.45,
-            hard_stop_loss_eur=220.0,
-            soft_stop_loss_eur=145.0,
-            trailing_activation_eur=95.0,
-            trailing_retrace_pct=0.28,
-            time_decay_hours=4.0,
-            risk_per_trade_pct=0.003,
-            max_risk_per_trade_pct=0.006,
+            entry_quality_threshold=0.55,
+            hard_stop_loss_eur=250.0,
+            soft_stop_loss_eur=160.0,
+            trailing_activation_eur=85.0,
+            trailing_retrace_pct=0.26,
+            time_decay_hours=4.5,
+            risk_per_trade_pct=0.0028,
+            max_risk_per_trade_pct=0.0055,
         ),
         competence=CompetenceThresholds(
-            # CONSISTENCY: Variance requirements tighten (but achievable from Stage 5)
-            min_episodes=350,             # Reduced from 400
-            min_timesteps=1_000_000,      # Reduced from 1.2M
-            min_win_rate=0.51,            # Softened from 0.53
-            min_profit_factor=1.30,       # Softened from 1.35
-            max_avg_drawdown=0.055,       # Softened from 0.05
-            min_avg_pnl=200.0,            # Softened from 250
-            min_avg_r_multiple=0.10,      # Softened from 0.12
-            min_entropy=0.05,
-            max_win_rate_std=0.09,        # Softened from 0.08 - more achievable
-            max_pnl_std=7500.0,           # Softened from 7000 - more achievable
-            min_trade_count_avg=5.0,      # Softened from 5.5
-            max_dd_breach_rate=0.06,      # Softened from 0.05
-            max_consecutive_loss_rate=0.06, # Softened from 0.05
-            evaluation_window=150,        # Reduced from 180
+            min_episodes=700,
+            min_timesteps=1_600_000,
+            min_win_rate=0.54,
+            min_profit_factor=1.32,
+            max_avg_drawdown=0.055,
+            min_avg_pnl=120.0,
+            min_avg_r_multiple=0.14,
+            min_entropy=0.04,
+            max_win_rate_std=0.12,
+            max_pnl_std=4500.0,
+            min_trade_count_avg=5.5,
+            max_dd_breach_rate=0.05,
+            max_consecutive_loss_rate=0.08,
+            evaluation_window=160,
         ),
-        max_steps_per_episode=2000,
+        max_steps_per_episode=3000,
         include_memory_features=True,
         include_world_model_features=True,
-        include_expert_signals=False,   # DISABLED: Live-robustness - agent must work without expert signals
-        expert_signal_dropout=0.0,      # No dropout needed when signals are disabled
+        include_expert_signals=True,
         allow_demotion=True,
+        is_terminal=True,
         data_difficulty=DataDifficulty(
-            # FULL domain randomization
             volatility_percentile_range=(0.0, 1.0),
             min_trend_clarity=0.0,
             include_asian_session=True,
@@ -2138,63 +2676,65 @@ def get_specialist_config() -> CurriculumStageConfig:
         transition=TransitionSettings(
             lr_warmup_enabled=True,
             lr_warmup_factor=0.25,
-            lr_warmup_steps=18_000,
+            lr_warmup_steps=20_000,
             reward_blend_enabled=True,
-            reward_blend_episodes=35,
+            reward_blend_episodes=45,
             checkpoint_on_transition=True,
             transition_cooldown_episodes=100,
         ),
         skill_requirements=SkillRequirements(
             required_skills={
-                TradingSkill.DRAWDOWN_CONTROL: 0.75,
-                TradingSkill.PATIENCE: 0.70,
+                TradingSkill.TREND_ALIGNMENT: 0.70,
                 TradingSkill.EXIT_QUALITY: 0.65,
+                TradingSkill.ENTRY_TIMING: 0.60,
+                TradingSkill.DRAWDOWN_CONTROL: 0.75,
+                TradingSkill.PATIENCE: 0.68,
                 TradingSkill.RISK_REWARD: 0.60,
-                TradingSkill.CONSISTENCY: 0.60,
+                TradingSkill.CONSISTENCY: 0.65,
             },
-            min_confidence=0.62,
+            min_confidence=0.68,
             require_all_skills=False,
             weighted_threshold=0.62,
         ),
         entropy_targets=EntropyTargets(
             min_entropy=0.05,
             max_entropy=0.35,
-            low_entropy_penalty_scale=0.05,
-            high_entropy_penalty_scale=0.08,
-            use_in_promotion=True,
+            low_entropy_penalty_scale=0.15,
+            high_entropy_penalty_scale=0.10,
+            use_in_promotion=False,
         ),
         composite_scoring=CompositeScoringConfig(
             enabled=True,
-            promotion_threshold=0.78,
-            demotion_threshold=0.42,
+            promotion_threshold=0.80,
+            demotion_threshold=0.40,
             hard_floors={
-                "win_rate": 0.52,
                 "max_drawdown": 0.055,
-                "dd_breach_rate": 0.06,
-                "profit_factor": 1.28,
+                "profit_factor": 1.25,
+                "dd_breach_rate": 0.05,
+                "win_rate": 0.52,
             },
         ),
         adaptive_thresholds=AdaptiveThresholdConfig(
             enabled=True,
-            plateau_episodes_threshold=75,
-            max_relaxation=0.06,
+            plateau_episodes_threshold=100,
+            max_relaxation=0.03,
         ),
         recovery_protocol=RecoveryProtocolConfig(
             enabled=True,
             trigger_after_demotions=2,
-            recovery_duration_episodes=300,
+            recovery_duration_episodes=250,
         ),
         mixed_stage_sampling=MixedStageSamplingConfig(
             enabled=True,
-            current_stage_weight=0.68,
-            recent_stages_weight=0.24,
-            foundation_weight=0.08,
+            current_stage_weight=0.62,
+            recent_stages_weight=0.28,
+            foundation_weight=0.10,
         ),
         review_session=ReviewSessionConfig(
             enabled=True,
-            review_frequency=320,
-            review_duration=65,
-            review_depth=3,
+            review_frequency=450,
+            review_duration=90,
+            review_depth=7,
         ),
         validation=ValidationConfig(
             enabled=True,
@@ -2208,243 +2748,7 @@ def get_specialist_config() -> CurriculumStageConfig:
                 MarketRegime.HIGH_VOLATILITY,
                 MarketRegime.LOW_VOLATILITY,
             ],
-            min_episodes_per_regime=20,
-        ),
-    )
-
-
-def get_live_ready_config() -> CurriculumStageConfig:
-    """
-    PHASE 3 - CONSISTENCY: Stage 7 (LIVE_READY) - TERMINAL
-    =======================================================
-    Final stage. Strictest variance penalties.
-    Must demonstrate consistent profitability for live deployment.
-    
-    ENABLED: ALL bonuses (same as Phase 2)
-    STRONGEST: loss_multiplier = 1.08 (losses hurt 8% MORE)
-    MARKET: Full domain randomization
-    FOCUS: Prove live-ready consistency
-    """
-    return CurriculumStageConfig(
-        stage=CurriculumStage.LIVE_READY,
-        name="Live Ready",
-        description="CONSISTENCY Phase: Terminal stage. Prove live-ready.",
-        execution=ExecutionDifficulty(
-            # FULL domain randomization - worst case scenarios
-            base_spread_points=0.22,
-            spread_mult_range=(0.70, 1.70),
-            max_spread_points=1.25,
-            slippage_points_sigma=0.06,
-            slippage_mult_range=(0.50, 2.00),
-            max_slippage_points=0.50,
-            commission_per_lot=5.0,       # Realistic commission: $5/lot (worst case)
-            latency_bars=1,
-            enable_randomization=True,
-            spread_randomization_range=(0.75, 1.60),
-            slippage_randomization_range=(0.55, 1.85),
-            latency_randomization_range=(0, 3),
-            volatility_scale_range=(0.75, 1.40),
-            spread_shock_enabled=True,      # Enable spread shocks for robustness
-            spread_shock_probability=0.02,   # 2% of steps
-            spread_shock_multiplier=3.0,     # 3x spread during news/open/close
-        ),
-        rewards=RewardShaping(
-            # ============================================================================
-            # PHASE 3 CONSISTENCY: Stage 7 - TERMINAL STAGE
-            # ============================================================================
-            # Strictest variance penalty. Losses hurt 8% MORE than wins help.
-            # Agent must demonstrate CONSISTENT profitability.
-            # This is the final test before live deployment.
-            # ============================================================================
-            reward_scale=10.0,
-            loss_multiplier=1.08,           # LOSSES HURT 8% MORE - strictest variance
-            
-            # ALL BONUSES ENABLED at full strength
-            r_multiple_bonus_threshold=1.2,
-            r_multiple_bonus_scale=0.12,
-            r_multiple_bonus_cap=0.18,
-            
-            mae_efficiency_enabled=True,
-            mae_efficiency_scale=0.10,
-            mae_efficiency_threshold=1.4,
-            
-            time_efficiency_enabled=True,
-            time_efficiency_scale=0.03,
-            optimal_trade_bars=7,
-            max_trade_bars_for_bonus=20,
-            
-            exit_quality_enabled=True,
-            trailing_stop_bonus=0.25,
-            agent_close_bonus=0.0,            # ALWAYS ZERO
-            hard_stop_penalty=0.15,
-            risk_liquidation_penalty=0.25,
-            
-            truncation_winner_discount=0.35,
-            truncation_loser_extra_penalty=0.18,
-            
-            entry_quality_integration=True,
-            entry_quality_weight=0.28,
-            
-            dd_shaping_enabled=True,
-            dd_threshold=0.018,
-            dd_penalty_scale=1.2,
-            dd_severity_exponent=1.6,
-            dd_severity_cap=1.5,
-            
-            # Streaks: STRONGEST penalties for losing streaks
-            streak_modifier_enabled=True,
-            win_streak_bonus_per_win=0.035,
-            loss_streak_penalty_per_loss=0.06,   # STRONGEST variance penalty
-            
-            anti_churn_enabled=True,
-            daily_trade_soft_limit=7,
-            churn_penalty_per_trade=0.03,
-            
-            hard_block_penalty=0.05,
-            soft_block_penalty=0.025,
-            per_step_shaping_enabled=False,
-            holding_cost_per_bar=0.0,
-            opportunity_bonus_scale=0.0,
-            min_reward=-5.0,
-            max_reward=5.0,
-        ),
-        constraints=TradingConstraints(
-            max_positions=1,
-            max_trades_per_day=7,
-            max_trades_per_session=4,
-            max_consecutive_losses=3,
-            enforce_session_windows=True,
-            enforce_no_new_trades_window=True,
-            enforce_weekend_block=True,
-            enforce_hard_close=True,
-            min_minutes_between_entries=18,
-            min_minutes_after_loss=30,
-            daily_drawdown_limit=0.05,
-            max_drawdown_limit=0.10,
-            daily_dd_safety_buffer=0.008,
-            max_dd_safety_buffer=0.015,
-            emergency_close_threshold=0.09,
-            entry_quality_gate_enabled=True,
-            entry_quality_threshold=0.48,
-            hard_stop_loss_eur=210.0,
-            soft_stop_loss_eur=140.0,
-            trailing_activation_eur=100.0,
-            trailing_retrace_pct=0.28,
-            time_decay_hours=4.0,
-            risk_per_trade_pct=0.003,
-            max_risk_per_trade_pct=0.006,
-        ),
-        competence=CompetenceThresholds(
-            # TERMINAL: Strict consistency (but achievable from Stage 6)
-            min_episodes=400,             # Reduced from 500
-            min_timesteps=1_200_000,      # Reduced from 1.5M
-            min_win_rate=0.52,            # Softened from 0.54
-            min_profit_factor=1.35,       # Softened from 1.40
-            max_avg_drawdown=0.05,        # Softened from 0.045
-            min_avg_pnl=250.0,            # Softened from 300
-            min_avg_r_multiple=0.12,      # Softened from 0.15
-            min_entropy=0.04,
-            max_win_rate_std=0.08,        # Softened from 0.06 - realistic
-            max_pnl_std=7000.0,           # Softened from 6000 - realistic
-            min_trade_count_avg=5.0,      # Softened from 5.5
-            max_dd_breach_rate=0.05,      # Softened from 0.04
-            max_consecutive_loss_rate=0.05, # Softened from 0.04
-            evaluation_window=160,        # Reduced from 200
-        ),
-        max_steps_per_episode=2000,
-        include_memory_features=True,
-        include_world_model_features=True,
-        include_expert_signals=False,   # DISABLED: Live-robustness - no expert signals in terminal stage
-        expert_signal_dropout=0.0,      # No dropout needed when signals are disabled
-        allow_demotion=True,
-        is_terminal=True,
-        data_difficulty=DataDifficulty(
-            # FULL domain randomization
-            volatility_percentile_range=(0.0, 1.0),
-            min_trend_clarity=0.0,
-            include_asian_session=True,
-            include_london_session=True,
-            include_ny_session=True,
-            include_overlap_sessions=True,
-            exclude_high_impact_news=False,
-            exclude_market_open_close=False,
-            prefer_recent_data=True,
-            recent_data_weight=1.5,
-        ),
-        transition=TransitionSettings(
-            lr_warmup_enabled=True,
-            lr_warmup_factor=0.20,
-            lr_warmup_steps=20_000,
-            reward_blend_enabled=True,
-            reward_blend_episodes=40,
-            checkpoint_on_transition=True,
-            transition_cooldown_episodes=120,
-        ),
-        skill_requirements=SkillRequirements(
-            required_skills={
-                TradingSkill.DRAWDOWN_CONTROL: 0.80,
-                TradingSkill.PATIENCE: 0.75,
-                TradingSkill.EXIT_QUALITY: 0.70,
-                TradingSkill.RISK_REWARD: 0.65,
-                TradingSkill.CONSISTENCY: 0.70,
-            },
-            min_confidence=0.68,
-            require_all_skills=False,
-            weighted_threshold=0.68,
-        ),
-        entropy_targets=EntropyTargets(
-            min_entropy=0.04,
-            max_entropy=0.30,
-            low_entropy_penalty_scale=0.04,
-            high_entropy_penalty_scale=0.10,
-            use_in_promotion=False,  # Terminal stage
-        ),
-        composite_scoring=CompositeScoringConfig(
-            enabled=True,
-            promotion_threshold=0.82,  # Terminal stage
-            demotion_threshold=0.45,
-            hard_floors={
-                "win_rate": 0.53,
-                "max_drawdown": 0.05,
-                "dd_breach_rate": 0.05,
-                "profit_factor": 1.35,
-            },
-        ),
-        adaptive_thresholds=AdaptiveThresholdConfig(
-            enabled=True,
-            plateau_episodes_threshold=80,
-            max_relaxation=0.05,
-        ),
-        recovery_protocol=RecoveryProtocolConfig(
-            enabled=True,
-            trigger_after_demotions=2,
-            recovery_duration_episodes=350,
-        ),
-        mixed_stage_sampling=MixedStageSamplingConfig(
-            enabled=True,
-            current_stage_weight=0.65,
-            recent_stages_weight=0.27,
-            foundation_weight=0.08,
-        ),
-        review_session=ReviewSessionConfig(
-            enabled=True,
-            review_frequency=280,
-            review_duration=75,
-            review_depth=4,
-        ),
-        validation=ValidationConfig(
-            enabled=True,
-            validation_episodes=150,
-            min_performance_ratio=0.90,
-            max_performance_drop=0.10,
-            required_regimes=[
-                MarketRegime.TRENDING_UP,
-                MarketRegime.TRENDING_DOWN,
-                MarketRegime.RANGING,
-                MarketRegime.HIGH_VOLATILITY,
-                MarketRegime.LOW_VOLATILITY,
-            ],
-            min_episodes_per_regime=25,
+            min_episodes_per_regime=22,
         ),
     )
 
@@ -2454,13 +2758,19 @@ def get_live_ready_config() -> CurriculumStageConfig:
 # =============================================================================
 
 CURRICULUM_CONFIGS: Dict[CurriculumStage, Callable[[], CurriculumStageConfig]] = {
-    CurriculumStage.FOUNDATION: get_foundation_config,
-    CurriculumStage.DISCIPLINE: get_discipline_config,
-    CurriculumStage.MARKET_STRUCTURE: get_market_structure_config,
-    CurriculumStage.ECONOMIC_LOGIC: get_economic_logic_config,
+    # Phase 0: DISCOVERY
+    CurriculumStage.EXPLORER: get_explorer_config,
+    CurriculumStage.EXPERIMENTER: get_experimenter_config,
+    # Phase 1: FOUNDATION
+    CurriculumStage.TREND_STUDENT: get_trend_student_config,
+    CurriculumStage.SESSION_STUDENT: get_session_student_config,
+    CurriculumStage.TIMING_STUDENT: get_timing_student_config,
+    # Phase 2: DEVELOPMENT
+    CurriculumStage.INTEGRATOR: get_integrator_config,
+    CurriculumStage.RISK_MANAGER: get_risk_manager_config,
+    CurriculumStage.STRATEGIST: get_strategist_config,
+    # Phase 3: MASTERY
     CurriculumStage.PROFESSIONAL: get_professional_config,
-    CurriculumStage.ADAPTIVE: get_adaptive_config,
-    CurriculumStage.SPECIALIST: get_specialist_config,
     CurriculumStage.LIVE_READY: get_live_ready_config,
 }
 
@@ -2523,6 +2833,16 @@ def validate_stage_config(cfg: CurriculumStageConfig) -> List[str]:
     e = cfg.entropy_targets
     if e.min_entropy > e.max_entropy:
         issues.append(f"{cfg.stage.name}: min_entropy > max_entropy")
+    
+    # AUDIT FIX: Single source of truth for entropy gating
+    # If entropy is used in promotion, competence.min_entropy and entropy_targets.min_entropy
+    # must match to avoid confusing mismatches (e.g., competence=0.30, targets=0.35)
+    if e.use_in_promotion and abs(c.min_entropy - e.min_entropy) > 1e-6:
+        issues.append(
+            f"{cfg.stage.name}: competence.min_entropy ({c.min_entropy}) != "
+            f"entropy_targets.min_entropy ({e.min_entropy}) while use_in_promotion=True. "
+            f"This causes promotion gating confusion - pick ONE value for both."
+        )
     
     # Validate composite scoring weights - keys must match compute_composite_score() components
     cs = cfg.composite_scoring
@@ -2624,13 +2944,14 @@ def validate_curriculum_monotonicity() -> List[str]:
 def print_curriculum_summary() -> None:
     """Print a summary of the curriculum configuration for debugging."""
     print("\n" + "=" * 80)
-    print("3-PHASE PROP FIRM CURRICULUM SUMMARY")
+    print("10-STAGE PROP FIRM CURRICULUM SUMMARY")
     print("=" * 80)
     
     phases = {
-        "PHASE 1 - SURVIVAL": [CurriculumStage.FOUNDATION, CurriculumStage.DISCIPLINE, CurriculumStage.MARKET_STRUCTURE],
-        "PHASE 2 - PROFITABILITY": [CurriculumStage.ECONOMIC_LOGIC, CurriculumStage.PROFESSIONAL, CurriculumStage.ADAPTIVE],
-        "PHASE 3 - CONSISTENCY": [CurriculumStage.SPECIALIST, CurriculumStage.LIVE_READY],
+        "PHASE 0 - DISCOVERY": [CurriculumStage.EXPLORER, CurriculumStage.EXPERIMENTER],
+        "PHASE 1 - FOUNDATION": [CurriculumStage.TREND_STUDENT, CurriculumStage.SESSION_STUDENT, CurriculumStage.TIMING_STUDENT],
+        "PHASE 2 - DEVELOPMENT": [CurriculumStage.INTEGRATOR, CurriculumStage.RISK_MANAGER, CurriculumStage.STRATEGIST],
+        "PHASE 3 - MASTERY": [CurriculumStage.PROFESSIONAL, CurriculumStage.LIVE_READY],
     }
     
     for phase_name, stages in phases.items():
@@ -2640,9 +2961,10 @@ def print_curriculum_summary() -> None:
             cfg = get_stage_config(stage)
             c = cfg.competence
             e = cfg.execution
+            ent = cfg.entropy_targets
             print(f"  Stage {stage.value}: {cfg.name}")
             print(f"    WR >= {c.min_win_rate:.0%}, PF >= {c.min_profit_factor:.2f}, DD <= {c.max_avg_drawdown:.1%}")
-            print(f"    Commission: ${e.commission_per_lot}/lot, Expert Signals: {cfg.include_expert_signals}")
+            print(f"    Entropy target: {ent.min_entropy:.2f}, Commission: ${e.commission_per_lot}/lot")
     
     # Validation
     print("\n" + "=" * 80)

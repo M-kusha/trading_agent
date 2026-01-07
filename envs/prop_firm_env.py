@@ -274,17 +274,17 @@ class RewardConfig:
 
     # Anti-churn
     anti_churn_enabled: bool = True
-    daily_trade_soft_limit: int = 10
-    churn_penalty_per_trade: float = 0.02
+    daily_trade_soft_limit: int = 5  # Lowered from 10 - enforce discipline earlier
+    churn_penalty_per_trade: float = 0.08  # 4x stronger penalty (was 0.02)
 
     # Trade activity consistency (NEW)
     # Encourages consistent trade counts across episodes
     activity_consistency_enabled: bool = True
-    target_trades_per_1k_steps: float = 40.0  # Default ~80 trades per 2000-step episode
+    target_trades_per_1k_steps: float = 10.0  # ~20 trades per 2000-step episode (was 40→80!)
     # Stage-specific targets: early stages allow more exploration, later enforce discipline
     # Key = stage index (0=Foundation, 7=LiveReady), Value = trades per 1k steps
     stage_activity_targets: Optional[Dict[int, float]] = None  # If None, use target_trades_per_1k_steps
-    activity_deviation_penalty_scale: float = 0.1  # Penalty for deviating from target
+    activity_deviation_penalty_scale: float = 0.2  # Stronger penalty for deviation (was 0.1)
     min_trades_penalty: float = 0.3  # Penalty if < 20% of target trades
 
     # Blocked action penalties
@@ -577,9 +577,9 @@ class PropFirmTradingEnv(gym.Env):
         self.obs_builder: Optional["PPOObservationBuilder"] = None  # type: ignore
         if OBS_BUILDER_AVAILABLE and PPOObservationBuilder is not None:
             self.obs_builder = PPOObservationBuilder()
-            print(f"[OBS] Using PPOObservationBuilder v{PPO_OBS_VERSION}")
+            logger.info(f"[OBS] Using PPOObservationBuilder v{PPO_OBS_VERSION}")
         else:
-            print("[OBS] PPOObservationBuilder not available -> fallback observation")
+            logger.warning("[OBS] PPOObservationBuilder not available -> fallback observation")
 
         # FIXED: Use primary timeframe length for episode boundaries, not min across all TFs
         # Higher timeframes (D1, H4) are only used for context, not for episode progression
@@ -676,14 +676,14 @@ class PropFirmTradingEnv(gym.Env):
                     sub = getattr(target, head)
                     try:
                         self._apply_overrides_to_object(sub, {rest: v})
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"Override {k}={v} failed: {e}")
                 continue
             if hasattr(target, k):
                 try:
                     setattr(target, k, v)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Override {k}={v} failed: {e}")
 
     def _sync_curriculum_stage_overrides(self) -> None:
         """
@@ -1089,8 +1089,8 @@ class PropFirmTradingEnv(gym.Env):
                     # If at least one session enabled, apply filter
                     if session_mask.any():
                         valid_mask &= session_mask
-            except Exception:
-                pass  # Skip session filtering if hours not available
+            except Exception as e:
+                logger.debug(f"Skip session filtering: {e}")
 
         # Apply market open/close filter
         if getattr(difficulty, "exclude_market_open_close", False):
@@ -1103,8 +1103,8 @@ class PropFirmTradingEnv(gym.Env):
                         (hours == 7) | (hours == 15) | (hours == 21)   # Closes
                     )
                     valid_mask &= open_close_mask
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Skip market open/close filter: {e}")
 
         # Restrict to valid start range
         range_mask = np.zeros(n_bars, dtype=bool)
@@ -1170,25 +1170,18 @@ class PropFirmTradingEnv(gym.Env):
                 return
             
             returns = np.abs(np.diff(close) / (close[:-1] + 1e-10))
-            vol = np.zeros(len(close))
-            vol[0] = 0.0  # First bar has no volatility data
             
-            for i in range(1, len(returns)):
-                start = max(0, i - window)
-                vol[i] = np.std(returns[start:i]) if i > start else 0.0
+            # HIGH-1 FIX: Use pandas rolling + rank instead of manual loop + scipy.rankdata
+            # This removes the SciPy dependency that can crash training boxes without scipy
+            vol_series = pd.Series(returns).rolling(window=window, min_periods=1).std().fillna(0.0)
+            vol = np.concatenate([[0.0], vol_series.to_numpy(dtype=np.float64)])
             
-            # O(n log n) global percentile using scipy rankdata
-            # This replaces the O(n²) expanding window loop
-            from scipy.stats import rankdata
-            
-            n = len(close)
-            # rankdata returns 1-based ranks; divide by n for percentile [0, 1]
-            # method='average' handles ties appropriately
-            full_ranks = rankdata(vol, method='average')
-            percentiles = full_ranks / n
+            # Percentile ranks in [0,1] using pandas (no SciPy required)
+            percentiles = pd.Series(vol).rank(pct=True, method="average").to_numpy(dtype=np.float64)
             
             # First bar gets default 0.5 (median assumption for unknown)
-            percentiles[0] = 0.5
+            if len(percentiles) > 0:
+                percentiles[0] = 0.5
             
             self._volatility_percentiles = percentiles
         except Exception:
@@ -1528,13 +1521,10 @@ class PropFirmTradingEnv(gym.Env):
         return dt.date()
 
     def _bars_per_day(self) -> int:
-        tf = (self.config.primary_timeframe or "M15").upper().strip()
-        mapping = {
-            "M1": 1440, "M2": 720, "M3": 480, "M5": 288, "M10": 144, "M15": 96, "M30": 48,
-            "H1": 24, "H2": 12, "H4": 6, "H6": 4, "H8": 3, "H12": 2,
-            "D1": 1,
-        }
-        return int(mapping.get(tf, 96))
+        # MED-2 FIX: Use shared_utils instead of duplicate mapping
+        from envs.shared_utils import bars_per_day_for_timeframe
+        tf = self.config.primary_timeframe or "M15"
+        return bars_per_day_for_timeframe(tf)
 
     def _maybe_roll_day_session(self, dt: Optional[datetime]) -> None:
         if dt is None:
@@ -1551,7 +1541,9 @@ class PropFirmTradingEnv(gym.Env):
 
             if self._current_day != cur_day:
                 self._current_day = cur_day
-                self.day_start_balance = self.balance
+                # CRIT FIX: Use equity (includes unrealized PnL), not balance (cash only)
+                # This prevents daily DD "reset" exploit when carrying losing positions over midnight
+                self.day_start_balance = self.equity
                 self.daily_trades = 0
                 self.daily_pnl = 0.0
             return
@@ -1559,7 +1551,8 @@ class PropFirmTradingEnv(gym.Env):
         cur_day = dt.date()
         if self._current_day != cur_day:
             self._current_day = cur_day
-            self.day_start_balance = self.balance
+            # CRIT FIX: Use equity (includes unrealized PnL), not balance (cash only)
+            self.day_start_balance = self.equity
             self.daily_trades = 0
             self.daily_pnl = 0.0
 
@@ -2356,7 +2349,6 @@ class PropFirmTradingEnv(gym.Env):
         
         # Cache entry quality at step start (computed once, reused for gating and info)
         self._step_entry_quality_cache: Dict[str, float] = {}
-        self._maybe_roll_day_session(dt)
 
         intent, size_mult = self._decode_action(int(action))
 
@@ -2376,7 +2368,7 @@ class PropFirmTradingEnv(gym.Env):
         trade_closed = False
         close_result: Optional[TradeResult] = None
 
-        # Mark-to-market
+        # Mark-to-market FIRST (before day roll)
         pnl_u = 0.0
         if self.position is not None:
             pnl_u = self._mark_unrealized_pnl_from_bid_ask(self.position, bid, ask)
@@ -2387,6 +2379,12 @@ class PropFirmTradingEnv(gym.Env):
             self.equity = self.balance
 
         self._update_peak_balance()
+        
+        # CRIT-1 FIX: Roll day/session AFTER mark-to-market so day_start_balance includes 
+        # open PnL at midnight. This prevents daily drawdown "reset" exploits when carrying
+        # losing positions across days.
+        self._maybe_roll_day_session(dt)
+        
         current_dd, current_daily_dd = self._calc_dds()
 
         # Forced closes
@@ -2644,7 +2642,20 @@ class PropFirmTradingEnv(gym.Env):
             
             expected_trades = (episode_steps / 1000.0) * target_per_1k
             
-            if expected_trades > 0:
+            # HIGH-2 FIX: Guard against penalizing short or DD-terminated episodes
+            # - Skip for short episodes (expected < 2 trades)
+            # - Skip for episodes < 300 steps (too short to establish pattern)
+            # - Skip for DD-breach terminations (risk management is the priority, not activity)
+            is_dd_termination = termination_reason in (
+                "max_drawdown_breach", "daily_limit_breach", "daily_dd_breach"
+            )
+            should_apply_penalty = (
+                expected_trades >= 2.0 and
+                episode_steps >= 300 and
+                not is_dd_termination
+            )
+            
+            if should_apply_penalty:
                 trade_ratio = actual_trades / expected_trades
                 
                 # Penalize severe under-trading (< 20% of expected)
@@ -2860,7 +2871,11 @@ class PropFirmTradingEnv(gym.Env):
         action_str = "long" if signed_score > 0.1 else ("short" if signed_score < -0.1 else "flat")
 
         nonzero_signs = [int(np.sign(d)) for d in dirs if abs(d) > 0.1]
-        agreement = 1.0 if len(set(nonzero_signs)) <= 1 else 0.0
+        # MED-1 FIX: When no meaningful signals exist, use 0.5 (uncertain), not 1.0 (full agreement)
+        if not nonzero_signs:
+            agreement = 0.5
+        else:
+            agreement = 1.0 if len(set(nonzero_signs)) == 1 else 0.0
 
         return {
             "consensus_score": float(np.clip(abs(signed_score), 0.0, 1.0)),

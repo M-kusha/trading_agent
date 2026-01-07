@@ -19,7 +19,7 @@ Usage:
     from envs.curriculum_env_wrapper import CurriculumEnvWrapper
     from envs.curriculum_manager import CurriculumManager
     
-    manager = CurriculumManager(initial_stage=CurriculumStage.FOUNDATION)
+    manager = CurriculumManager(initial_stage=CurriculumStage.EXPLORER)
     env = CurriculumEnvWrapper(base_env, manager)
     
     obs, info = env.reset()
@@ -176,19 +176,9 @@ class CurriculumEnvWrapper(gym.Wrapper):
         self._step_rewards: List[float] = []
         self._step_raw_rewards: List[float] = []
         
-        # Exit quality tracking within episode
-        self._episode_trailing_stops: int = 0
-        self._episode_agent_closes: int = 0
-        self._episode_hard_stops: int = 0
-        self._episode_risk_liquidations: int = 0
-        self._episode_other_exits: int = 0
-        
-        # Trade quality tracking
-        self._episode_entry_qualities: List[float] = []
-        self._episode_r_multiples: List[float] = []
-        self._episode_maes: List[float] = []
-        self._episode_mfes: List[float] = []
-        self._episode_bars_held: List[int] = []
+        # NOTE: Exit type and trade quality tracking was REMOVED.
+        # These are now exclusively tracked by PropFirmTradingEnv.get_episode_stats().
+        # The wrapper merges base env stats at episode end.
         
         # Recovery protocol state cache
         self._active_recovery: bool = False
@@ -343,242 +333,15 @@ class CurriculumEnvWrapper(gym.Wrapper):
                 setattr(rewards, name, value)
         
         return rewards
-    
-    # -------------------------------------------------------------------------
-    # Reward Shaping
-    # -------------------------------------------------------------------------
-    
-    def _shape_reward(
-        self,
-        raw_reward: float,
-        info: Dict[str, Any],
-        terminated: bool,
-        truncated: bool,
-    ) -> float:
-        """Apply curriculum-based reward shaping."""
-        if not self.apply_reward_shaping:
-            return raw_reward
-        
-        config = self._get_effective_reward_shaping()
-        shaped = raw_reward * config.reward_scale
-        shaping_component = 0.0
-        
-        # Loss multiplier
-        if raw_reward < 0:
-            shaped *= config.loss_multiplier
-        
-        # Track exit for exit quality bonus/penalty
-        exit_type = info.get("exit_type", info.get("close_reason", ""))
-        if exit_type:
-            self._track_exit_type(exit_type)
-            
-            if config.exit_quality_enabled:
-                exit_bonus = self._compute_exit_quality_bonus(exit_type, config)
-                shaped += exit_bonus
-                shaping_component += exit_bonus
-        
-        # R-multiple bonus
-        r_multiple = _safe_float(info.get("r_multiple", 0.0), 0.0)
-        if r_multiple > config.r_multiple_bonus_threshold:
-            bonus = min(
-                (r_multiple - config.r_multiple_bonus_threshold) * config.r_multiple_bonus_scale,
-                config.r_multiple_bonus_cap,
-            )
-            shaped += bonus
-            shaping_component += bonus
-            self._episode_r_multiples.append(r_multiple)
-        elif r_multiple != 0:
-            self._episode_r_multiples.append(r_multiple)
-        
-        # MAE efficiency bonus
-        if config.mae_efficiency_enabled:
-            mae = _safe_float(info.get("mae", 0.0), 0.0)
-            mfe = _safe_float(info.get("mfe", 0.0), 0.0)
-            if mae > 0:
-                self._episode_maes.append(mae)
-            if mfe > 0:
-                self._episode_mfes.append(mfe)
-                
-            if mae > 0 and mfe > 0:
-                efficiency = mfe / mae
-                if efficiency > config.mae_efficiency_threshold:
-                    bonus = min(efficiency * config.mae_efficiency_scale, 0.5)
-                    shaped += bonus
-                    shaping_component += bonus
-        
-        # Time efficiency bonus
-        if config.time_efficiency_enabled:
-            bars_held = info.get("bars_held", info.get("trade_duration_bars", 0))
-            if bars_held and bars_held > 0:
-                self._episode_bars_held.append(bars_held)
-                
-                if bars_held <= config.max_trade_bars_for_bonus:
-                    # Optimal is around optimal_trade_bars
-                    deviation = abs(bars_held - config.optimal_trade_bars)
-                    max_deviation = config.max_trade_bars_for_bonus - config.optimal_trade_bars
-                    if max_deviation > 0:
-                        time_score = 1.0 - (deviation / max_deviation)
-                        bonus = time_score * config.time_efficiency_scale
-                        shaped += bonus
-                        shaping_component += bonus
-        
-        # Entry quality integration
-        if config.entry_quality_integration:
-            entry_quality = _safe_float(info.get("entry_quality", 0.5), 0.5)
-            self._episode_entry_qualities.append(entry_quality)
-            
-            eq_modifier = (entry_quality - 0.5) * 2 * config.entry_quality_weight
-            shaped += eq_modifier
-            shaping_component += eq_modifier
-        
-        # Drawdown penalty
-        if config.dd_shaping_enabled:
-            current_dd = _safe_float(info.get("current_drawdown", info.get("drawdown", 0.0)), 0.0)
-            if current_dd > config.dd_threshold:
-                severity = min(
-                    ((current_dd - config.dd_threshold) / config.dd_threshold) ** config.dd_severity_exponent,
-                    config.dd_severity_cap,
-                )
-                penalty = severity * config.dd_penalty_scale
-                shaped -= penalty
-                shaping_component -= penalty
-        
-        # Streak modifiers
-        if config.streak_modifier_enabled:
-            consecutive_wins = info.get("consecutive_wins", 0)
-            consecutive_losses = info.get("consecutive_losses", 0)
-            
-            if consecutive_wins > 1:
-                bonus = min(consecutive_wins * config.win_streak_bonus_per_win, 0.2)
-                shaped += bonus
-                shaping_component += bonus
-            elif consecutive_losses > 1:
-                penalty = min(consecutive_losses * config.loss_streak_penalty_per_loss, 0.3)
-                shaped -= penalty
-                shaping_component -= penalty
-        
-        # Anti-churn penalty
-        if config.anti_churn_enabled:
-            trades_today = info.get("trades_today", info.get("daily_trades", 0))
-            if trades_today > config.daily_trade_soft_limit:
-                excess = trades_today - config.daily_trade_soft_limit
-                penalty = excess * config.churn_penalty_per_trade
-                shaped -= penalty
-                shaping_component -= penalty
-        
-        # Block penalties
-        if info.get("hard_blocked", False):
-            shaped -= config.hard_block_penalty
-            shaping_component -= config.hard_block_penalty
-        elif info.get("soft_blocked", False):
-            shaped -= config.soft_block_penalty
-            shaping_component -= config.soft_block_penalty
-        
-        # Truncation handling
-        if truncated and not terminated:
-            trade_pnl = _safe_float(info.get("unrealized_pnl", info.get("trade_pnl", 0.0)), 0.0)
-            if trade_pnl > 0:
-                shaped *= (1.0 - config.truncation_winner_discount)
-            elif trade_pnl < 0:
-                shaped -= abs(trade_pnl) * config.truncation_loser_extra_penalty
-                shaping_component -= abs(trade_pnl) * config.truncation_loser_extra_penalty
-        
-        # Exploration bonus (decays with stage progress)
-        if config.exploration_bonus > 0:
-            stage_progress = self.manager.stage_episodes / max(self._effective_config.competence.min_episodes, 100)
-            decay = np.exp(-stage_progress * 2)
-            exploration = config.exploration_bonus * decay
-            shaped += exploration
-            shaping_component += exploration
-        
-        # Entropy penalty from manager
-        entropy_penalty = self.manager.get_entropy_penalty()
-        if entropy_penalty != 0:
-            shaped -= entropy_penalty
-            self._episode_entropy_penalty += entropy_penalty
-        
-        # Apply reward blending during transitions
-        # blend_factor: 0.0 at start -> 1.0 at end
-        # At transition START, we use mostly OLD config (smooth transition)
-        # At transition END, we use fully NEW config
-        # This prevents sudden reward signal changes that destabilize learning
-        if self.manager.is_in_transition and self.manager._previous_stage_config is not None:
-            blend_factor = self.manager.reward_blend_factor
-            if blend_factor < 1.0:
-                # Compute reward with previous config
-                prev_shaped = self._shape_reward_with_config(
-                    raw_reward, info, terminated, truncated,
-                    self.manager._previous_stage_config.rewards
-                )
-                shaped = blend_factor * shaped + (1.0 - blend_factor) * prev_shaped
-        
-        # Clamp final reward
-        shaped = _clamp(shaped, config.min_reward, config.max_reward)
-        
-        # Track shaping contribution
-        self._episode_shaped_reward += shaping_component
-        
-        return shaped
-    
-    def _shape_reward_with_config(
-        self,
-        raw_reward: float,
-        info: Dict[str, Any],
-        terminated: bool,
-        truncated: bool,
-        config: RewardShaping,
-    ) -> float:
-        """Shape reward using a specific config (for blending)."""
-        shaped = raw_reward * config.reward_scale
-        
-        if raw_reward < 0:
-            shaped *= config.loss_multiplier
-        
-        # Simplified shaping for blending (just core components)
-        r_multiple = _safe_float(info.get("r_multiple", 0.0), 0.0)
-        if r_multiple > config.r_multiple_bonus_threshold:
-            bonus = min(
-                (r_multiple - config.r_multiple_bonus_threshold) * config.r_multiple_bonus_scale,
-                config.r_multiple_bonus_cap,
-            )
-            shaped += bonus
-        
-        return _clamp(shaped, config.min_reward, config.max_reward)
-    
-    def _compute_exit_quality_bonus(self, exit_type: str, config: RewardShaping) -> float:
-        """Compute exit quality bonus/penalty."""
-        exit_lower = exit_type.lower()
-        
-        if "trailing" in exit_lower:
-            return config.trailing_stop_bonus
-        elif "agent" in exit_lower or "manual" in exit_lower:
-            return config.agent_close_bonus
-        elif "hard" in exit_lower or "stop_loss" in exit_lower:
-            return -config.hard_stop_penalty
-        elif "liquidation" in exit_lower or "risk" in exit_lower or "margin" in exit_lower:
-            return -config.risk_liquidation_penalty
-        
-        return 0.0
-    
-    def _track_exit_type(self, exit_type: str) -> None:
-        """Track exit type for episode statistics."""
-        exit_lower = exit_type.lower()
-        
-        if "trailing" in exit_lower:
-            self._episode_trailing_stops += 1
-        elif "agent" in exit_lower or "manual" in exit_lower:
-            self._episode_agent_closes += 1
-        elif "hard" in exit_lower or "stop_loss" in exit_lower:
-            self._episode_hard_stops += 1
-        elif "liquidation" in exit_lower or "risk" in exit_lower or "margin" in exit_lower:
-            self._episode_risk_liquidations += 1
-        else:
-            self._episode_other_exits += 1
-    
+
     # -------------------------------------------------------------------------
     # Gym Interface
     # -------------------------------------------------------------------------
-    
+    # NOTE: Reward shaping was REMOVED from wrapper.
+    # Reward shaping is handled EXCLUSIVELY by PropFirmTradingEnv._compute_trade_reward().
+    # Curriculum stages modify rewards via env.set_reward_config().
+    # See AUDIT_ENVS_TRAIN_2026_01.md for rationale.
+
     def reset(
         self,
         *,
@@ -598,19 +361,8 @@ class CurriculumEnvWrapper(gym.Wrapper):
         self._step_rewards = []
         self._step_raw_rewards = []
         
-        # Reset exit tracking
-        self._episode_trailing_stops = 0
-        self._episode_agent_closes = 0
-        self._episode_hard_stops = 0
-        self._episode_risk_liquidations = 0
-        self._episode_other_exits = 0
-        
-        # Reset trade quality tracking
-        self._episode_entry_qualities = []
-        self._episode_r_multiples = []
-        self._episode_maes = []
-        self._episode_mfes = []
-        self._episode_bars_held = []
+        # NOTE: Exit type and trade quality tracking removed.
+        # Now exclusively tracked by PropFirmTradingEnv.get_episode_stats().
         
         # Reset base environment
         obs, info = self.env.reset(seed=seed, options=options)
@@ -710,27 +462,8 @@ class CurriculumEnvWrapper(gym.Wrapper):
             if k not in info["episode_stats"]:
                 info["episode_stats"][k] = v
         
-        # Fallback: if base env didn't provide exit_quality_distribution, use our tracking
-        if not info["episode_stats"].get("exit_quality_distribution"):
-            info["episode_stats"]["exit_quality_distribution"] = {
-                "trailing_stop": self._episode_trailing_stops,
-                "agent_close": self._episode_agent_closes,
-                "hard_stop": self._episode_hard_stops,
-                "risk_liquidation": self._episode_risk_liquidations,
-                "other": self._episode_other_exits,
-            }
-        
-        # Add computed averages (from wrapper tracking)
-        if self._episode_entry_qualities:
-            info["episode_stats"]["avg_entry_quality"] = float(np.mean(self._episode_entry_qualities))
-        if self._episode_r_multiples:
-            info["episode_stats"]["avg_r_multiple"] = float(np.mean(self._episode_r_multiples))
-        if self._episode_maes:
-            info["episode_stats"]["avg_mae"] = float(np.mean(self._episode_maes))
-        if self._episode_mfes:
-            info["episode_stats"]["avg_mfe"] = float(np.mean(self._episode_mfes))
-        if self._episode_bars_held:
-            info["episode_stats"]["avg_bars_held"] = float(np.mean(self._episode_bars_held))
+        # NOTE: Wrapper-side tracking fallbacks removed.
+        # All stats now come from PropFirmTradingEnv.get_episode_stats().
         
         # Add reward breakdown
         info["episode_stats"]["raw_reward"] = self._episode_raw_reward
@@ -738,22 +471,56 @@ class CurriculumEnvWrapper(gym.Wrapper):
         info["episode_stats"]["shaping_contribution"] = self._episode_shaped_reward
         info["episode_stats"]["entropy_penalty_total"] = self._episode_entropy_penalty
         
-        # Record to manager with the effective stage used for this episode
-        # This ensures mixed-stage samples get recorded to the correct stage's history
-        self.manager.record_episode_from_info(
-            info=info,
-            episode_reward=self._episode_reward,
+        # Build EpisodeMetrics for on_episode_end()
+        # CRIT FIX: Use on_episode_end() instead of record_episode_from_info() + update()
+        # This ensures proper idempotency (no double-counting) and deterministic transition handling
+        ep_stats = info.get("episode_stats", {})
+        from envs.curriculum_manager import EpisodeMetrics
+        
+        metrics = EpisodeMetrics(
+            total_pnl=safe_float(ep_stats.get("total_pnl", info.get("total_pnl", 0.0)), 0.0),
+            win_rate=clamp(safe_float(ep_stats.get("win_rate", info.get("win_rate", 0.0)), 0.0), 0.0, 1.0),
+            trade_count=int(safe_float(ep_stats.get("total_trades", ep_stats.get("trade_count", 0)), 0)),
+            winning_trades=int(safe_float(ep_stats.get("winning_trades", 0), 0)),
+            losing_trades=int(safe_float(ep_stats.get("losing_trades", 0), 0)),
+            max_drawdown=clamp(safe_float(ep_stats.get("max_drawdown", info.get("drawdown", 0.0)), 0.0), 0.0, 1.0),
+            daily_drawdown=clamp(safe_float(ep_stats.get("daily_drawdown", 0.0), 0.0), 0.0, 1.0),
+            dd_breach=bool(ep_stats.get("dd_breach", info.get("dd_breach", False))),
+            avg_r_multiple=safe_float(ep_stats.get("avg_r_multiple", 0.0), 0.0),
+            profit_factor=clamp(safe_float(ep_stats.get("profit_factor", 0.0), 0.0), 0.0, 10.0),
+            avg_entry_quality=clamp(safe_float(ep_stats.get("avg_entry_quality", 0.5), 0.5), 0.0, 1.0),
             episode_length=self._episode_timesteps,
-            effective_stage=self._effective_stage,
+            episode_reward=self._episode_reward,
+            termination_reason=str(ep_stats.get("termination_reason", "") or ""),
+            global_episode_idx=self.manager.total_episodes + 1,
         )
         
-        # Check for stage transitions
-        old_stage = self.manager.current_stage
-        transitioned, new_stage = self.manager.update()
+        # Parse exit distribution if available
+        exit_dist = ep_stats.get("exit_quality_distribution", {})
+        if exit_dist:
+            metrics.trailing_stop_exits = int(safe_float(exit_dist.get("trailing_stop", 0), 0))
+            metrics.agent_close_exits = int(safe_float(exit_dist.get("agent_close", 0), 0))
+            metrics.hard_stop_exits = int(safe_float(exit_dist.get("hard_stop", 0), 0))
+            metrics.risk_liquidation_exits = int(safe_float(exit_dist.get("risk_liquidation", 0), 0))
         
-        if transitioned and new_stage is not None:
+        # Use on_episode_end() for deterministic episode recording and transition handling
+        # This ensures idempotency (won't double-count if called twice)
+        result = self.manager.on_episode_end(
+            metrics=metrics,
+            timesteps=self._episode_timesteps,
+            effective_stage=self._effective_stage,
+            check_transitions=True,
+        )
+        
+        # Check for stage transitions from on_episode_end result
+        old_stage = self.manager.current_stage
+        transitioned = result.get("promoted", False) or result.get("demoted", False)
+        new_stage_name = result.get("transition_to")
+        
+        if transitioned and new_stage_name:
+            new_stage = CurriculumStage[new_stage_name]
             if self.verbose:
-                direction = "↑" if new_stage.value > old_stage.value else "↓"
+                direction = "↑" if result.get("promoted") else "↓"
                 logger.info(f"Stage transition: {old_stage.name} {direction} {new_stage.name}")
             
             if self.stage_change_callback is not None:
@@ -761,6 +528,9 @@ class CurriculumEnvWrapper(gym.Wrapper):
                     self.stage_change_callback(old_stage, new_stage)
                 except Exception as e:
                     logger.warning(f"Stage change callback error: {e}")
+        
+        # Add transition result to info for debugging
+        info["episode_stats"]["transition_result"] = result
         
         return info
     
@@ -841,6 +611,16 @@ class CurriculumEnvWrapper(gym.Wrapper):
         self.manager._stage_epoch_counter = loaded._stage_epoch_counter
         self.manager._demotion_analyzer = loaded._demotion_analyzer
         self.manager._learning_velocity = loaded._learning_velocity
+        
+        # Restore new v2.1 fields for idempotency and state consistency
+        self.manager._last_episode_end_idx = loaded._last_episode_end_idx
+        self.manager._processed_episode_ids = loaded._processed_episode_ids
+        self.manager._processed_episode_id_set = loaded._processed_episode_id_set
+        self.manager._current_entropy = loaded._current_entropy
+        self.manager._review_tick_episode = loaded._review_tick_episode
+        self.manager._recovery_state = loaded._recovery_state
+        self.manager._review_state = loaded._review_state
+        
         self.manager._rolling_stats_dirty = True
         
         # Reapply configuration
@@ -856,11 +636,7 @@ class CurriculumEnvWrapper(gym.Wrapper):
     def get_effective_constraints(self) -> TradingConstraints:
         """Get current effective trading constraints."""
         return self._get_effective_constraints(self._effective_config.constraints)
-    
-    def get_effective_reward_config(self) -> RewardShaping:
-        """Get current effective reward shaping configuration."""
-        return self._get_effective_reward_shaping()
-    
+
     def __repr__(self) -> str:
         return (
             f"CurriculumEnvWrapper("
@@ -877,7 +653,7 @@ class CurriculumEnvWrapper(gym.Wrapper):
 
 def make_curriculum_env(
     env_factory: Callable[[], gym.Env],
-    initial_stage: CurriculumStage = CurriculumStage.FOUNDATION,
+    initial_stage: CurriculumStage = CurriculumStage.EXPLORER,
     manager_kwargs: Optional[Dict[str, Any]] = None,
     wrapper_kwargs: Optional[Dict[str, Any]] = None,
 ) -> Tuple[CurriculumEnvWrapper, CurriculumManager]:
@@ -896,7 +672,7 @@ def make_curriculum_env(
     Example:
         env, manager = make_curriculum_env(
             env_factory=lambda: TradingEnv(config),
-            initial_stage=CurriculumStage.FOUNDATION,
+            initial_stage=CurriculumStage.EXPLORER,
             manager_kwargs={"verbose": True},
             wrapper_kwargs={"apply_reward_shaping": True},
         )
@@ -919,7 +695,7 @@ def make_curriculum_env(
 def make_vectorized_curriculum_env(
     env_factory: Callable[[], gym.Env],
     n_envs: int,
-    initial_stage: CurriculumStage = CurriculumStage.FOUNDATION,
+    initial_stage: CurriculumStage = CurriculumStage.EXPLORER,
     manager_kwargs: Optional[Dict[str, Any]] = None,
     wrapper_kwargs: Optional[Dict[str, Any]] = None,
 ) -> Tuple[List[CurriculumEnvWrapper], CurriculumManager]:

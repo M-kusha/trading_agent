@@ -208,12 +208,112 @@
       info: { pill: "badge-info", dot: "bg-indigo-500", label: "Info", order: 2 },
     },
     phase: {
-      1: { pill: "bg-red-500/20 text-red-300", ring: "ring-red-500/40", accent: "from-red-600", node: "bg-red-500 text-white", text: "text-red-300" },
-      2: { pill: "bg-amber-500/20 text-amber-300", ring: "ring-amber-500/40", accent: "from-amber-600", node: "bg-amber-500 text-white", text: "text-amber-300" },
+      0: { pill: "bg-cyan-500/20 text-cyan-300", ring: "ring-cyan-500/40", accent: "from-cyan-600", node: "bg-cyan-500 text-white", text: "text-cyan-300" },
+      1: { pill: "bg-amber-500/20 text-amber-300", ring: "ring-amber-500/40", accent: "from-amber-600", node: "bg-amber-500 text-white", text: "text-amber-300" },
+      2: { pill: "bg-purple-500/20 text-purple-300", ring: "ring-purple-500/40", accent: "from-purple-600", node: "bg-purple-500 text-white", text: "text-purple-300" },
       3: { pill: "bg-emerald-500/20 text-emerald-300", ring: "ring-emerald-500/40", accent: "from-emerald-600", node: "bg-emerald-500 text-white", text: "text-emerald-300" },
-      0: { pill: "bg-slate-500/15 text-slate-300", ring: "ring-slate-500/30", accent: "from-slate-600", node: "bg-slate-700 text-slate-200", text: "text-slate-300" },
     },
   };
+
+  // Stage-aware alert thresholds: adjust based on curriculum phase
+  // Phase 0 (DISCOVERY): Very loose - exploration expected, losses acceptable
+  // Phase 1 (FOUNDATION): Loose - learning concepts, some variance OK
+  // Phase 2 (DEVELOPMENT): Normal - refining skills
+  // Phase 3 (MASTERY): Tight - production-ready standards
+  const STAGE_ALERT_OVERRIDES = {
+    // Phase 0: DISCOVERY (stages 0-1) - Almost no alerts, pure exploration
+    0: {
+      ranges: {
+        entropy: { min: 0.20, max: 1.8, severity: "info" },  // Very wide - high entropy is GOOD
+        approx_kl: { max_warning: 0.08, max_critical: 0.15 },  // Very loose
+        clip_fraction: { min: 0.01, max: 0.40, severity: "info" },  // Wide range OK
+        explained_variance: { min_warning: -0.5, min_critical: -1.0 },  // Disable effectively
+        drawdown: { max_warning: 50.0, max_critical: 80.0 },  // Losses expected
+      },
+      slopes: {
+        win_rate_down: { warning: -1.0, critical: -2.0 },  // Disabled
+        drawdown_up: { warning: 1.0, critical: 2.0 },  // Disabled
+        mean_reward_down: { warning: -0.5, critical: -1.0 },  // Very loose
+        pnl_down: { warning: -500, critical: -1000 },  // Disabled
+      },
+      disabled: ["range.drawdown", "slope.pnl", "slope.win_rate", "corr.risk_escalation"],
+    },
+    // Phase 1: FOUNDATION (stages 2-4) - Looser thresholds, learning concepts
+    1: {
+      ranges: {
+        entropy: { min: 0.20, max: 1.2, severity: "info" },  // Still wide
+        approx_kl: { max_warning: 0.05, max_critical: 0.08 },
+        clip_fraction: { min: 0.03, max: 0.30, severity: "info" },
+        explained_variance: { min_warning: 0.05, min_critical: -0.2 },
+        drawdown: { max_warning: 20.0, max_critical: 40.0 },
+      },
+      slopes: {
+        win_rate_down: { warning: -0.5, critical: -0.8 },
+        drawdown_up: { warning: 0.3, critical: 0.5 },
+        mean_reward_down: { warning: -0.2, critical: -0.4 },
+        pnl_down: { warning: -100, critical: -200 },
+      },
+      disabled: [],
+    },
+    // Phase 2: DEVELOPMENT (stages 5-7) - Normal thresholds
+    2: {
+      ranges: {
+        entropy: { min: 0.15, max: 0.90, severity: "warning" },
+        approx_kl: { max_warning: 0.035, max_critical: 0.06 },
+        clip_fraction: { min: 0.05, max: 0.25, severity: "warning" },
+        explained_variance: { min_warning: 0.15, min_critical: 0.02 },
+        drawdown: { max_warning: 10.0, max_critical: 20.0 },
+      },
+      slopes: {
+        win_rate_down: { warning: -0.35, critical: -0.55 },
+        drawdown_up: { warning: 0.18, critical: 0.30 },
+        mean_reward_down: { warning: -0.12, critical: -0.20 },
+        pnl_down: { warning: -40, critical: -80 },
+      },
+      disabled: [],
+    },
+    // Phase 3: MASTERY (stages 8-9) - Tight thresholds, production standards
+    3: {
+      ranges: {
+        entropy: { min: 0.03, max: 0.60, severity: "warning" },  // Low entropy expected
+        approx_kl: { max_warning: 0.020, max_critical: 0.035 },
+        clip_fraction: { min: 0.05, max: 0.18, severity: "warning" },
+        explained_variance: { min_warning: 0.25, min_critical: 0.10 },
+        drawdown: { max_warning: 5.0, max_critical: 8.5 },  // Prop firm tight
+      },
+      slopes: {
+        win_rate_down: { warning: -0.20, critical: -0.35 },
+        drawdown_up: { warning: 0.10, critical: 0.18 },
+        mean_reward_down: { warning: -0.06, critical: -0.12 },
+        pnl_down: { warning: -10, critical: -25 },
+      },
+      disabled: [],
+    },
+  };
+
+  // Helper to get current phase from stage index
+  function getPhaseFromStage(stageIdx) {
+    if (stageIdx <= 1) return 0;  // DISCOVERY
+    if (stageIdx <= 4) return 1;  // FOUNDATION
+    if (stageIdx <= 7) return 2;  // DEVELOPMENT
+    return 3;  // MASTERY
+  }
+
+  // Helper to get stage-aware thresholds
+  function getStageAwareConfig(data) {
+    const stageIdx = (data?.curriculum_progress?.stage_index ?? data?.curriculum_stage_idx) || 0;
+    const phase = getPhaseFromStage(stageIdx);
+    const overrides = STAGE_ALERT_OVERRIDES[phase];
+    
+    return {
+      ...ALERT_CONFIG,
+      ranges: { ...ALERT_CONFIG.ranges, ...overrides.ranges },
+      slopes: { ...ALERT_CONFIG.slopes, ...overrides.slopes },
+      disabled: overrides.disabled || [],
+      phase,
+      stageIdx,
+    };
+  }
 
   const ALERT_CONFIG = {
     window: 20,                 // regression window length
@@ -544,11 +644,22 @@
 
   // ─────────────────────────────────────────────────────────────────────────────
   // ALERT ENGINE (persistence + cooldown; computed client-side)
+  // Stage-aware: thresholds adjust based on curriculum phase
   // ─────────────────────────────────────────────────────────────────────────────
   function buildAlertCandidates({ data, derived }) {
     const out = [];
+    
+    // Get stage-aware configuration
+    const cfg = getStageAwareConfig(data);
+    const disabled = new Set(cfg.disabled);
 
-    const add = (id, condition, payload) => out.push({ id, condition: !!condition, ...payload });
+    const add = (id, condition, payload) => {
+      // Skip disabled alerts for current phase
+      if (disabled.has(id) || disabled.has(id.split('.').slice(0, 2).join('.'))) {
+        return;
+      }
+      out.push({ id, condition: !!condition, ...payload });
+    };
 
     const wr = derived?.slopes?.win_rate || 0;
     const dd = derived?.slopes?.drawdown || 0;
@@ -558,8 +669,8 @@
     const kl = derived?.slopes?.kl || 0;
     const ev = derived?.slopes?.ev || 0;
 
-    // Trend alerts
-    const s = ALERT_CONFIG.slopes;
+    // Use stage-aware slope thresholds
+    const s = cfg.slopes;
 
     add(
       "trend.win_rate.down.critical",
@@ -704,13 +815,13 @@
     const ddv = data?.trading?.max_drawdown;
 
     if (ent != null && !isNaN(ent)) {
-      const band = ALERT_CONFIG.ranges.entropy;
+      const band = cfg.ranges.entropy;
       add(
         "range.entropy",
         (ent < band.min || ent > band.max),
         {
           severity: band.severity,
-          title: "Entropy Out of Band",
+          title: cfg.phase <= 1 ? "Entropy Note (Early Stage)" : "Entropy Out of Band",
           metric: "Entropy",
           current: ent,
           currentFmt: (v) => fmt.num(v, 2),
@@ -722,7 +833,7 @@
     }
 
     if (klv != null && !isNaN(klv)) {
-      const r = ALERT_CONFIG.ranges.approx_kl;
+      const r = cfg.ranges.approx_kl;
       add(
         "range.kl",
         (klv >= r.max_warning),
@@ -740,7 +851,7 @@
     }
 
     if (cf != null && !isNaN(cf)) {
-      const r = ALERT_CONFIG.ranges.clip_fraction;
+      const r = cfg.ranges.clip_fraction;
       add(
         "range.clip_fraction",
         (cf < r.min || cf > r.max),
@@ -758,7 +869,7 @@
     }
 
     if (evv != null && !isNaN(evv)) {
-      const r = ALERT_CONFIG.ranges.explained_variance;
+      const r = cfg.ranges.explained_variance;
       add(
         "range.explained_variance",
         (evv <= r.min_warning),
@@ -776,7 +887,7 @@
     }
 
     if (ddv != null && !isNaN(ddv)) {
-      const r = ALERT_CONFIG.ranges.drawdown;
+      const r = cfg.ranges.drawdown;
       add(
         "range.drawdown",
         (ddv >= r.max_warning),
@@ -1056,27 +1167,33 @@
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // CURRICULUM STRUCTURE (single source)
+  // CURRICULUM STRUCTURE (single source) - 10 Stage "First Grade to University"
   // ─────────────────────────────────────────────────────────────────────────────
   const CURRICULUM = [
-    { phase: 1, name: "SURVIVAL", icon: "🛡️", note: "No bonuses • Pure risk learning",
+    { phase: 0, name: "DISCOVERY", icon: "🔍", note: "Pure exploration • High entropy",
       stages: [
-        { idx: 0, key: "foundation", label: "Foundation", desc: "Basic risk awareness" },
-        { idx: 1, key: "discipline", label: "Discipline", desc: "Anti-churn, tighter DD" },
-        { idx: 2, key: "market_structure", label: "Market Structure", desc: "Trend awareness" },
+        { idx: 0, key: "explorer", label: "Explorer", desc: "Try everything, no penalties" },
+        { idx: 1, key: "experimenter", label: "Experimenter", desc: "Light outcome signals" },
       ],
     },
-    { phase: 2, name: "PROFITABILITY", icon: "💰", note: "All bonuses enabled",
+    { phase: 1, name: "FOUNDATION", icon: "📚", note: "One concept per stage",
       stages: [
-        { idx: 3, key: "economic_logic", label: "Economic Logic", desc: "R-multiple, MAE, exit quality" },
-        { idx: 4, key: "professional", label: "Professional", desc: "Harder market conditions" },
-        { idx: 5, key: "adaptive", label: "Adaptive", desc: "Domain randomization begins" },
+        { idx: 2, key: "trend_student", label: "Trend Student", desc: "Learn trend alignment" },
+        { idx: 3, key: "session_student", label: "Session Student", desc: "Learn session awareness" },
+        { idx: 4, key: "timing_student", label: "Timing Student", desc: "Learn entry quality" },
       ],
     },
-    { phase: 3, name: "CONSISTENCY", icon: "⚖️", note: "Loss multiplier > 1.0",
+    { phase: 2, name: "DEVELOPMENT", icon: "🔧", note: "Combine skills into strategies",
       stages: [
-        { idx: 6, key: "specialist", label: "Specialist", desc: "Variance penalties (×1.05)" },
-        { idx: 7, key: "live_ready", label: "Live Ready", desc: "Full difficulty (×1.08)" },
+        { idx: 5, key: "integrator", label: "Integrator", desc: "Combine trend+session+entry" },
+        { idx: 6, key: "risk_manager", label: "Risk Manager", desc: "Add risk control" },
+        { idx: 7, key: "strategist", label: "Strategist", desc: "Full strategy formation" },
+      ],
+    },
+    { phase: 3, name: "MASTERY", icon: "🏆", note: "Prop firm constraints",
+      stages: [
+        { idx: 8, key: "professional", label: "Professional", desc: "Prop firm mode" },
+        { idx: 9, key: "live_ready", label: "Live Ready", desc: "Live execution robustness" },
       ],
     },
   ];
@@ -1297,7 +1414,7 @@
           {
             key: "stage",
             title: "Stage",
-            value: `${fmt.int((cp?.stage_index ?? data?.curriculum_stage_idx ?? 0) + 1)} / 8`,
+            value: `${fmt.int((cp?.stage_index ?? data?.curriculum_stage_idx ?? 0) + 1)} / 10`,
             status: "neutral",
             delta: null, deltaStatus: "neutral",
             spark: null,
@@ -1847,7 +1964,7 @@
               {/* Radial gauges row */}
               <div className="grid grid-cols-4 gap-3 mb-4">
                 {[
-                  { key: "entropy", label: "Entropy", value: learning.entropy, format: (v) => fmt.num(v, 1), status: learning.entropy_status, min: -12, max: 0 },
+                  { key: "entropy", label: "Entropy", value: learning.entropy, format: (v) => fmt.num(v, 2), status: learning.entropy_status, min: 0, max: 2 },  // PPO entropy positive, 0-2 range
                   { key: "kl", label: "KL Div", value: learning.approx_kl, format: (v) => (v * 1000).toFixed(1) + "m", status: learning.approx_kl_status, min: 0, max: 0.05 },
                   { key: "clip", label: "Clip %", value: learning.clip_fraction, format: (v) => fmt.num(v * 100, 0) + "%", status: learning.clip_fraction_status, min: 0, max: 0.4 },
                   { key: "ev", label: "Exp Var", value: learning.explained_variance, format: (v) => fmt.num(v * 100, 0) + "%", status: learning.explained_variance_status, min: 0, max: 1 },
@@ -1912,11 +2029,11 @@
                     <span className="text-xs font-black text-white">Curriculum Stage</span>
                   </div>
                   <div className="flex items-center gap-1">
-                    {["S", "P", "C"].map((p, i) => {
+                    {["D", "F", "V", "M"].map((p, i) => {
                       const stageIdx = (data.curriculum_progress?.stage_index ?? data.curriculum_stage_idx) || 0;
-                      const phaseActive = i === 0 ? stageIdx <= 2 : i === 1 ? stageIdx >= 3 && stageIdx <= 5 : stageIdx >= 6;
-                      const phaseComplete = i === 0 ? stageIdx > 2 : i === 1 ? stageIdx > 5 : false;
-                      const colors = ["text-red-400 bg-red-500/20", "text-amber-400 bg-amber-500/20", "text-emerald-400 bg-emerald-500/20"];
+                      const phaseActive = i === 0 ? stageIdx <= 1 : i === 1 ? stageIdx >= 2 && stageIdx <= 4 : i === 2 ? stageIdx >= 5 && stageIdx <= 7 : stageIdx >= 8;
+                      const phaseComplete = i === 0 ? stageIdx > 1 : i === 1 ? stageIdx > 4 : i === 2 ? stageIdx > 7 : false;
+                      const colors = ["text-cyan-400 bg-cyan-500/20", "text-amber-400 bg-amber-500/20", "text-purple-400 bg-purple-500/20", "text-emerald-400 bg-emerald-500/20"];
                       return (
                         <div key={p} className={"w-6 h-6 rounded-md flex items-center justify-center text-[9px] font-black " +
                           (phaseComplete ? "bg-emerald-500/30 text-emerald-300" : phaseActive ? colors[i] : "bg-slate-700/30 text-slate-500")}>
@@ -1931,8 +2048,8 @@
                 <div className="relative mb-3">
                   <div className="h-2 rounded-full bg-slate-800/50 overflow-hidden">
                     <div 
-                      className="h-full bg-gradient-to-r from-red-500 via-amber-500 to-emerald-500 rounded-full transition-all duration-500"
-                      style={{ width: `${Math.min(100, (((data.curriculum_progress?.stage_index ?? data.curriculum_stage_idx) || 0) + 1) / 8 * 100)}%` }}
+                      className="h-full bg-gradient-to-r from-cyan-500 via-amber-500 via-purple-500 to-emerald-500 rounded-full transition-all duration-500"
+                      style={{ width: `${Math.min(100, (((data.curriculum_progress?.stage_index ?? data.curriculum_stage_idx) || 0) + 1) / 10 * 100)}%` }}
                     />
                   </div>
                 </div>
@@ -1941,13 +2058,13 @@
                 <div className="flex justify-between">
                   {CURRICULUM.flatMap(p => p.stages).map((s) => {
                     const stageIdx = (data.curriculum_progress?.stage_index ?? data.curriculum_stage_idx) || 0;
-                    const phaseNum = s.idx <= 2 ? 1 : s.idx <= 5 ? 2 : 3;
+                    const phaseNum = s.idx <= 1 ? 0 : s.idx <= 4 ? 1 : s.idx <= 7 ? 2 : 3;
                     const isCurrent = stageIdx === s.idx;
                     const isComplete = stageIdx > s.idx;
-                    const phaseColors = { 1: "bg-red-500", 2: "bg-amber-500", 3: "bg-emerald-500" };
+                    const phaseColors = { 0: "bg-cyan-500", 1: "bg-amber-500", 2: "bg-purple-500", 3: "bg-emerald-500" };
 
                     return (
-                      <div key={s.idx} className="flex flex-col items-center" style={{ width: "12.5%" }}>
+                      <div key={s.idx} className="flex flex-col items-center" style={{ width: "10%" }}>
                         <div className={
                           "w-6 h-6 rounded-full flex items-center justify-center text-[9px] font-black transition-all " +
                           (isCurrent ? phaseColors[phaseNum] + " text-white ring-2 ring-white/30 animate-pulse-slow" :
@@ -1968,13 +2085,13 @@
                   <div>
                     <div className="text-[10px] text-slate-500">Current</div>
                     <div className="text-xs font-black text-white">
-                      {data.curriculum_progress?.current_stage || data.curriculum_stage || "Foundation"}
+                      {data.curriculum_progress?.current_stage || data.curriculum_stage || "Explorer"}
                     </div>
                   </div>
                   <div className="text-right">
                     <div className="text-[10px] text-slate-500">Stage</div>
                     <div className="mono text-sm font-black text-white">
-                      {((data.curriculum_progress?.stage_index ?? data.curriculum_stage_idx) || 0) + 1}/8
+                      {((data.curriculum_progress?.stage_index ?? data.curriculum_stage_idx) || 0) + 1}/10
                     </div>
                   </div>
                 </div>
@@ -2239,18 +2356,18 @@
           <div className="px-5 py-3 bg-black/20 border-t border-white/5">
             <div className="relative">
               <div className="absolute top-3 left-0 right-0 h-0.5 bg-slate-700/50 rounded-full" />
-              <div className="absolute top-3 left-0 h-0.5 bg-gradient-to-r from-red-500 via-amber-500 to-emerald-500 rounded-full transition-all duration-700"
-                style={{ width: `${Math.min(100, (stageIdx / 7) * 100)}%` }} />
+              <div className="absolute top-3 left-0 h-0.5 bg-gradient-to-r from-cyan-500 via-amber-500 via-purple-500 to-emerald-500 rounded-full transition-all duration-700"
+                style={{ width: `${Math.min(100, (stageIdx / 9) * 100)}%` }} />
               
               <div className="relative flex justify-between">
                 {CURRICULUM.flatMap(p => p.stages).map((s) => {
-                  const phaseNum = s.idx <= 2 ? 1 : s.idx <= 5 ? 2 : 3;
+                  const phaseNum = s.idx <= 1 ? 0 : s.idx <= 4 ? 1 : s.idx <= 7 ? 2 : 3;
                   const ps = THEME.phase[phaseNum];
                   const isCurrent = stageIdx === s.idx;
                   const isComplete = stageIdx > s.idx;
 
                   return (
-                    <div key={s.idx} className="flex flex-col items-center" style={{ width: "12.5%" }}>
+                    <div key={s.idx} className="flex flex-col items-center" style={{ width: "10%" }}>
                       <div className={
                         "w-6 h-6 rounded-lg flex items-center justify-center text-[10px] font-black transition-all " +
                         (isCurrent ? ps.node + " ring-2 " + ps.ring + " scale-125" :
@@ -2263,11 +2380,12 @@
                 })}
               </div>
 
-              {/* Phase labels below */}
+              {/* Phase labels below - 4 phases for 10-stage curriculum */}
               <div className="flex mt-2 text-[9px] font-black">
-                <div className="w-[37.5%] text-center text-red-400/70">SURVIVAL</div>
-                <div className="w-[37.5%] text-center text-amber-400/70">PROFIT</div>
-                <div className="w-[25%] text-center text-emerald-400/70">CONSISTENCY</div>
+                <div className="w-[20%] text-center text-cyan-400/70">DISCOVERY</div>
+                <div className="w-[30%] text-center text-amber-400/70">FOUNDATION</div>
+                <div className="w-[30%] text-center text-purple-400/70">DEVELOPMENT</div>
+                <div className="w-[20%] text-center text-emerald-400/70">MASTERY</div>
               </div>
             </div>
           </div>
@@ -2417,7 +2535,7 @@
     const rows = [
       { id:"policy_loss", label: "Policy Loss", value: fmt.sci(learning.policy_loss, 4), status: learning.policy_loss_status, ideal: "< 0 (negative)", higherIsBetter: false, format:"num" },
       { id:"value_loss", label: "Value Loss", value: fmt.sci(learning.value_loss, 4), status: learning.value_loss_status, ideal: "< 0.1", higherIsBetter: false, format:"num" },
-      { id:"entropy", label: "Entropy", value: fmt.num(learning.entropy, 2), status: learning.entropy_status, ideal: "-9 to -5", higherIsBetter: false, format:"num" },
+      { id:"entropy", label: "Entropy", value: fmt.num(learning.entropy, 2), status: learning.entropy_status, ideal: "0.25 – 0.85", higherIsBetter: null, format:"num" },  // Range-based, not directional
       { id:"kl", label: "KL Divergence", value: fmt.sci(learning.approx_kl, 5), status: learning.approx_kl_status, ideal: "< 0.015", higherIsBetter: false, format:"num" },
       { id:"clip", label: "Clip Fraction", value: fmt.num(learning.clip_fraction, 3), status: learning.clip_fraction_status, ideal: "0.05 – 0.20", higherIsBetter: false, format:"num" },
       { id:"ev", label: "Explained Var", value: fmt.num(learning.explained_variance, 3), status: learning.explained_variance_status, ideal: "> 0.5", higherIsBetter: true, format:"num" },

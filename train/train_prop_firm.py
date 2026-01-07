@@ -90,7 +90,7 @@ except Exception:
     TrialPruned = Exception  # type: ignore
     OPTUNA_AVAILABLE = False
 
-# sb3-contrib (MaskablePPO + ActionMasker)
+# sb3-contrib (MaskablePPO + ActionMasker + MaskableEvalCallback)
 try:
     from sb3_contrib import MaskablePPO
     from sb3_contrib.common.wrappers import ActionMasker
@@ -100,12 +100,370 @@ except Exception:
     ActionMasker = None  # type: ignore
     MASKABLE_AVAILABLE = False
 
+try:
+    from sb3_contrib.common.maskable.callbacks import MaskableEvalCallback
+    MASKABLE_EVAL_AVAILABLE = True
+except Exception:
+    MaskableEvalCallback = None  # type: ignore
+    MASKABLE_EVAL_AVAILABLE = False
+    MASKABLE_AVAILABLE = False
+
+# AUDIT FIX: Import official mask extraction helper (more robust than custom unwrapping)
+try:
+    from sb3_contrib.common.maskable.utils import get_action_masks as sb3_get_action_masks
+    SB3_MASK_UTILS_AVAILABLE = True
+except Exception:
+    sb3_get_action_masks = None  # type: ignore
+    SB3_MASK_UTILS_AVAILABLE = False
+
 # Dashboard server (optional)
 try:
     from dashboard.server import start_dashboard_server, WEB_AVAILABLE as DASHBOARD_AVAILABLE
 except ImportError:
     DASHBOARD_AVAILABLE = False
     start_dashboard_server = None  # type: ignore
+
+
+# =============================================================================
+# PID CONTROLLER - Prevents oscillation by design
+# =============================================================================
+
+class PIDController:
+    """
+    A proper PID controller for smooth, stable hyperparameter adaptation.
+    
+    Why PID works better than threshold-based control:
+    1. Proportional (P): Responds to current error magnitude
+    2. Integral (I): Eliminates steady-state error over time  
+    3. Derivative (D): Dampens oscillation by reacting to rate of change
+    
+    The key insight: threshold-based control ("if X > Y then boost") causes
+    oscillation because it's purely reactive. PID considers:
+    - How far are we from target? (P)
+    - Have we been off-target for a while? (I)
+    - Are we heading toward or away from target? (D)
+    """
+    
+    def __init__(
+        self,
+        kp: float = 0.3,      # Proportional gain (response to current error)
+        ki: float = 0.05,     # Integral gain (accumulated error correction)
+        kd: float = 0.1,      # Derivative gain (damping/anti-oscillation)
+        setpoint: float = 0.7,  # Target value
+        output_min: float = 0.03,  # Minimum output
+        output_max: float = 0.15,  # Maximum output
+        integral_limit: float = 0.5,  # Anti-windup: cap accumulated error
+        deadband: float = 0.05,  # Don't react to errors smaller than this
+    ):
+        self.kp = kp
+        self.ki = ki
+        self.kd = kd
+        self.setpoint = setpoint
+        self.output_min = output_min
+        self.output_max = output_max
+        self.integral_limit = integral_limit
+        self.deadband = deadband
+        
+        # Internal state
+        self._integral = 0.0
+        self._last_error = 0.0
+        self._last_output = (output_min + output_max) / 2
+        self._last_update_time = 0
+        
+    def update(self, current_value: float, dt: float = 1.0) -> Tuple[float, str]:
+        """
+        Compute the control output given the current measured value.
+        
+        Args:
+            current_value: The current measurement (e.g., entropy)
+            dt: Time delta since last update (for proper I/D scaling)
+            
+        Returns:
+            (output, reason): The control signal and explanation string
+        """
+        error = self.setpoint - current_value
+        
+        # Deadband: Don't react to tiny errors (prevents micro-oscillation)
+        if abs(error) < self.deadband:
+            return self._last_output, f"IN_TARGET: {current_value:.3f} ≈ {self.setpoint:.3f} (±{self.deadband})"
+        
+        # Proportional term
+        p_term = self.kp * error
+        
+        # Integral term (with anti-windup)
+        self._integral += error * dt
+        self._integral = max(-self.integral_limit, min(self.integral_limit, self._integral))
+        i_term = self.ki * self._integral
+        
+        # Derivative term (rate of change of error)
+        if dt > 0:
+            d_term = self.kd * (error - self._last_error) / dt
+        else:
+            d_term = 0.0
+        
+        # Combine terms
+        raw_output = self._last_output + p_term + i_term + d_term
+        
+        # Clamp to valid range
+        output = max(self.output_min, min(self.output_max, raw_output))
+        
+        # Build explanation
+        direction = "↑" if output > self._last_output else "↓" if output < self._last_output else "→"
+        reason = (
+            f"PID {direction}: err={error:+.3f} "
+            f"[P={p_term:+.4f}, I={i_term:+.4f}, D={d_term:+.4f}]"
+        )
+        
+        # Update state for next iteration
+        self._last_error = error
+        self._last_output = output
+        
+        return output, reason
+    
+    def set_setpoint(self, new_setpoint: float) -> None:
+        """Change target value. Resets integral to prevent windup from old target."""
+        if abs(new_setpoint - self.setpoint) > 0.05:
+            self._integral *= 0.5  # Partial reset on significant setpoint change
+        self.setpoint = new_setpoint
+        
+    def reset(self) -> None:
+        """Reset controller state (use on stage transitions)."""
+        self._integral = 0.0
+        self._last_error = 0.0
+
+
+class SmartEntropyController:
+    """
+    High-level entropy management using PID control + stage awareness.
+    
+    This replaces the oscillating threshold-based controller with:
+    1. PID for smooth adjustment (no oscillation)
+    2. Stage-aware setpoints (target entropy varies by curriculum stage)
+    3. Emergency overrides only for extreme situations
+    4. Cooldown periods to let changes take effect
+    
+    AUDIT FIX: Entropy targets are now NORMALIZED to [0, 1] range.
+    H_norm = H / log(K_valid) where K_valid is the number of valid actions.
+    This makes targets portable across:
+    - Action space size changes
+    - Masking intensity changes (more/fewer actions masked)
+    - New instruments / regimes
+    
+    10-Stage Curriculum (NEW):
+    - Phase 0 DISCOVERY (0-1): Pure exploration, HIGH entropy
+    - Phase 1 FOUNDATION (2-4): One concept at a time, entropy decreasing
+    - Phase 2 DEVELOPMENT (5-7): Combine skills, moderate entropy
+    - Phase 3 MASTERY (8-9): Prop firm constraints, LOW entropy
+    """
+    
+    # AUDIT FIX: Target entropy by curriculum stage - NORMALIZED to [0, 1]
+    # These are now ratios of max possible entropy, not raw values
+    # 0.0 = deterministic (one action), 1.0 = uniform random (all actions equally likely)
+    STAGE_TARGETS_NORMALIZED = {
+        0: 0.85,  # EXPLORER: Very high exploration - try almost everything
+        1: 0.75,  # EXPERIMENTER: High exploration, start seeing patterns
+        2: 0.60,  # TREND_STUDENT: Learn trend-following, more focused
+        3: 0.50,  # SESSION_STUDENT: Learn sessions, developing preferences
+        4: 0.42,  # TIMING_STUDENT: Learn entry timing, solidifying strategy
+        5: 0.32,  # INTEGRATOR: Combine skills, more consistent
+        6: 0.22,  # RISK_MANAGER: Risk control, highly consistent
+        7: 0.16,  # STRATEGIST: Full integration, very consistent
+        8: 0.10,  # PROFESSIONAL: Prop firm mode, machine-like
+        9: 0.06,  # LIVE_READY: Terminal - nearly deterministic
+    }
+    
+    # ent_coef bounds by stage (output limits for PID controller)
+    # These remain as-is since they control the optimization parameter, not entropy
+    STAGE_ENT_COEF_BOUNDS = {
+        0: (0.12, 0.20),   # EXPLORER: Very high to encourage exploration
+        1: (0.10, 0.18),   # EXPERIMENTER: High exploration
+        2: (0.08, 0.15),   # TREND_STUDENT: Starting to focus
+        3: (0.07, 0.14),   # SESSION_STUDENT: More focused
+        4: (0.06, 0.12),   # TIMING_STUDENT: Building strategy
+        5: (0.05, 0.10),   # INTEGRATOR: Consistent behavior emerging
+        6: (0.04, 0.09),   # RISK_MANAGER: Very consistent
+        7: (0.035, 0.08),  # STRATEGIST: Highly consistent
+        8: (0.03, 0.07),   # PROFESSIONAL: Near-deterministic
+        9: (0.02, 0.06),   # LIVE_READY: Nearly deterministic
+    }
+    
+    # Emergency thresholds by stage (distance from NORMALIZED target before emergency)
+    # Early stages: WIDE tolerance (high entropy is expected and good)
+    # Late stages: TIGHT tolerance (we need predictable behavior)
+    STAGE_EMERGENCY_THRESHOLDS_NORMALIZED = {
+        0: {"low": -0.50, "high": +0.15},  # EXPLORER: Only intervene on collapse
+        1: {"low": -0.45, "high": +0.20},  # EXPERIMENTER: Wide tolerance
+        2: {"low": -0.40, "high": +0.30},  # TREND_STUDENT: Starting to narrow
+        3: {"low": -0.35, "high": +0.35},  # SESSION_STUDENT: Narrowing
+        4: {"low": -0.30, "high": +0.40},  # TIMING_STUDENT: Getting tighter
+        5: {"low": -0.25, "high": +0.45},  # INTEGRATOR: More consistent expected
+        6: {"low": -0.18, "high": +0.50},  # RISK_MANAGER: Tighter
+        7: {"low": -0.14, "high": +0.55},  # STRATEGIST: Tight
+        8: {"low": -0.08, "high": +0.60},  # PROFESSIONAL: Very tight
+        9: {"low": -0.05, "high": +0.65},  # LIVE_READY: Strictest
+    }
+    
+    # Default action space size (used if not provided)
+    DEFAULT_N_ACTIONS = 10  # 2*K + 2 where K=4 size buckets
+    
+    def __init__(self, initial_ent_coef: float = 0.15, n_actions: int = 10):
+        self.current_stage = 0
+        self.cooldown_steps = 0
+        self.min_steps_between_updates = 8_000  # Let changes take effect
+        self.steps_since_update = 0
+        self.n_actions = n_actions  # Total actions in action space
+        self._valid_actions_estimate = n_actions  # Estimated valid actions (updated dynamically)
+        
+        # Initialize PID with stage 0 settings
+        # PID operates on NORMALIZED entropy [0, 1]
+        bounds = self.STAGE_ENT_COEF_BOUNDS[0]
+        self.pid = PIDController(
+            kp=0.25,           # Moderate response
+            ki=0.03,           # Slow integral (prevents overshoot)
+            kd=0.15,           # Strong damping (prevents oscillation)
+            setpoint=self.STAGE_TARGETS_NORMALIZED[0],
+            output_min=bounds[0],
+            output_max=bounds[1],
+            deadband=0.06,     # Deadband in normalized units
+        )
+        self._last_ent_coef = initial_ent_coef
+    
+    def _get_max_entropy(self, n_valid_actions: Optional[int] = None) -> float:
+        """Get maximum possible entropy for given number of valid actions."""
+        k = n_valid_actions if n_valid_actions is not None else self._valid_actions_estimate
+        # AUDIT FIX: Floor at 4 (not 2) to avoid hypersensitivity when mask is very restrictive
+        # With k=2, log(2)≈0.69, making normalized entropy extremely sensitive to small changes
+        k = max(4, int(round(k)))
+        return float(np.log(k))
+    
+    def _normalize_entropy(self, raw_entropy: float, n_valid_actions: Optional[int] = None) -> float:
+        """Normalize raw entropy to [0, 1] range."""
+        max_h = self._get_max_entropy(n_valid_actions)
+        if max_h <= 0:
+            return 0.5  # Fallback
+        return min(1.0, max(0.0, raw_entropy / max_h))
+    
+    def _denormalize_entropy(self, norm_entropy: float, n_valid_actions: Optional[int] = None) -> float:
+        """Convert normalized entropy back to raw value (for logging)."""
+        max_h = self._get_max_entropy(n_valid_actions)
+        return norm_entropy * max_h
+    
+    def update_valid_actions_estimate(self, n_valid: int) -> None:
+        """Update the estimate of valid actions (call with action mask info)."""
+        # Exponential moving average to smooth out mask variations
+        alpha = 0.1
+        self._valid_actions_estimate = alpha * n_valid + (1 - alpha) * self._valid_actions_estimate
+        
+    def on_stage_change(self, new_stage: int) -> None:
+        """Called when curriculum stage changes. Updates PID parameters."""
+        if new_stage == self.current_stage:
+            return
+            
+        # Clamp to valid range (0-9 for 10 stages)
+        self.current_stage = min(new_stage, 9)
+        bounds = self.STAGE_ENT_COEF_BOUNDS[self.current_stage]
+        
+        # Update PID for new stage - using NORMALIZED target
+        self.pid.set_setpoint(self.STAGE_TARGETS_NORMALIZED[self.current_stage])
+        self.pid.output_min = bounds[0]
+        self.pid.output_max = bounds[1]
+        self.pid.reset()  # Fresh start for new stage
+        
+        # Cooldown after stage change
+        self.cooldown_steps = 20_000
+        
+    def get_ent_coef(
+        self, 
+        current_entropy: float, 
+        current_ent_coef: float,
+        timesteps_elapsed: int,
+        n_valid_actions: Optional[int] = None,
+    ) -> Tuple[float, str, bool]:
+        """
+        Compute the recommended ent_coef.
+        
+        Args:
+            current_entropy: Raw entropy value from policy
+            current_ent_coef: Current entropy coefficient
+            timesteps_elapsed: Steps since last call
+            n_valid_actions: Number of valid (non-masked) actions. If None, uses estimate.
+        
+        Returns:
+            (ent_coef, reason, should_apply): New coefficient, explanation, whether to apply
+        """
+        self.steps_since_update += timesteps_elapsed
+        
+        # Update valid actions estimate if provided
+        if n_valid_actions is not None:
+            self.update_valid_actions_estimate(n_valid_actions)
+        
+        # AUDIT FIX: Normalize entropy for scale-invariant control
+        norm_entropy = self._normalize_entropy(current_entropy, n_valid_actions)
+        max_h = self._get_max_entropy(n_valid_actions)
+        
+        # Cooldown: Don't adjust too frequently
+        if self.cooldown_steps > 0:
+            self.cooldown_steps = max(0, self.cooldown_steps - timesteps_elapsed)
+            return current_ent_coef, f"COOLDOWN: H={current_entropy:.3f} (norm={norm_entropy:.2f}, max={max_h:.2f})", False
+            
+        if self.steps_since_update < self.min_steps_between_updates:
+            return current_ent_coef, f"WAITING: H={current_entropy:.3f} (norm={norm_entropy:.2f})", False
+        
+        # Stage-aware NORMALIZED thresholds
+        target = self.STAGE_TARGETS_NORMALIZED[self.current_stage]
+        bounds = self.STAGE_ENT_COEF_BOUNDS[self.current_stage]
+        emergency_thresholds = self.STAGE_EMERGENCY_THRESHOLDS_NORMALIZED[self.current_stage]
+        
+        # ========================================================================
+        # DISCOVERY PHASE (stages 0-1): PASSIVE MODE
+        # High entropy is GOOD for exploration - only intervene on COLLAPSE
+        # ========================================================================
+        if self.current_stage <= 1:
+            # Only care about entropy collapse (too low) in discovery phase
+            low_threshold = target + emergency_thresholds["low"]
+            if norm_entropy < low_threshold:
+                # Emergency: entropy collapsed, boost it
+                new_coef = min(bounds[1], current_ent_coef * 1.3)
+                self.steps_since_update = 0
+                self.cooldown_steps = 20_000
+                self.pid._last_output = new_coef
+                return new_coef, f"DISCOVERY_BOOST: norm_H={norm_entropy:.2f} < {low_threshold:.2f} (raw={current_entropy:.3f})", True
+            
+            # In DISCOVERY, high entropy is fine - don't try to reduce it
+            return current_ent_coef, f"DISCOVERY_PASSIVE: norm_H={norm_entropy:.2f} OK (target={target:.2f})", False
+        
+        # ========================================================================
+        # FOUNDATION+ PHASES: ACTIVE PID CONTROL (on normalized entropy)
+        # ========================================================================
+        
+        # EMERGENCY: Critical low - entropy collapsed way below target
+        low_threshold = target + emergency_thresholds["low"]
+        if norm_entropy < low_threshold:
+            new_coef = min(bounds[1], current_ent_coef * 1.3)  # 30% boost, capped
+            self.steps_since_update = 0
+            self.cooldown_steps = 15_000
+            self.pid._last_output = new_coef
+            return new_coef, f"EMERGENCY_LOW: norm_H={norm_entropy:.2f} << {low_threshold:.2f} (stage {self.current_stage})", True
+        
+        # EMERGENCY: Critical high - entropy way too chaotic
+        high_threshold = target + emergency_thresholds["high"]
+        if norm_entropy > high_threshold:
+            new_coef = max(bounds[0], current_ent_coef * 0.75)  # 25% reduction, floored
+            self.steps_since_update = 0
+            self.cooldown_steps = 15_000
+            self.pid._last_output = new_coef
+            return new_coef, f"EMERGENCY_HIGH: norm_H={norm_entropy:.2f} >> {high_threshold:.2f} (stage {self.current_stage})", True
+        
+        # Normal operation: Let PID handle it smoothly (on normalized entropy)
+        new_coef, reason = self.pid.update(norm_entropy)
+        
+        # Only apply if change is meaningful (>2% difference)
+        if abs(new_coef - current_ent_coef) / current_ent_coef < 0.02:
+            return current_ent_coef, f"PID stable (norm_H={norm_entropy:.2f}): {reason}", False
+            
+        self.steps_since_update = 0
+        self._last_ent_coef = new_coef
+        return new_coef, f"PID (norm_H={norm_entropy:.2f}): {reason}", True
 
 
 # =============================================================================
@@ -473,8 +831,8 @@ def create_vec_envs(
             # Seed
             try:
                 env.reset(seed=seed + rank)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Could not seed env {rank}: {e}")
             return env
         return _init
 
@@ -548,29 +906,34 @@ def evaluate_agent_trading(
     # Check if model is MaskablePPO
     is_maskable = MASKABLE_AVAILABLE and MaskablePPO is not None and isinstance(model, MaskablePPO)
     
-    # Helper to get action masks from VecEnv
+    # AUDIT FIX: Use official sb3_contrib helper when available (more robust across wrappers)
+    # Falls back to custom extraction for older sb3_contrib versions
     def get_action_masks_from_vec_env(venv: VecEnv) -> Optional[np.ndarray]:
-        """Extract action masks from a VecEnv by unwrapping to the base env."""
-        # For DummyVecEnv, we can access the underlying envs
+        """Extract action masks from a VecEnv."""
+        # Try official helper first (works across Dummy/Subproc/FrameStack)
+        if SB3_MASK_UTILS_AVAILABLE and sb3_get_action_masks is not None:
+            try:
+                return sb3_get_action_masks(venv)
+            except Exception as e:
+                logger.debug(f"sb3_get_action_masks failed, falling back: {e}")
+        
+        # Fallback: manual unwrapping (for DummyVecEnv only)
         try:
-            # Unwrap VecFrameStack if present
             current: Any = venv
             while hasattr(current, 'venv'):
                 current = getattr(current, 'venv')
-            # Now current should be DummyVecEnv or SubprocVecEnv
             if hasattr(current, 'envs'):
                 envs_list = getattr(current, 'envs')
                 if envs_list and len(envs_list) > 0:
                     base_env: Any = envs_list[0]
-                    # Unwrap Monitor/ActionMasker to find action_masks
                     while hasattr(base_env, 'env'):
                         if hasattr(base_env, 'action_masks') and callable(getattr(base_env, 'action_masks')):
                             return np.array([base_env.action_masks()])
                         base_env = base_env.env
                     if hasattr(base_env, 'action_masks') and callable(getattr(base_env, 'action_masks')):
                         return np.array([base_env.action_masks()])
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Could not extract action_masks from vec env: {e}")
         return None
 
     for ep in range(n_episodes):
@@ -834,7 +1197,7 @@ class VecEpisodeTradingCallback(BaseCallback):
                     self._diagnostics['clip_range'] = float(cr) if cr is not None else 0.2
                     
         except Exception as e:
-            pass  # Don't crash training if diagnostics fail
+            logger.debug(f"Diagnostics collection failed: {e}")
 
 
     def _on_step(self) -> bool:
@@ -1140,16 +1503,17 @@ class VecEpisodeTradingCallback(BaseCallback):
                 "mean_entry_quality": mean_entry_quality,
             }
             
-            # Write directly - simpler and works on Windows
-            # The dashboard server handles partial reads gracefully
-            with open(metrics_file, 'w', encoding='utf-8') as f:
+            # AUDIT FIX: Atomic write to avoid partial JSON when process is interrupted
+            tmp_file = metrics_file.with_suffix('.json.tmp')
+            with open(tmp_file, 'w', encoding='utf-8') as f:
                 json.dump(metrics, f)  # No indent for faster writes
+            tmp_file.replace(metrics_file)  # Atomic on POSIX, near-atomic on Windows
                 
             # Debug: confirm file was written
             if len(self._ep_rewards) <= 5:
-                print(f"[Dashboard] Saved metrics: ep={len(self._ep_rewards)}, pnl={metrics['mean_pnl']:.4f}, wr={metrics['mean_win_rate']:.2%}, trades={metrics['mean_trades']:.1f}")
+                logger.debug(f"[Dashboard] Saved metrics: ep={len(self._ep_rewards)}, pnl={metrics['mean_pnl']:.4f}, wr={metrics['mean_win_rate']:.2%}, trades={metrics['mean_trades']:.1f}")
         except Exception as e:
-            print(f"[Dashboard] Error saving metrics: {e}")
+            logger.warning(f"[Dashboard] Error saving metrics: {e}")
     
     def _get_unified_memory(self) -> Optional[Any]:
         """Lazy-load UnifiedMemory for training integration."""
@@ -1440,8 +1804,8 @@ def run_optuna_optimization(
                 )
                 try:
                     train_env.seed(1_000 + trial.number + 10 * fi)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Could not seed optuna train_env: {e}")
 
                 model = build_model(train_env)
 
@@ -1452,7 +1816,7 @@ def run_optuna_optimization(
                 )
 
                 # Train (chunked) then evaluate on VAL with adversarial execution
-                print(f"\n[Trial {trial.number}] Fold {fi+1}/{len(folds)} - Training {per_fold_steps:,} steps...")
+                logger.info(f"[Trial {trial.number}] Fold {fi+1}/{len(folds)} - Training {per_fold_steps:,} steps...")
                 model.learn(total_timesteps=per_fold_steps, progress_bar=True, callback=optuna_callback)
 
                 eval_cfg = _make_eval_config_adversarial(base_cfg, adversity=0.7)
@@ -1487,13 +1851,13 @@ def run_optuna_optimization(
                 try:
                     if train_env is not None:
                         train_env.close()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Train env cleanup: {e}")
                 try:
                     if eval_env is not None:
                         eval_env.close()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Eval env cleanup: {e}")
                 gc.collect()
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
@@ -1581,12 +1945,24 @@ def train_prop_firm_agent(
     )
     try:
         train_env.seed(42)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"Could not seed train_env: {e}")
 
     # Single eval env for best-model saving + SB3 EvalCallback
+    # AUDIT FIX: Use deterministic config (no domain randomization) for stable best-model selection
+    eval_cfg = copy.deepcopy(config)
+    try:
+        # Disable domain randomization for deterministic evaluation
+        eval_cfg.domain_randomization_enabled = False
+        eval_cfg.spread_mult_range = (1.0, 1.0)
+        eval_cfg.slippage_mult_range = (1.0, 1.0)
+        eval_cfg.latency_bars_range = (0, 0)
+        eval_cfg.volatility_scale_range = (1.0, 1.0)
+    except Exception:
+        pass  # env may ignore these safely
+    
     eval_env_vec = create_vec_envs(
-        data, config,
+        data, eval_cfg,
         n_envs=1, seed=1337,
         use_action_masking=use_masking,
         frame_stack=frame_stack,
@@ -1667,17 +2043,31 @@ def train_prop_firm_agent(
     remaining = max(0, total_timesteps - current_steps)
     logger.info(f"Target timesteps: {total_timesteps:,} | current: {current_steps:,} | remaining: {remaining:,}")
 
-    callbacks: List[BaseCallback] = [
-        VecEpisodeTradingCallback(total_timesteps=total_timesteps, log_interval_steps=50_000),
-        CheckpointCallback(save_freq=checkpoint_freq, save_path=str(checkpoint_dir), name_prefix="propfirm_ppo"),
-        EvalCallback(
+    # AUDIT FIX: Use MaskableEvalCallback when using MaskablePPO for mask-aware evaluation
+    # Standard EvalCallback doesn't pass action masks during predict(), causing illegal actions
+    if use_masking and MASKABLE_EVAL_AVAILABLE and MaskableEvalCallback is not None:
+        eval_cb = MaskableEvalCallback(
             eval_env_vec,
             best_model_save_path=str(model_dir / "best"),
             log_path="logs/eval",
             eval_freq=eval_freq,
             deterministic=True,
             n_eval_episodes=5,
-        ),
+        )
+    else:
+        eval_cb = EvalCallback(
+            eval_env_vec,
+            best_model_save_path=str(model_dir / "best"),
+            log_path="logs/eval",
+            eval_freq=eval_freq,
+            deterministic=True,
+            n_eval_episodes=5,
+        )
+
+    callbacks: List[BaseCallback] = [
+        VecEpisodeTradingCallback(total_timesteps=total_timesteps, log_interval_steps=50_000),
+        CheckpointCallback(save_freq=checkpoint_freq, save_path=str(checkpoint_dir), name_prefix="propfirm_ppo"),
+        eval_cb,
     ]
 
     # Periodic adversarial score logging (no pruning here; just visibility)
@@ -1755,16 +2145,16 @@ def train_prop_firm_agent(
 
         try:
             train_env.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Train env cleanup: {e}")
         try:
             eval_env_vec.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Eval vec env cleanup: {e}")
         try:
             eval_env_single.close()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Eval single env cleanup: {e}")
 
         gc.collect()
         if torch.cuda.is_available():
@@ -1913,22 +2303,23 @@ class CurriculumTrainingCallback(BaseCallback):
         self._last_clip_update_step = 0  # Track when we last updated clip range
         self._last_lr_update_step = 0  # Track when we last updated learning rate
         
-        # Episode tracking
-        self._ep_rewards: List[float] = []
-        self._ep_pnls: List[float] = []
-        self._ep_win_rates: List[float] = []
-        self._ep_drawdowns: List[float] = []
-        self._ep_trades: List[int] = []
-        self._ep_lens: List[int] = []
+        # Episode tracking - AUDIT FIX: Use bounded deques to prevent memory leak on long runs
+        MAX_EPISODE_HISTORY = 5000
+        self._ep_rewards: deque = deque(maxlen=MAX_EPISODE_HISTORY)
+        self._ep_pnls: deque = deque(maxlen=MAX_EPISODE_HISTORY)
+        self._ep_win_rates: deque = deque(maxlen=MAX_EPISODE_HISTORY)
+        self._ep_drawdowns: deque = deque(maxlen=MAX_EPISODE_HISTORY)
+        self._ep_trades: deque = deque(maxlen=MAX_EPISODE_HISTORY)
+        self._ep_lens: deque = deque(maxlen=MAX_EPISODE_HISTORY)
         
         # AUDIT FIX (CRIT-1): Cumulative tracking for O(1) totals
         self._cumulative_pnl: float = 0.0
         self._cumulative_trades: int = 0
         
-        # NEW: Trading quality metrics per episode
-        self._ep_profit_factors: List[float] = []
-        self._ep_r_multiples: List[float] = []
-        self._ep_entry_quality: List[float] = []
+        # NEW: Trading quality metrics per episode - also bounded
+        self._ep_profit_factors: deque = deque(maxlen=MAX_EPISODE_HISTORY)
+        self._ep_r_multiples: deque = deque(maxlen=MAX_EPISODE_HISTORY)
+        self._ep_entry_quality: deque = deque(maxlen=MAX_EPISODE_HISTORY)
         self._exit_reason_counts: Dict[str, int] = {}
         
         # PPO diagnostics (updated from logger)
@@ -1938,8 +2329,8 @@ class CurriculumTrainingCallback(BaseCallback):
         self._cur_rewards: List[float] = []
         self._cur_lens: List[int] = []
         
-        # Stage tracking
-        self._stage_history: List[Dict[str, Any]] = []
+        # Stage tracking - bounded to prevent unbounded growth
+        self._stage_history: deque = deque(maxlen=200)
         self._start_time: Optional[float] = None
         self._base_lr: Optional[float] = None
         self._current_lr: Optional[float] = None  # Track actual current LR (survives lr_schedule changes)
@@ -1951,6 +2342,9 @@ class CurriculumTrainingCallback(BaseCallback):
         self._policy_loss_history: deque = deque(maxlen=20)  # Policy loss for LR
         self._value_loss_history: deque = deque(maxlen=20)  # Value loss for LR
         self._reward_history: deque = deque(maxlen=50)  # Recent rewards for performance
+        
+        # SMART ENTROPY CONTROLLER (PID-based, prevents oscillation)
+        self._smart_entropy_controller = SmartEntropyController(initial_ent_coef=base_ent_coef)
         
         # Register transition callback
         if self.curriculum_manager is not None:
@@ -2041,98 +2435,89 @@ class CurriculumTrainingCallback(BaseCallback):
                 self.model.learning_rate = self._base_lr
     
     def _apply_entropy_schedule(self) -> None:
-        """ADAPTIVE entropy controller - reacts to actual training dynamics.
+        """PID-based entropy controller - smooth, stable, no oscillation.
         
-        Instead of blindly following a fixed schedule, this controller:
-        1. Monitors actual policy entropy over a rolling window
-        2. Detects entropy collapse (rapid drop or below threshold)
-        3. Automatically boosts ent_coef when exploration is dying
-        4. Allows gradual reduction only when policy is healthy
-        5. Uses curriculum stage as a FLOOR, not a ceiling
+        This uses proper control theory (PID) instead of threshold-based logic.
+        The PID controller:
+        1. Tracks toward a TARGET entropy (not just bounds)
+        2. Uses derivative term to prevent oscillation
+        3. Uses integral term to eliminate steady-state error
+        4. Has built-in damping and cooldown periods
         
-        The key insight: entropy should drop naturally as policy improves,
-        but we intervene if it drops TOO FAST or TOO LOW.
+        Uses NORMALIZED entropy targets for portability across:
+        - Action-space changes
+        - Masking intensity changes
+        - New instruments/regimes
+        
+        This completely replaces the old oscillating threshold-based controller.
         """
         if not self.enable_entropy_schedule or self.curriculum_manager is None or self.model is None:
             return
         
-        # Adaptive check frequency: more frequent when entropy is low
-        current_entropy = self._entropy_history[-1] if self._entropy_history else 1.0
-        check_interval = 2_000 if current_entropy < 0.5 else 5_000  # More responsive when entropy low
+        # Get current state
+        current_entropy = self._entropy_history[-1] if self._entropy_history else 0.7
+        current_ent_coef = float(getattr(self.model, 'ent_coef', self.base_ent_coef))
+        stage = self.curriculum_manager.current_stage
+        stage_value = int(stage.value)
         
-        if self.num_timesteps - self._last_ent_update_step < check_interval:
+        # Update smart controller's stage awareness
+        self._smart_entropy_controller.on_stage_change(stage_value)
+        
+        # Calculate steps since last check
+        steps_elapsed = self.num_timesteps - self._last_ent_update_step
+        if steps_elapsed < 5_000:  # Minimum check interval
             return
-        
+            
         self._last_ent_update_step = self.num_timesteps
         
-        # === GATHER CURRENT STATE ===
-        stage = self.curriculum_manager.current_stage
-        stage_value = int(stage.value)  # 0-7
-        current_ent_coef = float(getattr(self.model, 'ent_coef', self.base_ent_coef))
+        # ENTROPY NORMALIZATION: Estimate number of valid actions from environment
+        # This makes entropy targets portable across action space changes and masking
+        n_valid_actions: Optional[int] = None
+        try:
+            if hasattr(self, 'training_env') and self.training_env is not None:
+                venv = self.training_env
+                # Unwrap to get base env with action_masks
+                current_env: Any = venv
+                while hasattr(current_env, 'venv'):
+                    current_env = getattr(current_env, 'venv')
+                if hasattr(current_env, 'envs'):
+                    envs_list = getattr(current_env, 'envs')
+                    if envs_list and len(envs_list) > 0:
+                        base_env: Any = envs_list[0]
+                        while hasattr(base_env, 'env'):
+                            if hasattr(base_env, 'action_masks') and callable(getattr(base_env, 'action_masks')):
+                                mask = base_env.action_masks()
+                                n_valid_actions = int(np.sum(mask))
+                                break
+                            base_env = base_env.env
+                        if n_valid_actions is None and hasattr(base_env, 'action_masks'):
+                            mask = base_env.action_masks()
+                            n_valid_actions = int(np.sum(mask))
+        except Exception as e:
+            logger.debug(f"Could not get action masks for entropy normalization: {e}")
         
-        # Get recent entropy from metrics (if available)
-        current_entropy = self._entropy_history[-1] if self._entropy_history else 1.0
+        # Get PID recommendation with normalized entropy
+        new_ent_coef, reason, should_apply = self._smart_entropy_controller.get_ent_coef(
+            current_entropy=current_entropy,
+            current_ent_coef=current_ent_coef,
+            timesteps_elapsed=steps_elapsed,
+            n_valid_actions=n_valid_actions,
+        )
         
-        # === STAGE-BASED MINIMUM (floor, not target) ===
-        # These are MINIMUM acceptable entropies per stage
-        stage_min_entropy = [0.60, 0.55, 0.50, 0.45, 0.40, 0.35, 0.30, 0.25]  # Raised minimums
-        min_entropy = stage_min_entropy[min(stage_value, 7)]
-        
-        # Stage-based ent_coef floor (never go below this for the stage) - HIGHER FLOORS
-        stage_floor_coef = [0.12, 0.10, 0.08, 0.06, 0.05, 0.04, 0.03, 0.025]  # Much higher
-        floor_coef = stage_floor_coef[min(stage_value, 7)]
-        
-        # === ADAPTIVE LOGIC ===
-        target_ent_coef = current_ent_coef  # Start with current
-        adjustment_reason = "stable"
-        
-        # 1. EMERGENCY BOOST: Entropy collapsed below stage minimum
-        if current_entropy < min_entropy:
-            deficit = min_entropy - current_entropy
-            # VERY aggressive boost: base 0.05 + scaled by deficit magnitude
-            boost = 0.05 + (deficit * 0.5)  # Double the boost strength
-            target_ent_coef = current_ent_coef + boost
-            adjustment_reason = f"EMERGENCY: entropy {current_entropy:.3f} < min {min_entropy:.3f}"
-        
-        # 2. WARNING BOOST: Entropy dropping too fast (approaching floor)
-        elif len(self._entropy_history) >= 5:
-            recent_entropy = list(self._entropy_history)[-5:]
-            entropy_slope = (recent_entropy[-1] - recent_entropy[0]) / max(len(recent_entropy), 1)
-            avg_entropy = sum(recent_entropy) / len(recent_entropy)
-            
-            # Check for rapid decline OR approaching minimum
-            buffer_zone = min_entropy + 0.15  # Increased from 0.10 - earlier warning
-            if entropy_slope < -0.03 or (avg_entropy < buffer_zone and entropy_slope < 0):
-                # Entropy dropping fast OR in buffer zone and still declining
-                boost = 0.02 + abs(entropy_slope) * 0.3  # Increased boost
-                target_ent_coef = current_ent_coef + boost
-                adjustment_reason = f"WARNING: entropy slope {entropy_slope:.3f}, avg {avg_entropy:.3f} (buffer: {buffer_zone:.2f})"
-            
-            # 3. HEALTHY REDUCTION: Much stricter conditions - entropy must be VERY stable and high
-            # This was triggering too often and causing yo-yo pattern!
-            elif entropy_slope > 0.01 and current_entropy > min_entropy + 0.30:
-                # Only reduce if entropy is INCREASING (slope > 0) and well above minimum
-                # 0.5% reduction instead of 1% - much gentler
-                target_ent_coef = current_ent_coef * 0.995
-                adjustment_reason = f"HEALTHY: entropy {current_entropy:.3f} increasing, very slight reduction"
-            # Otherwise: do nothing (stable is fine!)
-        
-        # 4. FLOOR ENFORCEMENT: Never go below stage floor
-        if target_ent_coef < floor_coef:
-            target_ent_coef = floor_coef
-            adjustment_reason = f"FLOOR: enforcing stage {stage.name} minimum coef"
-        
-        # 5. CEILING: Higher ceiling to allow aggressive recovery
-        target_ent_coef = min(0.25, target_ent_coef)  # Raised from 0.15
-        
-        # === APPLY CHANGE ===
-        if hasattr(self.model, 'ent_coef') and abs(current_ent_coef - target_ent_coef) > 0.001:
-            setattr(self.model, 'ent_coef', target_ent_coef)
+        # Apply if recommended
+        if should_apply and hasattr(self.model, 'ent_coef'):
+            setattr(self.model, 'ent_coef', new_ent_coef)
             if self.verbose >= 1:
+                norm_target = self._smart_entropy_controller.STAGE_TARGETS_NORMALIZED[stage_value]
+                max_h = self._smart_entropy_controller._get_max_entropy(n_valid_actions)
+                raw_target = norm_target * max_h
+                norm_current = current_entropy / max_h if max_h > 0 else 0
                 logger.info(
-                    f"Adaptive entropy: {adjustment_reason} | "
-                    f"ent_coef: {current_ent_coef:.4f} -> {target_ent_coef:.4f} | "
-                    f"entropy: {current_entropy:.3f} (min: {min_entropy:.2f})"
+                    f"🎛️ Entropy PID: {reason} | "
+                    f"ent_coef: {current_ent_coef:.4f} → {new_ent_coef:.4f} | "
+                    f"entropy: {current_entropy:.3f} (norm: {norm_current:.2f}) | "
+                    f"target: {raw_target:.2f} (norm: {norm_target:.2f}) | "
+                    f"valid_actions: {n_valid_actions or 'est'}"
                 )
 
     def _apply_adaptive_clip_range(self) -> None:
@@ -2160,17 +2545,20 @@ class CurriculumTrainingCallback(BaseCallback):
         
         self._last_clip_update_step = self.num_timesteps
         
-        # Get current clip_range value (handle callable schedules)
+        # AUDIT FIX: Get current clip_range value correctly
+        # SB3 schedules expect progress_remaining (1.0 at start -> 0.0 at end)
+        # Using 1.0 always returns the INITIAL value, not current
+        progress = float(getattr(self.model, "_current_progress_remaining", 1.0))
+        
         clip_range_attr = getattr(self.model, 'clip_range', self.base_clip_range)
         current_clip: float = self.base_clip_range
         if callable(clip_range_attr):
-            # It's a schedule function - call it to get current value
             try:
-                raw_result = clip_range_attr(1.0)  # progress=1.0 to get current
+                raw_result = clip_range_attr(progress)
                 if isinstance(raw_result, (int, float)):
                     current_clip = float(raw_result)
-            except Exception:
-                pass  # Keep default
+            except Exception as e:
+                logger.debug(f"Could not evaluate clip_range schedule: {e}")
         elif isinstance(clip_range_attr, (int, float)):
             current_clip = float(clip_range_attr)
         
@@ -2186,7 +2574,6 @@ class CurriculumTrainingCallback(BaseCallback):
             # Almost no updates being clipped = policy frozen, need bigger steps
             # More aggressive: 50% increase, higher ceiling
             target_clip = min(0.40, current_clip * 1.50)  # 50% increase (was 25%)
-            adjustment_reason = f"EMERGENCY: clip_frac {current_clip_frac:.3f} critically low - 50% boost"
             adjustment_reason = f"EMERGENCY: clip_frac {current_clip_frac:.3f} critically low - major boost"
         
         # 2. KL-based adjustment (primary signal)
@@ -2253,17 +2640,13 @@ class CurriculumTrainingCallback(BaseCallback):
         
         self._last_lr_update_step = self.num_timesteps
         
-        # Get current LR (use tracked value if available, otherwise read from model)
-        if self._current_lr is not None:
-            current_lr = self._current_lr
-        elif callable(self.model.learning_rate):
-            # Try to call the schedule to get current value
-            try:
-                current_lr = float(self.model.learning_rate(1.0))  # progress=1.0 for constant schedule
-            except:
-                current_lr = self._base_lr
-        else:
-            current_lr = float(self.model.learning_rate)
+        # AUDIT FIX: Get current LR from optimizer (most reliable source)
+        current_lr = self._current_lr or self._base_lr
+        try:
+            if hasattr(self.model, "policy") and hasattr(self.model.policy, "optimizer"):
+                current_lr = float(self.model.policy.optimizer.param_groups[0]["lr"])
+        except Exception:
+            pass  # Fall back to tracked/base value
         
         # Need enough history for meaningful decisions
         if len(self._policy_loss_history) < 5 or len(self._reward_history) < 10:
@@ -2318,11 +2701,19 @@ class CurriculumTrainingCallback(BaseCallback):
         target_lr = max(lr_floor, min(self._base_lr * 2, target_lr))
         
         if abs(current_lr - target_lr) / current_lr > 0.05:  # >5% change
-            # Apply to model
+            # Apply to model schedule
             if hasattr(self.model, 'lr_schedule'):
                 self.model.lr_schedule = lambda _, lr=target_lr: lr
             if hasattr(self.model, 'learning_rate'):
                 self.model.learning_rate = target_lr
+            
+            # AUDIT FIX: Also push directly to optimizer for immediate effect
+            try:
+                if hasattr(self.model, "policy") and hasattr(self.model.policy, "optimizer"):
+                    for g in self.model.policy.optimizer.param_groups:
+                        g["lr"] = float(target_lr)
+            except Exception:
+                pass
             
             # CRITICAL: Persist adjusted value for future calls
             self._current_lr = target_lr
@@ -2528,13 +2919,13 @@ class CurriculumTrainingCallback(BaseCallback):
         if not self._ep_rewards:
             return
 
-
+        # AUDIT FIX: deques don't support slicing - convert to list first
         n = min(50, len(self._ep_rewards))
-        rewards = self._ep_rewards[-n:]
-        pnls = self._ep_pnls[-n:]
-        win_rates = self._ep_win_rates[-n:]
-        drawdowns = self._ep_drawdowns[-n:]
-        trades = self._ep_trades[-n:]
+        rewards = list(self._ep_rewards)[-n:]
+        pnls = list(self._ep_pnls)[-n:]
+        win_rates = list(self._ep_win_rates)[-n:]
+        drawdowns = list(self._ep_drawdowns)[-n:]
+        trades = list(self._ep_trades)[-n:]
 
         mean_reward = float(np.mean(rewards))
         mean_pnl = float(np.mean(pnls))
@@ -2786,16 +3177,16 @@ class CurriculumTrainingCallback(BaseCallback):
                 "curriculum_progress": curriculum_progress,
                 "curriculum_detail": curriculum_detail,
                 
-                # Recent history for charts
-                "recent_rewards": [float(x) for x in self._ep_rewards[-n_recent:]],
-                "recent_pnls": [float(x) for x in self._ep_pnls[-n_recent:]],
-                "recent_win_rates": [float(x) * 100 for x in self._ep_win_rates[-n_recent:]],  # As percentage
-                "recent_drawdowns": [float(x) * 100 for x in self._ep_drawdowns[-n_recent:]],  # As percentage
-                "recent_trades": [int(x) for x in self._ep_trades[-n_recent:]],
-                "recent_r_multiples": [float(x) for x in self._ep_r_multiples[-n_recent:]],
+                # Recent history for charts - convert deques to lists for slicing
+                "recent_rewards": [float(x) for x in list(self._ep_rewards)[-n_recent:]],
+                "recent_pnls": [float(x) for x in list(self._ep_pnls)[-n_recent:]],
+                "recent_win_rates": [float(x) * 100 for x in list(self._ep_win_rates)[-n_recent:]],  # As percentage
+                "recent_drawdowns": [float(x) * 100 for x in list(self._ep_drawdowns)[-n_recent:]],  # As percentage
+                "recent_trades": [int(x) for x in list(self._ep_trades)[-n_recent:]],
+                "recent_r_multiples": [float(x) for x in list(self._ep_r_multiples)[-n_recent:]],
                 
-                # Stage history
-                "stage_history": self._stage_history,
+                # Stage history - AUDIT FIX: convert deque to list for JSON serialization
+                "stage_history": list(self._stage_history),
                 
                 # Legacy flat fields for backward compatibility
                 "timesteps": self.num_timesteps,
@@ -2812,8 +3203,11 @@ class CurriculumTrainingCallback(BaseCallback):
                 "total_trades": total_trades,
             }
             
-            with open(metrics_file, 'w', encoding='utf-8') as f:
+            # AUDIT FIX: Atomic write to avoid partial JSON when process is interrupted
+            tmp_file = metrics_file.with_suffix('.json.tmp')
+            with open(tmp_file, 'w', encoding='utf-8') as f:
                 json.dump(metrics, f)
+            tmp_file.replace(metrics_file)  # Atomic on POSIX, near-atomic on Windows
                 
         except Exception as e:
             import traceback
@@ -2892,8 +3286,12 @@ def create_curriculum_vec_envs(
     """
     Create vectorized curriculum environments.
     
-    All environments share the same CurriculumManager, so stage transitions
-    are synchronized across all parallel environments.
+    AUDIT FIX: Force DummyVecEnv to keep CurriculumManager truly shared.
+    SubprocVecEnv pickles curriculum_manager into each subprocess, causing
+    desynchronized stage transitions across parallel environments.
+    
+    For true subprocess parallelism with shared state, a centralized
+    curriculum authority (multiprocessing manager/proxy) would be needed.
     """
     Path(monitor_dir).mkdir(parents=True, exist_ok=True)
 
@@ -2909,13 +3307,16 @@ def create_curriculum_vec_envs(
             return env
         return _init
 
-    if platform.system() != "Windows" and n_envs > 1:
-        start_method = pick_subproc_start_method() or "spawn"
-        logger.info(f"Creating {n_envs} PARALLEL curriculum envs (SubprocVecEnv)")
-        venv = SubprocVecEnv([make_env(i) for i in range(n_envs)], start_method=start_method)
-    else:
-        logger.info(f"Creating {n_envs} curriculum envs (DummyVecEnv)")
-        venv = DummyVecEnv([make_env(i) for i in range(n_envs)])
+    # AUDIT FIX: Force DummyVecEnv even on Linux to keep curriculum_manager shared
+    # SubprocVecEnv would pickle the manager into each process -> desync
+    if n_envs > 1 and platform.system() != "Windows":
+        logger.warning(
+            "Curriculum mode: forcing DummyVecEnv to keep a truly shared CurriculumManager. "
+            "SubprocVecEnv would desynchronize stage transitions."
+        )
+    
+    logger.info(f"Creating {n_envs} curriculum envs (DummyVecEnv - shared CurriculumManager)")
+    venv = DummyVecEnv([make_env(i) for i in range(n_envs)])
 
     if frame_stack and frame_stack > 1:
         venv = VecFrameStack(venv, n_stack=int(frame_stack))
@@ -2941,7 +3342,7 @@ def train_curriculum_agent(
     policy_hidden: int,
     value_hidden: int,
     checkpoint_freq: int,
-    start_stage: str = "FOUNDATION",
+    start_stage: str = "EXPLORER",
     resume_path: Optional[str] = None,
     load_model_path: Optional[str] = None,
     frame_stack: int = 1,
@@ -2955,12 +3356,18 @@ def train_curriculum_agent(
     """
     Train with curriculum learning - progressive difficulty stages.
     
-    The agent starts at FOUNDATION and earns progression to harder stages
+    The agent starts at EXPLORER (Stage 0) and earns progression to harder stages
     by demonstrating statistical competence (not just time or luck).
+    
+    10-Stage Curriculum:
+        Phase 0 DISCOVERY (0-1): EXPLORER, EXPERIMENTER - Pure exploration
+        Phase 1 FOUNDATION (2-4): TREND_STUDENT, SESSION_STUDENT, TIMING_STUDENT
+        Phase 2 DEVELOPMENT (5-7): INTEGRATOR, RISK_MANAGER, STRATEGIST
+        Phase 3 MASTERY (8-9): PROFESSIONAL, LIVE_READY - Prop firm ready
     
     Goal-Based Stopping:
         When goal_based_stopping=True, training will continue until:
-        - Agent achieves MASTERY stage and stays for mastery_confirmation_episodes, OR
+        - Agent achieves LIVE_READY stage and stays for mastery_confirmation_episodes, OR
         - Safety caps hit: max_hours exceeded, OR
         - Plateau detected: no stage progression for plateau_threshold_episodes, OR
         - Repeated failures: demoted max_demotions_from_same_stage times from same stage
@@ -3043,23 +3450,56 @@ def train_curriculum_agent(
     # Load existing model or create new one
     if load_model_path and Path(load_model_path).exists():
         logger.info(f"Loading model from: {load_model_path}")
+        
+        # AUDIT FIX: SB3 .load() does NOT accept hyperparameter kwargs!
+        # Only valid kwargs are: path, env, device, custom_objects, print_system_info, force_reset
+        # Passing learning_rate, n_steps, etc. will cause TypeError at runtime.
         model = Algo.load(
             load_model_path,
             env=train_env,
             device=device,
-            # Override some params for continued training
-            learning_rate=learning_rate,
-            n_steps=n_steps,
-            batch_size=batch_size,
-            n_epochs=n_epochs,
-            gamma=gamma,
-            gae_lambda=gae_lambda,
-            clip_range=clip_range,
-            ent_coef=ent_coef,
-            vf_coef=vf_coef,
-            max_grad_norm=max_grad_norm,
-            target_kl=target_kl,
-            tensorboard_log="runs/curriculum",
+        )
+        
+        # Safe runtime overrides for hyperparameters (applied after load)
+        # Note: n_steps, batch_size, n_epochs cannot be safely changed after load
+        # as they affect rollout buffer geometry
+        loaded_n_steps = getattr(model, 'n_steps', n_steps)
+        loaded_batch_size = getattr(model, 'batch_size', batch_size)
+        if loaded_n_steps != n_steps:
+            logger.warning(
+                f"Loaded model n_steps={loaded_n_steps} differs from CLI n_steps={n_steps}. "
+                f"Keeping loaded value to avoid rollout buffer mismatch."
+            )
+        if loaded_batch_size != batch_size:
+            logger.warning(
+                f"Loaded model batch_size={loaded_batch_size} differs from CLI batch_size={batch_size}. "
+                f"Keeping loaded value."
+            )
+        
+        # Override LR schedule (safe to change)
+        if hasattr(model, 'lr_schedule'):
+            model.lr_schedule = lambda _progress, lr=learning_rate: lr
+        if hasattr(model, 'learning_rate'):
+            model.learning_rate = learning_rate
+        
+        # Override ent_coef (safe to change)
+        if hasattr(model, 'ent_coef'):
+            model.ent_coef = ent_coef
+        
+        # Override clip_range with constant schedule (safe to change)
+        if hasattr(model, 'clip_range'):
+            model.clip_range = lambda _progress, val=clip_range: val
+        
+        # Push LR immediately into optimizer
+        try:
+            for g in model.policy.optimizer.param_groups:
+                g["lr"] = float(learning_rate)
+        except Exception:
+            pass
+        
+        logger.info(
+            f"Applied runtime overrides: lr={learning_rate}, ent_coef={ent_coef}, "
+            f"clip_range={clip_range}"
         )
         
         # AUDIT FIX (CRIT-4): Validate observation version before continuing training
@@ -3127,16 +3567,28 @@ def train_curriculum_agent(
             save_path=str(save_dir / "checkpoints"),
             name_prefix="curriculum_state",
         ),
-        # AUDIT FIX (CRIT-3): Add EvalCallback for best model saving
-        EvalCallback(
+    ]
+    
+    # AUDIT FIX: Use MaskableEvalCallback when using MaskablePPO for mask-aware evaluation
+    if use_masking and MASKABLE_EVAL_AVAILABLE and MaskableEvalCallback is not None:
+        eval_cb = MaskableEvalCallback(
             eval_env,
             best_model_save_path=str(save_dir / "best"),
             log_path=str(save_dir / "eval_logs"),
             eval_freq=max(50_000, checkpoint_freq),
             deterministic=True,
             n_eval_episodes=5,
-        ),
-    ]
+        )
+    else:
+        eval_cb = EvalCallback(
+            eval_env,
+            best_model_save_path=str(save_dir / "best"),
+            log_path=str(save_dir / "eval_logs"),
+            eval_freq=max(50_000, checkpoint_freq),
+            deterministic=True,
+            n_eval_episodes=5,
+        )
+    callbacks.append(eval_cb)
     
     start_time = datetime.now()
     try:
@@ -3209,15 +3661,15 @@ def main() -> None:
     parser.add_argument(
         "--start-stage",
         type=str,
-        default="FOUNDATION",
-        help="Starting curriculum stage (FOUNDATION, DISCIPLINE, MARKET_STRUCTURE, etc.)",
+        default="EXPLORER",
+        help="Starting curriculum stage (EXPLORER, EXPERIMENTER, TREND_STUDENT, SESSION_STUDENT, TIMING_STUDENT, INTEGRATOR, RISK_MANAGER, STRATEGIST, PROFESSIONAL, LIVE_READY)",
     )
     parser.add_argument("--resume-curriculum", type=str, default=None, help="Resume curriculum from state file")
     parser.add_argument("--load-model", type=str, default=None, help="Load model weights from checkpoint (.zip file)")
     parser.add_argument(
         "--goal-based",
         action="store_true",
-        help="Train until MASTERY achieved (not fixed timesteps). Set --timesteps high as safety cap.",
+        help="Train until LIVE_READY achieved (not fixed timesteps). Set --timesteps high as safety cap.",
     )
     parser.add_argument(
         "--max-hours",
@@ -3235,7 +3687,7 @@ def main() -> None:
         "--mastery-episodes",
         type=int,
         default=100,
-        help="Episodes at MASTERY to confirm completion (goal-based)",
+        help="Episodes at LIVE_READY to confirm completion (goal-based)",
     )
 
     parser.add_argument("--timesteps", type=int, default=10_000_000, help="Total training timesteps")
