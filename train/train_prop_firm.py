@@ -2910,6 +2910,15 @@ class CurriculumTrainingCallback(BaseCallback):
             # Alternative: get from model attributes
             if self._n_updates == 0 and hasattr(self.model, '_n_updates'):
                 self._n_updates = int(self.model._n_updates)
+            
+            # Fallback: get learning rate from model if SB3 logger didn't provide it
+            if self._ppo_diagnostics.get('learning_rate', 0) == 0 and hasattr(self.model, 'learning_rate'):
+                lr = self.model.learning_rate
+                if callable(lr):
+                    # Learning rate schedule - evaluate at current progress
+                    progress = self.num_timesteps / max(getattr(self.model, '_total_timesteps', 1), 1)
+                    lr = lr(1.0 - progress)
+                self._ppo_diagnostics['learning_rate'] = float(lr)
                 
         except Exception:
             pass  # Silently fail - diagnostics are optional

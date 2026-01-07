@@ -361,7 +361,9 @@
     sci: (x, d=2) => {
       if (x == null || isNaN(x)) return "—";
       const v = Number(x);
-      if (Math.abs(v) < 0.0001 || Math.abs(v) > 10000) return v.toExponential(d);
+      // Use scientific notation for very small (< 0.01) or very large (> 10000) values
+      // This ensures learning rates like 3e-4 display correctly
+      if (v !== 0 && (Math.abs(v) < 0.01 || Math.abs(v) > 10000)) return v.toExponential(d);
       return v.toFixed(d);
     },
     time: (seconds) => {
