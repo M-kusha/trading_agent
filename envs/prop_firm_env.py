@@ -205,6 +205,27 @@ class CloseReason(str, Enum):
         }
         return scores.get(self, 0.5)
 
+    @property
+    def close_priority(self) -> int:
+        """
+        Returns close priority for override logic.
+        Higher priority = more urgent close reason.
+        Used to ensure forced closes override agent closes.
+        """
+        priorities = {
+            CloseReason.RISK_LIQUIDATION: 100,     # Highest: DD breach
+            CloseReason.EMERGENCY_CLOSE: 95,       # Emergency threshold
+            CloseReason.DAILY_LIMIT_SAFETY: 90,    # Near daily limit
+            CloseReason.HARD_STOP: 85,             # Max loss hit
+            CloseReason.TRAILING_STOP: 70,         # Profit protection
+            CloseReason.HARD_CLOSE: 60,            # Session end
+            CloseReason.WEEKEND_FLATTEN: 60,       # Weekend policy
+            CloseReason.TIME_DECAY: 50,            # Time limit
+            CloseReason.EPISODE_TRUNCATE: 40,      # Episode boundary
+            CloseReason.AGENT_CLOSE: 10,           # Lowest: voluntary
+        }
+        return priorities.get(self, 40)
+
 
 @dataclass
 class RewardConfig:
@@ -240,10 +261,12 @@ class RewardConfig:
     optimal_trade_bars: int = 8
     max_trade_bars_for_bonus: int = 24
 
-    # Exit quality modifiers
+    # Exit quality modifiers - TEACH PATIENCE
+    # The key insight: trailing_stop = agent let the trade run and got stopped at profit
+    # agent_close = agent chickened out and closed manually (often leaving profit on table)
     exit_quality_enabled: bool = True
-    trailing_stop_bonus: float = 0.25  # INCREASED from 0.15 - strongly reward letting winners run
-    agent_close_bonus: float = 0.0  # REMOVED - don't reward cutting winners short
+    trailing_stop_bonus: float = 0.25  # STRONG: Reward letting winners run to trailing stop
+    agent_close_bonus: float = -0.05   # PENALTY: Discourage manually cutting winners
     hard_stop_penalty: float = 0.15
     risk_liquidation_penalty: float = 0.30
     
@@ -260,6 +283,31 @@ class RewardConfig:
     entry_quality_integration: bool = True
     entry_quality_weight: float = 0.2
 
+    # Session timing penalties (direct signal for learning trading hours)
+    session_timing_enabled: bool = True
+    off_hours_trade_penalty: float = 0.15  # Penalty for trading in no-new-trades window
+    prime_hours_trade_bonus: float = 0.05  # Bonus for trading in prime hours (14:00-17:00)
+
+    # Market structure rewards (v5.3 - teach WHERE to trade)
+    market_structure_enabled: bool = False
+    sr_proximity_bonus: float = 0.10       # Bonus for entering near S/R
+    sr_proximity_penalty: float = 0.08     # Penalty for entering far from S/R
+    structure_alignment_bonus: float = 0.12 # Bonus for trading with structure (HH/HL or LL/LH)
+    bos_alignment_bonus: float = 0.08      # Bonus for trading after BOS confirmation
+    order_block_entry_bonus: float = 0.06  # Bonus for entering at order block levels
+    
+    # Divergence/momentum rewards (v5.3 - teach reversal awareness)
+    divergence_awareness_enabled: bool = False
+    divergence_contra_penalty: float = 0.15 # Penalty for trading against divergence
+    divergence_aligned_bonus: float = 0.10  # Bonus for trading with divergence
+    overbought_long_penalty: float = 0.12   # Penalty for going long when overbought
+    oversold_short_penalty: float = 0.12    # Penalty for going short when oversold
+    
+    # Regime awareness rewards (v5.3 - teach context sensitivity)
+    regime_awareness_enabled: bool = False
+    risk_off_aggressive_penalty: float = 0.10  # Penalty for aggressive trades in risk-off
+    high_vol_size_penalty: float = 0.08        # Penalty for large positions in high volatility
+
     # Drawdown shaping
     dd_shaping_enabled: bool = True
     dd_threshold: float = 0.02
@@ -272,10 +320,13 @@ class RewardConfig:
     win_streak_bonus_per_win: float = 0.02
     loss_streak_penalty_per_loss: float = 0.03
 
-    # Anti-churn
+    # Anti-churn - REASONABLE LIMITS
+    # daily_trade_soft_limit = trades per DAY in market data, NOT per episode!
+    # With M15 bars, 2400-step episode ≈ 25 trading days
+    # So limit=8 means 200 trades/episode is the soft limit
     anti_churn_enabled: bool = True
-    daily_trade_soft_limit: int = 5  # Lowered from 10 - enforce discipline earlier
-    churn_penalty_per_trade: float = 0.08  # 4x stronger penalty (was 0.02)
+    daily_trade_soft_limit: int = 8  # FIXED: 5 was too restrictive for learning
+    churn_penalty_per_trade: float = 0.05  # FIXED: Softer penalty - exponential growth handles escalation
 
     # Trade activity consistency (NEW)
     # Encourages consistent trade counts across episodes
@@ -357,6 +408,14 @@ class PropFirmConfig:
     hard_close_time: dtime = dtime(22, 0)
     final_exit_window_minutes: int = 60
     allow_weekend_holding: bool = False
+
+    # F-7 FIX: Constraint enforcement flags (controlled by curriculum stages)
+    # When False, the corresponding timing restriction is relaxed
+    # NOTE: enforce_session_windows was removed (was defined but never used)
+    # Session blocking is controlled by: enforce_no_new_trades_window, enforce_hard_close, enforce_weekend_block
+    enforce_no_new_trades_window: bool = True  # No new trades after 18:00
+    enforce_weekend_block: bool = True  # No weekend holding
+    enforce_hard_close: bool = True  # Hard close at 22:00
 
     # Entry-quality gate
     entry_quality_gate_enabled: bool = True
@@ -499,6 +558,7 @@ class PropPosition:
     lowest_pnl: float = 0.0
     entry_fee_eur: float = 0.0
     entry_quality: float = 0.5
+    entry_context: Optional[Dict[str, Any]] = None  # Market structure context at entry (v5.3)
 
 
 @dataclass
@@ -514,6 +574,8 @@ class TradeResult:
     direction: str
     lot_size: float
     total_fees: float = 0.0  # Entry + exit fees for consistent MFE/net_pnl comparisons
+    entry_dt: Optional[datetime] = None  # Entry timestamp for session timing rewards
+    entry_context: Optional[Dict[str, Any]] = None  # Market structure context at entry (v5.3)
 
 
 class PropFirmTradingEnv(gym.Env):
@@ -606,6 +668,7 @@ class PropFirmTradingEnv(gym.Env):
         self.daily_pnl = 0.0
         self.consecutive_losses = 0
         self.consecutive_wins = 0
+        self.max_consecutive_losses_reached = 0  # Peak consecutive losses during episode
 
         # Session tracking
         self._current_day: Optional[date] = None
@@ -647,6 +710,10 @@ class PropFirmTradingEnv(gym.Env):
         self._avg_vol: Optional[float] = None
         self._episode_trade_results: List[TradeResult] = []
         self._last_reward_components: Dict[str, float] = {}
+        
+        # Aggregate reward component tracking for dashboard
+        self._episode_reward_components: Dict[str, float] = {}
+        self._episode_reward_component_counts: Dict[str, int] = {}
 
         # Episode randomization state
         self._episode_spread_mult = 1.0
@@ -815,6 +882,16 @@ class PropFirmTradingEnv(gym.Env):
             if hasattr(constraints, "min_minutes_after_loss"):
                 cfg.min_minutes_after_loss = int(constraints.min_minutes_after_loss)
             
+            # F-7 FIX: Apply constraint enforcement flags
+            # These control whether timing windows are enforced or relaxed
+            # NOTE: enforce_session_windows was removed (was defined but never used)
+            if hasattr(constraints, "enforce_no_new_trades_window"):
+                cfg.enforce_no_new_trades_window = bool(constraints.enforce_no_new_trades_window)
+            if hasattr(constraints, "enforce_weekend_block"):
+                cfg.enforce_weekend_block = bool(constraints.enforce_weekend_block)
+            if hasattr(constraints, "enforce_hard_close"):
+                cfg.enforce_hard_close = bool(constraints.enforce_hard_close)
+            
             # Drawdown limits
             if hasattr(constraints, "daily_drawdown_limit"):
                 cfg.daily_drawdown_limit = float(constraints.daily_drawdown_limit)
@@ -920,6 +997,48 @@ class PropFirmTradingEnv(gym.Env):
                 rcfg.entry_quality_integration = bool(reward_shaping.entry_quality_integration)
             if hasattr(reward_shaping, "entry_quality_weight"):
                 rcfg.entry_quality_weight = float(reward_shaping.entry_quality_weight)
+            
+            # Session timing (teaching trading hours)
+            if hasattr(reward_shaping, "session_timing_enabled"):
+                rcfg.session_timing_enabled = bool(reward_shaping.session_timing_enabled)
+            if hasattr(reward_shaping, "off_hours_trade_penalty"):
+                rcfg.off_hours_trade_penalty = float(reward_shaping.off_hours_trade_penalty)
+            if hasattr(reward_shaping, "prime_hours_trade_bonus"):
+                rcfg.prime_hours_trade_bonus = float(reward_shaping.prime_hours_trade_bonus)
+            
+            # Market structure rewards (v5.3)
+            if hasattr(reward_shaping, "market_structure_enabled"):
+                rcfg.market_structure_enabled = bool(reward_shaping.market_structure_enabled)
+            if hasattr(reward_shaping, "sr_proximity_bonus"):
+                rcfg.sr_proximity_bonus = float(reward_shaping.sr_proximity_bonus)
+            if hasattr(reward_shaping, "sr_proximity_penalty"):
+                rcfg.sr_proximity_penalty = float(reward_shaping.sr_proximity_penalty)
+            if hasattr(reward_shaping, "structure_alignment_bonus"):
+                rcfg.structure_alignment_bonus = float(reward_shaping.structure_alignment_bonus)
+            if hasattr(reward_shaping, "bos_alignment_bonus"):
+                rcfg.bos_alignment_bonus = float(reward_shaping.bos_alignment_bonus)
+            if hasattr(reward_shaping, "order_block_entry_bonus"):
+                rcfg.order_block_entry_bonus = float(reward_shaping.order_block_entry_bonus)
+            
+            # Divergence awareness (v5.3)
+            if hasattr(reward_shaping, "divergence_awareness_enabled"):
+                rcfg.divergence_awareness_enabled = bool(reward_shaping.divergence_awareness_enabled)
+            if hasattr(reward_shaping, "divergence_contra_penalty"):
+                rcfg.divergence_contra_penalty = float(reward_shaping.divergence_contra_penalty)
+            if hasattr(reward_shaping, "divergence_aligned_bonus"):
+                rcfg.divergence_aligned_bonus = float(reward_shaping.divergence_aligned_bonus)
+            if hasattr(reward_shaping, "overbought_long_penalty"):
+                rcfg.overbought_long_penalty = float(reward_shaping.overbought_long_penalty)
+            if hasattr(reward_shaping, "oversold_short_penalty"):
+                rcfg.oversold_short_penalty = float(reward_shaping.oversold_short_penalty)
+            
+            # Regime awareness (v5.3)
+            if hasattr(reward_shaping, "regime_awareness_enabled"):
+                rcfg.regime_awareness_enabled = bool(reward_shaping.regime_awareness_enabled)
+            if hasattr(reward_shaping, "risk_off_aggressive_penalty"):
+                rcfg.risk_off_aggressive_penalty = float(reward_shaping.risk_off_aggressive_penalty)
+            if hasattr(reward_shaping, "high_vol_size_penalty"):
+                rcfg.high_vol_size_penalty = float(reward_shaping.high_vol_size_penalty)
             
             # Truncation handling
             if hasattr(reward_shaping, "truncation_winner_discount"):
@@ -1367,7 +1486,7 @@ class PropFirmTradingEnv(gym.Env):
         
         # Fallback: use min across all TFs for this instrument
         inst_data = self.data.get(inst, {})
-        if inst_data:
+        if isinstance(inst_data, dict) and inst_data:
             return min(len(df) for df in inst_data.values())
         
         return self._get_min_data_length()
@@ -1391,6 +1510,61 @@ class PropFirmTradingEnv(gym.Env):
             return "short", float(self.config.size_buckets[i])
         return "hold", 0.0
 
+    # ---------------------------
+    # Execution timing helpers (Bug fixes from audit)
+    # ---------------------------
+
+    def _exec_latency(self) -> int:
+        """Get execution latency in bars from episode config."""
+        return int(getattr(self._episode_execution_cfg, "latency_bars", 0) or 0)
+
+    def _can_fill_before_end(self, *, step_idx: int, latency: int, require_bars_after_fill: int) -> bool:
+        """
+        Check if an order can fill before episode end.
+        
+        Args:
+            step_idx: Current step index
+            latency: Latency in bars (fill happens at step_idx + latency)
+            require_bars_after_fill: Minimum bars required after fill (e.g., 1 for entries)
+        
+        Returns:
+            True if fill can complete with required post-fill bars
+        """
+        last_idx = int(self._min_data_len - 1)
+        remaining = last_idx - int(step_idx)
+        # Fill happens at step_idx + latency; ensure at least require_bars_after_fill bars after that
+        return remaining >= int(latency + require_bars_after_fill)
+
+    def _get_close_priority(self, reason: str) -> int:
+        """Get close priority for a reason string."""
+        try:
+            return CloseReason(reason).close_priority
+        except ValueError:
+            return 40  # Default middle priority
+
+    def _set_or_override_pending_exit(self, *, reason: str, fill_step: int) -> None:
+        """
+        Set pending exit, or override existing one if new reason has higher priority.
+        
+        Bug fix: Ensures forced closes (HARD_STOP, etc.) always override agent closes.
+        Also takes the earlier fill_step when overriding.
+        """
+        if self.pending_exit is None:
+            self.pending_exit = {"fill_step": int(fill_step), "reason": str(reason)}
+            return
+
+        old_reason = str(self.pending_exit.get("reason", CloseReason.AGENT_CLOSE.value))
+        new_priority = self._get_close_priority(reason)
+        old_priority = self._get_close_priority(old_reason)
+        
+        if new_priority >= old_priority:
+            # Override with higher priority reason, use earlier fill_step
+            self.pending_exit["reason"] = str(reason)
+            self.pending_exit["fill_step"] = min(
+                int(self.pending_exit.get("fill_step", fill_step)), 
+                int(fill_step)
+            )
+
     def action_masks(self) -> np.ndarray:
         """
         Action mask for sb3-contrib MaskablePPO.
@@ -1403,15 +1577,20 @@ class PropFirmTradingEnv(gym.Env):
         inst = self.instruments[0]
         next_step = int(self.current_step + 1)
 
-        latency_bars = int(getattr(self._episode_execution_cfg, "latency_bars", 0)) if self._episode_execution_cfg else 0
-        fill_delay = 1 + max(0, latency_bars)
+        # BUG FIX: fill_delay should be latency only, not 1 + latency
+        # The +1 was causing a hidden 2-bar delay because step() already advances time
+        latency = max(0, self._exec_latency())
 
         last_idx = (self._min_data_len - 1)
         remaining_bars_next = last_idx - next_step
-        can_fill_before_end = remaining_bars_next >= fill_delay
+        
+        # Entry requires at least 1 bar AFTER fill so position isn't instantly truncated
+        can_enter_fill = remaining_bars_next >= (latency + 1)
+        # Exit can fill right at the end (no post-fill bar required)
+        can_exit_fill = remaining_bars_next >= latency
 
         has_position_or_pending = (self.position is not None) or (self.pending_entry is not None)
-        can_enter = (not has_position_or_pending) and bool(can_fill_before_end)
+        can_enter = (not has_position_or_pending) and bool(can_enter_fill)
 
         if not can_enter:
             mask[self._ACTION_LONG_START: self._ACTION_LONG_START + self._K] = False
@@ -1422,7 +1601,7 @@ class PropFirmTradingEnv(gym.Env):
         elif self.pending_exit is not None:
             mask[self._ACTION_CLOSE] = True
         else:
-            mask[self._ACTION_CLOSE] = bool(can_fill_before_end)
+            mask[self._ACTION_CLOSE] = bool(can_exit_fill)
 
         mask[self._ACTION_HOLD] = True
         return mask
@@ -1793,9 +1972,10 @@ class PropFirmTradingEnv(gym.Env):
             if close_reason == CloseReason.TRAILING_STOP:
                 exit_modifier = cfg.trailing_stop_bonus
             elif close_reason == CloseReason.AGENT_CLOSE:
-                # Agent close gets NO bonus anymore (was 0.05)
-                # Instead, penalize agent_close if it left profit on the table
-                exit_modifier = cfg.agent_close_bonus if net_pnl > 0 else 0.0
+                # Agent close: Apply bonus/penalty regardless of PnL
+                # With agent_close_bonus < 0, this PENALIZES manual closes even on winners
+                # This teaches the agent to let trailing stops do their job
+                exit_modifier = cfg.agent_close_bonus
                 if net_pnl > 0 and mfe > 0:
                     # Capture ratio uses GROSS values for consistency:
                     # MFE is gross (peak unrealized PnL before fees)
@@ -1846,6 +2026,165 @@ class PropFirmTradingEnv(gym.Env):
                 reward_components["entry_quality_penalty"] = -q_pen
                 reward -= q_pen
 
+        # 7b) Session timing reward/penalty (DIRECT signal for learning trading hours)
+        if cfg.session_timing_enabled:
+            # Get the entry time from the trade result (if available)
+            entry_dt = getattr(result, 'entry_dt', None)
+            if entry_dt is None:
+                # Fallback: use current bar time
+                entry_dt = self._get_bar_dt(self.instruments[0])
+            
+            if entry_dt is not None:
+                if self._in_no_new_trades_window(entry_dt):
+                    # Traded during off-hours = penalty (even if profitable!)
+                    off_hours_pen = cfg.off_hours_trade_penalty
+                    reward_components["off_hours_penalty"] = -off_hours_pen
+                    reward -= off_hours_pen
+                elif self._in_prime_window(entry_dt):
+                    # Traded during prime hours = bonus
+                    prime_bonus = cfg.prime_hours_trade_bonus
+                    reward_components["prime_hours_bonus"] = prime_bonus
+                    reward += prime_bonus
+
+        # 7c) Market structure rewards (v5.3 - teach WHERE to trade)
+        # IMPROVED: Only reward S/R entries that actually WORKED (profitable or small loss)
+        if cfg.market_structure_enabled:
+            # Get entry context from stored state
+            entry_context = getattr(result, 'entry_context', {}) or {}
+            trade_direction = result.direction  # "long" or "short"
+            trade_pnl = result.net_pnl  # Actual P&L of the trade
+            
+            # S/R proximity reward - ONLY if trade was successful or near-breakeven
+            # This teaches: enter at S/R AND the level must hold
+            near_support = float(entry_context.get("near_support", 0.0))
+            near_resistance = float(entry_context.get("near_resistance", 0.0))
+            
+            # Trade must be at least not a disaster (> -50 EUR) to get S/R bonus
+            trade_worked = trade_pnl > -50.0
+            
+            if trade_direction == "long" and near_support > 0.5:
+                if trade_worked:
+                    # Support held! Reward the good entry
+                    sr_bonus = near_support * cfg.sr_proximity_bonus
+                    reward_components["sr_support_bonus"] = sr_bonus
+                    reward += sr_bonus
+                else:
+                    # Entered at support but support BROKE - double penalty
+                    sr_pen = near_support * cfg.sr_proximity_penalty * 1.5
+                    reward_components["sr_support_failed_penalty"] = -sr_pen
+                    reward -= sr_pen
+                    
+            elif trade_direction == "short" and near_resistance > 0.5:
+                if trade_worked:
+                    # Resistance held! Reward the good entry
+                    sr_bonus = near_resistance * cfg.sr_proximity_bonus
+                    reward_components["sr_resistance_bonus"] = sr_bonus
+                    reward += sr_bonus
+                else:
+                    # Entered at resistance but it BROKE - double penalty
+                    sr_pen = near_resistance * cfg.sr_proximity_penalty * 1.5
+                    reward_components["sr_resistance_failed_penalty"] = -sr_pen
+                    reward -= sr_pen
+                    
+            elif trade_direction == "long" and near_resistance > 0.5:
+                # Going long at resistance - bad idea
+                sr_pen = near_resistance * cfg.sr_proximity_penalty
+                reward_components["sr_bad_entry_penalty"] = -sr_pen
+                reward -= sr_pen
+            elif trade_direction == "short" and near_support > 0.5:
+                # Going short at support - bad idea
+                sr_pen = near_support * cfg.sr_proximity_penalty
+                reward_components["sr_bad_entry_penalty"] = -sr_pen
+                reward -= sr_pen
+            
+            # Structure alignment bonus (HH/HL for longs, LL/LH for shorts)
+            structure_trend = float(entry_context.get("structure_trend", 0.0))
+            if (trade_direction == "long" and structure_trend > 0.3) or \
+               (trade_direction == "short" and structure_trend < -0.3):
+                struct_bonus = abs(structure_trend) * cfg.structure_alignment_bonus
+                reward_components["structure_alignment_bonus"] = struct_bonus
+                reward += struct_bonus
+            
+            # BOS alignment bonus
+            bos_signal = float(entry_context.get("bos_signal", 0.0))
+            if cfg.bos_alignment_bonus > 0:
+                if (trade_direction == "long" and bos_signal > 0.3) or \
+                   (trade_direction == "short" and bos_signal < -0.3):
+                    bos_bonus = abs(bos_signal) * cfg.bos_alignment_bonus
+                    reward_components["bos_alignment_bonus"] = bos_bonus
+                    reward += bos_bonus
+            
+            # Order block entry bonus
+            ob_bull = float(entry_context.get("order_block_bull", 0.0))
+            ob_bear = float(entry_context.get("order_block_bear", 0.0))
+            if cfg.order_block_entry_bonus > 0:
+                if trade_direction == "long" and ob_bull > 0.5:
+                    ob_bonus = ob_bull * cfg.order_block_entry_bonus
+                    reward_components["order_block_bonus"] = ob_bonus
+                    reward += ob_bonus
+                elif trade_direction == "short" and ob_bear > 0.5:
+                    ob_bonus = ob_bear * cfg.order_block_entry_bonus
+                    reward_components["order_block_bonus"] = ob_bonus
+                    reward += ob_bonus
+
+        # 7d) Divergence awareness rewards (v5.3 - teach reversal awareness)
+        if cfg.divergence_awareness_enabled:
+            entry_context = getattr(result, 'entry_context', {}) or {}
+            trade_direction = result.direction
+            
+            divergence = entry_context.get("divergence_signal")
+            overbought = float(entry_context.get("overbought", 0.0))
+            oversold = float(entry_context.get("oversold", 0.0))
+            
+            # Penalty for trading against divergence
+            if divergence == "bullish" and trade_direction == "short":
+                div_pen = cfg.divergence_contra_penalty
+                reward_components["divergence_contra_penalty"] = -div_pen
+                reward -= div_pen
+            elif divergence == "bearish" and trade_direction == "long":
+                div_pen = cfg.divergence_contra_penalty
+                reward_components["divergence_contra_penalty"] = -div_pen
+                reward -= div_pen
+            
+            # Bonus for trading with divergence
+            if divergence == "bullish" and trade_direction == "long":
+                div_bonus = cfg.divergence_aligned_bonus
+                reward_components["divergence_aligned_bonus"] = div_bonus
+                reward += div_bonus
+            elif divergence == "bearish" and trade_direction == "short":
+                div_bonus = cfg.divergence_aligned_bonus
+                reward_components["divergence_aligned_bonus"] = div_bonus
+                reward += div_bonus
+            
+            # Overbought/oversold penalties
+            if overbought > 0.3 and trade_direction == "long":
+                ob_pen = overbought * cfg.overbought_long_penalty
+                reward_components["overbought_long_penalty"] = -ob_pen
+                reward -= ob_pen
+            if oversold > 0.3 and trade_direction == "short":
+                os_pen = oversold * cfg.oversold_short_penalty
+                reward_components["oversold_short_penalty"] = -os_pen
+                reward -= os_pen
+
+        # 7e) Regime awareness rewards (v5.3 - teach context sensitivity)
+        if cfg.regime_awareness_enabled:
+            entry_context = getattr(result, 'entry_context', {}) or {}
+            
+            risk_regime = entry_context.get("risk_regime", "neutral")
+            vol_regime = entry_context.get("volatility_regime", "normal")
+            
+            # Penalty for aggressive trades in risk-off environment
+            if risk_regime == "risk_off" and net_pnl < 0:
+                risk_pen = cfg.risk_off_aggressive_penalty
+                reward_components["risk_off_penalty"] = -risk_pen
+                reward -= risk_pen
+            
+            # Penalty for large losses in high volatility
+            if vol_regime == "high" and net_pnl < -50:
+                vol_pen = cfg.high_vol_size_penalty
+                reward_components["high_vol_penalty"] = -vol_pen
+                reward -= vol_pen
+
         # 8) Streak modifiers
         if cfg.streak_modifier_enabled:
             if net_pnl > 0:
@@ -1884,6 +2223,15 @@ class PropFirmTradingEnv(gym.Env):
 
         reward = float(np.clip(reward, cfg.min_reward, cfg.max_reward))
         self._last_reward_components = reward_components
+        
+        # Aggregate reward components for dashboard tracking
+        for key, value in reward_components.items():
+            if key not in self._episode_reward_components:
+                self._episode_reward_components[key] = 0.0
+                self._episode_reward_component_counts[key] = 0
+            self._episode_reward_components[key] += value
+            self._episode_reward_component_counts[key] += 1
+        
         return reward
 
     def _compute_blocked_action_penalty(self, block_reason: str, entry_quality: float, is_hard_block: bool) -> float:
@@ -1952,6 +2300,9 @@ class PropFirmTradingEnv(gym.Env):
         else:
             self.consecutive_losses += 1
             self.consecutive_wins = 0
+            # Track peak consecutive losses during episode
+            if self.consecutive_losses > self.max_consecutive_losses_reached:
+                self.max_consecutive_losses_reached = self.consecutive_losses
             if dt is not None:
                 self._last_loss_dt = dt
             self._last_loss_step = int(self.current_step)
@@ -1972,6 +2323,8 @@ class PropFirmTradingEnv(gym.Env):
             direction=pos.direction,
             lot_size=pos.lot_size,
             total_fees=total_fees,
+            entry_dt=pos.entry_dt if hasattr(pos, 'entry_dt') else None,
+            entry_context=pos.entry_context if hasattr(pos, 'entry_context') else None,  # v5.3
         )
 
         self._episode_trade_results.append(result)
@@ -2188,14 +2541,18 @@ class PropFirmTradingEnv(gym.Env):
         session_trades: int,
     ) -> Tuple[bool, str]:
         if dt is not None:
-            if (not self.config.allow_weekend_holding) and self._is_weekend(dt):
-                return False, "weekend_block"
-            if self._in_no_new_trades_window(dt):
-                return False, "no_new_trades_window"
-            if self._in_final_exit_window(dt):
-                return False, "final_exit_window"
-            if self._at_or_after_hard_close(dt):
-                return False, "hard_close"
+            # F-7 FIX: Respect constraint enforcement flags from curriculum
+            if self.config.enforce_weekend_block:
+                if (not self.config.allow_weekend_holding) and self._is_weekend(dt):
+                    return False, "weekend_block"
+            if self.config.enforce_no_new_trades_window:
+                if self._in_no_new_trades_window(dt):
+                    return False, "no_new_trades_window"
+            if self.config.enforce_hard_close:
+                if self._in_final_exit_window(dt):
+                    return False, "final_exit_window"
+                if self._at_or_after_hard_close(dt):
+                    return False, "hard_close"
 
         if self.consecutive_losses >= self.config.max_consecutive_losses:
             return False, "max_consecutive_losses"
@@ -2296,6 +2653,10 @@ class PropFirmTradingEnv(gym.Env):
         self._avg_vol = None
         self._episode_trade_results = []
         self._last_reward_components = {}
+        
+        # Reset reward component aggregates
+        self._episode_reward_components = {}
+        self._episode_reward_component_counts = {}
 
         self._ohlcv_cache_key = None
         self._ohlcv_cache = {}
@@ -2349,6 +2710,9 @@ class PropFirmTradingEnv(gym.Env):
         
         # Cache entry quality at step start (computed once, reused for gating and info)
         self._step_entry_quality_cache: Dict[str, float] = {}
+        
+        # Cache expert signals per step (prevents recomputation and ensures consistency)
+        self._step_expert_signals_cache: Optional[Dict[str, Any]] = None
 
         intent, size_mult = self._decode_action(int(action))
 
@@ -2358,11 +2722,16 @@ class PropFirmTradingEnv(gym.Env):
 
         bid, ask = self._get_step_bid_ask(inst, mid, vol_proxy)
 
-        latency_bars = int(getattr(self._episode_execution_cfg, "latency_bars", 0)) if self._episode_execution_cfg else 0
-        fill_delay = 1 + max(0, latency_bars)
+        # BUG FIX: fill_delay should be latency only, not 1 + latency
+        # The +1 was causing a hidden 2-bar delay because step() already advanced time
+        latency = max(0, self._exec_latency())
         last_idx = (self._min_data_len - 1)
         remaining_bars = last_idx - int(self.current_step)
-        can_fill_before_end = remaining_bars >= fill_delay
+        
+        # Entry requires 1 bar AFTER fill so position isn't instantly truncated
+        can_entry_fill = remaining_bars >= (latency + 1)
+        # Exit can fill right at the end (no post-fill bar required)
+        can_exit_fill = remaining_bars >= latency
 
         reward = 0.0
         trade_closed = False
@@ -2429,32 +2798,48 @@ class PropFirmTradingEnv(gym.Env):
                     close_reason_str = CloseReason.WEEKEND_FLATTEN.value
 
         # Agent close intent
-        if self.position is not None and not forced_close_now and can_fill_before_end:
-            if intent == "close" and self.pending_exit is None:
-                self.pending_exit = {"fill_step": self.current_step + fill_delay, "reason": CloseReason.AGENT_CLOSE.value}
+        # BUG FIX: Use _set_or_override_pending_exit so forced closes can override
+        if self.position is not None and not forced_close_now and can_exit_fill:
+            if intent == "close":
+                self._set_or_override_pending_exit(
+                    reason=CloseReason.AGENT_CLOSE.value,
+                    fill_step=self.current_step + latency
+                )
 
         # Handle forced closes
-        # Split into two categories for execution realism:
-        # 1. CRITICAL (immediate): RISK_LIQUIDATION, EMERGENCY_CLOSE - broker/risk systems act instantly
-        # 2. DELAYED (realistic latency): All other forced closes go through pending_exit
+        # BUG FIX: Split into three categories:
+        # 1. IMMEDIATE (broker/risk systems): RISK_LIQUIDATION, EMERGENCY_CLOSE, DAILY_LIMIT_SAFETY, HARD_STOP
+        # 2. DELAYED (realistic latency): TIME_DECAY, TRAILING_STOP, HARD_CLOSE, WEEKEND_FLATTEN
+        # 3. Also use _set_or_override_pending_exit so forced closes override agent closes
         if forced_close_now and self.position is not None:
-            # Critical liquidations execute immediately (no latency)
-            critical_reasons = {
+            # BUG FIX: DAILY_LIMIT_SAFETY and HARD_STOP should be immediate to prevent breaches
+            immediate_reasons = {
                 CloseReason.RISK_LIQUIDATION.value,
                 CloseReason.EMERGENCY_CLOSE.value,
+                CloseReason.DAILY_LIMIT_SAFETY.value,  # BUG FIX: Must be immediate to prevent breach
+                CloseReason.HARD_STOP.value,           # BUG FIX: Server-side stop should be immediate
             }
             
-            if close_reason_str in critical_reasons:
+            if close_reason_str in immediate_reasons:
                 # Immediate execution for critical risk events
                 close_result = self._close_position_now(reason=close_reason_str, dt=dt, mid=mid, vol_proxy=vol_proxy)
                 trade_closed = True
                 current_dd, current_daily_dd = self._calc_dds()
                 reward += self._compute_trade_reward(close_result, current_dd)
             else:
-                # Non-critical forced closes use delayed execution (consistent with agent closes)
-                # This includes: HARD_STOP, TIME_DECAY, TRAILING_STOP, HARD_CLOSE, WEEKEND_FLATTEN, DAILY_LIMIT_SAFETY
-                if self.pending_exit is None:
-                    self.pending_exit = {"fill_step": self.current_step + fill_delay, "reason": close_reason_str}
+                # Non-critical forced closes use delayed execution
+                # BUG FIX: If can't fill before end, close immediately
+                if not can_exit_fill:
+                    close_result = self._close_position_now(reason=close_reason_str, dt=dt, mid=mid, vol_proxy=vol_proxy)
+                    trade_closed = True
+                    current_dd, current_daily_dd = self._calc_dds()
+                    reward += self._compute_trade_reward(close_result, current_dd)
+                else:
+                    # BUG FIX: Use override helper so forced closes always win over agent closes
+                    self._set_or_override_pending_exit(
+                        reason=close_reason_str,
+                        fill_step=self.current_step + latency
+                    )
                     forced_close_now = False  # Don't execute yet
 
         # Execute scheduled exit (both agent closes AND delayed forced closes)
@@ -2499,6 +2884,7 @@ class PropFirmTradingEnv(gym.Env):
                         initial_risk_eur=initial_risk,
                         entry_fee_eur=float(entry_fee),
                         entry_quality=entry_quality,
+                        entry_context=self._capture_entry_context(inst),  # v5.3: Market structure at entry
                     )
                     self.position = pos
 
@@ -2525,7 +2911,7 @@ class PropFirmTradingEnv(gym.Env):
         entry_allowed = hard_ok
         block_reason = hard_block
 
-        if attempted_entry and not can_fill_before_end:
+        if attempted_entry and not can_entry_fill:
             entry_allowed = False
             block_reason = "insufficient_bars_for_fill"
 
@@ -2540,7 +2926,7 @@ class PropFirmTradingEnv(gym.Env):
                     "direction": intent,
                     "lot": lot,
                     "initial_risk": initial_risk,
-                    "fill_step": self.current_step + fill_delay,
+                    "fill_step": self.current_step + latency,  # BUG FIX: Use latency, not fill_delay
                     "entry_quality": entry_quality,
                 }
 
@@ -2817,16 +3203,39 @@ class PropFirmTradingEnv(gym.Env):
         return {"M15": m15, "H1": agg(4, 50), "H4": agg(16, 30), "D1": agg(96, 20)}
 
     def _prepare_expert_signals(self, instrument: str) -> Dict[str, Any]:
+        """
+        Prepare expert signals with per-step caching.
+        
+        Caching prevents:
+        - Redundant compute (called by entry quality, observation, entry context)
+        - Subtle inconsistencies if any state changes mid-step
+        """
+        # Return cached result if available (set in step())
+        cache = getattr(self, "_step_expert_signals_cache", None)
+        if cache is not None:
+            return cache
+        
         o = self._get_ohlcv(instrument, lookback=60)
         if not o or len(o.get("close", [])) < 20:
-            return {"experts": {}, "market": {"regime": "unknown", "regime_strength": 0.5}}
+            result = {"experts": {}, "market": {"regime": "unknown", "regime_strength": 0.5}}
+            self._step_expert_signals_cache = result
+            return result
 
         close = np.asarray(o["close"], dtype=np.float64)
+        high = np.asarray(o.get("high", o["close"]), dtype=np.float64)
+        low = np.asarray(o.get("low", o["close"]), dtype=np.float64)
+        open_ = np.asarray(o.get("open", o["close"]), dtype=np.float64)
 
         fast = float(np.mean(close[-10:]))
         slow = float(np.mean(close[-20:]))
         trend_dir = "bullish" if fast > slow else "bearish"
         trend_strength = float(np.clip(abs(fast - slow) / max(abs(slow), 1e-8) * 50.0, 0.0, 1.0))
+
+        # Compute BASIC market structure: S/R proximity (institutional-grade)
+        near_support, near_resistance = self._compute_market_structure_signals(high, low, close)
+        
+        # Compute ADVANCED market structure signals (with open for better OB detection)
+        advanced_structure = self._compute_advanced_market_structure(high, low, close, open_)
 
         rsi = self._compute_rsi(close, 14)
         if rsi > 50:
@@ -2835,8 +3244,15 @@ class PropFirmTradingEnv(gym.Env):
         else:
             mom_dir = "bearish" if rsi < 50 else "neutral"
             mom_strength = float(np.clip((50 - rsi) / 50, 0.0, 1.0))
+        
+        # Compute MOMENTUM DIVERGENCE (RSI divergence detection)
+        divergence_signal, overbought, oversold = self._compute_momentum_signals(close, rsi)
 
         vol_proxy = self._atr_vol_proxy(instrument)
+        
+        # Compute THEME/REGIME signals
+        volatility_regime, risk_regime = self._compute_theme_signals(vol_proxy, trend_dir)
+        
         if vol_proxy < 0.3:
             theme_dir, theme_strength = "neutral", 0.4
         elif vol_proxy > 0.7:
@@ -2844,15 +3260,626 @@ class PropFirmTradingEnv(gym.Env):
         else:
             theme_dir, theme_strength = ("bullish", 0.5) if trend_dir == "bullish" else ("bearish", 0.5)
 
-        return {
+        result = {
             "experts": {
-                "trend": {"direction": trend_dir, "score": trend_strength, "confidence": 0.6 + 0.3 * trend_strength},
-                "momentum": {"direction": mom_dir, "score": mom_strength, "confidence": 0.5 + 0.4 * mom_strength},
-                "theme": {"direction": theme_dir, "score": float(theme_strength), "confidence": 0.5},
+                "trend": {
+                    "direction": trend_dir,
+                    "score": trend_strength,
+                    "confidence": 0.6 + 0.3 * trend_strength,
+                    "proposal": {
+                        "near_support": near_support,
+                        "near_resistance": near_resistance,
+                        # Advanced structure signals
+                        "structure_trend": advanced_structure["structure_trend"],
+                        "structure_strength": advanced_structure["structure_strength"],
+                        "bos_signal": advanced_structure["bos_signal"],
+                        "liquidity_above": advanced_structure["liquidity_above"],
+                        "liquidity_below": advanced_structure["liquidity_below"],
+                        "order_block_bull": advanced_structure["order_block_bull"],
+                        "order_block_bear": advanced_structure["order_block_bear"],
+                    },
+                },
+                "momentum": {
+                    "direction": mom_dir,
+                    "score": mom_strength,
+                    "confidence": 0.5 + 0.4 * mom_strength,
+                    "proposal": {
+                        # Divergence: "bullish", "bearish", or None
+                        "divergence_signal": divergence_signal,
+                        "overbought": overbought,  # RSI > 70
+                        "oversold": oversold,      # RSI < 30
+                        "rsi_value": float(rsi),
+                    },
+                },
+                "theme": {
+                    "direction": theme_dir,
+                    "score": float(theme_strength),
+                    "confidence": 0.5,
+                    "proposal": {
+                        "volatility_regime": volatility_regime,  # "low", "normal", "high"
+                        "risk_regime": risk_regime,              # "risk_on", "risk_off", "neutral"
+                        "vol_score": float(vol_proxy),
+                    },
+                },
                 "seasonality": {"direction": "neutral", "score": 0.0, "confidence": 0.5},
             },
-            "market": {"regime": "unknown", "regime_strength": 0.5},
+            "market": {"regime": volatility_regime, "regime_strength": float(vol_proxy)},
         }
+        
+        # Cache for reuse within same step
+        self._step_expert_signals_cache = result
+        return result
+
+    def _compute_momentum_signals(self, close: np.ndarray, rsi: float) -> Tuple[Optional[str], float, float]:
+        """
+        Compute momentum divergence and overbought/oversold signals.
+        
+        Returns:
+            divergence_signal: "bullish", "bearish", or None
+            overbought: 0.0-1.0 (how overbought, 1.0 = RSI at 100)
+            oversold: 0.0-1.0 (how oversold, 1.0 = RSI at 0)
+        """
+        divergence_signal: Optional[str] = None
+        overbought = 0.0
+        oversold = 0.0
+        
+        # Overbought/Oversold
+        if rsi > 70:
+            overbought = float((rsi - 70) / 30)  # 0 at 70, 1 at 100
+        if rsi < 30:
+            oversold = float((30 - rsi) / 30)    # 0 at 30, 1 at 0
+        
+        # Divergence detection (simplified)
+        if len(close) < 20:
+            return divergence_signal, overbought, oversold
+        
+        # Look for divergence in last 20 bars
+        lookback = 20
+        recent_prices = close[-lookback:]
+        
+        # Compute RSI for recent bars (simplified)
+        rsi_values = []
+        for i in range(lookback):
+            start_idx = max(0, len(close) - lookback - 14 + i)
+            end_idx = len(close) - lookback + i + 1
+            if end_idx > start_idx + 14:
+                rsi_val = self._compute_rsi(close[start_idx:end_idx], 14)
+                rsi_values.append(rsi_val)
+        
+        if len(rsi_values) < 10:
+            return divergence_signal, overbought, oversold
+        
+        # Find local extremes
+        price_min_idx = int(np.argmin(recent_prices[-10:]))
+        price_max_idx = int(np.argmax(recent_prices[-10:]))
+        
+        rsi_recent = rsi_values[-10:] if len(rsi_values) >= 10 else rsi_values
+        
+        # Bullish divergence: price makes lower low, RSI makes higher low
+        if price_min_idx > 5:  # Recent low
+            prev_price_low = np.min(recent_prices[:5])
+            curr_price_low = recent_prices[price_min_idx]
+            if len(rsi_recent) > price_min_idx and len(rsi_recent) > 5:
+                prev_rsi_low = np.min(rsi_recent[:5])
+                curr_rsi_low = rsi_recent[price_min_idx] if price_min_idx < len(rsi_recent) else rsi_recent[-1]
+                if curr_price_low < prev_price_low and curr_rsi_low > prev_rsi_low:
+                    divergence_signal = "bullish"
+        
+        # Bearish divergence: price makes higher high, RSI makes lower high
+        if price_max_idx > 5:  # Recent high
+            prev_price_high = np.max(recent_prices[:5])
+            curr_price_high = recent_prices[price_max_idx]
+            if len(rsi_recent) > price_max_idx and len(rsi_recent) > 5:
+                prev_rsi_high = np.max(rsi_recent[:5])
+                curr_rsi_high = rsi_recent[price_max_idx] if price_max_idx < len(rsi_recent) else rsi_recent[-1]
+                if curr_price_high > prev_price_high and curr_rsi_high < prev_rsi_high:
+                    divergence_signal = "bearish"
+        
+        return divergence_signal, overbought, oversold
+
+    def _compute_theme_signals(self, vol_proxy: float, trend_dir: str) -> Tuple[str, str]:
+        """
+        Compute theme/regime signals matching ThemeExpert output.
+        
+        Returns:
+            volatility_regime: "low", "normal", "high"
+            risk_regime: "risk_on", "risk_off", "neutral"
+        """
+        # Volatility regime
+        if vol_proxy < 0.3:
+            volatility_regime = "low"
+        elif vol_proxy > 0.7:
+            volatility_regime = "high"
+        else:
+            volatility_regime = "normal"
+        
+        # Risk regime (simplified: low vol + bullish = risk_on)
+        if volatility_regime == "low" and trend_dir == "bullish":
+            risk_regime = "risk_on"
+        elif volatility_regime == "high" or trend_dir == "bearish":
+            risk_regime = "risk_off"
+        else:
+            risk_regime = "neutral"
+        
+        return volatility_regime, risk_regime
+
+    def _capture_entry_context(self, instrument: str) -> Dict[str, Any]:
+        """
+        Capture market structure context at trade entry for reward calculation.
+        
+        Returns dict with:
+        - near_support, near_resistance: S/R proximity (0-1)
+        - structure_trend: -1 (LL/LH) to +1 (HH/HL)
+        - bos_signal: -1 (bearish BOS) to +1 (bullish BOS)
+        - order_block_bull, order_block_bear: 0-1 proximity
+        - divergence_signal: "bullish", "bearish", or None
+        - overbought, oversold: 0-1 intensity
+        - volatility_regime, risk_regime: string regime labels
+        """
+        # Get expert signals which contain all the computed values
+        expert_signals = self._prepare_expert_signals(instrument)
+        
+        context: Dict[str, Any] = {}
+        
+        # Extract from trend expert (market structure)
+        experts = expert_signals.get("experts", {})
+        trend = experts.get("trend", {})
+        trend_proposal = trend.get("proposal", {}) if isinstance(trend, dict) else {}
+        
+        context["near_support"] = float(trend_proposal.get("near_support", 0.0))
+        context["near_resistance"] = float(trend_proposal.get("near_resistance", 0.0))
+        context["structure_trend"] = float(trend_proposal.get("structure_trend", 0.0))
+        context["structure_strength"] = float(trend_proposal.get("structure_strength", 0.0))
+        context["bos_signal"] = float(trend_proposal.get("bos_signal", 0.0))
+        context["liquidity_above"] = float(trend_proposal.get("liquidity_above", 0.0))
+        context["liquidity_below"] = float(trend_proposal.get("liquidity_below", 0.0))
+        context["order_block_bull"] = float(trend_proposal.get("order_block_bull", 0.0))
+        context["order_block_bear"] = float(trend_proposal.get("order_block_bear", 0.0))
+        
+        # Extract from momentum expert (divergence, OB/OS)
+        momentum = experts.get("momentum", {})
+        momentum_proposal = momentum.get("proposal", {}) if isinstance(momentum, dict) else {}
+        
+        context["divergence_signal"] = momentum_proposal.get("divergence_signal")
+        context["overbought"] = float(momentum_proposal.get("overbought", 0.0))
+        context["oversold"] = float(momentum_proposal.get("oversold", 0.0))
+        context["rsi_value"] = float(momentum_proposal.get("rsi_value", 50.0))
+        
+        # Extract from theme expert (regime)
+        theme = experts.get("theme", {})
+        theme_proposal = theme.get("proposal", {}) if isinstance(theme, dict) else {}
+        
+        context["volatility_regime"] = theme_proposal.get("volatility_regime", "normal")
+        context["risk_regime"] = theme_proposal.get("risk_regime", "neutral")
+        context["vol_score"] = float(theme_proposal.get("vol_score", 0.5))
+        
+        # Add spread percentile for regime tracking (Phase 2.2)
+        # Calculate spread percentile relative to recent history
+        context["spread_percentile"] = self._compute_spread_percentile(instrument)
+        
+        return context
+    
+    def _compute_spread_percentile(self, instrument: str) -> float:
+        """Compute current spread as percentile of recent spread history."""
+        try:
+            df = self.data[instrument]["M15"]
+            idx = self.current_step
+            
+            # Look back up to 200 bars for spread history
+            lookback = min(200, idx)
+            if lookback < 20:
+                return 0.5  # Not enough history, assume median
+            
+            # Get spread history
+            if "spread" in df.columns:
+                spread_history = df["spread"].iloc[idx - lookback:idx].values
+                current_spread = df["spread"].iloc[idx]
+            else:
+                # Estimate from bid/ask or use a proxy
+                return 0.5
+            
+            # Calculate percentile
+            spread_history = spread_history[~np.isnan(spread_history)]
+            if len(spread_history) < 10:
+                return 0.5
+            
+            percentile = float(np.sum(spread_history <= current_spread) / len(spread_history))
+            return percentile
+        except Exception:
+            return 0.5  # Default to median on any error
+
+    # ---------------------------
+    # ATR + Pivots + Clustering Helpers (Institutional-Grade)
+    # ---------------------------
+
+    def _structure_atr(self, high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int = 14) -> float:
+        """Simple ATR for market structure calculations (robust scale measure)."""
+        n = len(close)
+        if n < period + 2:
+            return float(max(np.mean(high - low), 1e-8))
+
+        h = high[-(period + 1):]
+        l = low[-(period + 1):]
+        c = close[-(period + 1):]
+
+        prev_c = c[:-1]
+        tr = np.maximum(h[1:] - l[1:], np.maximum(np.abs(h[1:] - prev_c), np.abs(l[1:] - prev_c)))
+        atr = float(np.mean(tr))
+        return float(max(atr, 1e-8))
+
+    def _find_fractal_pivots(
+        self,
+        high: np.ndarray,
+        low: np.ndarray,
+        left: int = 3,
+        right: int = 3,
+    ) -> Tuple[List[Tuple[int, float]], List[Tuple[int, float]]]:
+        """
+        Fractal pivots using only past data up to current bar.
+        Returns lists of (index, price) in ascending index order.
+        """
+        n = len(high)
+        if n < left + right + 3:
+            return [], []
+
+        piv_hi: List[Tuple[int, float]] = []
+        piv_lo: List[Tuple[int, float]] = []
+
+        for i in range(left, n - right):
+            window_h = high[i - left : i + right + 1]
+            window_l = low[i - left : i + right + 1]
+
+            hi = high[i]
+            lo = low[i]
+
+            # Strict: require uniqueness to reduce duplicates in flat markets
+            if hi == np.max(window_h) and np.sum(window_h == hi) == 1:
+                piv_hi.append((i, float(hi)))
+            if lo == np.min(window_l) and np.sum(window_l == lo) == 1:
+                piv_lo.append((i, float(lo)))
+
+        return piv_hi, piv_lo
+
+    def _cluster_levels_1d(self, levels: List[float], eps: float) -> List[Tuple[float, int]]:
+        """
+        Cluster 1D levels. Returns list of (cluster_level_avg, count).
+        """
+        if not levels:
+            return []
+        xs = sorted(levels)
+        clusters: List[Tuple[float, int]] = []
+
+        bucket = [xs[0]]
+        for x in xs[1:]:
+            if abs(x - bucket[-1]) <= eps:
+                bucket.append(x)
+            else:
+                clusters.append((float(np.mean(bucket)), len(bucket)))
+                bucket = [x]
+        clusters.append((float(np.mean(bucket)), len(bucket)))
+        return clusters
+
+    def _count_rejections(
+        self,
+        level: float,
+        highs: np.ndarray,
+        lows: np.ndarray,
+        closes: np.ndarray,
+        *,
+        side: str,                 # "support" or "resistance"
+        eps_touch: float,
+        eps_break: float,
+        move_away: float,
+        fwd: int = 3,
+    ) -> int:
+        """
+        Count validated rejections:
+        - price touches near the level
+        - does not break beyond eps_break
+        - then moves away by move_away within fwd bars
+        """
+        n = len(closes)
+        if n < fwd + 2:
+            return 0
+
+        rej = 0
+        for i in range(0, n - fwd - 1):
+            touched = (abs(highs[i] - level) <= eps_touch) or (abs(lows[i] - level) <= eps_touch)
+            if not touched:
+                continue
+
+            f_hi = float(np.max(highs[i+1 : i+1+fwd]))
+            f_lo = float(np.min(lows[i+1 : i+1+fwd]))
+            f_cl = closes[i+1 : i+1+fwd]
+
+            if side == "support":
+                # Broken support if forward lows pierce below level - eps_break
+                if f_lo < level - eps_break:
+                    continue
+                # Rejection if price closes above level + move_away at least once
+                if np.any(f_cl > (level + move_away)):
+                    rej += 1
+            else:
+                # Broken resistance if forward highs pierce above level + eps_break
+                if f_hi > level + eps_break:
+                    continue
+                # Rejection if price closes below level - move_away at least once
+                if np.any(f_cl < (level - move_away)):
+                    rej += 1
+
+        return rej
+
+    # ---------------------------
+    # Institutional-Grade S/R Detection
+    # ---------------------------
+
+    def _compute_market_structure_signals(
+        self,
+        high: np.ndarray,
+        low: np.ndarray,
+        close: np.ndarray
+    ) -> Tuple[float, float]:
+        """
+        Institutional-grade S/R proximity with rejection validation:
+        - Pivots via fractals (not arbitrary swings)
+        - Cluster by ATR-scaled epsilon (not fixed %)
+        - Validate by rejection count (actual bounce behavior)
+        - Proximity score uses exp decay + strength weighting
+
+        Returns: near_support, near_resistance in [0, 1]
+        """
+        if len(close) < 60:
+            return 0.0, 0.0
+
+        current_price = float(close[-1])
+        if current_price <= 0:
+            return 0.0, 0.0
+
+        lookback = min(180, len(close))
+        h = high[-lookback:]
+        l = low[-lookback:]
+        c = close[-lookback:]
+
+        atr = self._structure_atr(h, l, c, period=14)
+
+        # ATR-scaled epsilons (robust across regimes and instruments)
+        eps_cluster = max(0.15 * atr, current_price * 0.0010)   # cluster bands
+        eps_touch   = max(0.10 * atr, current_price * 0.0008)   # what counts as a "touch"
+        eps_break   = max(0.20 * atr, current_price * 0.0012)   # break buffer
+        move_away   = max(0.35 * atr, current_price * 0.0015)   # meaningful reaction
+        eps_prox    = max(0.25 * atr, current_price * 0.0012)   # proximity decay scale
+
+        piv_hi, piv_lo = self._find_fractal_pivots(h, l, left=3, right=3)
+
+        # Candidate raw levels
+        res_levels = [p for _, p in piv_hi]
+        sup_levels = [p for _, p in piv_lo]
+
+        res_clusters = self._cluster_levels_1d(res_levels, eps_cluster)
+        sup_clusters = self._cluster_levels_1d(sup_levels, eps_cluster)
+
+        # Validate clusters by rejection behavior
+        validated_res: List[Tuple[float, float]] = []  # (level, strength)
+        for level, base_ct in res_clusters:
+            rej = self._count_rejections(level, h, l, c, side="resistance",
+                                         eps_touch=eps_touch, eps_break=eps_break,
+                                         move_away=move_away, fwd=3)
+            # Strength: blend touches + rejections (rejections matter more)
+            strength = 0.35 * min(base_ct / 4.0, 1.0) + 0.65 * min(rej / 3.0, 1.0)
+            if rej >= 1 and (base_ct + rej) >= 3:
+                validated_res.append((level, float(np.clip(strength, 0.0, 1.0))))
+
+        validated_sup: List[Tuple[float, float]] = []
+        for level, base_ct in sup_clusters:
+            rej = self._count_rejections(level, h, l, c, side="support",
+                                         eps_touch=eps_touch, eps_break=eps_break,
+                                         move_away=move_away, fwd=3)
+            strength = 0.35 * min(base_ct / 4.0, 1.0) + 0.65 * min(rej / 3.0, 1.0)
+            if rej >= 1 and (base_ct + rej) >= 3:
+                validated_sup.append((level, float(np.clip(strength, 0.0, 1.0))))
+
+        # Keep strongest few
+        validated_res.sort(key=lambda x: -x[1])
+        validated_sup.sort(key=lambda x: -x[1])
+        validated_res = validated_res[:4]
+        validated_sup = validated_sup[:4]
+
+        def prox_score(level: float, strength: float, side: str) -> float:
+            dist = abs(current_price - level)
+            if dist > 3.0 * eps_prox:
+                return 0.0
+
+            # Side constraint: don't call it "near support" if price is meaningfully below it, etc.
+            if side == "support" and current_price < (level - eps_touch):
+                return 0.0
+            if side == "resistance" and current_price > (level + eps_touch):
+                return 0.0
+
+            # Smooth proximity with exponential decay
+            p = float(np.exp(-dist / max(eps_prox, 1e-8)))
+            return float(np.clip(p * (0.5 + 0.5 * strength), 0.0, 1.0))
+
+        near_support = 0.0
+        for level, strength in validated_sup:
+            near_support = max(near_support, prox_score(level, strength, "support"))
+
+        near_resistance = 0.0
+        for level, strength in validated_res:
+            near_resistance = max(near_resistance, prox_score(level, strength, "resistance"))
+
+        return float(near_support), float(near_resistance)
+
+    def _compute_advanced_market_structure(
+        self,
+        high: np.ndarray,
+        low: np.ndarray,
+        close: np.ndarray,
+        open_: Optional[np.ndarray] = None,
+    ) -> Dict[str, float]:
+        """
+        Institutional-grade advanced market structure:
+        - structure_trend/strength from last pivot sequences (ATR-aware)
+        - BOS/CHOCH using close breaks of last pivots
+        - liquidity pools as equal-high/low clusters
+        - order blocks as displacement-based, unmitigated zones
+        
+        Returns dict with multiple structure signals.
+        """
+        out = {
+            "structure_trend": 0.0,
+            "structure_strength": 0.0,
+            "bos_signal": 0.0,
+            "liquidity_above": 0.0,
+            "liquidity_below": 0.0,
+            "order_block_bull": 0.0,
+            "order_block_bear": 0.0,
+        }
+
+        if len(close) < 80:
+            return out
+
+        current_price = float(close[-1])
+        if current_price <= 0:
+            return out
+
+        lookback = min(220, len(close))
+        h = np.asarray(high[-lookback:], dtype=np.float64)
+        l = np.asarray(low[-lookback:], dtype=np.float64)
+        c = np.asarray(close[-lookback:], dtype=np.float64)
+
+        atr = self._structure_atr(h, l, c, period=14)
+
+        eps_pivot_break = max(0.25 * atr, current_price * 0.0012)
+        eps_liq = max(0.15 * atr, current_price * 0.0010)
+        eps_ob_prox = max(0.30 * atr, current_price * 0.0015)
+
+        piv_hi, piv_lo = self._find_fractal_pivots(h, l, left=3, right=3)
+
+        # --- 1) Structure trend/strength from last pivots (HH/HL vs LL/LH but ATR-aware)
+        if len(piv_hi) >= 2 and len(piv_lo) >= 2:
+            (i_h1, h1), (i_h2, h2) = piv_hi[-2], piv_hi[-1]
+            (i_l1, l1), (i_l2, l2) = piv_lo[-2], piv_lo[-1]
+
+            # Determine classical structure with ATR buffer for noise filtering
+            hh = h2 > h1 + 0.05 * atr
+            hl = l2 > l1 + 0.05 * atr
+            ll = l2 < l1 - 0.05 * atr
+            lh = h2 < h1 - 0.05 * atr
+
+            if hh and hl:
+                trend = 1.0
+            elif ll and lh:
+                trend = -1.0
+            else:
+                trend = 0.0
+
+            # Strength: how large the pivot changes are relative to ATR
+            dh = abs(h2 - h1) / max(atr, 1e-8)
+            dl = abs(l2 - l1) / max(atr, 1e-8)
+            strength = float(np.clip(0.5 * (dh + dl) / 2.0, 0.0, 1.0))
+
+            out["structure_trend"] = float(trend)
+            out["structure_strength"] = float(strength)
+
+        # --- 2) BOS / CHOCH (use CLOSE break for signal stability)
+        if len(piv_hi) >= 1 and len(piv_lo) >= 1:
+            last_hi = piv_hi[-1][1]
+            last_lo = piv_lo[-1][1]
+
+            # Directional break magnitude normalized by ATR
+            if c[-1] > last_hi + eps_pivot_break:
+                mag = (c[-1] - (last_hi + eps_pivot_break)) / max(atr, 1e-8)
+                out["bos_signal"] = float(np.clip(mag, 0.0, 1.0))
+            elif c[-1] < last_lo - eps_pivot_break:
+                mag = ((last_lo - eps_pivot_break) - c[-1]) / max(atr, 1e-8)
+                out["bos_signal"] = float(-np.clip(mag, 0.0, 1.0))
+
+        # --- 3) Liquidity pools = equal-high/low clusters
+        hi_levels = [p for _, p in piv_hi]
+        lo_levels = [p for _, p in piv_lo]
+        hi_clusters = self._cluster_levels_1d(hi_levels, eps_liq)
+        lo_clusters = self._cluster_levels_1d(lo_levels, eps_liq)
+
+        def liq_score(level: float, count: int) -> float:
+            if count < 2:
+                return 0.0
+            dist = abs(level - current_price)
+            # Ignore far pools
+            if dist > 3.0 * atr:
+                return 0.0
+            prox = float(np.exp(-dist / max(1.5 * atr, 1e-8)))
+            depth = float(np.clip((count - 1) / 2.0, 0.0, 1.0))
+            return float(np.clip(prox * depth, 0.0, 1.0))
+
+        best_above = 0.0
+        for lvl, ct in hi_clusters:
+            if lvl > current_price:
+                best_above = max(best_above, liq_score(lvl, ct))
+        out["liquidity_above"] = float(best_above)
+
+        best_below = 0.0
+        for lvl, ct in lo_clusters:
+            if lvl < current_price:
+                best_below = max(best_below, liq_score(lvl, ct))
+        out["liquidity_below"] = float(best_below)
+
+        # --- 4) Order blocks: displacement-based, unmitigated
+        # Displacement: large body relative to ATR
+        # Bullish OB: last bearish candle before bullish displacement
+        # Bearish OB: last bullish candle before bearish displacement
+        if len(c) >= 20:
+            # Use provided open if available, otherwise approximate with prev close
+            if open_ is not None and len(open_) >= lookback:
+                approx_open = np.asarray(open_[-lookback:], dtype=np.float64)
+            else:
+                approx_open = np.concatenate([[c[0]], c[:-1]])
+
+            bull_ob_scores: List[float] = []
+            bear_ob_scores: List[float] = []
+
+            body = np.abs(c - approx_open)
+            disp_thresh = 0.9 * atr  # "meaningful move" threshold
+
+            for i in range(2, len(c) - 1):
+                # Bullish displacement candle
+                if (c[i] > approx_open[i]) and (body[i] >= disp_thresh) and (c[i] > c[i-1]):
+                    # Previous candle bearish -> bullish OB zone = previous candle range
+                    if c[i-1] < approx_open[i-1]:
+                        ob_low = float(l[i-1])
+                        ob_high = float(h[i-1])
+                        # Unmitigated check: price has NOT traded back into zone after i
+                        post_low = float(np.min(l[i+1:])) if (i + 1) < len(l) else float(l[-1])
+                        mitigated = post_low <= ob_high
+                        if not mitigated:
+                            # Proximity score
+                            dist = 0.0
+                            if current_price < ob_low:
+                                dist = ob_low - current_price
+                            elif current_price > ob_high:
+                                dist = current_price - ob_high
+                            prox = float(np.exp(-dist / max(eps_ob_prox, 1e-8)))
+                            bull_ob_scores.append(prox)
+
+                # Bearish displacement candle
+                if (c[i] < approx_open[i]) and (body[i] >= disp_thresh) and (c[i] < c[i-1]):
+                    if c[i-1] > approx_open[i-1]:
+                        ob_low = float(l[i-1])
+                        ob_high = float(h[i-1])
+                        post_high = float(np.max(h[i+1:])) if (i + 1) < len(h) else float(h[-1])
+                        mitigated = post_high >= ob_low
+                        if not mitigated:
+                            dist = 0.0
+                            if current_price < ob_low:
+                                dist = ob_low - current_price
+                            elif current_price > ob_high:
+                                dist = current_price - ob_high
+                            prox = float(np.exp(-dist / max(eps_ob_prox, 1e-8)))
+                            bear_ob_scores.append(prox)
+
+            out["order_block_bull"] = float(np.clip(max(bull_ob_scores) if bull_ob_scores else 0.0, 0.0, 1.0))
+            out["order_block_bear"] = float(np.clip(max(bear_ob_scores) if bear_ob_scores else 0.0, 0.0, 1.0))
+
+        return out
 
     def _prepare_committee_state(self, expert_signals: Dict[str, Any]) -> Dict[str, Any]:
         experts = expert_signals.get("experts", {}) if isinstance(expert_signals, dict) else {}
@@ -3203,6 +4230,9 @@ class PropFirmTradingEnv(gym.Env):
                 "avg_mae": 0.0,
                 "avg_bars_held": 0.0,
                 "exit_quality_distribution": {},
+                "consecutive_losses": int(self.consecutive_losses),
+                "consecutive_wins": int(self.consecutive_wins),
+                "hit_max_consecutive_losses": self.consecutive_losses >= self.config.max_consecutive_losses,
             }
 
         results = self._episode_trade_results
@@ -3222,6 +4252,21 @@ class PropFirmTradingEnv(gym.Env):
             else float("inf")
         )
 
+        # Check if episode ended due to max consecutive losses constraint
+        # This is tracked for curriculum consecutive_loss_breach_rate metric
+        hit_max_consec_losses = self.consecutive_losses >= self.config.max_consecutive_losses
+        
+        # Build reward component breakdown for dashboard
+        # Separate into positive (bonuses) and negative (penalties) components
+        reward_components = {}
+        for key, total in self._episode_reward_components.items():
+            count = self._episode_reward_component_counts.get(key, 1)
+            reward_components[key] = {
+                "total": float(total),
+                "count": count,
+                "avg": float(total / count) if count > 0 else 0.0,
+            }
+
         return {
             "total_trades": len(results),
             "winning_trades": len(wins),
@@ -3238,4 +4283,69 @@ class PropFirmTradingEnv(gym.Env):
             "avg_entry_quality": float(sum(r.entry_quality for r in results) / len(results)) if results else 0.5,
             "exit_quality_distribution": exit_dist,
             "profit_factor": float(pf),
+            "consecutive_losses": int(self.consecutive_losses),
+            "consecutive_wins": int(self.consecutive_wins),
+            "max_consecutive_losses_reached": int(self.max_consecutive_losses_reached),  # Peak during episode
+            "hit_max_consecutive_losses": hit_max_consec_losses,
+            "reward_components": reward_components,
+            # Regime-tagged trade data for skill assessment
+            "trades_with_regime": self._build_trades_with_regime(results),
         }
+
+    def _build_trades_with_regime(self, results: List[TradeResult]) -> List[Dict[str, Any]]:
+        """Build regime-tagged trade list for RegimeSkillAssessment integration."""
+        trades_with_regime = []
+        for r in results:
+            entry_context = r.entry_context or {}
+            
+            # Extract regime info from entry_context if available
+            vol_regime = entry_context.get("volatility_regime", "medium")
+            risk_regime = entry_context.get("risk_regime", "neutral")
+            
+            # Derive trend regime from entry context or default
+            trend_strength = float(entry_context.get("structure_trend", 0.0))
+            if abs(trend_strength) > 0.5:
+                trend_regime = "strong_trend"
+            elif abs(trend_strength) > 0.2:
+                trend_regime = "weak_trend"
+            else:
+                trend_regime = "ranging"
+            
+            # Derive session from entry timestamp
+            session_regime = "off_hours"
+            if r.entry_dt:
+                hour = r.entry_dt.hour
+                if 0 <= hour < 7:
+                    session_regime = "asian"
+                elif 7 <= hour < 12:
+                    session_regime = "london"
+                elif 12 <= hour < 16:
+                    session_regime = "overlap"
+                elif 16 <= hour < 21:
+                    session_regime = "ny"
+            
+            # Derive spread regime from entry context
+            spread_percentile = float(entry_context.get("spread_percentile", 0.5))
+            if spread_percentile < 0.3:
+                spread_regime = "tight"
+            elif spread_percentile > 0.7:
+                spread_regime = "wide"
+            else:
+                spread_regime = "normal"
+            
+            trades_with_regime.append({
+                "pnl": float(r.net_pnl),
+                "r_multiple": float(r.net_pnl / max(r.initial_risk_eur, 1.0)),
+                "is_winner": r.net_pnl > 0,
+                "bars_held": int(r.bars_held),
+                "mae": float(r.mae),
+                "mfe": float(r.mfe),
+                "entry_quality": float(r.entry_quality),
+                "exit_type": r.close_reason.value,
+                "volatility_regime": vol_regime,
+                "trend_regime": trend_regime,
+                "session_regime": session_regime,
+                "spread_regime": spread_regime,
+            })
+        
+        return trades_with_regime

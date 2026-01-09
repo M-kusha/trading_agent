@@ -223,6 +223,7 @@ class EpisodeMetrics:
     # Behavior metrics
     consecutive_losses: int = 0
     consecutive_wins: int = 0
+    max_consecutive_losses_reached: int = 0  # Peak consecutive losses during episode
     hit_max_consecutive_losses: bool = False
 
     # Exit quality tracking
@@ -283,6 +284,8 @@ class RollingStats:
 
     # Behavior stats
     consecutive_loss_breach_rate: float = 0.0
+    avg_max_consecutive_losses: float = 0.0  # Average of peak consecutive losses per episode
+    consecutive_loss_streak_rate: float = 0.0  # Rate of episodes with 3+ consecutive losses
 
     # Computed metrics
     sharpe_ratio: float = 0.0
@@ -1323,6 +1326,12 @@ class CurriculumManager:
         self._stress_tester = StressTestRunner()
         self._regime_assessment: Optional[RegimeSkillAssessment] = None
         
+        # Regime trade accumulator for RegimeSkillAssessment
+        # Bounded to prevent memory issues during long training runs
+        self._regime_trades: Deque[TradeWithRegime] = deque(maxlen=2000)
+        self._regime_assessment_dirty: bool = True
+
+        
         # Episode-end call tracking (Phase 1.2: ensure single call per episode)
         self._last_episode_end_idx: int = -1
         
@@ -2050,6 +2059,8 @@ class CurriculumManager:
             avg_entry_quality=_clamp(_safe_float(ep_stats.get("avg_entry_quality", info.get("avg_entry_quality", 0.5)), 0.5), 0.0, 1.0),
             consecutive_losses=_safe_int(info.get("consecutive_losses", ep_stats.get("consecutive_losses", 0)), 0),
             consecutive_wins=_safe_int(info.get("consecutive_wins", ep_stats.get("consecutive_wins", 0)), 0),
+            max_consecutive_losses_reached=_safe_int(ep_stats.get("max_consecutive_losses_reached", 
+                                                                   info.get("consecutive_losses", ep_stats.get("consecutive_losses", 0))), 0),
             hit_max_consecutive_losses=hit_max_consec,
             trailing_stop_exits=trailing_stops,
             agent_close_exits=agent_closes,
@@ -2066,7 +2077,80 @@ class CurriculumManager:
             timestamp=_now_iso(self.tz),
         )
         
+        # Extract regime-tagged trades for skill assessment (Phase 2.2)
+        self._accumulate_regime_trades(ep_stats.get("trades_with_regime", []))
+        
         self.record_episode(metrics, timesteps=episode_length, effective_stage=effective_stage)
+    
+    def _accumulate_regime_trades(self, trades_data: List[Dict[str, Any]]) -> None:
+        """
+        Accumulate regime-tagged trades for RegimeSkillAssessment.
+        
+        Args:
+            trades_data: List of trade dicts with regime info from prop_firm_env
+        """
+        if not trades_data:
+            return
+        
+        # Map string regime names to enums
+        from envs.regime_skill_assessment import (
+            VolatilityRegime, TrendRegime, SessionRegime, SpreadRegime
+        )
+        
+        vol_map = {
+            "low": VolatilityRegime.LOW,
+            "medium": VolatilityRegime.MEDIUM,
+            "high": VolatilityRegime.HIGH,
+        }
+        trend_map = {
+            "strong_trend": TrendRegime.STRONG_TREND,
+            "weak_trend": TrendRegime.WEAK_TREND,
+            "ranging": TrendRegime.RANGING,
+        }
+        session_map = {
+            "asian": SessionRegime.ASIAN,
+            "london": SessionRegime.LONDON,
+            "overlap": SessionRegime.LONDON_NY_OVERLAP,
+            "ny": SessionRegime.NY,
+            "off_hours": SessionRegime.OFF_HOURS,
+        }
+        spread_map = {
+            "tight": SpreadRegime.TIGHT,
+            "normal": SpreadRegime.NORMAL,
+            "wide": SpreadRegime.WIDE,
+        }
+        
+        for td in trades_data:
+            try:
+                trade = TradeWithRegime(
+                    pnl=float(td.get("pnl", 0.0)),
+                    r_multiple=float(td.get("r_multiple", 0.0)),
+                    is_winner=bool(td.get("is_winner", False)),
+                    bars_held=int(td.get("bars_held", 0)),
+                    mae=float(td.get("mae", 0.0)),
+                    mfe=float(td.get("mfe", 0.0)),
+                    entry_quality=float(td.get("entry_quality", 0.5)),
+                    exit_type=str(td.get("exit_type", "")),
+                    volatility_regime=vol_map.get(td.get("volatility_regime", "medium"), VolatilityRegime.MEDIUM),
+                    trend_regime=trend_map.get(td.get("trend_regime", "ranging"), TrendRegime.RANGING),
+                    session_regime=session_map.get(td.get("session_regime", "off_hours"), SessionRegime.OFF_HOURS),
+                    spread_regime=spread_map.get(td.get("spread_regime", "normal"), SpreadRegime.NORMAL),
+                )
+                self._regime_trades.append(trade)
+                self._regime_assessment_dirty = True
+            except Exception as e:
+                logger.debug(f"Failed to parse regime trade: {e}")
+    
+    def _update_regime_assessment(self) -> None:
+        """Update RegimeSkillAssessment from accumulated trades."""
+        if not self._regime_assessment_dirty:
+            return
+        
+        if len(self._regime_trades) >= 50:  # Need minimum sample for meaningful assessment
+            self._regime_assessment = RegimeSkillAssessment.from_trades(list(self._regime_trades))
+            self._regime_assessment_dirty = False
+        else:
+            self._regime_assessment = None
     
     # -------------------------------------------------------------------------
     # Statistics
@@ -2104,6 +2188,8 @@ class CurriculumManager:
         r_multiples = np.array([_safe_float(m.avg_r_multiple, 0.0) for m in window], dtype=np.float64)
         entry_qualities = np.array([_clamp(_safe_float(m.avg_entry_quality, 0.5), 0.0, 1.0) for m in window], dtype=np.float64)
         consec_loss_breaches = np.array([bool(m.hit_max_consecutive_losses) for m in window], dtype=np.bool_)
+        # Track peak consecutive losses per episode (more informative than just breach rate)
+        max_consec_losses = np.array([max(0, m.max_consecutive_losses_reached) for m in window], dtype=np.int32)
         entropies = np.array([m.policy_entropy for m in window if m.policy_entropy >= 0], dtype=np.float64)
         
         # Basic stats (use ddof=1 for sample std - proper for CI calculation)
@@ -2130,6 +2216,10 @@ class CurriculumManager:
         mean_r_multiple = float(np.mean(r_multiples)) if len(r_multiples) else 0.0
         mean_entry_quality = float(np.mean(entry_qualities)) if len(entry_qualities) else 0.5
         consecutive_loss_breach_rate = float(np.mean(consec_loss_breaches)) if len(consec_loss_breaches) else 0.0
+        # Average of peak consecutive losses per episode
+        avg_max_consecutive_losses = float(np.mean(max_consec_losses)) if len(max_consec_losses) else 0.0
+        # Rate of episodes with 3+ consecutive losses (catches problematic streaks earlier)
+        consecutive_loss_streak_rate = float(np.mean(max_consec_losses >= 3)) if len(max_consec_losses) else 0.0
         
         # Sharpe/Sortino
         if std_pnl > 1e-9:
@@ -2195,6 +2285,8 @@ class CurriculumManager:
             mean_r_multiple=mean_r_multiple,
             mean_entry_quality=mean_entry_quality,
             consecutive_loss_breach_rate=consecutive_loss_breach_rate,
+            avg_max_consecutive_losses=avg_max_consecutive_losses,
+            consecutive_loss_streak_rate=consecutive_loss_streak_rate,
             sharpe_ratio=float(sharpe),
             sortino_ratio=float(sortino),
             win_loss_ratio=float(win_loss_ratio),
@@ -2478,6 +2570,94 @@ class CurriculumManager:
                 "concerns": gaming_concerns,
             }
         
+        # Phase 2.2: Regime-based skill assessment
+        # For late stages (>= TIMING_STUDENT), require regime adaptation
+        stage_idx = _stage_to_index(self.current_stage)
+        if stage_idx >= 4:  # TIMING_STUDENT and above
+            self._update_regime_assessment()
+            if self._regime_assessment is not None:
+                regime_score = self._regime_assessment.adaptation_score
+                regime_coverage = self._regime_assessment.regime_coverage
+                
+                results["regime_assessment"] = {
+                    "adaptation_score": regime_score,
+                    "regime_coverage": regime_coverage,
+                    "volatility_handling": self._regime_assessment.volatility_handling,
+                    "trend_following": self._regime_assessment.trend_following,
+                    "session_awareness": self._regime_assessment.session_awareness,
+                    "cost_resilience": self._regime_assessment.cost_resilience,
+                    "total_trades": self._regime_assessment.total_trades,
+                    "confidence": self._regime_assessment.confidence,
+                }
+                
+                # Require minimum adaptation score for late stages
+                min_adaptation = 0.35 if stage_idx >= 6 else 0.25  # Stricter for prop stages
+                if regime_score < min_adaptation:
+                    results["checks"]["regime_adaptation"] = {
+                        "required": min_adaptation,
+                        "actual": regime_score,
+                        "passed": False,
+                        "reason": "Performance too inconsistent across market regimes",
+                    }
+                    all_passed = False
+                else:
+                    results["checks"]["regime_adaptation"] = {
+                        "required": min_adaptation,
+                        "actual": regime_score,
+                        "passed": True,
+                    }
+                
+                # Require minimum regime coverage for late stages
+                min_coverage = 0.5 if stage_idx >= 6 else 0.3
+                if regime_coverage < min_coverage:
+                    results["checks"]["regime_coverage"] = {
+                        "required": min_coverage,
+                        "actual": regime_coverage,
+                        "passed": False,
+                        "reason": "Not trading across enough market conditions",
+                    }
+                    all_passed = False
+                else:
+                    results["checks"]["regime_coverage"] = {
+                        "required": min_coverage,
+                        "actual": regime_coverage,
+                        "passed": True,
+                    }
+                
+                # Phase 3: Stress resilience check for prop stages (>= 6)
+                # Uses cost_resilience and volatility_handling from regime assessment
+                if stage_idx >= 6:
+                    cost_resilience = self._regime_assessment.cost_resilience
+                    vol_handling = self._regime_assessment.volatility_handling
+                    
+                    # Must handle stress conditions reasonably well
+                    min_stress_score = 0.35
+                    stress_score = (cost_resilience + vol_handling) / 2
+                    
+                    results["stress_resilience"] = {
+                        "cost_resilience": cost_resilience,
+                        "volatility_handling": vol_handling,
+                        "combined_score": stress_score,
+                        "min_required": min_stress_score,
+                    }
+                    
+                    if stress_score < min_stress_score:
+                        results["checks"]["stress_resilience"] = {
+                            "required": min_stress_score,
+                            "actual": stress_score,
+                            "passed": False,
+                            "reason": "Poor performance under stress conditions (wide spreads, high volatility)",
+                        }
+                        all_passed = False
+                    else:
+                        results["checks"]["stress_resilience"] = {
+                            "required": min_stress_score,
+                            "actual": stress_score,
+                            "passed": True,
+                        }
+            else:
+                results["regime_assessment"] = {"status": "insufficient_data"}
+        
         results["promotion_ready"] = all_passed
         results["stats"] = asdict(stats)
         
@@ -2554,9 +2734,98 @@ class CurriculumManager:
         
         return should_demote, results
     
+    def _internal_validation_check(self, promotion_results: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Internal validation gate based on performance stability and generalization proxies.
+        
+        Since we don't have separate validation data, we check:
+        1. Win rate stability across recent episodes (std < threshold)
+        2. Profit factor stability (no wild swings)
+        3. Recent vs overall performance ratio (catch late overfitting)
+        4. Safety metrics (DD breach rate must stay low)
+        
+        Returns:
+            Dict with "passed" bool and diagnostic info
+        """
+        stats = self.get_rolling_stats()
+        val_cfg = self.stage_config.validation
+        stage_idx = _stage_to_index(self.current_stage)
+        
+        result: Dict[str, Any] = {
+            "type": "internal_stability_check",
+            "passed": True,
+            "checks": {},
+        }
+        
+        # Check 1: Win rate stability (low std = consistent performance)
+        # Use recent history for stability check
+        recent_window = min(50, stats.window_size)
+        recent_episodes = self._current_epoch_window(recent_window)
+        
+        if len(recent_episodes) >= 20:
+            recent_wr = [ep.win_rate for ep in recent_episodes]
+            wr_std = float(np.std(recent_wr))
+            max_wr_std = 0.15 if stage_idx >= 6 else 0.20  # Stricter for prop stages
+            
+            wr_stable = wr_std <= max_wr_std
+            result["checks"]["win_rate_stability"] = {
+                "std": wr_std,
+                "max_allowed": max_wr_std,
+                "passed": wr_stable,
+            }
+            if not wr_stable:
+                result["passed"] = False
+        
+        # Check 2: Recent vs overall performance (detect late-episode overfitting)
+        if len(recent_episodes) >= 20 and stats.window_size >= 50:
+            recent_mean_wr = float(np.mean([ep.win_rate for ep in recent_episodes]))
+            overall_mean_wr = stats.mean_win_rate
+            
+            # Recent should be at least 85% of overall (no severe late degradation)
+            min_ratio = val_cfg.min_performance_ratio if hasattr(val_cfg, 'min_performance_ratio') else 0.85
+            if overall_mean_wr > 0.01:
+                perf_ratio = recent_mean_wr / overall_mean_wr
+                ratio_ok = perf_ratio >= min_ratio
+                result["checks"]["performance_ratio"] = {
+                    "recent_wr": recent_mean_wr,
+                    "overall_wr": overall_mean_wr,
+                    "ratio": perf_ratio,
+                    "min_required": min_ratio,
+                    "passed": ratio_ok,
+                }
+                if not ratio_ok:
+                    result["passed"] = False
+        
+        # Check 3: Safety check (DD breach rate must be acceptable)
+        max_dd_breach_rate = 0.05 if stage_idx >= 6 else 0.10
+        dd_breach_ok = stats.dd_breach_rate <= max_dd_breach_rate
+        result["checks"]["safety"] = {
+            "dd_breach_rate": stats.dd_breach_rate,
+            "max_allowed": max_dd_breach_rate,
+            "passed": dd_breach_ok,
+        }
+        if not dd_breach_ok:
+            result["passed"] = False
+        
+        # Check 4: For late stages, require regime stability from RegimeSkillAssessment
+        if stage_idx >= 6 and self._regime_assessment is not None:
+            adaptation = self._regime_assessment.adaptation_score
+            min_adaptation = 0.4
+            adapt_ok = adaptation >= min_adaptation
+            result["checks"]["regime_stability"] = {
+                "adaptation_score": adaptation,
+                "min_required": min_adaptation,
+                "passed": adapt_ok,
+            }
+            if not adapt_ok:
+                result["passed"] = False
+        
+        return result
+    
     # -------------------------------------------------------------------------
     # Promotion/Demotion Execution
     # -------------------------------------------------------------------------
+
     
     def try_promote(self) -> Tuple[bool, Optional[CurriculumStage]]:
         """Attempt to promote to next stage."""
@@ -2583,8 +2852,13 @@ class CurriculumManager:
         val_cfg = self.stage_config.validation
         if val_cfg.enabled:
             if self.validation_evaluator is None:
-                if self.verbose:
-                    logger.warning("Validation enabled but no validation_evaluator provided; skipping validation gate.")
+                # Use internal validation gate based on rolling stats stability
+                val_result = self._internal_validation_check(results)
+                results["validation"] = val_result
+                if not val_result.get("passed", False):
+                    if self.verbose:
+                        logger.info(f"Internal validation failed; blocking promotion. Details: {val_result}")
+                    return False, None
             else:
                 try:
                     val_result = self.validation_evaluator(self.stage_config)
@@ -2718,6 +2992,74 @@ class CurriculumManager:
     # Progress Reporting
     # -------------------------------------------------------------------------
     
+    def _get_regime_assessment_report(self) -> Dict[str, Any]:
+        """Get regime skill assessment report for dashboard."""
+        self._update_regime_assessment()
+        
+        if self._regime_assessment is None:
+            return {
+                "status": "insufficient_data",
+                "total_trades": len(self._regime_trades),
+                "min_required": 50,
+            }
+        
+        ra = self._regime_assessment
+        
+        return {
+            "status": "active",
+            "total_trades": ra.total_trades,
+            "confidence": ra.confidence,
+            
+            # Main skill scores
+            "scores": {
+                "adaptation": ra.adaptation_score,
+                "volatility_handling": ra.volatility_handling,
+                "trend_following": ra.trend_following,
+                "session_awareness": ra.session_awareness,
+                "cost_resilience": ra.cost_resilience,
+            },
+            
+            # Coverage
+            "regime_coverage": ra.regime_coverage,
+            
+            # Weaknesses
+            "weaknesses": ra.get_weaknesses(threshold=0.4),
+            
+            # Breakdown by regime (for detailed view)
+            "volatility_breakdown": {
+                k.value: {
+                    "trades": v.trade_count,
+                    "win_rate": v.win_rate,
+                    "avg_r": v.avg_r,
+                }
+                for k, v in ra.volatility_performance.items()
+            },
+            "trend_breakdown": {
+                k.value: {
+                    "trades": v.trade_count,
+                    "win_rate": v.win_rate,
+                    "avg_r": v.avg_r,
+                }
+                for k, v in ra.trend_performance.items()
+            },
+            "session_breakdown": {
+                k.value: {
+                    "trades": v.trade_count,
+                    "win_rate": v.win_rate,
+                    "avg_r": v.avg_r,
+                }
+                for k, v in ra.session_performance.items()
+            },
+            "spread_breakdown": {
+                k.value: {
+                    "trades": v.trade_count,
+                    "win_rate": v.win_rate,
+                    "avg_r": v.avg_r,
+                }
+                for k, v in ra.spread_performance.items()
+            },
+        }
+    
     def get_progress_report(self) -> Dict[str, Any]:
         """Generate comprehensive progress report."""
         stats = self.get_rolling_stats()
@@ -2726,6 +3068,26 @@ class CurriculumManager:
         
         progression = get_stage_progression()
         stage_idx = progression.index(self.current_stage)
+        
+        # Build phase_info for dashboard display
+        reward_cfg = self.stage_config.rewards if self.stage_config else None
+        bonuses_enabled = False
+        if reward_cfg:
+            # Bonuses are "enabled" if any meaningful bonus scale is > 0
+            bonuses_enabled = (
+                getattr(reward_cfg, 'trailing_stop_bonus', 0.0) > 0.01 or
+                getattr(reward_cfg, 'r_multiple_bonus_scale', 0.0) > 0.01 or
+                getattr(reward_cfg, 'agent_close_bonus', 0.0) > 0.01
+            )
+        
+        phase_info = {
+            "phase_num": stage_idx,
+            "phase_name": self.current_stage.name,
+            "description": getattr(self.stage_config, 'description', '') if self.stage_config else '',
+            "bonuses_enabled": bonuses_enabled,
+            "loss_multiplier_range": f"{getattr(reward_cfg, 'loss_penalty_mult', 1.0):.1f}x" if reward_cfg else "1.0x",
+            "market_difficulty": "Progressive" if stage_idx < 5 else "Full",
+        }
         
         # Identify promotion blockers with correct gap calculation
         # For "min_*" metrics: gap = required - actual (need to increase)
@@ -2779,6 +3141,9 @@ class CurriculumManager:
             "total_stages": len(progression),
             "progress_pct": (stage_idx / (len(progression) - 1)) * 100 if len(progression) > 1 else 100,
             
+            # Dashboard phase info
+            "phase_info": phase_info,
+            
             # Totals
             "total_timesteps": self.total_timesteps,
             "total_episodes": self.total_episodes,
@@ -2813,6 +3178,9 @@ class CurriculumManager:
             
             # Phase 2.1 hardening
             "invariant_summary": self._invariant_checker.get_summary(),
+            
+            # Phase 2.2 - Regime skill assessment
+            "regime_assessment": self._get_regime_assessment_report(),
             
             # Transition state
             "is_in_transition": self.is_in_transition,

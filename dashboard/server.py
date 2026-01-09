@@ -21,6 +21,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, TYPE_CHECKING
 
+import numpy as np
+
 # Ensure project root is importable (dashboard/ is typically one level below root)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -467,6 +469,14 @@ class MetricsReader:
         exit_distribution = self._safe_dict(exit_stats.get("distribution", raw.get("exit_reason_distribution", {})))
         exit_stats_out = {"distribution": exit_distribution}
 
+        # Reward component breakdown (new - for market structure signals dashboard)
+        reward_components_raw = self._safe_dict(raw.get("reward_components", {}))
+        reward_components = self._process_reward_components(reward_components_raw)
+
+        # Stage comparison data for Stage Progress tab
+        stage_comparison_raw = self._safe_dict(raw.get("stage_comparison", {}))
+        stage_comparison = self._process_stage_comparison(stage_comparison_raw)
+
         # Curriculum (pass-through + normalized checks)
         curriculum_progress = self._safe_dict(raw.get("curriculum_progress", {}))
         curriculum_detail = self._safe_dict(raw.get("curriculum_detail", {}))
@@ -505,6 +515,8 @@ class MetricsReader:
             "trading": trading,
             "quality": quality,
             "exit_stats": exit_stats_out,
+            "reward_components": reward_components,
+            "stage_comparison": stage_comparison,
 
             "curriculum_stage": raw.get("curriculum_stage", "N/A"),
             "curriculum_stage_idx": raw.get("curriculum_stage_idx", 0),
@@ -634,12 +646,216 @@ class MetricsReader:
                 "penalty": self._safe_float(es.get("penalty", 0)),
             }
 
+        # Phase 2.2: Regime skill assessment
+        if isinstance(cp.get("regime_assessment"), dict):
+            ra = cp["regime_assessment"]
+            out["regime_assessment"] = {
+                "status": ra.get("status", "unknown"),
+                "total_trades": self._safe_int(ra.get("total_trades", 0)),
+                "confidence": self._safe_float(ra.get("confidence", 0)),
+                "regime_coverage": self._safe_float(ra.get("regime_coverage", 0)),
+                "scores": self._safe_dict(ra.get("scores", {})),
+                "weaknesses": self._safe_list(ra.get("weaknesses", [])),
+                "volatility_breakdown": self._safe_dict(ra.get("volatility_breakdown", {})),
+                "trend_breakdown": self._safe_dict(ra.get("trend_breakdown", {})),
+                "session_breakdown": self._safe_dict(ra.get("session_breakdown", {})),
+                "spread_breakdown": self._safe_dict(ra.get("spread_breakdown", {})),
+            }
+
         out["blockers"] = self._safe_list(cp.get("blockers", []))
         out["recommendations"] = self._safe_list(cp.get("recommendations", []))
         out["estimated_episodes_to_promotion"] = cp.get("estimated_episodes_to_promotion")
         out["phase_info"] = cp.get("phase_info", {})  # UI uses it if available
 
         return out
+
+    def _process_reward_components(self, rc: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Process reward components into dashboard-friendly format.
+        Groups components into categories: market_structure, divergence, regime, exit_quality, etc.
+        """
+        if not rc:
+            return {
+                "market_structure": {},
+                "divergence": {},
+                "regime": {},
+                "exit_quality": {},
+                "timing": {},
+                "risk": {},
+                "other": {},
+                "summary": {"total_positive": 0, "total_negative": 0, "net": 0},
+            }
+
+        # Component category mapping
+        market_structure_keys = ["sr_support_bonus", "sr_resistance_bonus", "sr_bad_entry_penalty", 
+                                 "structure_alignment_bonus", "bos_alignment_bonus", "order_block_bonus"]
+        divergence_keys = ["divergence_contra_penalty", "divergence_aligned_bonus", 
+                          "overbought_long_penalty", "oversold_short_penalty"]
+        regime_keys = ["risk_off_penalty", "high_vol_penalty"]
+        exit_quality_keys = ["exit_quality", "premature_close_penalty", "trailing_stop_bonus"]
+        timing_keys = ["off_hours_penalty", "prime_hours_bonus", "time_efficiency", "time_penalty"]
+        risk_keys = ["dd_shaping", "churn_penalty", "win_streak_bonus", "loss_streak_penalty"]
+
+        result = {
+            "market_structure": {},
+            "divergence": {},
+            "regime": {},
+            "exit_quality": {},
+            "timing": {},
+            "risk": {},
+            "other": {},
+        }
+
+        total_positive = 0.0
+        total_negative = 0.0
+
+        for name, data in rc.items():
+            if isinstance(data, dict):
+                total = self._safe_float(data.get("total", 0))
+                count = self._safe_int(data.get("count", 0))
+                avg = self._safe_float(data.get("avg", 0))
+            else:
+                total = self._safe_float(data)
+                count = 1
+                avg = total
+
+            comp_data = {"total": total, "count": count, "avg": avg}
+
+            # Track totals
+            if total > 0:
+                total_positive += total
+            else:
+                total_negative += total
+
+            # Categorize
+            if name in market_structure_keys:
+                result["market_structure"][name] = comp_data
+            elif name in divergence_keys:
+                result["divergence"][name] = comp_data
+            elif name in regime_keys:
+                result["regime"][name] = comp_data
+            elif name in exit_quality_keys:
+                result["exit_quality"][name] = comp_data
+            elif name in timing_keys:
+                result["timing"][name] = comp_data
+            elif name in risk_keys:
+                result["risk"][name] = comp_data
+            else:
+                result["other"][name] = comp_data
+
+        result["summary"] = {
+            "total_positive": total_positive,
+            "total_negative": total_negative,
+            "net": total_positive + total_negative,
+        }
+
+        return result
+
+    def _process_stage_comparison(self, sc: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Process stage comparison data into dashboard-friendly format.
+        Provides per-stage metrics and improvements between stages.
+        """
+        if not sc or not sc.get("stages"):
+            return {
+                "stages": [],
+                "overall_improvement": {},
+                "current_stage": "N/A",
+                "total_stages_visited": 0,
+                "summary": {},
+            }
+
+        stages = self._safe_list(sc.get("stages", []))
+        overall_improvement = self._safe_dict(sc.get("overall_improvement", {}))
+        current_stage = sc.get("current_stage", "N/A")
+        total_stages_visited = self._safe_int(sc.get("total_stages_visited", 0))
+
+        # Process each stage
+        processed_stages = []
+        for stage in stages:
+            if not isinstance(stage, dict):
+                continue
+
+            processed_stage = {
+                "stage_name": stage.get("stage_name", "Unknown"),
+                "stage_index": self._safe_int(stage.get("stage_index", 0)),
+                "episodes": self._safe_int(stage.get("episodes", 0)),
+                "timesteps": self._safe_int(stage.get("timesteps", 0)),
+                "total_trades": self._safe_int(stage.get("total_trades", 0)),
+                "total_pnl": self._safe_float(stage.get("total_pnl", 0)),
+                "avg_pnl": self._safe_float(stage.get("avg_pnl", 0)),
+                "pnl_std": self._safe_float(stage.get("pnl_std", 0)),
+                "win_rate": self._safe_float(stage.get("win_rate", 0)),
+                "win_rate_std": self._safe_float(stage.get("win_rate_std", 0)),
+                "avg_drawdown": self._safe_float(stage.get("avg_drawdown", 0)),
+                "avg_trades": self._safe_float(stage.get("avg_trades", 0)),
+                "avg_reward": self._safe_float(stage.get("avg_reward", 0)),
+                "avg_profit_factor": self._safe_float(stage.get("avg_profit_factor", 0)),
+                "avg_r_multiple": self._safe_float(stage.get("avg_r_multiple", 0)),
+                "first_episode": self._safe_int(stage.get("first_episode", 0)),
+                "last_episode": self._safe_int(stage.get("last_episode", 0)),
+            }
+
+            # Process improvement data
+            improvement = stage.get("improvement")
+            if improvement is not None and isinstance(improvement, dict):
+                processed_stage["improvement"] = {
+                    "win_rate_delta": self._safe_float(improvement.get("win_rate_delta", 0)),
+                    "pnl_delta": self._safe_float(improvement.get("pnl_delta", 0)),
+                    "profit_factor_delta": self._safe_float(improvement.get("profit_factor_delta", 0)),
+                    "reward_delta": self._safe_float(improvement.get("reward_delta", 0)),
+                }
+                # Add status indicators
+                processed_stage["improvement"]["win_rate_status"] = "good" if improvement.get("win_rate_delta", 0) > 0 else "bad"
+                processed_stage["improvement"]["pnl_status"] = "good" if improvement.get("pnl_delta", 0) > 0 else "bad"
+                processed_stage["improvement"]["profit_factor_status"] = "good" if improvement.get("profit_factor_delta", 0) > 0 else "bad"
+            else:
+                processed_stage["improvement"] = None
+
+            # Add overall status for the stage
+            win_rate = processed_stage["win_rate"]
+            avg_pnl = processed_stage["avg_pnl"]
+            profit_factor = processed_stage["avg_profit_factor"]
+            
+            processed_stage["status"] = {
+                "win_rate": "good" if win_rate >= 55 else "ok" if win_rate >= 45 else "bad",
+                "pnl": "good" if avg_pnl > 0 else "ok" if avg_pnl > -500 else "bad",
+                "profit_factor": "good" if profit_factor >= 1.2 else "ok" if profit_factor >= 0.9 else "bad",
+            }
+
+            processed_stages.append(processed_stage)
+
+        # Calculate summary statistics across all stages
+        summary = {}
+        if processed_stages:
+            all_win_rates = [s["win_rate"] for s in processed_stages]
+            all_pnls = [s["total_pnl"] for s in processed_stages]
+            all_pfs = [s["avg_profit_factor"] for s in processed_stages if s["avg_profit_factor"] > 0]
+            
+            summary = {
+                "best_stage_win_rate": max(processed_stages, key=lambda x: x["win_rate"])["stage_name"] if processed_stages else "N/A",
+                "best_stage_pnl": max(processed_stages, key=lambda x: x["total_pnl"])["stage_name"] if processed_stages else "N/A",
+                "worst_stage_pnl": min(processed_stages, key=lambda x: x["total_pnl"])["stage_name"] if processed_stages else "N/A",
+                "avg_win_rate_all_stages": float(np.mean(all_win_rates)) if all_win_rates else 0,
+                "total_pnl_all_stages": sum(all_pnls),
+                "avg_profit_factor_all_stages": float(np.mean(all_pfs)) if all_pfs else 0,
+                "total_episodes_all_stages": sum(s["episodes"] for s in processed_stages),
+                "total_trades_all_stages": sum(s["total_trades"] for s in processed_stages),
+            }
+
+        return {
+            "stages": processed_stages,
+            "overall_improvement": {
+                "win_rate_delta": self._safe_float(overall_improvement.get("win_rate_delta", 0)),
+                "pnl_delta": self._safe_float(overall_improvement.get("pnl_delta", 0)),
+                "profit_factor_delta": self._safe_float(overall_improvement.get("profit_factor_delta", 0)),
+                "reward_delta": self._safe_float(overall_improvement.get("reward_delta", 0)),
+                "stages_progressed": self._safe_int(overall_improvement.get("stages_progressed", 0)),
+            },
+            "current_stage": current_stage,
+            "total_stages_visited": total_stages_visited,
+            "summary": summary,
+        }
 
     def _estimate_eta(self, current: int, total: int, raw: Dict[str, Any]) -> float:
         fps = self._safe_float(raw.get("fps", raw.get("learning", {}).get("fps", 0)))

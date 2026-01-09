@@ -309,22 +309,23 @@ class SmartEntropyController:
     def __init__(self, initial_ent_coef: float = 0.15, n_actions: int = 10):
         self.current_stage = 0
         self.cooldown_steps = 0
-        self.min_steps_between_updates = 8_000  # Let changes take effect
+        self.min_steps_between_updates = 20_000  # INCREASED: 8k -> 20k to let changes settle
         self.steps_since_update = 0
         self.n_actions = n_actions  # Total actions in action space
         self._valid_actions_estimate = n_actions  # Estimated valid actions (updated dynamically)
         
         # Initialize PID with stage 0 settings
         # PID operates on NORMALIZED entropy [0, 1]
+        # FIX: Reduced gains to prevent rapid oscillation
         bounds = self.STAGE_ENT_COEF_BOUNDS[0]
         self.pid = PIDController(
-            kp=0.25,           # Moderate response
-            ki=0.03,           # Slow integral (prevents overshoot)
-            kd=0.15,           # Strong damping (prevents oscillation)
+            kp=0.10,           # REDUCED: 0.25 -> 0.10 (less aggressive)
+            ki=0.01,           # REDUCED: 0.03 -> 0.01 (slower integral)
+            kd=0.05,           # REDUCED: 0.15 -> 0.05 (less derivative kick)
             setpoint=self.STAGE_TARGETS_NORMALIZED[0],
             output_min=bounds[0],
             output_max=bounds[1],
-            deadband=0.06,     # Deadband in normalized units
+            deadband=0.12,     # INCREASED: 0.06 -> 0.12 (wider tolerance band)
         )
         self._last_ent_coef = initial_ent_coef
     
@@ -369,8 +370,8 @@ class SmartEntropyController:
         self.pid.output_max = bounds[1]
         self.pid.reset()  # Fresh start for new stage
         
-        # Cooldown after stage change
-        self.cooldown_steps = 20_000
+        # FIX: Increased cooldown after stage change to let policy settle
+        self.cooldown_steps = 40_000  # INCREASED: 20k -> 40k
         
     def get_ent_coef(
         self, 
@@ -457,8 +458,9 @@ class SmartEntropyController:
         # Normal operation: Let PID handle it smoothly (on normalized entropy)
         new_coef, reason = self.pid.update(norm_entropy)
         
+        # F-9 FIX: Guard against division by zero when ent_coef=0
         # Only apply if change is meaningful (>2% difference)
-        if abs(new_coef - current_ent_coef) / current_ent_coef < 0.02:
+        if current_ent_coef > 0 and abs(new_coef - current_ent_coef) / current_ent_coef < 0.02:
             return current_ent_coef, f"PID stable (norm_H={norm_entropy:.2f}): {reason}", False
             
         self.steps_since_update = 0
@@ -582,9 +584,12 @@ def load_market_data(
 
             df = pd.read_csv(filepath)
 
+            # F-8 FIX: Normalize column names to lowercase for case-insensitive OHLC detection
+            df.columns = df.columns.str.lower()
+
             required = {"open", "high", "low", "close"}
             if not required.issubset(df.columns):
-                logger.warning(f"Skipping {file}: missing OHLC columns")
+                logger.warning(f"Skipping {file}: missing OHLC columns (have: {list(df.columns)[:10]})")
                 continue
 
             if "volume" not in df.columns:
@@ -1058,6 +1063,156 @@ def score_trading_metrics(m: Dict[str, float], eval_episodes: int) -> float:
 
 
 # =============================================================================
+# TRAINING HEALTH WATCHDOG
+# =============================================================================
+
+class TrainingHealthWatchdog:
+    """
+    Monitors training health metrics and alerts/stops if critical issues arise.
+    
+    Red flags that indicate wasted compute:
+    1. Explained Variance (EV) collapse - critic not learning
+    2. Sustained reward decline - policy degrading
+    3. Win rate stuck at 50% - no learning
+    4. Entropy collapse or explosion
+    
+    Usage:
+        watchdog = TrainingHealthWatchdog()
+        
+        # In training loop:
+        should_stop, reason = watchdog.check(
+            explained_variance=ev,
+            mean_reward=reward,
+            win_rate=wr,
+            entropy=ent,
+            timestep=step
+        )
+        if should_stop:
+            logger.error(f"TRAINING HALTED: {reason}")
+            break
+    """
+    
+    def __init__(
+        self,
+        ev_critical_threshold: float = -0.5,
+        ev_warning_threshold: float = 0.05,
+        ev_consecutive_failures: int = 5,
+        reward_decline_threshold: float = -2.0,  # Mean reward slope
+        reward_consecutive_declines: int = 10,
+        winrate_stuck_range: tuple = (0.45, 0.55),  # Breakeven range
+        winrate_stuck_episodes: int = 200,
+        check_interval_steps: int = 20_000,
+        auto_stop: bool = False,  # If True, returns should_stop=True
+    ):
+        self.ev_critical = ev_critical_threshold
+        self.ev_warning = ev_warning_threshold
+        self.ev_failures_needed = ev_consecutive_failures
+        self.reward_decline = reward_decline_threshold
+        self.reward_declines_needed = reward_consecutive_declines
+        self.winrate_range = winrate_stuck_range
+        self.winrate_stuck_needed = winrate_stuck_episodes
+        self.check_interval = check_interval_steps
+        self.auto_stop = auto_stop
+        
+        # History tracking
+        self._ev_history: deque = deque(maxlen=20)
+        self._reward_history: deque = deque(maxlen=50)
+        self._winrate_history: deque = deque(maxlen=100)
+        self._last_check_step = 0
+        self._consecutive_ev_failures = 0
+        self._consecutive_reward_declines = 0
+        self._winrate_stuck_count = 0
+        
+    def check(
+        self,
+        explained_variance: float,
+        mean_reward: float,
+        win_rate: float,
+        entropy: float,
+        timestep: int,
+    ) -> tuple:
+        """
+        Check training health metrics.
+        
+        Returns:
+            (should_stop: bool, reason: str or None)
+        """
+        # Rate-limit checks
+        if timestep - self._last_check_step < self.check_interval:
+            return False, None
+        
+        self._last_check_step = timestep
+        
+        # Update histories
+        self._ev_history.append(explained_variance)
+        self._reward_history.append(mean_reward)
+        self._winrate_history.append(win_rate)
+        
+        alerts = []
+        should_stop = False
+        
+        # === CHECK 1: Explained Variance ===
+        if explained_variance < self.ev_critical:
+            self._consecutive_ev_failures += 1
+            alerts.append(
+                f"🔴 CRITICAL: Explained Variance = {explained_variance:.3f} "
+                f"(consecutive failures: {self._consecutive_ev_failures}/{self.ev_failures_needed})"
+            )
+            if self._consecutive_ev_failures >= self.ev_failures_needed:
+                should_stop = self.auto_stop
+                alerts.append("⛔ EV has collapsed - critic is not learning. Consider: reduce LR, increase n_steps, check reward scaling.")
+        elif explained_variance < self.ev_warning:
+            alerts.append(f"🟠 WARNING: Explained Variance = {explained_variance:.3f} (low)")
+            # Reset critical counter on partial recovery
+            self._consecutive_ev_failures = max(0, self._consecutive_ev_failures - 1)
+        else:
+            self._consecutive_ev_failures = 0  # Full reset on good EV
+        
+        # === CHECK 2: Reward Trend ===
+        if len(self._reward_history) >= 10:
+            recent = list(self._reward_history)[-10:]
+            older = list(self._reward_history)[-20:-10] if len(self._reward_history) >= 20 else recent
+            
+            recent_mean = sum(recent) / len(recent)
+            older_mean = sum(older) / len(older)
+            reward_delta = recent_mean - older_mean
+            
+            if reward_delta < self.reward_decline:
+                self._consecutive_reward_declines += 1
+                alerts.append(
+                    f"🟠 WARNING: Reward declining ({reward_delta:+.2f} over last 20 checks)"
+                )
+                if self._consecutive_reward_declines >= self.reward_declines_needed:
+                    alerts.append("⚠️ Sustained reward decline - policy may be degrading")
+            else:
+                self._consecutive_reward_declines = 0
+        
+        # === CHECK 3: Win Rate Stuck ===
+        if self.winrate_range[0] <= win_rate <= self.winrate_range[1]:
+            self._winrate_stuck_count += 1
+            if self._winrate_stuck_count >= self.winrate_stuck_needed:
+                alerts.append(
+                    f"🟠 WARNING: Win rate stuck at {win_rate:.1%} for {self._winrate_stuck_count} checks "
+                    "(agent may not be learning market direction)"
+                )
+        else:
+            self._winrate_stuck_count = 0
+        
+        # === CHECK 4: Entropy ===
+        if entropy < 0.1:
+            alerts.append(f"🔴 CRITICAL: Entropy collapsed to {entropy:.3f} - policy is deterministic")
+        elif entropy > 2.0:
+            alerts.append(f"🟠 WARNING: Entropy very high ({entropy:.3f}) - policy is random")
+        
+        # Log all alerts
+        for alert in alerts:
+            logger.warning(alert)
+        
+        reason = "; ".join(alerts) if alerts else None
+        return should_stop, reason
+
+
+# =============================================================================
 # CALLBACKS (VECENV-CORRECT)
 # =============================================================================
 
@@ -1103,6 +1258,10 @@ class VecEpisodeTradingCallback(BaseCallback):
         self._ep_consecutive_losses: deque = deque(maxlen=self.MAX_EPISODE_HISTORY)
         self._exit_reason_counts: Dict[str, int] = {}  # Aggregate across all episodes
         
+        # Reward component tracking for dashboard
+        self._reward_component_totals: Dict[str, float] = {}  # Aggregate totals
+        self._reward_component_counts: Dict[str, int] = {}  # Count of occurrences
+        
         # AUDIT FIX (CRIT-5): Cumulative stats for all-time metrics (O(1) update)
         self._cumulative_pnl: float = 0.0
         self._cumulative_trades: int = 0
@@ -1138,10 +1297,11 @@ class VecEpisodeTradingCallback(BaseCallback):
                 logger_dict = getattr(self.model.logger, 'name_to_value', {})
                 
                 # Map SB3 logger keys to our diagnostics
+                # F-5 FIX: Use 'train/entropy' (true entropy) not 'train/entropy_loss' (scaled, signed)
                 key_mapping = {
-                    'train/approx_kl': 'approx_kl',
+                    'train/approx_kl': 'kl_divergence',  # F-10 FIX: Use consistent key name
                     'train/clip_fraction': 'clip_fraction',
-                    'train/entropy_loss': 'entropy',
+                    'train/entropy': 'entropy',  # F-5 FIX: true entropy, not entropy_loss
                     'train/explained_variance': 'explained_variance',
                     'train/value_loss': 'value_loss',
                     'train/policy_gradient_loss': 'policy_loss',
@@ -1273,16 +1433,31 @@ class VecEpisodeTradingCallback(BaseCallback):
             self._ep_avg_entry_quality.append(ep_entry_q)
             self._ep_profit_factors.append(ep_pf)
 
-            # Consecutive wins/losses (from step info)
+            # Consecutive wins/losses - prefer max_consecutive_losses_reached (peak during episode)
+            # over consecutive_losses (current at episode end, which may be 0 if last trade was win)
             cons_wins = int(finfo.get("consecutive_wins", info.get("consecutive_wins", 0)))
-            cons_losses = int(finfo.get("consecutive_losses", info.get("consecutive_losses", 0)))
+            # Use max_consecutive_losses_reached from episode_stats if available (peak during episode)
+            max_cons_losses = int(ep_stats.get("max_consecutive_losses_reached", 
+                                               finfo.get("consecutive_losses", info.get("consecutive_losses", 0))))
             self._ep_consecutive_wins.append(cons_wins)
-            self._ep_consecutive_losses.append(cons_losses)
+            self._ep_consecutive_losses.append(max_cons_losses)
 
             # Exit reason tracking from episode_stats (contains all trade close reasons)
             exit_dist = ep_stats.get("exit_quality_distribution", {}) or {}
             for reason, count in exit_dist.items():
                 self._exit_reason_counts[reason] = self._exit_reason_counts.get(reason, 0) + count
+
+            # Reward component tracking from episode_stats
+            reward_components = ep_stats.get("reward_components", {}) or {}
+            for comp_name, comp_data in reward_components.items():
+                if isinstance(comp_data, dict):
+                    total = float(comp_data.get("total", 0.0))
+                    count = int(comp_data.get("count", 0))
+                else:
+                    total = float(comp_data)
+                    count = 1
+                self._reward_component_totals[comp_name] = self._reward_component_totals.get(comp_name, 0.0) + total
+                self._reward_component_counts[comp_name] = self._reward_component_counts.get(comp_name, 0) + count
 
             # Also track termination reason
             term_reason = str(finfo.get("termination_reason", info.get("termination_reason", "")))
@@ -1468,11 +1643,25 @@ class VecEpisodeTradingCallback(BaseCallback):
                     "mean_bars_held": float(np.mean(list(self._ep_avg_bars_held)[-50:])) if self._ep_avg_bars_held else 0.0,
                     "max_consecutive_wins": int(max(list(self._ep_consecutive_wins)[-50:])) if self._ep_consecutive_wins else 0,
                     "max_consecutive_losses": int(max(list(self._ep_consecutive_losses)[-50:])) if self._ep_consecutive_losses else 0,
+                    # Average and rate metrics for consecutive losses (more informative than just max)
+                    "avg_consecutive_losses": float(np.mean(list(self._ep_consecutive_losses)[-50:])) if self._ep_consecutive_losses else 0.0,
+                    # Rate of episodes with 3+ consecutive losses (catches problematic streaks early)
+                    "consecutive_loss_streak_rate": float(sum(1 for x in list(self._ep_consecutive_losses)[-50:] if x >= 3) / max(len(list(self._ep_consecutive_losses)[-50:]), 1)) if self._ep_consecutive_losses else 0.0,
                 },
                 
                 # Exit stats
                 "exit_stats": {
                     "distribution": dict(self._exit_reason_counts),
+                },
+                
+                # Reward component breakdown for dashboard
+                "reward_components": {
+                    name: {
+                        "total": float(total),
+                        "count": self._reward_component_counts.get(name, 0),
+                        "avg": float(total / self._reward_component_counts.get(name, 1)) if self._reward_component_counts.get(name, 0) > 0 else 0.0,
+                    }
+                    for name, total in self._reward_component_totals.items()
                 },
                 
                 # Recent history for charts (convert deque to list for slicing)
@@ -1933,6 +2122,13 @@ def train_prop_firm_agent(
     seed_everything(42)
 
     config = PropFirmConfig(**config_overrides)
+    
+    # Apply any CLI/Optuna reward params directly to config.reward
+    # (replaces deprecated sync_reward_from_legacy)
+    if 'reward_scale' in config_overrides:
+        config.reward.reward_scale = float(config_overrides['reward_scale'])
+    if 'risk_penalty_scale' in config_overrides:
+        config.reward.dd_penalty_scale = float(config_overrides['risk_penalty_scale'])
 
     test_environment(data, config)
 
@@ -2296,6 +2492,15 @@ class CurriculumTrainingCallback(BaseCallback):
         self.max_demotions_from_same_stage = max_demotions_from_same_stage
         self.mastery_confirmation_episodes = mastery_confirmation_episodes
         
+        # NEW: Training health watchdog
+        self._health_watchdog = TrainingHealthWatchdog(
+            ev_critical_threshold=-0.5,
+            ev_warning_threshold=0.05,
+            ev_consecutive_failures=5,
+            check_interval_steps=25_000,
+            auto_stop=False,  # Just alert, don't stop (set True to auto-stop)
+        )
+        
         self._last_log = 0
         self._last_metrics_save: float = 0.0  # Time-based metrics saving
         self._n_envs = 1
@@ -2321,6 +2526,15 @@ class CurriculumTrainingCallback(BaseCallback):
         self._ep_r_multiples: deque = deque(maxlen=MAX_EPISODE_HISTORY)
         self._ep_entry_quality: deque = deque(maxlen=MAX_EPISODE_HISTORY)
         self._exit_reason_counts: Dict[str, int] = {}
+        
+        # Reward component tracking for dashboard signals tab
+        self._reward_component_totals: Dict[str, float] = {}
+        self._reward_component_counts: Dict[str, int] = {}
+        
+        # Per-stage statistics tracking for dashboard Stage Progress tab
+        # Maps stage_name -> {metrics dict}
+        self._per_stage_stats: Dict[str, Dict[str, Any]] = {}
+        self._current_stage_name: Optional[str] = None
         
         # PPO diagnostics (updated from logger)
         self._ppo_diagnostics: Dict[str, float] = {}
@@ -2734,8 +2948,10 @@ class CurriculumTrainingCallback(BaseCallback):
             return True
         
         # Update transition state and all adaptive controls
+        # F-6 FIX: Skip step_transition_state here - CurriculumEnvWrapper already calls it
+        # per env step (timesteps=1). Calling again here would double-count transitions.
         if self.curriculum_manager is not None:
-            self.curriculum_manager.step_transition_state(timesteps=self._n_envs)
+            # self.curriculum_manager.step_transition_state(timesteps=self._n_envs)  # F-6: REMOVED - wrapper handles this
             self._apply_lr_warmup()
             self._apply_entropy_schedule()  # Adapt entropy by stage
             self._apply_adaptive_clip_range()  # Adapt clip range by KL
@@ -2791,6 +3007,34 @@ class CurriculumTrainingCallback(BaseCallback):
             for reason, count in exit_dist.items():
                 self._exit_reason_counts[reason] = self._exit_reason_counts.get(reason, 0) + int(count)
             
+            # Track reward components from episode_stats for dashboard Signals tab
+            reward_components = ep_stats.get("reward_components", {}) or {}
+            for comp_name, comp_data in reward_components.items():
+                if isinstance(comp_data, dict):
+                    total = float(comp_data.get("total", 0.0))
+                    count = int(comp_data.get("count", 0))
+                else:
+                    total = float(comp_data)
+                    count = 1
+                self._reward_component_totals[comp_name] = self._reward_component_totals.get(comp_name, 0.0) + total
+                self._reward_component_counts[comp_name] = self._reward_component_counts.get(comp_name, 0) + count
+            
+            # Track per-stage statistics for Stage Progress dashboard tab
+            if self.curriculum_manager is not None:
+                stage_name = self.curriculum_manager.current_stage.name
+            else:
+                stage_name = finfo.get("curriculum_stage", info.get("curriculum_stage", "unknown"))
+            self._record_stage_episode_stats(
+                stage_name=stage_name,
+                pnl=pnl,
+                win_rate=float(finfo.get("win_rate", info.get("win_rate", 0.0))),
+                drawdown=float(finfo.get("drawdown", info.get("drawdown", 0.0))),
+                trades=trades,
+                profit_factor=float(ep_stats.get("profit_factor", finfo.get("profit_factor", 0.0))),
+                r_multiple=float(ep_stats.get("avg_r_multiple", finfo.get("avg_r_multiple", 0.0))),
+                reward=ep_reward,
+            )
+            
             # NOTE: episode_transition_tick is called by CurriculumEnvWrapper._on_episode_end
             # via record_episode_from_info(), so we don't call it here to avoid double-counting
             
@@ -2821,6 +3065,27 @@ class CurriculumTrainingCallback(BaseCallback):
 
         # Collect PPO diagnostics from SB3 logger
         self._update_ppo_diagnostics()
+        
+        # === TRAINING HEALTH CHECK ===
+        # Run the watchdog to detect critical issues early
+        if hasattr(self, '_health_watchdog') and self._health_watchdog is not None:
+            ev = self._ppo_diagnostics.get('explained_variance', 0.5)
+            mean_reward = float(np.mean(list(self._ep_rewards)[-50:])) if self._ep_rewards else 0
+            win_rate = float(np.mean(list(self._ep_win_rates)[-50:])) if self._ep_win_rates else 0.5
+            entropy = float(self._entropy_history[-1]) if self._entropy_history else 0.7
+            
+            should_stop, reason = self._health_watchdog.check(
+                explained_variance=ev,
+                mean_reward=mean_reward,
+                win_rate=win_rate / 100.0 if win_rate > 1 else win_rate,  # Normalize if percentage
+                entropy=entropy,
+                timestep=self.num_timesteps,
+            )
+            # If auto_stop is True in watchdog and critical failure detected
+            if should_stop:
+                logger.error(f"⛔ TRAINING HALTED BY WATCHDOG: {reason}")
+                self._save_live_metrics()
+                return False
 
         # Periodic logging
         if self.num_timesteps - self._last_log >= self.log_interval_steps:
@@ -2870,9 +3135,10 @@ class CurriculumTrainingCallback(BaseCallback):
                     values = logger_obj.name_to_value
                     
                     # Extract common PPO metrics
+                    # F-5 FIX: Use 'train/entropy' (true entropy) not 'train/entropy_loss' (scaled by -ent_coef)
                     self._ppo_diagnostics['policy_loss'] = float(values.get('train/policy_gradient_loss', values.get('train/policy_loss', 0)))
                     self._ppo_diagnostics['value_loss'] = float(values.get('train/value_loss', 0))
-                    self._ppo_diagnostics['entropy'] = float(values.get('train/entropy_loss', values.get('train/entropy', 0)))
+                    self._ppo_diagnostics['entropy'] = float(values.get('train/entropy', values.get('train/entropy_loss', 0)))
                     self._ppo_diagnostics['kl_divergence'] = float(values.get('train/approx_kl', 0))
                     self._ppo_diagnostics['clip_fraction'] = float(values.get('train/clip_fraction', 0))
                     self._ppo_diagnostics['explained_variance'] = float(values.get('train/explained_variance', 0))
@@ -2922,6 +3188,165 @@ class CurriculumTrainingCallback(BaseCallback):
                 
         except Exception:
             pass  # Silently fail - diagnostics are optional
+    
+    def _record_stage_episode_stats(
+        self,
+        stage_name: str,
+        pnl: float,
+        win_rate: float,
+        drawdown: float,
+        trades: int,
+        profit_factor: float,
+        r_multiple: float,
+        reward: float,
+    ) -> None:
+        """
+        Record episode statistics for a specific stage.
+        This enables per-stage comparisons on the dashboard.
+        """
+        if stage_name not in self._per_stage_stats:
+            self._per_stage_stats[stage_name] = {
+                "stage_name": stage_name,
+                "episodes": 0,
+                "total_pnl": 0.0,
+                "total_trades": 0,
+                "total_wins": 0,
+                "total_losses": 0,
+                "total_drawdown": 0.0,
+                "total_reward": 0.0,
+                "sum_profit_factor": 0.0,
+                "sum_r_multiple": 0.0,
+                "pnl_values": [],  # Keep last N for variance
+                "win_rate_values": [],
+                "first_episode": len(self._ep_rewards),
+                "first_timestep": self.num_timesteps,
+                "last_episode": 0,
+                "last_timestep": 0,
+            }
+        
+        stats = self._per_stage_stats[stage_name]
+        stats["episodes"] += 1
+        stats["total_pnl"] += pnl
+        stats["total_trades"] += trades
+        stats["total_drawdown"] += drawdown
+        stats["total_reward"] += reward
+        stats["sum_profit_factor"] += profit_factor
+        stats["sum_r_multiple"] += r_multiple
+        stats["last_episode"] = len(self._ep_rewards)
+        stats["last_timestep"] = self.num_timesteps
+        
+        # Track wins/losses (win_rate is 0-1 range)
+        if trades > 0:
+            wins = int(round(win_rate * trades))
+            losses = trades - wins
+            stats["total_wins"] += wins
+            stats["total_losses"] += losses
+        
+        # Keep last 100 values for variance calculation
+        stats["pnl_values"].append(pnl)
+        stats["win_rate_values"].append(win_rate)
+        if len(stats["pnl_values"]) > 100:
+            stats["pnl_values"] = stats["pnl_values"][-100:]
+        if len(stats["win_rate_values"]) > 100:
+            stats["win_rate_values"] = stats["win_rate_values"][-100:]
+    
+    def _get_stage_comparison_data(self) -> Dict[str, Any]:
+        """
+        Compute stage comparison data for the dashboard.
+        Returns per-stage metrics and stage-to-stage improvements.
+        """
+        stage_order = [
+            "EXPLORER", "EXPERIMENTER", "TREND_STUDENT", "SESSION_STUDENT",
+            "TIMING_STUDENT", "INTEGRATOR", "RISK_MANAGER", "STRATEGIST",
+            "PROFESSIONAL", "LIVE_READY"
+        ]
+        
+        stages_data = []
+        prev_stats = None
+        
+        for stage_name in stage_order:
+            stats = self._per_stage_stats.get(stage_name)
+            if stats is None or stats["episodes"] == 0:
+                continue
+            
+            episodes = stats["episodes"]
+            total_trades = stats["total_trades"]
+            
+            # Calculate averages
+            avg_pnl = stats["total_pnl"] / episodes if episodes > 0 else 0
+            avg_trades = total_trades / episodes if episodes > 0 else 0
+            avg_drawdown = stats["total_drawdown"] / episodes if episodes > 0 else 0
+            avg_reward = stats["total_reward"] / episodes if episodes > 0 else 0
+            avg_profit_factor = stats["sum_profit_factor"] / episodes if episodes > 0 else 0
+            avg_r_multiple = stats["sum_r_multiple"] / episodes if episodes > 0 else 0
+            
+            # Win rate from total wins/losses
+            total_trades_wl = stats["total_wins"] + stats["total_losses"]
+            win_rate = stats["total_wins"] / total_trades_wl if total_trades_wl > 0 else 0
+            
+            # Calculate variance from stored values
+            pnl_std = float(np.std(stats["pnl_values"])) if len(stats["pnl_values"]) > 1 else 0
+            win_rate_std = float(np.std(stats["win_rate_values"])) if len(stats["win_rate_values"]) > 1 else 0
+            
+            # Build stage entry
+            stage_entry = {
+                "stage_name": stage_name,
+                "stage_index": stage_order.index(stage_name),
+                "episodes": episodes,
+                "timesteps": stats["last_timestep"] - stats["first_timestep"],
+                "total_trades": total_trades,
+                "total_pnl": stats["total_pnl"],
+                "avg_pnl": avg_pnl,
+                "pnl_std": pnl_std,
+                "win_rate": win_rate * 100,  # As percentage
+                "win_rate_std": win_rate_std * 100,
+                "avg_drawdown": avg_drawdown * 100,  # As percentage
+                "avg_trades": avg_trades,
+                "avg_reward": avg_reward,
+                "avg_profit_factor": avg_profit_factor,
+                "avg_r_multiple": avg_r_multiple,
+                "first_episode": stats["first_episode"],
+                "last_episode": stats["last_episode"],
+            }
+            
+            # Calculate improvements from previous stage
+            if prev_stats is not None:
+                prev_win_rate = prev_stats.get("win_rate", 0)
+                prev_pnl = prev_stats.get("avg_pnl", 0)
+                prev_pf = prev_stats.get("avg_profit_factor", 0)
+                prev_reward = prev_stats.get("avg_reward", 0)
+                
+                stage_entry["improvement"] = {
+                    "win_rate_delta": (win_rate * 100) - prev_win_rate,
+                    "pnl_delta": avg_pnl - prev_pnl,
+                    "profit_factor_delta": avg_profit_factor - prev_pf,
+                    "reward_delta": avg_reward - prev_reward,
+                }
+            else:
+                stage_entry["improvement"] = None
+            
+            stages_data.append(stage_entry)
+            prev_stats = stage_entry
+        
+        # Calculate overall progression (first to current)
+        overall_improvement = {}
+        if len(stages_data) >= 2:
+            first = stages_data[0]
+            last = stages_data[-1]
+            overall_improvement = {
+                "win_rate_delta": last["win_rate"] - first["win_rate"],
+                "pnl_delta": last["avg_pnl"] - first["avg_pnl"],
+                "profit_factor_delta": last["avg_profit_factor"] - first["avg_profit_factor"],
+                "reward_delta": last["avg_reward"] - first["avg_reward"],
+                "stages_progressed": last["stage_index"] - first["stage_index"],
+            }
+        
+        return {
+            "stages": stages_data,
+            "overall_improvement": overall_improvement,
+            "current_stage": self.curriculum_manager.current_stage.name if self.curriculum_manager else "N/A",
+            "total_stages_visited": len(stages_data),
+        }
     
     def _log_progress(self) -> None:
         """Log training progress."""
@@ -3180,6 +3605,16 @@ class CurriculumTrainingCallback(BaseCallback):
                     "distribution": dict(self._exit_reason_counts),
                 },
                 
+                # Reward component breakdown for dashboard Signals tab
+                "reward_components": {
+                    name: {
+                        "total": float(total),
+                        "count": self._reward_component_counts.get(name, 0),
+                        "avg": float(total / self._reward_component_counts.get(name, 1)) if self._reward_component_counts.get(name, 0) > 0 else 0.0,
+                    }
+                    for name, total in self._reward_component_totals.items()
+                },
+                
                 # Curriculum data
                 "curriculum_stage": self.curriculum_manager.current_stage.name if self.curriculum_manager else "N/A",
                 "curriculum_stage_idx": int(self.curriculum_manager.current_stage.value) if self.curriculum_manager else 0,
@@ -3197,6 +3632,9 @@ class CurriculumTrainingCallback(BaseCallback):
                 # Stage history - AUDIT FIX: convert deque to list for JSON serialization
                 "stage_history": list(self._stage_history),
                 
+                # Stage comparison data for dashboard Stage Progress tab
+                "stage_comparison": self._get_stage_comparison_data(),
+                
                 # Legacy flat fields for backward compatibility
                 "timesteps": self.num_timesteps,
                 "total_timesteps": self.total_timesteps,
@@ -3213,10 +3651,25 @@ class CurriculumTrainingCallback(BaseCallback):
             }
             
             # AUDIT FIX: Atomic write to avoid partial JSON when process is interrupted
+            # Windows-specific: Add retry with fallback for file locking issues
             tmp_file = metrics_file.with_suffix('.json.tmp')
             with open(tmp_file, 'w', encoding='utf-8') as f:
                 json.dump(metrics, f)
-            tmp_file.replace(metrics_file)  # Atomic on POSIX, near-atomic on Windows
+            
+            # Try atomic replace, fallback to direct write on Windows lock errors
+            try:
+                tmp_file.replace(metrics_file)  # Atomic on POSIX, near-atomic on Windows
+            except PermissionError:
+                # Windows: file may be locked by dashboard reader, write directly
+                import shutil
+                try:
+                    shutil.copy2(tmp_file, metrics_file)
+                    tmp_file.unlink(missing_ok=True)
+                except Exception:
+                    # Last resort: direct overwrite
+                    with open(metrics_file, 'w', encoding='utf-8') as f:
+                        json.dump(metrics, f)
+                    tmp_file.unlink(missing_ok=True)
                 
         except Exception as e:
             import traceback
@@ -3247,6 +3700,9 @@ def create_curriculum_env(
         entry_quality_gate_enabled=stage_config.constraints.entry_quality_gate_enabled,
         entry_quality_threshold=stage_config.constraints.entry_quality_threshold,
     )
+    
+    # NOTE: Legacy sync removed. Curriculum wrapper now applies stage reward config
+    # directly to env.config.reward, so no pre-sync needed here.
     
     # Create base environment
     base_env = PropFirmTradingEnv(data, base_config)
@@ -3599,13 +4055,26 @@ def train_curriculum_agent(
         )
     callbacks.append(eval_cb)
     
+    # F-11 FIX: Calculate remaining timesteps if resuming
+    # When loading a model, we should continue from where we left off
+    current_steps = getattr(model, 'num_timesteps', 0)
+    remaining_timesteps = max(0, total_timesteps - current_steps)
+    should_reset_num_timesteps = (current_steps == 0)
+    
+    if current_steps > 0:
+        logger.info(
+            f"Resuming from {current_steps:,} timesteps. "
+            f"Remaining: {remaining_timesteps:,} (total target: {total_timesteps:,})"
+        )
+    
     start_time = datetime.now()
     try:
         model.learn(
-            total_timesteps=total_timesteps,
+            total_timesteps=remaining_timesteps,  # F-11 FIX: Use remaining, not total
             callback=CallbackList(callbacks),
             tb_log_name="curriculum_ppo",
             progress_bar=True,
+            reset_num_timesteps=should_reset_num_timesteps,  # F-11 FIX: Keep counters on resume
         )
     except KeyboardInterrupt:
         logger.warning("Curriculum training interrupted by user")
@@ -3704,15 +4173,15 @@ def main() -> None:
     parser.add_argument("--n-envs", type=int, default=default_n_envs, help="Number of envs")
     parser.add_argument("--test", action="store_true", help="Quick test mode")
 
-    parser.add_argument("--lr", type=float, default=3e-4)
-    parser.add_argument("--batch-size", type=int, default=128)
-    parser.add_argument("--n-steps", type=int, default=2048)
+    parser.add_argument("--lr", type=float, default=1e-4)  # REDUCED: 3e-4 -> 1e-4 for stable critic learning
+    parser.add_argument("--batch-size", type=int, default=256)  # INCREASED: better gradient estimates
+    parser.add_argument("--n-steps", type=int, default=4096)  # INCREASED: 2048 -> 4096 for better EV
     parser.add_argument("--n-epochs", type=int, default=10)
     parser.add_argument("--gamma", type=float, default=0.95)
-    parser.add_argument("--gae-lambda", type=float, default=0.95)
+    parser.add_argument("--gae-lambda", type=float, default=0.97)  # INCREASED: 0.95 -> 0.97 for longer horizon
     parser.add_argument("--clip-range", type=float, default=0.2)
-    parser.add_argument("--ent-coef", type=float, default=0.08)  # Safe default to prevent collapse
-    parser.add_argument("--vf-coef", type=float, default=0.5)
+    parser.add_argument("--ent-coef", type=float, default=0.10)  # INCREASED: more exploration headroom
+    parser.add_argument("--vf-coef", type=float, default=0.7)  # INCREASED: emphasize critic learning
     parser.add_argument("--max-grad-norm", type=float, default=0.5)
     parser.add_argument("--target-kl", type=float, default=0.03)
 

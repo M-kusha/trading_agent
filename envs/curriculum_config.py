@@ -326,6 +326,31 @@ class RewardShaping:
     entry_quality_integration: bool = False
     entry_quality_weight: float = 0.2
 
+    # Session timing rewards (teach trading hours)
+    session_timing_enabled: bool = False
+    off_hours_trade_penalty: float = 0.15
+    prime_hours_trade_bonus: float = 0.05
+
+    # Market structure rewards (teach WHERE to trade - v5.3)
+    market_structure_enabled: bool = False
+    sr_proximity_bonus: float = 0.10       # Bonus for entering near S/R
+    sr_proximity_penalty: float = 0.08     # Penalty for entering far from S/R
+    structure_alignment_bonus: float = 0.12 # Bonus for trading with structure (HH/HL or LL/LH)
+    bos_alignment_bonus: float = 0.08      # Bonus for trading after BOS confirmation
+    order_block_entry_bonus: float = 0.06  # Bonus for entering at order block levels
+    
+    # Divergence/momentum rewards (teach reversal awareness - v5.3)
+    divergence_awareness_enabled: bool = False
+    divergence_contra_penalty: float = 0.15 # Penalty for trading against divergence
+    divergence_aligned_bonus: float = 0.10  # Bonus for trading with divergence
+    overbought_long_penalty: float = 0.12   # Penalty for going long when overbought
+    oversold_short_penalty: float = 0.12    # Penalty for going short when oversold
+    
+    # Regime awareness rewards (teach context sensitivity - v5.3)
+    regime_awareness_enabled: bool = False
+    risk_off_aggressive_penalty: float = 0.10  # Penalty for aggressive trades in risk-off
+    high_vol_size_penalty: float = 0.08        # Penalty for large positions in high volatility
+
     dd_shaping_enabled: bool = False
     dd_threshold: float = 0.02
     dd_penalty_scale: float = 1.0
@@ -729,7 +754,7 @@ def get_explorer_config() -> CurriculumStageConfig:
             # ============================================================================
             # PHASE 0 DISCOVERY: Pure exploration, NO penalties
             # ============================================================================
-            reward_scale=3.0,                 # Low scale - outcomes don't matter much
+            reward_scale=5.0,                 # STANDARDIZED: Same scale across stages to reduce critic shock
             loss_multiplier=1.0,
             
             # NO profit incentives yet - just observe
@@ -923,7 +948,7 @@ def get_experimenter_config() -> CurriculumStageConfig:
             # ============================================================================
             # PHASE 0 DISCOVERY: Light outcome signals
             # ============================================================================
-            reward_scale=4.0,                 # Slightly higher than Stage 0
+            reward_scale=5.0,                 # STANDARDIZED: Same scale across stages
             loss_multiplier=1.0,
             
             # TINY profit incentive - just a hint
@@ -1134,17 +1159,25 @@ def get_trend_student_config() -> CurriculumStageConfig:
             optimal_trade_bars=12,
             max_trade_bars_for_bonus=36,
             
-            exit_quality_enabled=False,
-            trailing_stop_bonus=0.0,
-            agent_close_bonus=0.0,
-            hard_stop_penalty=0.0,
-            risk_liquidation_penalty=0.0,
+            exit_quality_enabled=True,        # ENABLED: Even beginners should learn exits matter
+            trailing_stop_bonus=0.08,         # Light: reward letting winners run
+            agent_close_bonus=-0.03,          # Light: discourage cutting winners
+            hard_stop_penalty=0.04,           # Light: hitting stop = bad entry signal
+            risk_liquidation_penalty=0.04,
             
             truncation_winner_discount=0.20,
             truncation_loser_extra_penalty=0.10,
             
             entry_quality_integration=False,
             entry_quality_weight=0.0,
+            
+            # MARKET STRUCTURE: Light intro - just S/R awareness
+            market_structure_enabled=True,
+            sr_proximity_bonus=0.10,          # Light: reward good S/R entries
+            sr_proximity_penalty=0.12,        # Light: punish bad S/R entries
+            structure_alignment_bonus=0.0,    # Not yet
+            bos_alignment_bonus=0.0,          # Not yet
+            order_block_entry_bonus=0.0,      # Not yet
             
             # DD SHAPING: Light
             dd_shaping_enabled=True,
@@ -1157,10 +1190,10 @@ def get_trend_student_config() -> CurriculumStageConfig:
             win_streak_bonus_per_win=0.0,
             loss_streak_penalty_per_loss=0.0,
             
-            # ANTI-CHURN: Light
+            # ANTI-CHURN: Light - learning stage needs room to explore
             anti_churn_enabled=True,
-            daily_trade_soft_limit=3,
-            churn_penalty_per_trade=0.03,
+            daily_trade_soft_limit=15,     # FIXED: 3 was too restrictive for learning
+            churn_penalty_per_trade=0.02,  # FIXED: Softer penalty during learning
             
             hard_block_penalty=0.01,
             soft_block_penalty=0.005,
@@ -1191,9 +1224,9 @@ def get_trend_student_config() -> CurriculumStageConfig:
             emergency_close_threshold=0.25,
             entry_quality_gate_enabled=False,
             entry_quality_threshold=0.0,
-            hard_stop_loss_eur=600.0,
-            soft_stop_loss_eur=400.0,
-            trailing_activation_eur=120.0,
+            hard_stop_loss_eur=450.0,         # REDUCED from 600 - limit max damage
+            soft_stop_loss_eur=320.0,         # REDUCED from 400
+            trailing_activation_eur=100.0,    # REDUCED from 120
             trailing_retrace_pct=0.40,
             time_decay_hours=12.0,
             risk_per_trade_pct=0.006,
@@ -1333,12 +1366,11 @@ def get_session_student_config() -> CurriculumStageConfig:
             max_trade_bars_for_bonus=36,
             
             # EXIT QUALITY: NEW - Learn to hold winners
-            # AUDIT FIX: Stop rewarding premature agent_close exits
-            # Strongly prefer trailing stops, penalize discretionary exits and hard stops
+            # STRONGLY prefer trailing stops - this is where we teach patience!
             exit_quality_enabled=True,
-            trailing_stop_bonus=0.08,    # Strong reward for trailing stop exits
-            agent_close_bonus=0.00,      # NEUTRAL - don't reward "I got scared"
-            hard_stop_penalty=0.05,      # Meaningful penalty for hitting stop loss
+            trailing_stop_bonus=0.15,    # INCREASED: Strong reward for letting winners run
+            agent_close_bonus=-0.05,     # STRONGER: Discourage cutting winners early
+            hard_stop_penalty=0.06,      # INCREASED: Meaningful penalty for hitting stop loss
             risk_liquidation_penalty=0.10,  # Strong penalty for risk liquidation
             
             truncation_winner_discount=0.20,
@@ -1346,6 +1378,11 @@ def get_session_student_config() -> CurriculumStageConfig:
             
             entry_quality_integration=False,
             entry_quality_weight=0.0,
+            
+            # SESSION TIMING: NEW - Learn trading hours
+            session_timing_enabled=True,      # Teach agent to prefer prime hours
+            off_hours_trade_penalty=0.10,     # Penalty for off-hours trades
+            prime_hours_trade_bonus=0.03,     # Bonus for prime hours trades
             
             dd_shaping_enabled=True,
             dd_threshold=0.08,
@@ -1358,8 +1395,8 @@ def get_session_student_config() -> CurriculumStageConfig:
             loss_streak_penalty_per_loss=0.0,
             
             anti_churn_enabled=True,
-            daily_trade_soft_limit=6,    # AUDIT FIX: 2 was too aggressive, causing constant penalty
-            churn_penalty_per_trade=0.06,  # Keep pressure on overtrading
+            daily_trade_soft_limit=12,   # FIXED: 6 still too low - agent learning sessions
+            churn_penalty_per_trade=0.03,  # FIXED: Softer penalty during foundation phase
             
             hard_block_penalty=0.015,
             soft_block_penalty=0.008,
@@ -1531,10 +1568,10 @@ def get_timing_student_config() -> CurriculumStageConfig:
             max_trade_bars_for_bonus=32,
             
             exit_quality_enabled=True,
-            trailing_stop_bonus=0.05,
-            agent_close_bonus=0.02,
-            hard_stop_penalty=0.02,
-            risk_liquidation_penalty=0.04,
+            trailing_stop_bonus=0.12,    # INCREASED: Reward letting winners run
+            agent_close_bonus=-0.06,     # STRONGER: Discourage premature exits more
+            hard_stop_penalty=0.05,      # INCREASED: Punish bad entries that hit stop
+            risk_liquidation_penalty=0.06,
             
             truncation_winner_discount=0.22,
             truncation_loser_extra_penalty=0.12,
@@ -1542,6 +1579,29 @@ def get_timing_student_config() -> CurriculumStageConfig:
             # ENTRY QUALITY: NEW
             entry_quality_integration=True,
             entry_quality_weight=0.10,
+            
+            # SESSION TIMING: Continue from Stage 3
+            session_timing_enabled=True,
+            off_hours_trade_penalty=0.12,     # Slightly stronger
+            prime_hours_trade_bonus=0.04,
+            
+            # MARKET STRUCTURE: NOW MEANINGFUL (was too weak to matter)
+            market_structure_enabled=True,
+            sr_proximity_bonus=0.20,          # STRONG: Good S/R entry gets real reward
+            sr_proximity_penalty=0.25,        # STRONG: Bad S/R entry gets punished hard
+            structure_alignment_bonus=0.15,   # STRONG: Trading with structure matters
+            bos_alignment_bonus=0.0,          # Not yet - too advanced for Stage 4
+            order_block_entry_bonus=0.0,      # Not yet - too advanced for Stage 4
+            
+            # DIVERGENCE: NOW MEANINGFUL (was too weak to matter)
+            divergence_awareness_enabled=True,
+            divergence_contra_penalty=0.20,   # STRONG: Don't trade against divergence
+            divergence_aligned_bonus=0.15,    # STRONG: Reward respecting divergence
+            overbought_long_penalty=0.18,     # STRONG: Don't go long overbought
+            oversold_short_penalty=0.18,      # STRONG: Don't go short oversold
+            
+            # REGIME: Not yet
+            regime_awareness_enabled=False,
             
             dd_shaping_enabled=True,
             dd_threshold=0.06,
@@ -1554,8 +1614,8 @@ def get_timing_student_config() -> CurriculumStageConfig:
             loss_streak_penalty_per_loss=0.0,
             
             anti_churn_enabled=True,
-            daily_trade_soft_limit=2,
-            churn_penalty_per_trade=0.06,
+            daily_trade_soft_limit=10,   # FIXED: 2 was absurdly low for learning stage
+            churn_penalty_per_trade=0.04, # FIXED: Moderate penalty
             
             hard_block_penalty=0.02,
             soft_block_penalty=0.01,
@@ -1584,7 +1644,7 @@ def get_timing_student_config() -> CurriculumStageConfig:
             max_dd_safety_buffer=0.0,
             emergency_close_threshold=0.18,
             entry_quality_gate_enabled=True,
-            entry_quality_threshold=0.25,
+            entry_quality_threshold=0.30,   # INCREASED: Be stricter about entry quality
             hard_stop_loss_eur=400.0,
             soft_stop_loss_eur=280.0,
             trailing_activation_eur=90.0,
@@ -1734,16 +1794,41 @@ def get_integrator_config() -> CurriculumStageConfig:
             max_trade_bars_for_bonus=30,
             
             exit_quality_enabled=True,
-            trailing_stop_bonus=0.08,
-            agent_close_bonus=0.03,
-            hard_stop_penalty=0.03,
-            risk_liquidation_penalty=0.06,
+            trailing_stop_bonus=0.18,    # INCREASED: Strong reward for trailing stop
+            agent_close_bonus=-0.08,     # STRONGER: Penalize cutting winners hard
+            hard_stop_penalty=0.06,      # INCREASED: Stronger penalty for bad entries
+            risk_liquidation_penalty=0.08,
             
             truncation_winner_discount=0.22,
             truncation_loser_extra_penalty=0.12,
             
             entry_quality_integration=True,
             entry_quality_weight=0.15,
+            
+            # SESSION TIMING: Strengthened
+            session_timing_enabled=True,
+            off_hours_trade_penalty=0.15,
+            prime_hours_trade_bonus=0.05,
+            
+            # MARKET STRUCTURE: STRONG signals (must compete with P&L scale)
+            market_structure_enabled=True,
+            sr_proximity_bonus=0.25,          # STRONG: Reward good S/R entries
+            sr_proximity_penalty=0.30,        # STRONG: Punish bad S/R entries hard
+            structure_alignment_bonus=0.20,   # STRONG: Structure alignment matters
+            bos_alignment_bonus=0.15,         # STRONG: BOS confirmation bonus
+            order_block_entry_bonus=0.12,     # STRONG: Order block awareness
+            
+            # DIVERGENCE: STRONG signals (must compete with P&L scale)
+            divergence_awareness_enabled=True,
+            divergence_contra_penalty=0.25,   # STRONG: Don't trade against divergence
+            divergence_aligned_bonus=0.18,    # STRONG: Reward divergence awareness
+            overbought_long_penalty=0.22,     # STRONG: Don't go long overbought
+            oversold_short_penalty=0.22,      # STRONG: Don't go short oversold
+            
+            # REGIME: Introduce lightly
+            regime_awareness_enabled=True,
+            risk_off_aggressive_penalty=0.04,
+            high_vol_size_penalty=0.03,
             
             dd_shaping_enabled=True,
             dd_threshold=0.05,
@@ -1756,8 +1841,8 @@ def get_integrator_config() -> CurriculumStageConfig:
             loss_streak_penalty_per_loss=0.0,
             
             anti_churn_enabled=True,
-            daily_trade_soft_limit=1,
-            churn_penalty_per_trade=0.08,
+            daily_trade_soft_limit=8,    # FIXED: 1 was absurd - agent still integrating skills
+            churn_penalty_per_trade=0.05, # FIXED: Moderate but meaningful
             
             hard_block_penalty=0.025,
             soft_block_penalty=0.012,
@@ -1937,16 +2022,41 @@ def get_risk_manager_config() -> CurriculumStageConfig:
             max_trade_bars_for_bonus=28,
             
             exit_quality_enabled=True,
-            trailing_stop_bonus=0.10,
-            agent_close_bonus=0.04,
-            hard_stop_penalty=0.04,
-            risk_liquidation_penalty=0.08,
+            trailing_stop_bonus=0.20,    # STRONG: Must learn to let winners run
+            agent_close_bonus=-0.08,     # STRONGER: Discourage cutting winners
+            hard_stop_penalty=0.07,      # INCREASED: Bad entries hurt
+            risk_liquidation_penalty=0.10,
             
             truncation_winner_discount=0.25,
             truncation_loser_extra_penalty=0.15,
             
             entry_quality_integration=True,
             entry_quality_weight=0.18,
+            
+            # SESSION TIMING: Full strength
+            session_timing_enabled=True,
+            off_hours_trade_penalty=0.18,
+            prime_hours_trade_bonus=0.06,
+            
+            # MARKET STRUCTURE: STRONG signals (must compete with P&L scale)
+            market_structure_enabled=True,
+            sr_proximity_bonus=0.28,          # STRONG: Reward good S/R entries
+            sr_proximity_penalty=0.35,        # STRONG: Punish bad S/R entries hard
+            structure_alignment_bonus=0.25,   # STRONG: Structure alignment matters
+            bos_alignment_bonus=0.18,         # STRONG: BOS confirmation bonus
+            order_block_entry_bonus=0.15,     # STRONG: Order block awareness
+            
+            # DIVERGENCE: STRONG signals (must compete with P&L scale)
+            divergence_awareness_enabled=True,
+            divergence_contra_penalty=0.30,   # STRONG: Don't trade against divergence
+            divergence_aligned_bonus=0.22,    # STRONG: Reward divergence awareness
+            overbought_long_penalty=0.25,     # STRONG: Don't go long overbought
+            oversold_short_penalty=0.25,      # STRONG: Don't go short oversold
+            
+            # REGIME: Full strength
+            regime_awareness_enabled=True,
+            risk_off_aggressive_penalty=0.08,
+            high_vol_size_penalty=0.06,
             
             # DD SHAPING: Strong
             dd_shaping_enabled=True,
@@ -1961,8 +2071,8 @@ def get_risk_manager_config() -> CurriculumStageConfig:
             loss_streak_penalty_per_loss=0.03,
             
             anti_churn_enabled=True,
-            daily_trade_soft_limit=1,
-            churn_penalty_per_trade=0.10,
+            daily_trade_soft_limit=6,    # FIXED: 1 was destroying learning - agent can't learn with constant punishment
+            churn_penalty_per_trade=0.06, # FIXED: Meaningful but not crushing
             
             hard_block_penalty=0.03,
             soft_block_penalty=0.015,
@@ -2144,16 +2254,41 @@ def get_strategist_config() -> CurriculumStageConfig:
             max_trade_bars_for_bonus=25,
             
             exit_quality_enabled=True,
-            trailing_stop_bonus=0.12,
-            agent_close_bonus=0.05,
-            hard_stop_penalty=0.05,
-            risk_liquidation_penalty=0.10,
+            trailing_stop_bonus=0.22,    # VERY STRONG: Strategy stage must master this
+            agent_close_bonus=-0.08,     # STRONGER: Really discourage cutting winners
+            hard_stop_penalty=0.08,      # INCREASED: Bad entries hurt more
+            risk_liquidation_penalty=0.12,
             
             truncation_winner_discount=0.22,
             truncation_loser_extra_penalty=0.18,
             
             entry_quality_integration=True,
             entry_quality_weight=0.20,
+            
+            # SESSION TIMING: Full strength
+            session_timing_enabled=True,
+            off_hours_trade_penalty=0.20,
+            prime_hours_trade_bonus=0.08,
+            
+            # MARKET STRUCTURE: STRONG signals (must compete with P&L scale)
+            market_structure_enabled=True,
+            sr_proximity_bonus=0.30,          # STRONG: Reward good S/R entries
+            sr_proximity_penalty=0.38,        # STRONG: Punish bad S/R entries hard
+            structure_alignment_bonus=0.28,   # STRONG: Structure alignment matters
+            bos_alignment_bonus=0.20,         # STRONG: BOS confirmation bonus
+            order_block_entry_bonus=0.18,     # STRONG: Order block awareness
+            
+            # DIVERGENCE: STRONG signals (must compete with P&L scale)
+            divergence_awareness_enabled=True,
+            divergence_contra_penalty=0.35,   # STRONG: Don't trade against divergence
+            divergence_aligned_bonus=0.25,    # STRONG: Reward divergence awareness
+            overbought_long_penalty=0.28,     # STRONG: Don't go long overbought
+            oversold_short_penalty=0.28,      # STRONG: Don't go short oversold
+            
+            # REGIME: Full strength
+            regime_awareness_enabled=True,
+            risk_off_aggressive_penalty=0.10,
+            high_vol_size_penalty=0.08,
             
             dd_shaping_enabled=True,
             dd_threshold=0.035,
@@ -2166,8 +2301,8 @@ def get_strategist_config() -> CurriculumStageConfig:
             loss_streak_penalty_per_loss=0.035,
             
             anti_churn_enabled=True,
-            daily_trade_soft_limit=1,
-            churn_penalty_per_trade=0.12,
+            daily_trade_soft_limit=5,    # FIXED: Strategy forming - allow reasonable activity
+            churn_penalty_per_trade=0.08, # FIXED: Stronger but not exponentially crushing
             
             hard_block_penalty=0.035,
             soft_block_penalty=0.018,
@@ -2354,16 +2489,41 @@ def get_professional_config() -> CurriculumStageConfig:
             max_trade_bars_for_bonus=22,
             
             exit_quality_enabled=True,
-            trailing_stop_bonus=0.15,
-            agent_close_bonus=0.06,
-            hard_stop_penalty=0.06,
-            risk_liquidation_penalty=0.12,
+            trailing_stop_bonus=0.25,    # VERY STRONG: Pro stage must excel at this
+            agent_close_bonus=-0.10,     # STRONGER: Cutting winners is unprofessional
+            hard_stop_penalty=0.10,      # INCREASED: Bad entries are costly
+            risk_liquidation_penalty=0.15,
             
             truncation_winner_discount=0.20,
             truncation_loser_extra_penalty=0.20,
             
             entry_quality_integration=True,
             entry_quality_weight=0.22,
+            
+            # SESSION TIMING: Full strength for Pro level
+            session_timing_enabled=True,
+            off_hours_trade_penalty=0.25,
+            prime_hours_trade_bonus=0.10,
+            
+            # MARKET STRUCTURE: MAXIMUM strength (was MISSING - critical bug!)
+            market_structure_enabled=True,
+            sr_proximity_bonus=0.35,          # MAXIMUM: Pro must nail S/R entries
+            sr_proximity_penalty=0.45,        # MAXIMUM: Punish bad entries severely
+            structure_alignment_bonus=0.32,   # MAXIMUM: Structure alignment critical
+            bos_alignment_bonus=0.25,         # MAXIMUM: BOS confirmation
+            order_block_entry_bonus=0.22,     # MAXIMUM: Order block awareness
+            
+            # DIVERGENCE: MAXIMUM strength (was MISSING - critical bug!)
+            divergence_awareness_enabled=True,
+            divergence_contra_penalty=0.40,   # MAXIMUM: Never trade against divergence
+            divergence_aligned_bonus=0.30,    # MAXIMUM: Reward divergence awareness
+            overbought_long_penalty=0.35,     # MAXIMUM: Don't go long overbought
+            oversold_short_penalty=0.35,      # MAXIMUM: Don't go short oversold
+            
+            # REGIME: Full strength
+            regime_awareness_enabled=True,
+            risk_off_aggressive_penalty=0.15,
+            high_vol_size_penalty=0.12,
             
             dd_shaping_enabled=True,
             dd_threshold=0.030,
@@ -2376,8 +2536,8 @@ def get_professional_config() -> CurriculumStageConfig:
             loss_streak_penalty_per_loss=0.04,
             
             anti_churn_enabled=True,
-            daily_trade_soft_limit=1,
-            churn_penalty_per_trade=0.14,
+            daily_trade_soft_limit=4,    # FIXED: Pro level - selective but active
+            churn_penalty_per_trade=0.10, # FIXED: Strong pressure for discipline
             
             hard_block_penalty=0.04,
             soft_block_penalty=0.02,
@@ -2578,16 +2738,41 @@ def get_live_ready_config() -> CurriculumStageConfig:
             max_trade_bars_for_bonus=20,
             
             exit_quality_enabled=True,
-            trailing_stop_bonus=0.18,
-            agent_close_bonus=0.08,
-            hard_stop_penalty=0.08,
-            risk_liquidation_penalty=0.15,
+            trailing_stop_bonus=0.28,    # MAXIMUM: Live ready MUST be excellent at exits
+            agent_close_bonus=-0.12,     # STRONGEST: No excuses at final stage - trailing only
+            hard_stop_penalty=0.12,      # INCREASED: Live-ready means no bad entries
+            risk_liquidation_penalty=0.20,
             
             truncation_winner_discount=0.18,
             truncation_loser_extra_penalty=0.22,
             
             entry_quality_integration=True,
             entry_quality_weight=0.25,
+            
+            # SESSION TIMING: MAXIMUM strength for Live Ready
+            session_timing_enabled=True,
+            off_hours_trade_penalty=0.30,
+            prime_hours_trade_bonus=0.12,
+            
+            # MARKET STRUCTURE: MAXIMUM strength (was MISSING - critical bug!)
+            market_structure_enabled=True,
+            sr_proximity_bonus=0.40,          # MAXIMUM: Live-ready MUST nail S/R entries
+            sr_proximity_penalty=0.50,        # MAXIMUM: Punish bad entries severely
+            structure_alignment_bonus=0.38,   # MAXIMUM: Structure alignment critical
+            bos_alignment_bonus=0.30,         # MAXIMUM: BOS confirmation
+            order_block_entry_bonus=0.25,     # MAXIMUM: Order block awareness
+            
+            # DIVERGENCE: MAXIMUM strength (was MISSING - critical bug!)
+            divergence_awareness_enabled=True,
+            divergence_contra_penalty=0.45,   # MAXIMUM: Never trade against divergence
+            divergence_aligned_bonus=0.35,    # MAXIMUM: Reward divergence awareness
+            overbought_long_penalty=0.40,     # MAXIMUM: Don't go long overbought
+            oversold_short_penalty=0.40,      # MAXIMUM: Don't go short oversold
+            
+            # REGIME: MAXIMUM strength
+            regime_awareness_enabled=True,
+            risk_off_aggressive_penalty=0.20,
+            high_vol_size_penalty=0.15,
             
             dd_shaping_enabled=True,
             dd_threshold=0.025,
@@ -2600,8 +2785,8 @@ def get_live_ready_config() -> CurriculumStageConfig:
             loss_streak_penalty_per_loss=0.045,
             
             anti_churn_enabled=True,
-            daily_trade_soft_limit=1,
-            churn_penalty_per_trade=0.16,
+            daily_trade_soft_limit=3,    # FIXED: Live ready - very selective but realistic
+            churn_penalty_per_trade=0.12, # FIXED: Strong but not crushing
             
             hard_block_penalty=0.045,
             soft_block_penalty=0.022,

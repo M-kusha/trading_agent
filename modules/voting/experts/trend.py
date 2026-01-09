@@ -509,6 +509,237 @@ class TrendExpert(VotingExpertBase):
 
         return near_support, near_resistance
 
+    def _structure_atr(self, high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int = 14) -> float:
+        """Simple ATR for market structure calculations."""
+        n = len(close)
+        if n < period + 2:
+            return float(max(np.mean(high - low), 1e-8))
+
+        h = high[-(period + 1):]
+        l = low[-(period + 1):]
+        c = close[-(period + 1):]
+
+        prev_c = c[:-1]
+        tr = np.maximum(h[1:] - l[1:], np.maximum(np.abs(h[1:] - prev_c), np.abs(l[1:] - prev_c)))
+        return float(max(np.mean(tr), 1e-8))
+
+    def _find_fractal_pivots_live(
+        self,
+        high: np.ndarray,
+        low: np.ndarray,
+        left: int = 3,
+        right: int = 3,
+    ) -> Tuple[List[Tuple[int, float]], List[Tuple[int, float]]]:
+        """Fractal pivots for live trading parity."""
+        n = len(high)
+        if n < left + right + 3:
+            return [], []
+
+        piv_hi: List[Tuple[int, float]] = []
+        piv_lo: List[Tuple[int, float]] = []
+
+        for i in range(left, n - right):
+            window_h = high[i - left : i + right + 1]
+            window_l = low[i - left : i + right + 1]
+
+            hi = high[i]
+            lo = low[i]
+
+            if hi == np.max(window_h) and np.sum(window_h == hi) == 1:
+                piv_hi.append((i, float(hi)))
+            if lo == np.min(window_l) and np.sum(window_l == lo) == 1:
+                piv_lo.append((i, float(lo)))
+
+        return piv_hi, piv_lo
+
+    def _cluster_levels_1d_live(self, levels: List[float], eps: float) -> List[Tuple[float, int]]:
+        """Cluster 1D levels for live trading parity."""
+        if not levels:
+            return []
+        xs = sorted(levels)
+        clusters: List[Tuple[float, int]] = []
+
+        bucket = [xs[0]]
+        for x in xs[1:]:
+            if abs(x - bucket[-1]) <= eps:
+                bucket.append(x)
+            else:
+                clusters.append((float(np.mean(bucket)), len(bucket)))
+                bucket = [x]
+        clusters.append((float(np.mean(bucket)), len(bucket)))
+        return clusters
+
+    def _compute_advanced_market_structure(
+        self, highs: List[float], lows: List[float], closes: List[float], current_price: float,
+        opens: Optional[List[float]] = None,
+    ) -> Dict[str, float]:
+        """
+        Institutional-grade advanced market structure for live trading.
+        Must match training implementation in prop_firm_env.py!
+        
+        Features:
+        - structure_trend/strength from last pivot sequences (ATR-aware)
+        - BOS/CHOCH using close breaks of last pivots
+        - liquidity pools as equal-high/low clusters
+        - order blocks as displacement-based, unmitigated zones
+        
+        Returns:
+            structure_trend: -1 to +1 (bearish to bullish structure)
+            structure_strength: 0 to 1 (how clear the structure is)
+            bos_signal: -1 to +1 (break of structure direction)
+            liquidity_above: 0 to 1 (sell-side liquidity pool above price)
+            liquidity_below: 0 to 1 (buy-side liquidity pool below price)
+            order_block_bull: 0 to 1 (near bullish order block)
+            order_block_bear: 0 to 1 (near bearish order block)
+        """
+        out = {
+            "structure_trend": 0.0,
+            "structure_strength": 0.0,
+            "bos_signal": 0.0,
+            "liquidity_above": 0.0,
+            "liquidity_below": 0.0,
+            "order_block_bull": 0.0,
+            "order_block_bear": 0.0,
+        }
+        
+        n = int(min(len(highs), len(lows), len(closes)))
+        if n < 80 or current_price <= 0:
+            return out
+        
+        try:
+            lookback = min(220, n)
+            high = np.asarray(highs[-lookback:], dtype=np.float64)
+            low = np.asarray(lows[-lookback:], dtype=np.float64)
+            close = np.asarray(closes[-lookback:], dtype=np.float64)
+            px = float(current_price)
+            
+            if not np.isfinite(px) or px <= 0:
+                return out
+
+            atr = self._structure_atr(high, low, close, period=14)
+
+            eps_pivot_break = max(0.25 * atr, px * 0.0012)
+            eps_liq = max(0.15 * atr, px * 0.0010)
+            eps_ob_prox = max(0.30 * atr, px * 0.0015)
+
+            piv_hi, piv_lo = self._find_fractal_pivots_live(high, low, left=3, right=3)
+
+            # --- 1) Structure trend/strength from last pivots
+            if len(piv_hi) >= 2 and len(piv_lo) >= 2:
+                (i_h1, h1), (i_h2, h2) = piv_hi[-2], piv_hi[-1]
+                (i_l1, l1), (i_l2, l2) = piv_lo[-2], piv_lo[-1]
+
+                hh = h2 > h1 + 0.05 * atr
+                hl = l2 > l1 + 0.05 * atr
+                ll = l2 < l1 - 0.05 * atr
+                lh = h2 < h1 - 0.05 * atr
+
+                if hh and hl:
+                    trend = 1.0
+                elif ll and lh:
+                    trend = -1.0
+                else:
+                    trend = 0.0
+
+                dh = abs(h2 - h1) / max(atr, 1e-8)
+                dl = abs(l2 - l1) / max(atr, 1e-8)
+                strength = float(np.clip(0.5 * (dh + dl) / 2.0, 0.0, 1.0))
+
+                out["structure_trend"] = float(trend)
+                out["structure_strength"] = float(strength)
+
+            # --- 2) BOS / CHOCH
+            if len(piv_hi) >= 1 and len(piv_lo) >= 1:
+                last_hi = piv_hi[-1][1]
+                last_lo = piv_lo[-1][1]
+
+                if close[-1] > last_hi + eps_pivot_break:
+                    mag = (close[-1] - (last_hi + eps_pivot_break)) / max(atr, 1e-8)
+                    out["bos_signal"] = float(np.clip(mag, 0.0, 1.0))
+                elif close[-1] < last_lo - eps_pivot_break:
+                    mag = ((last_lo - eps_pivot_break) - close[-1]) / max(atr, 1e-8)
+                    out["bos_signal"] = float(-np.clip(mag, 0.0, 1.0))
+
+            # --- 3) Liquidity pools
+            hi_levels = [p for _, p in piv_hi]
+            lo_levels = [p for _, p in piv_lo]
+            hi_clusters = self._cluster_levels_1d_live(hi_levels, eps_liq)
+            lo_clusters = self._cluster_levels_1d_live(lo_levels, eps_liq)
+
+            def liq_score(level: float, count: int) -> float:
+                if count < 2:
+                    return 0.0
+                dist = abs(level - px)
+                if dist > 3.0 * atr:
+                    return 0.0
+                prox = float(np.exp(-dist / max(1.5 * atr, 1e-8)))
+                depth = float(np.clip((count - 1) / 2.0, 0.0, 1.0))
+                return float(np.clip(prox * depth, 0.0, 1.0))
+
+            best_above = 0.0
+            for lvl, ct in hi_clusters:
+                if lvl > px:
+                    best_above = max(best_above, liq_score(lvl, ct))
+            out["liquidity_above"] = float(best_above)
+
+            best_below = 0.0
+            for lvl, ct in lo_clusters:
+                if lvl < px:
+                    best_below = max(best_below, liq_score(lvl, ct))
+            out["liquidity_below"] = float(best_below)
+
+            # --- 4) Order blocks: displacement-based, unmitigated
+            if len(close) >= 20:
+                if opens is not None and len(opens) >= lookback:
+                    approx_open = np.asarray(opens[-lookback:], dtype=np.float64)
+                else:
+                    approx_open = np.concatenate([[close[0]], close[:-1]])
+
+                bull_ob_scores: List[float] = []
+                bear_ob_scores: List[float] = []
+
+                body = np.abs(close - approx_open)
+                disp_thresh = 0.9 * atr
+
+                for i in range(2, len(close) - 1):
+                    if (close[i] > approx_open[i]) and (body[i] >= disp_thresh) and (close[i] > close[i-1]):
+                        if close[i-1] < approx_open[i-1]:
+                            ob_low = float(low[i-1])
+                            ob_high = float(high[i-1])
+                            post_low = float(np.min(low[i+1:])) if (i + 1) < len(low) else float(low[-1])
+                            mitigated = post_low <= ob_high
+                            if not mitigated:
+                                dist = 0.0
+                                if px < ob_low:
+                                    dist = ob_low - px
+                                elif px > ob_high:
+                                    dist = px - ob_high
+                                prox = float(np.exp(-dist / max(eps_ob_prox, 1e-8)))
+                                bull_ob_scores.append(prox)
+
+                    if (close[i] < approx_open[i]) and (body[i] >= disp_thresh) and (close[i] < close[i-1]):
+                        if close[i-1] > approx_open[i-1]:
+                            ob_low = float(low[i-1])
+                            ob_high = float(high[i-1])
+                            post_high = float(np.max(high[i+1:])) if (i + 1) < len(high) else float(high[-1])
+                            mitigated = post_high >= ob_low
+                            if not mitigated:
+                                dist = 0.0
+                                if px < ob_low:
+                                    dist = ob_low - px
+                                elif px > ob_high:
+                                    dist = px - ob_high
+                                prox = float(np.exp(-dist / max(eps_ob_prox, 1e-8)))
+                                bear_ob_scores.append(prox)
+
+                out["order_block_bull"] = float(np.clip(max(bull_ob_scores) if bull_ob_scores else 0.0, 0.0, 1.0))
+                out["order_block_bear"] = float(np.clip(max(bear_ob_scores) if bear_ob_scores else 0.0, 0.0, 1.0))
+        
+        except Exception as e:
+            self.log_warning(f"[TREND] Advanced structure computation failed: {e}")
+        
+        return out
+
     # ═══════════════════════════ LEGACY SINGLE-PATH (for base hooks) ═══════════════════════════
 
     async def _generate_expert_specific_proposal(
@@ -680,6 +911,11 @@ class TrendExpert(VotingExpertBase):
             self.trend_performance.setdefault(action, {}).setdefault("signals", 0)
             self.trend_performance[action]["signals"] += 1
 
+            # Compute advanced market structure signals for train/live parity
+            advanced_structure = self._compute_advanced_market_structure(
+                highs, lows, prices, current_price
+            )
+
             proposal = {
                 "action": action,
                 "signal_strength": float(signal_strength),
@@ -703,6 +939,14 @@ class TrendExpert(VotingExpertBase):
                 "sar_direction": self.sar_direction,
                 "near_support": self.near_support,
                 "near_resistance": self.near_resistance,
+                # Advanced market structure signals (for train/live parity)
+                "structure_trend": advanced_structure["structure_trend"],
+                "structure_strength": advanced_structure["structure_strength"],
+                "bos_signal": advanced_structure["bos_signal"],
+                "liquidity_above": advanced_structure["liquidity_above"],
+                "liquidity_below": advanced_structure["liquidity_below"],
+                "order_block_bull": advanced_structure["order_block_bull"],
+                "order_block_bear": advanced_structure["order_block_bear"],
                 "duration": "medium"
                 if self.trend_duration >= 3
                 else "short",
@@ -1373,6 +1617,20 @@ class TrendExpert(VotingExpertBase):
                         "position_evaluation": position_eval,
                         "original_action": original_action,
                     }
+                    
+                    # Compute and add advanced market structure signals for train/live parity
+                    advanced_structure = self._compute_advanced_market_structure(
+                        highs, lows, prices, current_price
+                    )
+                    per_instrument_analysis[inst_norm].update({
+                        "structure_trend": advanced_structure["structure_trend"],
+                        "structure_strength": advanced_structure["structure_strength"],
+                        "bos_signal": advanced_structure["bos_signal"],
+                        "liquidity_above": advanced_structure["liquidity_above"],
+                        "liquidity_below": advanced_structure["liquidity_below"],
+                        "order_block_bull": advanced_structure["order_block_bull"],
+                        "order_block_bear": advanced_structure["order_block_bear"],
+                    })
 
                     self.log_debug(
                         f"[TREND] {inst_norm}: action={action}, conf={confidence:.2f}, "

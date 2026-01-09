@@ -1,10 +1,18 @@
 #!/usr/bin/env python3
 # ─────────────────────────────────────────────────────────────
 # File: modules/meta/ppo_observation_builder.py
-# Unified PPO Observation Builder (v5.2 - Master/Advisor Architecture)
+# Unified PPO Observation Builder (v5.3 - Master/Advisor + Advanced Signals)
 #
 # Single source of truth for PPO observation construction.
 # Used identically in TRAINING (ModernTradingEnv) and LIVE (PPOAgent).
+#
+# SCHEMA V5.3 CHANGES:
+# - Added advanced market structure signals (S/R, BOS, order blocks, liquidity)
+# - Added momentum divergence signals (bullish/bearish RSI divergence)
+# - Added overbought/oversold signals (for reversal detection)
+# - Added theme regime signals (risk_on/off, volatility regime)
+# - Observation builder now fetches per-instrument rich analysis from experts
+# - Train/live parity ensured: training env and live experts compute same signals
 #
 # FIXES APPLIED (Dec 2025):
 # - Prevent cross-symbol leakage when instrument key mismatches (XAUUSD vs XAU/USD, etc.)
@@ -45,22 +53,32 @@ except ImportError:
 
 
 # ═══════════════════════════════════════════════════════════════════
-# OBSERVATION SCHEMA (v5.1) - Master/Advisor Architecture
+# OBSERVATION SCHEMA (v5.3) - Master/Advisor + Advanced Signals
 # ═══════════════════════════════════════════════════════════════════
 #
 # Total: 64 dimensions
 #
 # [0-9]   M15 Price Features (PRIMARY) - 10 dims
+#         [3] = S/R Proximity Signal (SIGNED: +support/-resistance)
 # [10-15] Higher TF Context (H1/H4/D1 aggregated) - 6 dims
 # [16-23] Expert ADVISOR Signals (SIGNED: +bull/-bear) - 8 dims
-# [24-31] Committee Consensus (SIGNED + metrics) - 8 dims
+#         [2,3] = Momentum (direction boosted by divergence, conf + OB/OS)
+#         [4,5] = Theme (direction, conf + regime risk)
+# [24-31] Committee Consensus (SIGNED + structure) - 8 dims
+#         [7] = Composite Market Structure (40% S/R + 30% HH/HL + 20% BOS + 10% OB)
 # [32-39] Risk/Memory Signals - 8 dims
 # [40-47] Account/Position State - 8 dims
 # [48-55] World Model Predictions - 8 dims
 # [56-63] Trading Mode State (incl. timing features) - 8 dims
+#
+# EXPERT SIGNALS NOW INCLUDE (v5.3):
+# - TrendExpert: near_support, near_resistance, structure_trend, bos_signal,
+#                liquidity_above/below, order_block_bull/bear
+# - MomentumExpert: divergence_signal (bullish/bearish), overbought, oversold, rsi_value
+# - ThemeExpert: volatility_regime (low/normal/high), risk_regime (risk_on/off/neutral)
 # ═══════════════════════════════════════════════════════════════════
 
-PPO_OBS_VERSION = "5.2"
+PPO_OBS_VERSION = "5.3"
 PPO_OBS_SIZE = 64
 
 FEATURE_GROUPS: Dict[str, tuple[int, int]] = {
@@ -395,6 +413,109 @@ class PPOObservationBuilder:
         return account
 
     # ======================================================================
+    # Market Structure Helpers (Swing Points, S/R Proximity)
+    # ======================================================================
+
+    def _find_swing_points(self, highs: np.ndarray, lows: np.ndarray, lookback: int = 5) -> tuple[list[float], list[float]]:
+        """
+        Find swing high/low points for support/resistance detection.
+        Uses 5-bar confirmation (2 bars each side).
+        """
+        support_levels: list[float] = []
+        resistance_levels: list[float] = []
+        
+        if len(highs) < lookback or len(lows) < lookback:
+            return support_levels, resistance_levels
+        
+        # Find swing highs (resistance)
+        for i in range(2, len(highs) - 2):
+            if (highs[i] > highs[i-1] and highs[i] > highs[i-2] and
+                highs[i] > highs[i+1] and highs[i] > highs[i+2]):
+                resistance_levels.append(float(highs[i]))
+        
+        # Find swing lows (support)
+        for i in range(2, len(lows) - 2):
+            if (lows[i] < lows[i-1] and lows[i] < lows[i-2] and
+                lows[i] < lows[i+1] and lows[i] < lows[i+2]):
+                support_levels.append(float(lows[i]))
+        
+        # Keep only the 3 most relevant levels
+        resistance_levels = sorted(set(resistance_levels), reverse=True)[:3]
+        support_levels = sorted(set(support_levels))[:3]
+        
+        return support_levels, resistance_levels
+
+    def _compute_sr_proximity(self, current_price: float, support: list[float], resistance: list[float], threshold_pct: float = 0.005) -> tuple[float, float]:
+        """
+        Compute signed proximity to nearest support/resistance.
+        
+        Returns:
+            near_support: 0.0 to 1.0 (how close to support, 1.0 = at support)
+            near_resistance: 0.0 to 1.0 (how close to resistance, 1.0 = at resistance)
+        """
+        near_support = 0.0
+        near_resistance = 0.0
+        
+        if current_price <= 0:
+            return 0.0, 0.0
+        
+        threshold_abs = current_price * threshold_pct
+        
+        # Find closest support
+        for s in support:
+            dist = abs(current_price - s)
+            if dist < threshold_abs:
+                proximity = 1.0 - (dist / threshold_abs)
+                near_support = max(near_support, proximity)
+        
+        # Find closest resistance
+        for r in resistance:
+            dist = abs(current_price - r)
+            if dist < threshold_abs:
+                proximity = 1.0 - (dist / threshold_abs)
+                near_resistance = max(near_resistance, proximity)
+        
+        return float(near_support), float(near_resistance)
+
+    def _compute_market_structure(self, highs: np.ndarray, lows: np.ndarray, closes: np.ndarray) -> float:
+        """
+        Compute market structure signal: HH/HL = bullish, LL/LH = bearish.
+        
+        Returns:
+            -1.0 to +1.0: positive = bullish structure, negative = bearish
+        """
+        if len(highs) < 10 or len(lows) < 10:
+            return 0.0
+        
+        # Look at last 5 swing periods
+        lookback = min(len(highs), 20)
+        recent_highs = highs[-lookback:]
+        recent_lows = lows[-lookback:]
+        
+        # Count higher highs vs lower highs
+        hh_count = 0
+        lh_count = 0
+        for i in range(1, len(recent_highs)):
+            if recent_highs[i] > recent_highs[i-1]:
+                hh_count += 1
+            elif recent_highs[i] < recent_highs[i-1]:
+                lh_count += 1
+        
+        # Count higher lows vs lower lows
+        hl_count = 0
+        ll_count = 0
+        for i in range(1, len(recent_lows)):
+            if recent_lows[i] > recent_lows[i-1]:
+                hl_count += 1
+            elif recent_lows[i] < recent_lows[i-1]:
+                ll_count += 1
+        
+        bullish_score = (hh_count + hl_count) / max(lookback - 1, 1)
+        bearish_score = (lh_count + ll_count) / max(lookback - 1, 1)
+        
+        return float(np.clip(bullish_score - bearish_score, -1.0, 1.0))
+
+    # ======================================================================
     # M15 Price Features (PRIMARY) - 10 dims
     # ======================================================================
 
@@ -496,6 +617,14 @@ class PPOObservationBuilder:
             returns = (curr - prev) / denom_prev
             vol = float(np.std(returns))
             feats[9] = float(np.clip(vol * 100.0, 0.0, 1.0))
+        
+        # Override feats[3] (was volume ratio) with S/R proximity signal
+        # This is more useful for learning WHERE to buy/sell
+        if high_arr.size >= 10 and low_arr.size >= 10:
+            support, resistance = self._find_swing_points(high_arr[-50:], low_arr[-50:])
+            near_support, near_resistance = self._compute_sr_proximity(c, support, resistance)
+            # SIGNED: positive = near support (good for longs), negative = near resistance (good for shorts)
+            feats[3] = float(np.clip(near_support - near_resistance, -1.0, 1.0))
 
         return feats
 
@@ -562,7 +691,19 @@ class PPOObservationBuilder:
     # ======================================================================
 
     def _build_voting_features(self, expert_signals: Optional[Dict[str, Any]]) -> np.ndarray:
-        """Build expert signals as signed features for PPO to learn from."""
+        """
+        Build expert signals as signed features for PPO to learn from.
+        
+        Schema v5.3 - Includes divergence and regime signals:
+        [0] Trend: signed direction * strength
+        [1] Trend: confidence + divergence bonus (0.2 if divergence aligns)
+        [2] Momentum: signed direction * strength (boosted by divergence)
+        [3] Momentum: confidence + overbought/oversold signal
+        [4] Theme: signed direction * strength
+        [5] Theme: confidence + regime risk signal
+        [6] Seasonality: signed direction * strength
+        [7] Seasonality: confidence
+        """
         feats = np.zeros(8, dtype=np.float32)
         if not expert_signals:
             return feats
@@ -591,14 +732,56 @@ class PPOObservationBuilder:
             else:
                 signed_strength = 0.0
 
-            feats[i * 2] = float(np.clip(signed_strength, -1.0, 1.0))
-
             conf_raw = sig.get("confidence", 0.0)
             try:
                 conf_val = float(conf_raw)
             except (TypeError, ValueError):
                 conf_val = 0.0
-            feats[i * 2 + 1] = float(np.clip(conf_val, 0.0, 1.0))
+            
+            proposal = sig.get("proposal", {}) if isinstance(sig, dict) else {}
+            
+            # Enhanced feature encoding based on expert type
+            if name == "momentum":
+                # Boost momentum signal if divergence present
+                divergence = proposal.get("divergence_signal") if isinstance(proposal, dict) else None
+                if divergence == "bullish":
+                    signed_strength = max(signed_strength, 0.3)  # Ensure bullish bias
+                    signed_strength = min(signed_strength + 0.2, 1.0)  # Boost
+                elif divergence == "bearish":
+                    signed_strength = min(signed_strength, -0.3)  # Ensure bearish bias
+                    signed_strength = max(signed_strength - 0.2, -1.0)  # Boost
+                
+                feats[i * 2] = float(np.clip(signed_strength, -1.0, 1.0))
+                
+                # Encode overbought/oversold into confidence slot
+                overbought = float(proposal.get("overbought", 0)) if isinstance(proposal, dict) else 0.0
+                oversold = float(proposal.get("oversold", 0)) if isinstance(proposal, dict) else 0.0
+                # Overbought adds negative bias, oversold adds positive bias (reversal signal)
+                ob_signal = oversold - overbought  # -1 to +1
+                feats[i * 2 + 1] = float(np.clip(conf_val + ob_signal * 0.3, 0.0, 1.0))
+                
+            elif name == "theme":
+                feats[i * 2] = float(np.clip(signed_strength, -1.0, 1.0))
+                
+                # Encode risk regime into confidence slot
+                risk_regime = proposal.get("risk_regime", "neutral") if isinstance(proposal, dict) else "neutral"
+                vol_regime = proposal.get("volatility_regime", "normal") if isinstance(proposal, dict) else "normal"
+                
+                regime_bonus = 0.0
+                if risk_regime == "risk_on":
+                    regime_bonus = 0.2  # Higher confidence in risk-on
+                elif risk_regime == "risk_off":
+                    regime_bonus = -0.1  # Lower confidence in risk-off
+                
+                if vol_regime == "high":
+                    regime_bonus -= 0.1  # High vol = less confident
+                
+                feats[i * 2 + 1] = float(np.clip(conf_val + regime_bonus, 0.0, 1.0))
+                
+            else:
+                # Standard encoding for trend and seasonality
+                feats[i * 2] = float(np.clip(signed_strength, -1.0, 1.0))
+                feats[i * 2 + 1] = float(np.clip(conf_val, 0.0, 1.0))
 
         return feats
 
@@ -690,8 +873,36 @@ class PPOObservationBuilder:
                 regime_strength = 0.5
         feats[6] = float(np.clip(regime_strength, 0.0, 1.0))
 
-        strong_conviction_count = sum(1 for s in signed_expert_scores if abs(s) > 0.5)
-        feats[7] = float(strong_conviction_count / max(len(signed_expert_scores), 1))
+        # Extract ADVANCED market structure from TrendExpert (if available)
+        trend_sig = experts.get("trend", {}) if isinstance(experts, dict) else {}
+        proposal = trend_sig.get("proposal", {}) if isinstance(trend_sig, dict) else {}
+        if isinstance(proposal, dict):
+            # Combine multiple structure signals into one composite:
+            # - near_support (positive for longs)
+            # - near_resistance (negative for shorts)  
+            # - structure_trend (HH/HL vs LL/LH)
+            # - bos_signal (break of structure)
+            # - order_block proximity
+            near_support = float(proposal.get("near_support", 0))
+            near_resistance = float(proposal.get("near_resistance", 0))
+            structure_trend = float(proposal.get("structure_trend", 0))  # -1 to +1
+            bos_signal = float(proposal.get("bos_signal", 0))  # -1 to +1
+            ob_bull = float(proposal.get("order_block_bull", 0))  # 0 to 1
+            ob_bear = float(proposal.get("order_block_bear", 0))  # 0 to 1
+            
+            # Composite market structure signal:
+            # Positive = bullish structure (near support, HH/HL, bullish BOS, bullish OB)
+            # Negative = bearish structure (near resistance, LL/LH, bearish BOS, bearish OB)
+            sr_signal = near_support - near_resistance  # -1 to +1
+            ob_signal = ob_bull - ob_bear  # -1 to +1
+            
+            # Weight the signals: S/R proximity (40%), structure trend (30%), BOS (20%), OB (10%)
+            composite = (sr_signal * 0.40 + structure_trend * 0.30 + bos_signal * 0.20 + ob_signal * 0.10)
+            feats[7] = float(np.clip(composite, -1.0, 1.0))
+        else:
+            # Fallback: use conviction count if no S/R data
+            strong_conviction_count = sum(1 for s in signed_expert_scores if abs(s) > 0.5)
+            feats[7] = float(strong_conviction_count / max(len(signed_expert_scores), 1))
 
         return feats
 
@@ -1127,10 +1338,15 @@ class PPOObservationBuilder:
     def _fetch_expert_signals(self, bus: Any, module: str) -> Dict[str, Any]:
         """
         Fetch expert voting signals in the schema expected by _build_voting_features():
-        each expert has at least: direction, score, confidence.
+        each expert has at least: direction, score, confidence, and proposal dict.
+        
+        Schema v5.3: Also fetches proposal sub-signals for:
+        - TrendExpert: near_support, near_resistance, structure_trend, bos_signal, etc.
+        - MomentumExpert: divergence_signal, overbought, oversold, rsi_value
+        - ThemeExpert: volatility_regime, risk_regime, vol_score
         """
         try:
-            def _expert_block(vote_key: str, conf_key: str) -> Dict[str, Any]:
+            def _expert_block(vote_key: str, conf_key: str, expert_name: str) -> Dict[str, Any]:
                 proposal = bus.get(vote_key, module) or "flat"
                 conf_raw = bus.get(conf_key, module)
 
@@ -1148,19 +1364,93 @@ class PPOObservationBuilder:
                     direction = "neutral"
 
                 score = float(np.clip(conf, 0.0, 1.0))
+                
+                # Extract proposal dict with sub-signals (v5.3 schema)
+                proposal_dict: Dict[str, Any] = {}
+                if isinstance(proposal, dict):
+                    # Raw proposal is a dict - extract sub-signals
+                    proposal_dict = proposal
+                else:
+                    # Try to get per_instrument analysis for richer signals
+                    per_inst = bus.get(f"{expert_name}_per_instrument", module)
+                    if isinstance(per_inst, dict):
+                        # Take first instrument's analysis as proposal
+                        for inst_data in per_inst.values():
+                            if isinstance(inst_data, dict):
+                                proposal_dict = inst_data
+                                break
+                
+                # Extract specific signals based on expert type
+                if expert_name == "MomentumExpert":
+                    # Try to get rich momentum analysis from bus
+                    mom_analysis = bus.get("momentum_analysis", module)
+                    if isinstance(mom_analysis, dict):
+                        per_inst_mom = mom_analysis.get("per_instrument", {})
+                        if isinstance(per_inst_mom, dict):
+                            # Take first instrument's analysis
+                            for inst_data in per_inst_mom.values():
+                                if isinstance(inst_data, dict):
+                                    proposal_dict.update(inst_data)
+                                    break
+                    
+                    # Momentum signals: divergence, overbought/oversold
+                    proposal_dict.setdefault("divergence_signal", proposal_dict.get("divergence"))
+                    rsi_val = proposal_dict.get("rsi", 50)
+                    try:
+                        rsi_val = float(rsi_val)
+                    except (TypeError, ValueError):
+                        rsi_val = 50.0
+                    proposal_dict.setdefault("overbought", max(0.0, (rsi_val - 70) / 30) if rsi_val > 70 else 0.0)
+                    proposal_dict.setdefault("oversold", max(0.0, (30 - rsi_val) / 30) if rsi_val < 30 else 0.0)
+                    proposal_dict.setdefault("rsi_value", rsi_val)
+                    
+                elif expert_name == "ThemeExpert":
+                    # Try to get rich theme analysis from bus
+                    theme_analysis = bus.get("theme_analysis", module)
+                    if isinstance(theme_analysis, dict):
+                        per_inst_theme = theme_analysis.get("per_instrument", {})
+                        if isinstance(per_inst_theme, dict):
+                            for inst_data in per_inst_theme.values():
+                                if isinstance(inst_data, dict):
+                                    proposal_dict.update(inst_data)
+                                    break
+                    
+                    # Theme signals: risk_regime, volatility_regime
+                    proposal_dict.setdefault("risk_regime", "neutral")
+                    proposal_dict.setdefault("volatility_regime", "normal")
+                    proposal_dict.setdefault("vol_score", 0.5)
+                
+                elif expert_name == "TrendExpert":
+                    # Try to get rich trend analysis from bus  
+                    trend_analysis = bus.get("trend_analysis", module)
+                    if isinstance(trend_analysis, dict):
+                        per_inst_trend = trend_analysis.get("per_instrument", {})
+                        if isinstance(per_inst_trend, dict):
+                            for inst_data in per_inst_trend.values():
+                                if isinstance(inst_data, dict):
+                                    proposal_dict.update(inst_data)
+                                    break
+                    
+                    # Trend signals: S/R, structure, BOS, order blocks
+                    proposal_dict.setdefault("near_support", 0.0)
+                    proposal_dict.setdefault("near_resistance", 0.0)
+                    proposal_dict.setdefault("structure_trend", 0.0)
+                    proposal_dict.setdefault("bos_signal", 0.0)
+                    proposal_dict.setdefault("order_block_bull", 0.0)
+                    proposal_dict.setdefault("order_block_bear", 0.0)
 
                 return {
-                    "proposal": proposal,
+                    "proposal": proposal_dict,
                     "direction": direction,
                     "score": score,
                     "confidence": score,
                 }
 
             experts = {
-                "trend": _expert_block("TrendExpert_voting_proposal", "TrendExpert_confidence"),
-                "momentum": _expert_block("MomentumExpert_voting_proposal", "MomentumExpert_confidence"),
-                "theme": _expert_block("ThemeExpert_voting_proposal", "ThemeExpert_confidence"),
-                "seasonality": _expert_block("SeasonalityRiskExpert_voting_proposal", "SeasonalityRiskExpert_confidence"),
+                "trend": _expert_block("TrendExpert_voting_proposal", "TrendExpert_confidence", "TrendExpert"),
+                "momentum": _expert_block("MomentumExpert_voting_proposal", "MomentumExpert_confidence", "MomentumExpert"),
+                "theme": _expert_block("ThemeExpert_voting_proposal", "ThemeExpert_confidence", "ThemeExpert"),
+                "seasonality": _expert_block("SeasonalityRiskExpert_voting_proposal", "SeasonalityRiskExpert_confidence", "SeasonalityRiskExpert"),
             }
 
             market = {

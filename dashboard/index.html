@@ -1741,6 +1741,288 @@
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
+  // REGIME SKILL ASSESSMENT PANEL (Quality Gates Integration)
+  // ─────────────────────────────────────────────────────────────────────────────
+  function RegimeAssessmentPanel({ regimeAssessment }) {
+    if (!regimeAssessment) return null;
+    
+    const ra = regimeAssessment;
+    
+    // Insufficient data state
+    if (ra.status === "insufficient_data") {
+      return (
+        <Glass className="p-0 overflow-hidden">
+          <div className="px-5 py-4 border-b border-white/5">
+            <div className="flex items-center gap-3">
+              <span className="text-xl">🎯</span>
+              <div>
+                <div className="text-sm font-black text-white">Regime Skill Assessment</div>
+                <div className="text-[10px] text-slate-500">Collecting trade data...</div>
+              </div>
+            </div>
+          </div>
+          <div className="p-5">
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-[10px] text-slate-500">Trade Data Progress</span>
+              <span className="text-[10px] mono text-amber-400">{ra.total_trades}/{ra.min_required}</span>
+            </div>
+            <div className="h-2 rounded-full bg-slate-700/50 overflow-hidden">
+              <div className="h-full bg-amber-500 rounded-full transition-all" 
+                style={{ width: `${Math.min(100, (ra.total_trades / ra.min_required) * 100)}%` }} />
+            </div>
+            <div className="mt-3 text-[10px] text-slate-500 text-center">
+              Need {ra.min_required - ra.total_trades} more trades for regime analysis
+            </div>
+          </div>
+        </Glass>
+      );
+    }
+    
+    const scores = ra.scores || {};
+    const weaknesses = ra.weaknesses || [];
+    const coverage = Number(ra.regime_coverage || 0) * 100;
+    const confidence = Number(ra.confidence || 0) * 100;
+    
+    const scoreEntries = [
+      { key: "adaptation", label: "Adaptation", icon: "🔄", value: Number(scores.adaptation || 0) * 100 },
+      { key: "volatility_handling", label: "Volatility", icon: "📊", value: Number(scores.volatility_handling || 0) * 100 },
+      { key: "trend_following", label: "Trend", icon: "📈", value: Number(scores.trend_following || 0) * 100 },
+      { key: "session_awareness", label: "Session", icon: "🕐", value: Number(scores.session_awareness || 0) * 100 },
+      { key: "cost_resilience", label: "Cost Resilience", icon: "💰", value: Number(scores.cost_resilience || 0) * 100 },
+    ];
+    
+    const avgScore = scoreEntries.reduce((sum, s) => sum + s.value, 0) / scoreEntries.length;
+    
+    const formatBreakdown = (breakdown) => {
+      if (!breakdown) return [];
+      return Object.entries(breakdown).map(([regime, data]) => ({
+        regime,
+        trades: data.trades || 0,
+        winRate: Number(data.win_rate || 0) * 100,
+        avgR: Number(data.avg_r || 0),
+      })).filter(b => b.trades > 0).sort((a, b) => b.trades - a.trades);
+    };
+    
+    const volatilityData = formatBreakdown(ra.volatility_breakdown);
+    const trendData = formatBreakdown(ra.trend_breakdown);
+    const sessionData = formatBreakdown(ra.session_breakdown);
+    const spreadData = formatBreakdown(ra.spread_breakdown);
+    
+    return (
+      <Glass className="p-0 overflow-hidden">
+        {/* Header with main gauges */}
+        <div className="relative px-5 py-4 border-b border-white/5">
+          <div className="absolute inset-0 bg-gradient-to-r from-teal-600/10 via-cyan-600/5 to-transparent" />
+          <div className="relative flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              {/* Big radial for avg score */}
+              <div className="relative w-16 h-16">
+                <svg className="w-full h-full -rotate-90" viewBox="0 0 64 64">
+                  <circle cx="32" cy="32" r="26" fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth="5" />
+                  <circle 
+                    cx="32" cy="32" r="26" fill="none"
+                    stroke={avgScore >= 70 ? "#2dd4bf" : avgScore >= 50 ? "#fbbf24" : "#fb7185"}
+                    strokeWidth="5"
+                    strokeLinecap="round"
+                    strokeDasharray={2 * Math.PI * 26}
+                    strokeDashoffset={2 * Math.PI * 26 * (1 - avgScore / 100)}
+                    className="transition-all duration-700"
+                  />
+                </svg>
+                <div className="absolute inset-0 flex flex-col items-center justify-center">
+                  <span className={"text-base font-black " + (avgScore >= 70 ? "text-teal-400" : avgScore >= 50 ? "text-amber-400" : "text-rose-400")}>
+                    {fmt.int(avgScore)}%
+                  </span>
+                </div>
+              </div>
+              <div>
+                <div className="text-sm font-black text-white">Regime Skills</div>
+                <div className="text-[10px] text-slate-500 mt-0.5">{ra.total_trades} trades analyzed</div>
+              </div>
+            </div>
+            
+            {/* Right: mini gauges for coverage & confidence */}
+            <div className="flex items-center gap-4">
+              <div className="text-center">
+                <div className="relative w-10 h-10 mx-auto">
+                  <svg className="w-full h-full -rotate-90" viewBox="0 0 40 40">
+                    <circle cx="20" cy="20" r="16" fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth="3" />
+                    <circle cx="20" cy="20" r="16" fill="none"
+                      stroke={coverage >= 60 ? "#2dd4bf" : coverage >= 40 ? "#fbbf24" : "#fb7185"}
+                      strokeWidth="3" strokeLinecap="round"
+                      strokeDasharray={2 * Math.PI * 16}
+                      strokeDashoffset={2 * Math.PI * 16 * (1 - coverage / 100)}
+                    />
+                  </svg>
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <span className="text-[10px] font-black text-white">{fmt.int(coverage)}</span>
+                  </div>
+                </div>
+                <div className="text-[9px] text-slate-500 mt-1">Coverage</div>
+              </div>
+              <div className="text-center">
+                <div className="relative w-10 h-10 mx-auto">
+                  <svg className="w-full h-full -rotate-90" viewBox="0 0 40 40">
+                    <circle cx="20" cy="20" r="16" fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth="3" />
+                    <circle cx="20" cy="20" r="16" fill="none"
+                      stroke={confidence >= 70 ? "#a5b4fc" : confidence >= 50 ? "#fbbf24" : "#fb7185"}
+                      strokeWidth="3" strokeLinecap="round"
+                      strokeDasharray={2 * Math.PI * 16}
+                      strokeDashoffset={2 * Math.PI * 16 * (1 - confidence / 100)}
+                    />
+                  </svg>
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <span className="text-[10px] font-black text-white">{fmt.int(confidence)}</span>
+                  </div>
+                </div>
+                <div className="text-[9px] text-slate-500 mt-1">Confidence</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        {/* Main content: 3-column grid */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 divide-y lg:divide-y-0 lg:divide-x divide-white/5">
+          {/* Skills Column */}
+          <div className="p-4">
+            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-black mb-3">Skill Scores</div>
+            <div className="space-y-2">
+              {scoreEntries.map(s => {
+                const isWeak = weaknesses.some(w => w.type === s.key);
+                return (
+                  <div key={s.key} className={"flex items-center gap-2 px-2 py-1.5 rounded-lg " + 
+                    (isWeak ? "bg-rose-500/10 border border-rose-500/30" : "")}>
+                    <span className="text-sm">{s.icon}</span>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-medium text-slate-300 truncate">{s.label}</span>
+                        <span className={"text-[10px] font-black mono " + 
+                          (s.value >= 70 ? "text-teal-400" : s.value >= 50 ? "text-amber-400" : "text-rose-400")}>
+                          {fmt.int(s.value)}%
+                        </span>
+                      </div>
+                      <div className="h-1 rounded-full bg-slate-700/50 mt-1 overflow-hidden">
+                        <div className={"h-full rounded-full " + 
+                          (s.value >= 70 ? "bg-teal-500" : s.value >= 50 ? "bg-amber-500" : "bg-rose-500")}
+                          style={{ width: `${s.value}%` }} />
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+          
+          {/* Regime Breakdowns Column */}
+          <div className="p-4">
+            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-black mb-3">Regime Performance</div>
+            <div className="space-y-3 max-h-48 overflow-y-auto">
+              {/* Volatility */}
+              {volatilityData.length > 0 && (
+                <div>
+                  <div className="text-[9px] text-cyan-400 font-bold mb-1">📊 Volatility</div>
+                  <div className="space-y-1">
+                    {volatilityData.map(b => (
+                      <div key={b.regime} className="flex items-center justify-between text-[9px] px-2 py-1 bg-slate-800/30 rounded">
+                        <span className="text-slate-400 capitalize">{b.regime}</span>
+                        <div className="flex items-center gap-2">
+                          <span className="text-slate-500">{b.trades}t</span>
+                          <span className={b.winRate >= 50 ? "text-emerald-400" : "text-rose-400"}>{fmt.int(b.winRate)}%</span>
+                          <span className={b.avgR >= 0 ? "text-emerald-400" : "text-rose-400"}>{fmt.num(b.avgR, 2)}R</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {/* Trend */}
+              {trendData.length > 0 && (
+                <div>
+                  <div className="text-[9px] text-amber-400 font-bold mb-1">📈 Trend</div>
+                  <div className="space-y-1">
+                    {trendData.map(b => (
+                      <div key={b.regime} className="flex items-center justify-between text-[9px] px-2 py-1 bg-slate-800/30 rounded">
+                        <span className="text-slate-400 capitalize">{b.regime.replace("_", " ")}</span>
+                        <div className="flex items-center gap-2">
+                          <span className="text-slate-500">{b.trades}t</span>
+                          <span className={b.winRate >= 50 ? "text-emerald-400" : "text-rose-400"}>{fmt.int(b.winRate)}%</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {/* Session */}
+              {sessionData.length > 0 && (
+                <div>
+                  <div className="text-[9px] text-purple-400 font-bold mb-1">🕐 Session</div>
+                  <div className="space-y-1">
+                    {sessionData.map(b => (
+                      <div key={b.regime} className="flex items-center justify-between text-[9px] px-2 py-1 bg-slate-800/30 rounded">
+                        <span className="text-slate-400 capitalize">{b.regime.replace("_", " ")}</span>
+                        <div className="flex items-center gap-2">
+                          <span className="text-slate-500">{b.trades}t</span>
+                          <span className={b.winRate >= 50 ? "text-emerald-400" : "text-rose-400"}>{fmt.int(b.winRate)}%</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+          
+          {/* Weaknesses & Alerts Column */}
+          <div className="p-4 bg-slate-900/50">
+            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-black mb-3">Issues & Alerts</div>
+            {weaknesses.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-6 text-center">
+                <div className="text-3xl mb-2">✨</div>
+                <div className="text-[10px] font-bold text-emerald-400">No Critical Weaknesses</div>
+                <div className="text-[9px] text-slate-500 mt-1">All regime skills above threshold</div>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {weaknesses.map((w, i) => (
+                  <div key={i} className="p-2 rounded-lg bg-rose-500/10 border border-rose-500/30">
+                    <div className="flex items-center gap-2">
+                      <span className="text-rose-400 text-sm">⚠️</span>
+                      <div className="flex-1">
+                        <div className="text-[10px] font-bold text-rose-300 capitalize">
+                          {w.type?.replace("_", " ")}
+                        </div>
+                        <div className="text-[9px] text-rose-400/70 mt-0.5">
+                          {w.regime}: {fmt.int((w.score || 0) * 100)}% (need &gt;40%)
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            
+            {/* Quick summary stats */}
+            <div className="mt-4 pt-3 border-t border-white/5">
+              <div className="grid grid-cols-2 gap-2">
+                <div className="text-center p-2 rounded bg-slate-800/30">
+                  <div className="text-lg font-black text-white">{ra.total_trades}</div>
+                  <div className="text-[9px] text-slate-500">Total Trades</div>
+                </div>
+                <div className="text-center p-2 rounded bg-slate-800/30">
+                  <div className={"text-lg font-black " + (weaknesses.length === 0 ? "text-emerald-400" : "text-rose-400")}>
+                    {weaknesses.length}
+                  </div>
+                  <div className="text-[9px] text-slate-500">Weak Areas</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </Glass>
+    );
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
   // STAGE REQUIREMENTS PANEL (kept from v2.2)
   // ─────────────────────────────────────────────────────────────────────────────
   function StageRequirementsPanel({ requirementsByStage, stageName }) {
@@ -2226,6 +2508,866 @@
     );
   }
 
+  function SignalsTab({ data }) {
+    const rc = data.reward_components || {};
+    const summary = rc.summary || { total_positive: 0, total_negative: 0, net: 0 };
+
+    // Category display config
+    const categories = [
+      { 
+        key: "market_structure", 
+        label: "Market Structure", 
+        icon: "📐", 
+        desc: "S/R, BOS, Order Blocks",
+        color: "cyan",
+        gradient: "from-cyan-500 to-teal-600"
+      },
+      { 
+        key: "divergence", 
+        label: "Divergence & RSI", 
+        icon: "📉", 
+        desc: "Overbought/Oversold alignment",
+        color: "purple",
+        gradient: "from-purple-500 to-pink-600"
+      },
+      { 
+        key: "regime", 
+        label: "Regime Context", 
+        icon: "🌍", 
+        desc: "Risk-off, volatility state",
+        color: "amber",
+        gradient: "from-amber-500 to-orange-600"
+      },
+      { 
+        key: "exit_quality", 
+        label: "Exit Quality", 
+        icon: "🎯", 
+        desc: "Trailing stops vs premature exits",
+        color: "emerald",
+        gradient: "from-emerald-500 to-green-600"
+      },
+      { 
+        key: "timing", 
+        label: "Timing", 
+        icon: "⏰", 
+        desc: "Session hours, efficiency",
+        color: "indigo",
+        gradient: "from-indigo-500 to-blue-600"
+      },
+      { 
+        key: "risk", 
+        label: "Risk & Discipline", 
+        icon: "🛡️", 
+        desc: "DD shaping, churn penalty, streaks",
+        color: "rose",
+        gradient: "from-rose-500 to-red-600"
+      },
+      { 
+        key: "other", 
+        label: "Other", 
+        icon: "📋", 
+        desc: "Base P&L, R-multiple",
+        color: "slate",
+        gradient: "from-slate-500 to-gray-600"
+      },
+    ];
+
+    const colorMap = {
+      cyan: { bg: "bg-cyan-500/15", border: "border-cyan-500/30", text: "text-cyan-400", bar: "bg-cyan-500" },
+      purple: { bg: "bg-purple-500/15", border: "border-purple-500/30", text: "text-purple-400", bar: "bg-purple-500" },
+      amber: { bg: "bg-amber-500/15", border: "border-amber-500/30", text: "text-amber-400", bar: "bg-amber-500" },
+      emerald: { bg: "bg-emerald-500/15", border: "border-emerald-500/30", text: "text-emerald-400", bar: "bg-emerald-500" },
+      indigo: { bg: "bg-indigo-500/15", border: "border-indigo-500/30", text: "text-indigo-400", bar: "bg-indigo-500" },
+      rose: { bg: "bg-rose-500/15", border: "border-rose-500/30", text: "text-rose-400", bar: "bg-rose-500" },
+      slate: { bg: "bg-slate-500/15", border: "border-slate-500/30", text: "text-slate-400", bar: "bg-slate-500" },
+    };
+
+    // Helper to format component names
+    const formatName = (name) => {
+      return name
+        .replace(/_/g, " ")
+        .replace(/\b\w/g, (c) => c.toUpperCase())
+        .replace("Pnl", "P&L")
+        .replace("Dd", "DD")
+        .replace("Sr ", "S/R ")
+        .replace("Bos", "BOS");
+    };
+
+    // Calculate category totals
+    const categoryTotals = categories.map(cat => {
+      const catData = rc[cat.key] || {};
+      let total = 0;
+      let count = 0;
+      Object.values(catData).forEach(comp => {
+        if (typeof comp === "object") {
+          total += comp.total || 0;
+          count += comp.count || 0;
+        }
+      });
+      return { ...cat, total, count, hasData: count > 0 };
+    });
+
+    const hasAnyData = categoryTotals.some(c => c.hasData);
+
+    return (
+      <div className="space-y-4 animate-fade-in">
+        {/* Summary Header */}
+        <Glass className="p-0 overflow-hidden">
+          <div className="px-5 py-4 border-b border-white/5">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center shadow-lg shadow-violet-500/25">
+                  <span className="text-lg">🎛️</span>
+                </div>
+                <div>
+                  <div className="text-sm font-black text-white">Reward Signals</div>
+                  <div className="text-[10px] text-slate-500">Market structure & behavior feedback</div>
+                </div>
+              </div>
+              
+              {/* Net reward indicator */}
+              <div className="flex items-center gap-4">
+                <div className="text-right">
+                  <div className="text-[9px] text-slate-500">Bonuses</div>
+                  <div className="mono text-sm font-black text-emerald-400">+{fmt.num(summary.total_positive, 3)}</div>
+                </div>
+                <div className="text-right">
+                  <div className="text-[9px] text-slate-500">Penalties</div>
+                  <div className="mono text-sm font-black text-rose-400">{fmt.num(summary.total_negative, 3)}</div>
+                </div>
+                <div className="text-right pl-3 border-l border-white/10">
+                  <div className="text-[9px] text-slate-500">Net</div>
+                  <div className={"mono text-sm font-black " + (summary.net >= 0 ? "text-emerald-400" : "text-rose-400")}>
+                    {summary.net >= 0 ? "+" : ""}{fmt.num(summary.net, 3)}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {!hasAnyData ? (
+            <div className="p-8 text-center text-slate-500">
+              <div className="text-2xl mb-2">📊</div>
+              <div>No reward component data yet.</div>
+              <div className="text-xs mt-1">Complete some trades to see signal breakdowns.</div>
+            </div>
+          ) : (
+            <div className="p-4">
+              {/* Horizontal bar showing category contributions */}
+              <div className="mb-4">
+                <div className="h-3 rounded-full overflow-hidden flex bg-slate-800/50">
+                  {categoryTotals.filter(c => c.total !== 0).map((cat, idx) => {
+                    const absTotal = Math.abs(cat.total);
+                    const maxAbs = Math.max(...categoryTotals.map(c => Math.abs(c.total)), 0.01);
+                    const width = Math.min((absTotal / maxAbs) * 100, 100);
+                    const cm = colorMap[cat.color];
+                    return (
+                      <div 
+                        key={cat.key}
+                        className={cm.bar + " h-full transition-all duration-500 " + (cat.total < 0 ? "opacity-50" : "")}
+                        style={{ width: `${width / categoryTotals.filter(c => c.total !== 0).length}%`, minWidth: "4px" }}
+                        title={`${cat.label}: ${fmt.num(cat.total, 3)}`}
+                      />
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+        </Glass>
+
+        {/* Category Cards */}
+        {hasAnyData && (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {categoryTotals.filter(c => c.hasData).map(cat => {
+              const catData = rc[cat.key] || {};
+              const components = Object.entries(catData).sort((a, b) => Math.abs(b[1]?.total || 0) - Math.abs(a[1]?.total || 0));
+              const cm = colorMap[cat.color];
+
+              return (
+                <Glass key={cat.key} className="p-0 overflow-hidden">
+                  <div className={"px-4 py-3 border-b border-white/5 bg-gradient-to-r " + cat.gradient + " bg-opacity-10"}>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="text-lg">{cat.icon}</span>
+                        <div>
+                          <div className="text-sm font-black text-white">{cat.label}</div>
+                          <div className="text-[9px] text-slate-400">{cat.desc}</div>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <div className={"mono text-sm font-black " + (cat.total >= 0 ? "text-emerald-400" : "text-rose-400")}>
+                          {cat.total >= 0 ? "+" : ""}{fmt.num(cat.total, 3)}
+                        </div>
+                        <div className="text-[9px] text-slate-500">{cat.count} triggers</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="p-3 space-y-2 max-h-60 overflow-y-auto">
+                    {components.map(([name, comp]) => {
+                      const total = comp?.total || 0;
+                      const count = comp?.count || 0;
+                      const avg = comp?.avg || (count > 0 ? total / count : 0);
+                      const isPositive = total >= 0;
+
+                      return (
+                        <div key={name} className={"rounded-lg border p-2 " + cm.border + " " + cm.bg}>
+                          <div className="flex items-center justify-between">
+                            <div className="flex-1 min-w-0">
+                              <div className="text-xs font-semibold text-white truncate">{formatName(name)}</div>
+                              <div className="text-[9px] text-slate-500">{count} times • avg {fmt.num(avg, 4)}</div>
+                            </div>
+                            <div className={"mono text-sm font-black " + (isPositive ? "text-emerald-400" : "text-rose-400")}>
+                              {isPositive ? "+" : ""}{fmt.num(total, 3)}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </Glass>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Interpretation Guide */}
+        <Glass className="p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <span className="text-sm">💡</span>
+            <span className="text-xs font-black text-white">Signal Interpretation</span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 text-[10px] text-slate-400">
+            <div>
+              <span className="text-cyan-400 font-bold">Market Structure:</span> Positive = agent trading with S/R levels, BOS alignment, order blocks
+            </div>
+            <div>
+              <span className="text-purple-400 font-bold">Divergence:</span> Negative = trading against RSI divergence or overbought/oversold conditions
+            </div>
+            <div>
+              <span className="text-emerald-400 font-bold">Exit Quality:</span> High trailing_stop_bonus = letting winners run; negative = premature exits
+            </div>
+            <div>
+              <span className="text-amber-400 font-bold">Regime:</span> Penalties for trading in risk-off or high-volatility regimes
+            </div>
+            <div>
+              <span className="text-rose-400 font-bold">Risk:</span> Churn penalty = over-trading; DD shaping = drawdown management
+            </div>
+            <div>
+              <span className="text-indigo-400 font-bold">Timing:</span> Prime hours bonus vs off-hours penalty
+            </div>
+          </div>
+        </Glass>
+      </div>
+    );
+  }
+
+  // ============================================================================
+  // Stage Progress Tab - Compare performance across curriculum stages
+  // ============================================================================
+  function StageProgressTab({ data }) {
+    const sc = data.stage_comparison || {};
+    const stages = sc.stages || [];
+    const overall = sc.overall_improvement || {};
+    const summary = sc.summary || {};
+    const currentStage = sc.current_stage || "N/A";
+
+    // State for custom stage comparison
+    const [compareFrom, setCompareFrom] = React.useState(null);
+    const [compareTo, setCompareTo] = React.useState(null);
+
+    // Auto-select first and last stages when data loads
+    React.useEffect(() => {
+      if (stages.length >= 2 && compareFrom === null) {
+        setCompareFrom(stages[0].stage_name);
+        setCompareTo(stages[stages.length - 1].stage_name);
+      }
+    }, [stages.length]);
+
+    const stageColors = {
+      "EXPLORER": { bg: "bg-indigo-500/15", border: "border-indigo-500/30", text: "text-indigo-400", bar: "bg-indigo-500" },
+      "EXPERIMENTER": { bg: "bg-violet-500/15", border: "border-violet-500/30", text: "text-violet-400", bar: "bg-violet-500" },
+      "TREND_STUDENT": { bg: "bg-cyan-500/15", border: "border-cyan-500/30", text: "text-cyan-400", bar: "bg-cyan-500" },
+      "SESSION_STUDENT": { bg: "bg-teal-500/15", border: "border-teal-500/30", text: "text-teal-400", bar: "bg-teal-500" },
+      "TIMING_STUDENT": { bg: "bg-emerald-500/15", border: "border-emerald-500/30", text: "text-emerald-400", bar: "bg-emerald-500" },
+      "INTEGRATOR": { bg: "bg-amber-500/15", border: "border-amber-500/30", text: "text-amber-400", bar: "bg-amber-500" },
+      "RISK_MANAGER": { bg: "bg-orange-500/15", border: "border-orange-500/30", text: "text-orange-400", bar: "bg-orange-500" },
+      "STRATEGIST": { bg: "bg-rose-500/15", border: "border-rose-500/30", text: "text-rose-400", bar: "bg-rose-500" },
+      "PROFESSIONAL": { bg: "bg-pink-500/15", border: "border-pink-500/30", text: "text-pink-400", bar: "bg-pink-500" },
+      "LIVE_READY": { bg: "bg-green-500/15", border: "border-green-500/30", text: "text-green-400", bar: "bg-green-500" },
+    };
+
+    const stageIcons = {
+      "EXPLORER": "🔍", "EXPERIMENTER": "🧪", "TREND_STUDENT": "📈", 
+      "SESSION_STUDENT": "⏰", "TIMING_STUDENT": "⚡", "INTEGRATOR": "🔗",
+      "RISK_MANAGER": "🛡️", "STRATEGIST": "♟️", "PROFESSIONAL": "💼", "LIVE_READY": "🚀"
+    };
+
+    const hasData = stages.length > 0;
+
+    // Format delta with color
+    const DeltaValue = ({ value, suffix = "", inverse = false, size = "sm" }) => {
+      const isPositive = inverse ? value < 0 : value > 0;
+      const isNegative = inverse ? value > 0 : value < 0;
+      const color = isPositive ? "text-emerald-400" : isNegative ? "text-rose-400" : "text-slate-400";
+      const sizeClass = size === "lg" ? "text-lg" : size === "md" ? "text-base" : "text-sm";
+      return (
+        <span className={color + " font-bold " + sizeClass}>
+          {value > 0 ? "+" : ""}{fmt.num(value, 2)}{suffix}
+        </span>
+      );
+    };
+
+    // Compute custom comparison between selected stages
+    const customComparison = React.useMemo(() => {
+      if (!compareFrom || !compareTo || compareFrom === compareTo) return null;
+      
+      const fromStage = stages.find(s => s.stage_name === compareFrom);
+      const toStage = stages.find(s => s.stage_name === compareTo);
+      
+      if (!fromStage || !toStage) return null;
+      
+      return {
+        from: fromStage,
+        to: toStage,
+        delta: {
+          win_rate: toStage.win_rate - fromStage.win_rate,
+          avg_pnl: toStage.avg_pnl - fromStage.avg_pnl,
+          total_pnl: toStage.total_pnl - fromStage.total_pnl,
+          profit_factor: toStage.avg_profit_factor - fromStage.avg_profit_factor,
+          r_multiple: toStage.avg_r_multiple - fromStage.avg_r_multiple,
+          reward: toStage.avg_reward - fromStage.avg_reward,
+          drawdown: toStage.avg_drawdown - fromStage.avg_drawdown,
+          trades: toStage.avg_trades - fromStage.avg_trades,
+        },
+        stages_between: toStage.stage_index - fromStage.stage_index,
+      };
+    }, [compareFrom, compareTo, stages]);
+
+    // Find max values for bar scaling
+    const maxPnl = Math.max(...stages.map(s => Math.abs(s.total_pnl || 0)), 1);
+    const maxWinRate = Math.max(...stages.map(s => s.win_rate || 0), 1);
+
+    return (
+      <div className="space-y-4 animate-fade-in">
+        {/* Summary Header */}
+        <Glass className="p-0 overflow-hidden">
+          <div className="px-5 py-4 border-b border-white/5">
+            <div className="flex items-center justify-between flex-wrap gap-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center shadow-lg shadow-amber-500/25">
+                  <span className="text-lg">📊</span>
+                </div>
+                <div>
+                  <div className="text-sm font-black text-white">Stage Progress</div>
+                  <div className="text-[10px] text-slate-500">Win rate & P&L comparison across stages</div>
+                </div>
+              </div>
+              
+              {/* Overall improvement indicator */}
+              {hasData && Object.keys(overall).length > 0 && (
+                <div className="flex items-center gap-6">
+                  <div className="text-right">
+                    <div className="text-[9px] text-slate-500">WR Improvement</div>
+                    <DeltaValue value={overall.win_rate_delta || 0} suffix="%" />
+                  </div>
+                  <div className="text-right">
+                    <div className="text-[9px] text-slate-500">P&L Improvement</div>
+                    <DeltaValue value={overall.pnl_delta || 0} suffix="€" />
+                  </div>
+                  <div className="text-right">
+                    <div className="text-[9px] text-slate-500">PF Improvement</div>
+                    <DeltaValue value={overall.profit_factor_delta || 0} />
+                  </div>
+                  <div className="text-right pl-4 border-l border-white/10">
+                    <div className="text-[9px] text-slate-500">Stages Progressed</div>
+                    <div className="text-sm font-black text-amber-400">{overall.stages_progressed || 0}</div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {!hasData ? (
+            <div className="p-8 text-center text-slate-500">
+              <div className="text-2xl mb-2">📈</div>
+              <div>No stage comparison data yet.</div>
+              <div className="text-xs mt-1">Complete some episodes to see progress across stages.</div>
+            </div>
+          ) : (
+            <div className="p-4">
+              {/* Summary Stats */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+                <div className="rounded-lg bg-slate-800/50 p-3">
+                  <div className="text-[9px] text-slate-500">Stages Visited</div>
+                  <div className="mono text-lg font-black text-white">{sc.total_stages_visited || stages.length}</div>
+                </div>
+                <div className="rounded-lg bg-slate-800/50 p-3">
+                  <div className="text-[9px] text-slate-500">Total P&L</div>
+                  <div className={"mono text-lg font-black " + ((summary.total_pnl_all_stages || 0) >= 0 ? "text-emerald-400" : "text-rose-400")}>
+                    €{fmt.num(summary.total_pnl_all_stages || 0, 0)}
+                  </div>
+                </div>
+                <div className="rounded-lg bg-slate-800/50 p-3">
+                  <div className="text-[9px] text-slate-500">Avg Win Rate</div>
+                  <div className="mono text-lg font-black text-cyan-400">{fmt.pct(summary.avg_win_rate_all_stages || 0, 1)}</div>
+                </div>
+                <div className="rounded-lg bg-slate-800/50 p-3">
+                  <div className="text-[9px] text-slate-500">Best Stage (PnL)</div>
+                  <div className="text-sm font-black text-amber-400">{summary.best_stage_pnl || "N/A"}</div>
+                </div>
+              </div>
+            </div>
+          )}
+        </Glass>
+
+        {/* Custom Stage Comparison Selector */}
+        {hasData && stages.length >= 2 && (
+          <Glass className="p-0 overflow-hidden">
+            <div className="px-5 py-4 border-b border-white/5 bg-gradient-to-r from-purple-500/10 to-pink-500/10">
+              <div className="flex items-center gap-3">
+                <span className="text-xl">⚖️</span>
+                <div>
+                  <div className="text-sm font-black text-white">Compare Stages</div>
+                  <div className="text-[10px] text-slate-500">Select any two stages to compare</div>
+                </div>
+              </div>
+            </div>
+            
+            <div className="p-4">
+              {/* Stage Selectors */}
+              <div className="flex flex-wrap items-center gap-4 mb-4">
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] text-slate-500 w-12">From:</span>
+                  <select
+                    value={compareFrom || ""}
+                    onChange={(e) => setCompareFrom(e.target.value)}
+                    className="bg-slate-800/80 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-purple-500/50"
+                  >
+                    {stages.map(s => (
+                      <option key={s.stage_name} value={s.stage_name}>
+                        {stageIcons[s.stage_name] || "📊"} {s.stage_name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                
+                <span className="text-slate-500 text-lg">→</span>
+                
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] text-slate-500 w-12">To:</span>
+                  <select
+                    value={compareTo || ""}
+                    onChange={(e) => setCompareTo(e.target.value)}
+                    className="bg-slate-800/80 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-purple-500/50"
+                  >
+                    {stages.map(s => (
+                      <option key={s.stage_name} value={s.stage_name}>
+                        {stageIcons[s.stage_name] || "📊"} {s.stage_name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Quick select buttons */}
+                <div className="flex gap-2 ml-auto">
+                  <button
+                    onClick={() => { setCompareFrom(stages[0].stage_name); setCompareTo(stages[stages.length-1].stage_name); }}
+                    className="px-3 py-1.5 rounded-lg bg-slate-700/50 border border-white/10 text-[10px] text-slate-300 hover:bg-slate-600/50 transition-colors"
+                  >
+                    First → Last
+                  </button>
+                  {stages.length >= 3 && (
+                    <button
+                      onClick={() => { 
+                        const midIdx = Math.floor(stages.length / 2);
+                        setCompareFrom(stages[0].stage_name); 
+                        setCompareTo(stages[midIdx].stage_name); 
+                      }}
+                      className="px-3 py-1.5 rounded-lg bg-slate-700/50 border border-white/10 text-[10px] text-slate-300 hover:bg-slate-600/50 transition-colors"
+                    >
+                      First → Middle
+                    </button>
+                  )}
+                  {stages.length >= 3 && (
+                    <button
+                      onClick={() => { 
+                        const midIdx = Math.floor(stages.length / 2);
+                        setCompareFrom(stages[midIdx].stage_name); 
+                        setCompareTo(stages[stages.length-1].stage_name); 
+                      }}
+                      className="px-3 py-1.5 rounded-lg bg-slate-700/50 border border-white/10 text-[10px] text-slate-300 hover:bg-slate-600/50 transition-colors"
+                    >
+                      Middle → Last
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Comparison Result */}
+              {customComparison ? (
+                <div className="space-y-4">
+                  {/* Side by Side Comparison */}
+                  <div className="grid grid-cols-3 gap-4">
+                    {/* From Stage */}
+                    <div className={"rounded-xl p-4 " + (stageColors[customComparison.from.stage_name]?.bg || "bg-slate-800/50") + " border " + (stageColors[customComparison.from.stage_name]?.border || "border-white/10")}>
+                      <div className="flex items-center gap-2 mb-3">
+                        <span className="text-xl">{stageIcons[customComparison.from.stage_name] || "📊"}</span>
+                        <div>
+                          <div className={"text-sm font-black " + (stageColors[customComparison.from.stage_name]?.text || "text-white")}>{customComparison.from.stage_name}</div>
+                          <div className="text-[9px] text-slate-500">Stage {customComparison.from.stage_index}</div>
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        <div className="flex justify-between">
+                          <span className="text-[10px] text-slate-500">Win Rate</span>
+                          <span className="mono text-sm font-bold text-white">{fmt.pct(customComparison.from.win_rate, 1)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-[10px] text-slate-500">Avg P&L</span>
+                          <span className={"mono text-sm font-bold " + (customComparison.from.avg_pnl >= 0 ? "text-emerald-400" : "text-rose-400")}>€{fmt.num(customComparison.from.avg_pnl, 0)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-[10px] text-slate-500">Profit Factor</span>
+                          <span className="mono text-sm font-bold text-white">{fmt.num(customComparison.from.avg_profit_factor, 2)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-[10px] text-slate-500">Avg Reward</span>
+                          <span className={"mono text-sm font-bold " + (customComparison.from.avg_reward >= 0 ? "text-emerald-400" : "text-rose-400")}>{fmt.num(customComparison.from.avg_reward, 3)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-[10px] text-slate-500">Avg DD</span>
+                          <span className="mono text-sm font-bold text-white">{fmt.pct(customComparison.from.avg_drawdown, 1)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-[10px] text-slate-500">Episodes</span>
+                          <span className="mono text-sm font-bold text-white">{customComparison.from.episodes}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Delta / Improvement */}
+                    <div className="rounded-xl p-4 bg-gradient-to-br from-purple-500/10 to-pink-500/10 border border-purple-500/20 flex flex-col justify-center">
+                      <div className="text-center mb-3">
+                        <div className="text-[10px] text-slate-500 mb-1">Improvement</div>
+                        <div className="text-lg font-black text-purple-400">
+                          {customComparison.stages_between > 0 ? "+" : ""}{customComparison.stages_between} stages
+                        </div>
+                      </div>
+                      <div className="space-y-3">
+                        <div className="flex justify-between items-center">
+                          <span className="text-[10px] text-slate-500">Win Rate</span>
+                          <DeltaValue value={customComparison.delta.win_rate} suffix="%" size="md" />
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-[10px] text-slate-500">Avg P&L</span>
+                          <DeltaValue value={customComparison.delta.avg_pnl} suffix="€" size="md" />
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-[10px] text-slate-500">Profit Factor</span>
+                          <DeltaValue value={customComparison.delta.profit_factor} size="md" />
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-[10px] text-slate-500">Avg Reward</span>
+                          <DeltaValue value={customComparison.delta.reward} size="md" />
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-[10px] text-slate-500">Avg DD</span>
+                          <DeltaValue value={customComparison.delta.drawdown} suffix="%" inverse={true} size="md" />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* To Stage */}
+                    <div className={"rounded-xl p-4 " + (stageColors[customComparison.to.stage_name]?.bg || "bg-slate-800/50") + " border " + (stageColors[customComparison.to.stage_name]?.border || "border-white/10")}>
+                      <div className="flex items-center gap-2 mb-3">
+                        <span className="text-xl">{stageIcons[customComparison.to.stage_name] || "📊"}</span>
+                        <div>
+                          <div className={"text-sm font-black " + (stageColors[customComparison.to.stage_name]?.text || "text-white")}>{customComparison.to.stage_name}</div>
+                          <div className="text-[9px] text-slate-500">Stage {customComparison.to.stage_index}</div>
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        <div className="flex justify-between">
+                          <span className="text-[10px] text-slate-500">Win Rate</span>
+                          <span className="mono text-sm font-bold text-white">{fmt.pct(customComparison.to.win_rate, 1)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-[10px] text-slate-500">Avg P&L</span>
+                          <span className={"mono text-sm font-bold " + (customComparison.to.avg_pnl >= 0 ? "text-emerald-400" : "text-rose-400")}>€{fmt.num(customComparison.to.avg_pnl, 0)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-[10px] text-slate-500">Profit Factor</span>
+                          <span className="mono text-sm font-bold text-white">{fmt.num(customComparison.to.avg_profit_factor, 2)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-[10px] text-slate-500">Avg Reward</span>
+                          <span className={"mono text-sm font-bold " + (customComparison.to.avg_reward >= 0 ? "text-emerald-400" : "text-rose-400")}>{fmt.num(customComparison.to.avg_reward, 3)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-[10px] text-slate-500">Avg DD</span>
+                          <span className="mono text-sm font-bold text-white">{fmt.pct(customComparison.to.avg_drawdown, 1)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-[10px] text-slate-500">Episodes</span>
+                          <span className="mono text-sm font-bold text-white">{customComparison.to.episodes}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Visual improvement bars */}
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    <div className="rounded-lg bg-slate-800/30 p-3">
+                      <div className="text-[9px] text-slate-500 mb-2">Win Rate Change</div>
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 h-2 bg-slate-700 rounded-full overflow-hidden">
+                          <div 
+                            className={customComparison.delta.win_rate >= 0 ? "bg-emerald-500" : "bg-rose-500"}
+                            style={{ width: `${Math.min(Math.abs(customComparison.delta.win_rate) * 2, 100)}%`, height: "100%" }}
+                          />
+                        </div>
+                        <DeltaValue value={customComparison.delta.win_rate} suffix="%" />
+                      </div>
+                    </div>
+                    <div className="rounded-lg bg-slate-800/30 p-3">
+                      <div className="text-[9px] text-slate-500 mb-2">P&L Change</div>
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 h-2 bg-slate-700 rounded-full overflow-hidden">
+                          <div 
+                            className={customComparison.delta.avg_pnl >= 0 ? "bg-emerald-500" : "bg-rose-500"}
+                            style={{ width: `${Math.min(Math.abs(customComparison.delta.avg_pnl) / 50, 100)}%`, height: "100%" }}
+                          />
+                        </div>
+                        <DeltaValue value={customComparison.delta.avg_pnl} suffix="€" />
+                      </div>
+                    </div>
+                    <div className="rounded-lg bg-slate-800/30 p-3">
+                      <div className="text-[9px] text-slate-500 mb-2">Profit Factor Change</div>
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 h-2 bg-slate-700 rounded-full overflow-hidden">
+                          <div 
+                            className={customComparison.delta.profit_factor >= 0 ? "bg-emerald-500" : "bg-rose-500"}
+                            style={{ width: `${Math.min(Math.abs(customComparison.delta.profit_factor) * 50, 100)}%`, height: "100%" }}
+                          />
+                        </div>
+                        <DeltaValue value={customComparison.delta.profit_factor} />
+                      </div>
+                    </div>
+                    <div className="rounded-lg bg-slate-800/30 p-3">
+                      <div className="text-[9px] text-slate-500 mb-2">Reward Change</div>
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 h-2 bg-slate-700 rounded-full overflow-hidden">
+                          <div 
+                            className={customComparison.delta.reward >= 0 ? "bg-emerald-500" : "bg-rose-500"}
+                            style={{ width: `${Math.min(Math.abs(customComparison.delta.reward) * 20, 100)}%`, height: "100%" }}
+                          />
+                        </div>
+                        <DeltaValue value={customComparison.delta.reward} />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="text-center py-4 text-slate-500 text-sm">
+                  Select two different stages to compare
+                </div>
+              )}
+            </div>
+          </Glass>
+        )}
+
+        {/* Per-Stage Cards */}
+        {hasData && (
+          <div className="space-y-3">
+            {stages.map((stage, idx) => {
+              const colors = stageColors[stage.stage_name] || stageColors["EXPLORER"];
+              const icon = stageIcons[stage.stage_name] || "📊";
+              const isCurrent = stage.stage_name === currentStage;
+              const imp = stage.improvement;
+
+              // Calculate bar widths
+              const pnlWidth = Math.min((Math.abs(stage.total_pnl) / maxPnl) * 100, 100);
+              const wrWidth = Math.min((stage.win_rate / 100) * 100, 100);
+
+              return (
+                <Glass 
+                  key={stage.stage_name} 
+                  className={"p-0 overflow-hidden transition-all duration-300 " + (isCurrent ? "ring-2 ring-amber-500/50" : "")}
+                >
+                  {/* Stage Header */}
+                  <div className={"px-4 py-3 border-b border-white/5 " + colors.bg}>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <span className="text-xl">{icon}</span>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className={"text-sm font-black " + colors.text}>{stage.stage_name}</span>
+                            {isCurrent && (
+                              <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-400 text-[9px] font-bold">CURRENT</span>
+                            )}
+                            <span className="text-[10px] text-slate-500">Stage {stage.stage_index}</span>
+                          </div>
+                          <div className="text-[9px] text-slate-500">
+                            {stage.episodes} episodes • {fmt.num(stage.timesteps / 1000, 1)}K steps • {stage.total_trades} trades
+                          </div>
+                        </div>
+                      </div>
+                      
+                      {/* Quick stats */}
+                      <div className="flex items-center gap-4 text-right">
+                        <div>
+                          <div className="text-[9px] text-slate-500">Win Rate</div>
+                          <div className={"mono text-sm font-bold " + (stage.win_rate >= 50 ? "text-emerald-400" : stage.win_rate >= 40 ? "text-amber-400" : "text-rose-400")}>
+                            {fmt.pct(stage.win_rate, 1)}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-[9px] text-slate-500">Avg P&L</div>
+                          <div className={"mono text-sm font-bold " + (stage.avg_pnl >= 0 ? "text-emerald-400" : "text-rose-400")}>
+                            €{fmt.num(stage.avg_pnl, 0)}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-[9px] text-slate-500">Profit Factor</div>
+                          <div className={"mono text-sm font-bold " + (stage.avg_profit_factor >= 1.0 ? "text-emerald-400" : stage.avg_profit_factor >= 0.8 ? "text-amber-400" : "text-rose-400")}>
+                            {fmt.num(stage.avg_profit_factor, 2)}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Stage Details */}
+                  <div className="p-4">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {/* Left: Bars */}
+                      <div className="space-y-3">
+                        {/* Win Rate Bar */}
+                        <div>
+                          <div className="flex justify-between text-[10px] mb-1">
+                            <span className="text-slate-400">Win Rate</span>
+                            <span className="text-slate-300">{fmt.pct(stage.win_rate, 1)} ± {fmt.pct(stage.win_rate_std, 1)}</span>
+                          </div>
+                          <div className="h-2 bg-slate-800 rounded-full overflow-hidden">
+                            <div 
+                              className={(stage.win_rate >= 50 ? "bg-emerald-500" : stage.win_rate >= 40 ? "bg-amber-500" : "bg-rose-500") + " h-full rounded-full transition-all duration-500"}
+                              style={{ width: `${wrWidth}%` }}
+                            />
+                          </div>
+                        </div>
+
+                        {/* P&L Bar */}
+                        <div>
+                          <div className="flex justify-between text-[10px] mb-1">
+                            <span className="text-slate-400">Total P&L</span>
+                            <span className={stage.total_pnl >= 0 ? "text-emerald-400" : "text-rose-400"}>
+                              €{fmt.num(stage.total_pnl, 0)}
+                            </span>
+                          </div>
+                          <div className="h-2 bg-slate-800 rounded-full overflow-hidden">
+                            <div 
+                              className={(stage.total_pnl >= 0 ? "bg-emerald-500" : "bg-rose-500") + " h-full rounded-full transition-all duration-500"}
+                              style={{ width: `${pnlWidth}%` }}
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Right: Metrics + Improvement */}
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className={"rounded-lg p-2 " + colors.bg + " " + colors.border + " border"}>
+                          <div className="text-[9px] text-slate-500">Avg Trades</div>
+                          <div className="mono text-sm font-bold text-white">{fmt.num(stage.avg_trades, 1)}</div>
+                        </div>
+                        <div className={"rounded-lg p-2 " + colors.bg + " " + colors.border + " border"}>
+                          <div className="text-[9px] text-slate-500">Avg DD</div>
+                          <div className={"mono text-sm font-bold " + (stage.avg_drawdown <= 3 ? "text-emerald-400" : stage.avg_drawdown <= 6 ? "text-amber-400" : "text-rose-400")}>
+                            {fmt.pct(stage.avg_drawdown, 1)}
+                          </div>
+                        </div>
+                        <div className={"rounded-lg p-2 " + colors.bg + " " + colors.border + " border"}>
+                          <div className="text-[9px] text-slate-500">Avg R-Multiple</div>
+                          <div className={"mono text-sm font-bold " + (stage.avg_r_multiple >= 0 ? "text-emerald-400" : "text-rose-400")}>
+                            {fmt.num(stage.avg_r_multiple, 3)}
+                          </div>
+                        </div>
+                        <div className={"rounded-lg p-2 " + colors.bg + " " + colors.border + " border"}>
+                          <div className="text-[9px] text-slate-500">Avg Reward</div>
+                          <div className={"mono text-sm font-bold " + (stage.avg_reward >= 0 ? "text-emerald-400" : "text-rose-400")}>
+                            {fmt.num(stage.avg_reward, 3)}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Improvement from Previous Stage */}
+                    {imp && (
+                      <div className="mt-3 pt-3 border-t border-white/5">
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className="text-[10px] text-slate-500">vs Previous Stage:</span>
+                        </div>
+                        <div className="flex flex-wrap gap-3">
+                          <div className="flex items-center gap-1">
+                            <span className="text-[10px] text-slate-500">WR:</span>
+                            <DeltaValue value={imp.win_rate_delta} suffix="%" />
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <span className="text-[10px] text-slate-500">P&L:</span>
+                            <DeltaValue value={imp.pnl_delta} suffix="€" />
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <span className="text-[10px] text-slate-500">PF:</span>
+                            <DeltaValue value={imp.profit_factor_delta} />
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <span className="text-[10px] text-slate-500">Reward:</span>
+                            <DeltaValue value={imp.reward_delta} />
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </Glass>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Legend */}
+        {hasData && (
+          <Glass className="p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <span className="text-sm">📖</span>
+              <span className="text-xs font-black text-white">Stage Progression Guide</span>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 text-[10px] text-slate-400">
+              <div>
+                <span className="text-indigo-400 font-bold">Phase 0 (Discovery):</span> EXPLORER, EXPERIMENTER - Pure exploration
+              </div>
+              <div>
+                <span className="text-cyan-400 font-bold">Phase 1 (Foundation):</span> TREND_STUDENT, SESSION_STUDENT, TIMING_STUDENT
+              </div>
+              <div>
+                <span className="text-amber-400 font-bold">Phase 2 (Development):</span> INTEGRATOR, RISK_MANAGER, STRATEGIST
+              </div>
+              <div>
+                <span className="text-emerald-400 font-bold">Phase 3 (Mastery):</span> PROFESSIONAL, LIVE_READY - Prop firm ready
+              </div>
+              <div>
+                <span className="text-slate-300 font-bold">Win Rate Target:</span> ≥50% good, ≥40% acceptable
+              </div>
+              <div>
+                <span className="text-slate-300 font-bold">P&L Target:</span> Positive avg P&L indicates profitability
+              </div>
+            </div>
+          </Glass>
+        )}
+      </div>
+    );
+  }
+
   function CurriculumTab({ data, derived, baseline=null, compareOn=false }) {
     const cp = data.curriculum_progress || {};
     const reqs = data.requirements_by_stage || null;
@@ -2285,6 +3427,7 @@
     const skillAssessment = cp.skill_assessment || null;
     const compositeScore = cp.composite_score || null;
     const learningVelocity = cp.learning_velocity || null;
+    const regimeAssessment = cp.regime_assessment || null;
 
     return (
       <div className="space-y-4 animate-fade-in">
@@ -2515,6 +3658,11 @@
           baseline={baseline}
           compareOn={compareOn}
         />
+
+        {/* ═══════════════════════════════════════════════════════════════════════
+            REGIME SKILL ASSESSMENT (Quality Gates)
+        ═══════════════════════════════════════════════════════════════════════ */}
+        <RegimeAssessmentPanel regimeAssessment={regimeAssessment} />
 
         {/* Debug (collapsed) */}
         <details className="group">
@@ -3197,9 +4345,11 @@
     const tabs = [
       { id: "overview", label: "Overview", icon: "📊" },
       { id: "alerts", label: "Alerts", icon: "🚨", badge: counts.critical + counts.warning },
+      { id: "signals", label: "Signals", icon: "🎛️" },
+      { id: "stages", label: "Stages", icon: "📈" },
       { id: "curriculum", label: "Curriculum", icon: "🎓" },
       { id: "learning", label: "Learning", icon: "🧠" },
-      { id: "charts", label: "Charts", icon: "📈" },
+      { id: "charts", label: "Charts", icon: "📉" },
     ];
 
     const doFreeze = () => {
@@ -3335,6 +4485,12 @@
               )}
               {activeTab === "alerts" && (
                 <AlertsTab alerts={alerts} counts={counts} derived={derived} data={data} />
+              )}
+              {activeTab === "signals" && (
+                <SignalsTab data={data} />
+              )}
+              {activeTab === "stages" && (
+                <StageProgressTab data={data} />
               )}
               {activeTab === "curriculum" && (
                 <CurriculumTab data={data} derived={derived} baseline={baseline} compareOn={compareOn && !!baseline} />

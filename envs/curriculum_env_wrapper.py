@@ -476,6 +476,17 @@ class CurriculumEnvWrapper(gym.Wrapper):
         # This ensures proper idempotency (no double-counting) and deterministic transition handling
         ep_stats = info.get("episode_stats", {})
         from envs.curriculum_manager import EpisodeMetrics
+        import math
+        
+        # F-1 FIX: Handle profit_factor=inf before safe_float converts it to 0
+        # profit_factor=inf means no losses, which should be treated as a strong positive (cap to 10.0)
+        pf_raw = ep_stats.get("profit_factor", 0.0)
+        if pf_raw is not None and (math.isinf(pf_raw) if isinstance(pf_raw, float) else False):
+            pf_value = 10.0  # Cap inf to max meaningful value
+        elif pf_raw is not None and isinstance(pf_raw, (int, float)) and pf_raw > 1e6:
+            pf_value = 10.0  # Cap very large values too
+        else:
+            pf_value = clamp(safe_float(pf_raw, 0.0), 0.0, 10.0)
         
         metrics = EpisodeMetrics(
             total_pnl=safe_float(ep_stats.get("total_pnl", info.get("total_pnl", 0.0)), 0.0),
@@ -487,7 +498,7 @@ class CurriculumEnvWrapper(gym.Wrapper):
             daily_drawdown=clamp(safe_float(ep_stats.get("daily_drawdown", 0.0), 0.0), 0.0, 1.0),
             dd_breach=bool(ep_stats.get("dd_breach", info.get("dd_breach", False))),
             avg_r_multiple=safe_float(ep_stats.get("avg_r_multiple", 0.0), 0.0),
-            profit_factor=clamp(safe_float(ep_stats.get("profit_factor", 0.0), 0.0), 0.0, 10.0),
+            profit_factor=pf_value,  # F-1 FIX: Use pre-processed value
             avg_entry_quality=clamp(safe_float(ep_stats.get("avg_entry_quality", 0.5), 0.5), 0.0, 1.0),
             episode_length=self._episode_timesteps,
             episode_reward=self._episode_reward,
@@ -505,6 +516,10 @@ class CurriculumEnvWrapper(gym.Wrapper):
         
         # Use on_episode_end() for deterministic episode recording and transition handling
         # This ensures idempotency (won't double-count if called twice)
+        
+        # F-2 FIX: Capture old_stage BEFORE on_episode_end() which may update current_stage
+        old_stage = self.manager.current_stage
+        
         result = self.manager.on_episode_end(
             metrics=metrics,
             timesteps=self._episode_timesteps,
@@ -513,19 +528,23 @@ class CurriculumEnvWrapper(gym.Wrapper):
         )
         
         # Check for stage transitions from on_episode_end result
-        old_stage = self.manager.current_stage
+        # Use 'stage' from result (captured before transition) as the old stage name
         transitioned = result.get("promoted", False) or result.get("demoted", False)
         new_stage_name = result.get("transition_to")
+        old_stage_name = result.get("stage", old_stage.name)  # Fallback to captured value
         
         if transitioned and new_stage_name:
             new_stage = CurriculumStage[new_stage_name]
+            # Get old stage from result's stage field (captured before transition)
+            old_stage_from_result = CurriculumStage[old_stage_name]
+            
             if self.verbose:
                 direction = "↑" if result.get("promoted") else "↓"
-                logger.info(f"Stage transition: {old_stage.name} {direction} {new_stage.name}")
+                logger.info(f"Stage transition: {old_stage_name} {direction} {new_stage.name}")
             
             if self.stage_change_callback is not None:
                 try:
-                    self.stage_change_callback(old_stage, new_stage)
+                    self.stage_change_callback(old_stage_from_result, new_stage)
                 except Exception as e:
                     logger.warning(f"Stage change callback error: {e}")
         
@@ -620,6 +639,13 @@ class CurriculumEnvWrapper(gym.Wrapper):
         self.manager._review_tick_episode = loaded._review_tick_episode
         self.manager._recovery_state = loaded._recovery_state
         self.manager._review_state = loaded._review_state
+        
+        # F-3 FIX: Restore RNG state for reproducible mixed-stage sampling
+        try:
+            if hasattr(loaded, '_rng') and hasattr(self.manager, '_rng'):
+                self.manager._rng.bit_generator.state = loaded._rng.bit_generator.state
+        except Exception as e:
+            logger.warning(f"Could not restore RNG state: {e}")
         
         self.manager._rolling_stats_dirty = True
         
