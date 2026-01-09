@@ -61,3 +61,4 @@ copilot-instructions.md
 # MT5 credentials (keep out of version control)
 live/mt5_credentials.py
 live/mt5_credentials.*
+runs/curriculum/curriculum_ppo_1/events.out.tfevents.1766109273.Kusha.13088.0
