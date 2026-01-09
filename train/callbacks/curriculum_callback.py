@@ -21,6 +21,14 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback
 
+# Optional SB3-contrib mask utilities for efficient action mask extraction
+try:
+    from sb3_contrib.common.maskable.utils import get_action_masks as sb3_get_action_masks
+    SB3_MASK_UTILS_AVAILABLE = True
+except ImportError:
+    sb3_get_action_masks = None  # type: ignore
+    SB3_MASK_UTILS_AVAILABLE = False
+
 from ..controllers import SmartEntropyController, TrainingHealthWatchdog
 
 logger = logging.getLogger(__name__)
@@ -44,6 +52,7 @@ class CurriculumTrainingCallback(BaseCallback):
         total_timesteps: int,
         log_interval_steps: int = 50_000,
         save_path: str = "logs/curriculum",
+        metrics_file: str = "logs/training/live_metrics.json",  # Dashboard metrics path
         verbose: int = 1,
         enable_lr_warmup: bool = True,
         enable_checkpoints: bool = True,
@@ -66,6 +75,7 @@ class CurriculumTrainingCallback(BaseCallback):
         self.total_timesteps = total_timesteps
         self.log_interval_steps = log_interval_steps
         self.save_path = Path(save_path)
+        self.metrics_file = Path(metrics_file)  # Dashboard metrics path
         self.enable_lr_warmup = enable_lr_warmup
         self.enable_checkpoints = enable_checkpoints
         self.enable_entropy_schedule = enable_entropy_schedule
@@ -207,6 +217,26 @@ class CurriculumTrainingCallback(BaseCallback):
         # Save initial metrics file so dashboard sees data immediately
         self._save_live_metrics()
     
+    def _on_rollout_end(self) -> None:
+        """Called after each rollout batch completes.
+        
+        This is the best time to update PPO diagnostics since SB3 has just
+        finished a training step and updated its logger with fresh metrics.
+        """
+        self._update_ppo_diagnostics()
+        self._maybe_save_live_metrics(force=False)
+    
+    def _maybe_save_live_metrics(self, force: bool = False) -> None:
+        """Throttled metrics save - max 1Hz to avoid I/O overhead.
+        
+        Args:
+            force: If True, save regardless of time since last save.
+        """
+        now = time.time()
+        if force or (now - self._last_metrics_save >= 1.0):
+            self._save_live_metrics_inline()
+            self._last_metrics_save = now
+    
     def _apply_lr_warmup(self) -> None:
         """Apply learning rate warmup based on curriculum transition state.
         
@@ -282,23 +312,34 @@ class CurriculumTrainingCallback(BaseCallback):
         try:
             if hasattr(self, 'training_env') and self.training_env is not None:
                 venv = self.training_env
-                # Unwrap to get base env with action_masks
-                current_env: Any = venv
-                while hasattr(current_env, 'venv'):
-                    current_env = getattr(current_env, 'venv')
-                if hasattr(current_env, 'envs'):
-                    envs_list = getattr(current_env, 'envs')
-                    if envs_list and len(envs_list) > 0:
-                        base_env: Any = envs_list[0]
-                        while hasattr(base_env, 'env'):
-                            if hasattr(base_env, 'action_masks') and callable(getattr(base_env, 'action_masks')):
+                
+                # PREFER: Use sb3-contrib helper if available (cleanest approach)
+                if SB3_MASK_UTILS_AVAILABLE and sb3_get_action_masks is not None:
+                    try:
+                        masks = sb3_get_action_masks(venv)
+                        if masks is not None and len(masks) > 0:
+                            n_valid_actions = int(np.sum(masks[0]))
+                    except Exception as e:
+                        logger.debug(f"sb3_get_action_masks failed, falling back: {e}")
+                
+                # FALLBACK: Manual unwrap if sb3 helper unavailable or failed
+                if n_valid_actions is None:
+                    current_env: Any = venv
+                    while hasattr(current_env, 'venv'):
+                        current_env = getattr(current_env, 'venv')
+                    if hasattr(current_env, 'envs'):
+                        envs_list = getattr(current_env, 'envs')
+                        if envs_list and len(envs_list) > 0:
+                            base_env: Any = envs_list[0]
+                            while hasattr(base_env, 'env'):
+                                if hasattr(base_env, 'action_masks') and callable(getattr(base_env, 'action_masks')):
+                                    mask = base_env.action_masks()
+                                    n_valid_actions = int(np.sum(mask))
+                                    break
+                                base_env = base_env.env
+                            if n_valid_actions is None and hasattr(base_env, 'action_masks'):
                                 mask = base_env.action_masks()
                                 n_valid_actions = int(np.sum(mask))
-                                break
-                            base_env = base_env.env
-                        if n_valid_actions is None and hasattr(base_env, 'action_masks'):
-                            mask = base_env.action_masks()
-                            n_valid_actions = int(np.sum(mask))
         except Exception as e:
             logger.debug(f"Could not get action masks for entropy normalization: {e}")
         
@@ -652,8 +693,8 @@ class CurriculumTrainingCallback(BaseCallback):
             self._cur_rewards[i] = 0.0
             self._cur_lens[i] = 0
             
-            # Save live metrics
-            self._save_live_metrics()
+            # Save live metrics (throttled - max 1Hz)
+            self._maybe_save_live_metrics(force=False)
 
         # Collect PPO diagnostics from SB3 logger
         self._update_ppo_diagnostics()
@@ -684,11 +725,8 @@ class CurriculumTrainingCallback(BaseCallback):
             self._log_progress()
             self._last_log = self.num_timesteps
         
-        # Save metrics every 1 second (time-based, not step-based)
-        now = time.time()
-        if now - self._last_metrics_save >= 1.0:
-            self._save_live_metrics()
-            self._last_metrics_save = now
+        # Periodic metrics save (throttled in _maybe_save_live_metrics)
+        self._maybe_save_live_metrics(force=False)
 
         # Goal-based stopping check (only if enabled)
         if self.goal_based_stopping and self.curriculum_manager is not None:
@@ -977,7 +1015,7 @@ class CurriculumTrainingCallback(BaseCallback):
     def _save_live_metrics_inline(self) -> None:
         """Inline implementation of metrics saving."""
         try:
-            metrics_file = Path("logs/training/live_metrics.json")
+            metrics_file = self.metrics_file  # Use configured path
             metrics_file.parent.mkdir(parents=True, exist_ok=True)
             
             n_recent = min(100, len(self._ep_rewards))
@@ -1005,6 +1043,17 @@ class CurriculumTrainingCallback(BaseCallback):
             max_drawdown = float(np.max(list(self._ep_drawdowns)[-50:])) if self._ep_drawdowns else 0.0
             mean_trades = float(np.mean(list(self._ep_trades)[-50:])) if self._ep_trades else 0.0
             total_trades = self._cumulative_trades
+            
+            # Calculate quality metrics (recent 50 episodes)
+            mean_profit_factor = float(np.mean(list(self._ep_profit_factors)[-50:])) if self._ep_profit_factors else 0.0
+            mean_r_multiple = float(np.mean(list(self._ep_r_multiples)[-50:])) if self._ep_r_multiples else 0.0
+            mean_entry_quality = float(np.mean(list(self._ep_entry_quality)[-50:])) if self._ep_entry_quality else 0.5
+            
+            # Compute reward component averages
+            reward_component_avgs = {}
+            for comp_name, total in self._reward_component_totals.items():
+                count = self._reward_component_counts.get(comp_name, 1)
+                reward_component_avgs[comp_name] = total / max(count, 1)
             
             metrics = {
                 "timestamp": datetime.now().isoformat(),
@@ -1034,12 +1083,27 @@ class CurriculumTrainingCallback(BaseCallback):
                     "mean_win_rate": mean_win_rate * 100,
                     "max_drawdown": max_drawdown * 100,
                 },
+                # NEW: Quality metrics for dashboard "Quality" tab
+                "quality": {
+                    "mean_profit_factor": mean_profit_factor,
+                    "mean_r_multiple": mean_r_multiple,
+                    "mean_entry_quality": mean_entry_quality,
+                },
+                # NEW: Exit reason distribution for dashboard "Exits" tab
+                "exit_stats": dict(self._exit_reason_counts),
+                # NEW: Reward components for dashboard "Signals" tab
+                "reward_components": reward_component_avgs,
                 "curriculum_stage": self.curriculum_manager.current_stage.name if self.curriculum_manager else "N/A",
                 "recent_rewards": [float(x) for x in list(self._ep_rewards)[-n_recent:]],
                 "recent_pnls": [float(x) for x in list(self._ep_pnls)[-n_recent:]],
+                # NEW: Additional recent arrays for dashboard charts
+                "recent_win_rates": [float(x) for x in list(self._ep_win_rates)[-n_recent:]],
+                "recent_drawdowns": [float(x) for x in list(self._ep_drawdowns)[-n_recent:]],
+                "recent_trades": [int(x) for x in list(self._ep_trades)[-n_recent:]],
+                "recent_profit_factors": [float(x) for x in list(self._ep_profit_factors)[-n_recent:]],
                 "stage_history": list(self._stage_history),
                 "stage_comparison": self._get_stage_comparison_data(),
-                # Legacy flat fields
+                # Legacy flat fields for backward compatibility
                 "timesteps": self.num_timesteps,
                 "total_timesteps": self.total_timesteps,
                 "mean_reward": mean_reward,

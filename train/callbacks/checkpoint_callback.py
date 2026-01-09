@@ -37,27 +37,29 @@ class CurriculumCheckpointCallback(BaseCallback):
     ):
         super().__init__(verbose)
         self.curriculum_manager = curriculum_manager
-        self.save_freq = save_freq
+        # NOTE: We intentionally match SB3 CheckpointCallback semantics:
+        # save_freq is measured in callback calls (n_calls), not global timesteps.
+        # This keeps curriculum state checkpoints synchronized with model checkpoints
+        # when both callbacks share the same save_freq.
+        self.save_freq = int(save_freq)
         self.save_path = Path(save_path)
         self.name_prefix = name_prefix
-        self._last_save = 0
     
     def _on_step(self) -> bool:
         if self.curriculum_manager is None:
             return True
         
-        # Save at same frequency as CheckpointCallback
-        if self.num_timesteps - self._last_save >= self.save_freq:
+        # Save at same frequency as SB3 CheckpointCallback (n_calls-based)
+        if self.save_freq > 0 and (self.n_calls % self.save_freq == 0):
             self.save_path.mkdir(parents=True, exist_ok=True)
             
-            state_path = self.save_path / f"{self.name_prefix}_{self.num_timesteps}_steps.json"
+            step = int(self.num_timesteps)
+            state_path = self.save_path / f"{self.name_prefix}_{step}_steps.json"
             try:
                 self.curriculum_manager.save(state_path)
                 if self.verbose >= 1:
                     logger.info(f"  📁 Curriculum state saved: {state_path.name}")
             except Exception as e:
                 logger.warning(f"  ⚠️ Curriculum state save failed: {e}")
-            
-            self._last_save = self.num_timesteps
         
         return True

@@ -930,9 +930,11 @@ def run_optuna_optimization(
             eval_env: Optional[VecEnv] = None
             try:
                 # Train env uses masking + frame stack
+                # COUPLING FIX: Use optuna-specific monitor dir to avoid collisions
                 train_env = create_vec_envs(
                     train_data, base_cfg,
                     n_envs=n_envs, seed=trial.number + 100 * fi,
+                    monitor_dir=f"logs/optuna/trial_{trial.number}",
                     use_action_masking=True,
                     frame_stack=frame_stack,
                 )
@@ -944,9 +946,11 @@ def run_optuna_optimization(
                 model = build_model(train_env)
 
                 # Create callback for live metrics during Optuna
+                # COUPLING FIX: Trial-specific metrics file to avoid collisions
                 optuna_callback = VecEpisodeTradingCallback(
                     total_timesteps=per_fold_steps,
                     log_interval_steps=per_fold_steps + 1,  # Don't spam logs, just save metrics
+                    metrics_file=f"logs/optuna/trial_{trial.number}/live_metrics.json",
                 )
 
                 # Train (chunked) then evaluate on VAL with adversarial execution
@@ -1078,9 +1082,15 @@ def train_prop_firm_agent(
     test_environment(data, config)
 
     use_masking = bool(MASKABLE_AVAILABLE)
+    
+    # COUPLING FIX: Use separate monitor directories to avoid collisions
+    # train_prop_firm_agent -> logs/propfirm/training (not logs/training which curriculum uses)
+    train_monitor_dir = "logs/propfirm/training"
+    
     train_env = create_vec_envs(
         data, config,
         n_envs=n_envs, seed=42,
+        monitor_dir=train_monitor_dir,
         use_action_masking=use_masking,
         frame_stack=frame_stack,
     )
@@ -1186,12 +1196,15 @@ def train_prop_firm_agent(
 
     # AUDIT FIX: Use MaskableEvalCallback when using MaskablePPO for mask-aware evaluation
     # Standard EvalCallback doesn't pass action masks during predict(), causing illegal actions
+    # COUPLING FIX: eval_freq also needs n_calls conversion
+    eval_freq_calls = max(1, eval_freq // n_envs)
+    
     if use_masking and MASKABLE_EVAL_AVAILABLE and MaskableEvalCallback is not None:
         eval_cb = MaskableEvalCallback(
             eval_env_vec,
             best_model_save_path=str(model_dir / "best"),
-            log_path="logs/eval",
-            eval_freq=eval_freq,
+            log_path="logs/propfirm/eval",  # COUPLING FIX: propfirm-specific eval logs
+            eval_freq=eval_freq_calls,
             deterministic=True,
             n_eval_episodes=5,
         )
@@ -1199,15 +1212,26 @@ def train_prop_firm_agent(
         eval_cb = EvalCallback(
             eval_env_vec,
             best_model_save_path=str(model_dir / "best"),
-            log_path="logs/eval",
-            eval_freq=eval_freq,
+            log_path="logs/propfirm/eval",  # COUPLING FIX: propfirm-specific eval logs
+            eval_freq=eval_freq_calls,
             deterministic=True,
             n_eval_episodes=5,
         )
 
     callbacks: List[BaseCallback] = [
-        VecEpisodeTradingCallback(total_timesteps=total_timesteps, log_interval_steps=50_000),
-        CheckpointCallback(save_freq=checkpoint_freq, save_path=str(checkpoint_dir), name_prefix="propfirm_ppo"),
+        VecEpisodeTradingCallback(
+            total_timesteps=total_timesteps,
+            log_interval_steps=50_000,
+            metrics_file="logs/propfirm/live_metrics.json",
+        ),
+        # COUPLING FIX: Convert checkpoint_freq from global timesteps to n_calls
+        # SB3 CheckpointCallback.save_freq is measured in n_calls, not timesteps
+        # n_calls = num_timesteps // n_envs, so divide freq by n_envs
+        CheckpointCallback(
+            save_freq=max(1, checkpoint_freq // n_envs),
+            save_path=str(checkpoint_dir),
+            name_prefix="propfirm_ppo",
+        ),
         eval_cb,
     ]
 
@@ -1622,12 +1646,17 @@ def train_curriculum_agent(
         )
     
     # Create callbacks
+    # COUPLING FIX: Convert checkpoint_freq from global timesteps to n_calls
+    # SB3 callbacks use n_calls (= num_timesteps // n_envs), not raw timesteps
+    save_freq_calls = max(1, checkpoint_freq // n_envs)
+    
     callbacks: List[BaseCallback] = [
         CurriculumTrainingCallback(
             curriculum_manager=curriculum_manager,
             total_timesteps=total_timesteps,
             log_interval_steps=50_000,
             save_path=str(save_dir),
+            metrics_file=str(save_dir / "live_metrics.json"),  # Curriculum-specific metrics
             # Pass user's hyperparameters as base for adaptive controllers
             base_ent_coef=ent_coef,
             base_clip_range=clip_range,  # Pass CLI clip-range to adaptive controller
@@ -1640,13 +1669,13 @@ def train_curriculum_agent(
             mastery_confirmation_episodes=mastery_confirmation_episodes,
         ),
         CheckpointCallback(
-            save_freq=checkpoint_freq,
+            save_freq=save_freq_calls,
             save_path=str(save_dir / "checkpoints"),
             name_prefix="curriculum_ppo",
         ),
         CurriculumCheckpointCallback(
             curriculum_manager=curriculum_manager,
-            save_freq=checkpoint_freq,
+            save_freq=save_freq_calls,
             save_path=str(save_dir / "checkpoints"),
             name_prefix="curriculum_state",
         ),
@@ -1658,7 +1687,7 @@ def train_curriculum_agent(
             eval_env,
             best_model_save_path=str(save_dir / "best"),
             log_path=str(save_dir / "eval_logs"),
-            eval_freq=max(50_000, checkpoint_freq),
+            eval_freq=max(50_000 // n_envs, save_freq_calls),  # COUPLING FIX: n_calls semantics
             deterministic=True,
             n_eval_episodes=5,
         )
@@ -1667,7 +1696,7 @@ def train_curriculum_agent(
             eval_env,
             best_model_save_path=str(save_dir / "best"),
             log_path=str(save_dir / "eval_logs"),
-            eval_freq=max(50_000, checkpoint_freq),
+            eval_freq=max(50_000 // n_envs, save_freq_calls),  # COUPLING FIX: n_calls semantics
             deterministic=True,
             n_eval_episodes=5,
         )

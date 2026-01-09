@@ -38,10 +38,17 @@ class VecEpisodeTradingCallback(BaseCallback):
     # Maximum episodes to keep in rolling window
     MAX_EPISODE_HISTORY = 1000
 
-    def __init__(self, total_timesteps: int, log_interval_steps: int = 50_000, verbose: int = 1):
+    def __init__(
+        self,
+        total_timesteps: int,
+        log_interval_steps: int = 50_000,
+        verbose: int = 1,
+        metrics_file: str = "logs/training/live_metrics.json",
+    ):
         super().__init__(verbose)
         self.total_timesteps = total_timesteps
         self.log_interval_steps = log_interval_steps
+        self.metrics_file = Path(metrics_file)
         self._last_log = 0
         self._n_envs = 1
 
@@ -95,6 +102,11 @@ class VecEpisodeTradingCallback(BaseCallback):
         self._cur_lens = [0 for _ in range(self._n_envs)]
         self._start_time = time.time()  # Initialize FPS tracking
         self._last_metrics_save = self._start_time  # Initialize metrics save throttle
+        # Ensure dashboard sees a file immediately
+        try:
+            self._save_live_metrics()
+        except Exception:
+            pass
 
     def _on_rollout_end(self) -> None:
         """Capture PPO diagnostics after each rollout (before update)."""
@@ -216,7 +228,7 @@ class VecEpisodeTradingCallback(BaseCallback):
             # AUDIT FIX (CRIT-5): Update cumulative stats (O(1) instead of O(n) sum)
             self._cumulative_pnl += pnl
             self._cumulative_trades += trades
-            self._cumulative_wins += int(trades * wr) if trades > 0 else 0
+            self._cumulative_wins += int(round(trades * wr)) if trades > 0 else 0
             self._cumulative_episodes += 1
 
             # Get episode_stats from env (contains aggregated trade metrics)
@@ -251,7 +263,7 @@ class VecEpisodeTradingCallback(BaseCallback):
             # Exit reason tracking from episode_stats (contains all trade close reasons)
             exit_dist = ep_stats.get("exit_quality_distribution", {}) or {}
             for reason, count in exit_dist.items():
-                self._exit_reason_counts[reason] = self._exit_reason_counts.get(reason, 0) + count
+                self._exit_reason_counts[reason] = self._exit_reason_counts.get(reason, 0) + int(count)
 
             # Reward component tracking from episode_stats
             reward_components = ep_stats.get("reward_components", {}) or {}
@@ -345,7 +357,7 @@ class VecEpisodeTradingCallback(BaseCallback):
     def _save_live_metrics(self) -> None:
         """Save current training metrics to JSON for dashboard."""
         try:
-            metrics_file = Path("logs/training/live_metrics.json")
+            metrics_file = self.metrics_file
             metrics_file.parent.mkdir(parents=True, exist_ok=True)
             
             # Get recent episodes for charts
@@ -501,7 +513,18 @@ class VecEpisodeTradingCallback(BaseCallback):
             tmp_file = metrics_file.with_suffix('.json.tmp')
             with open(tmp_file, 'w', encoding='utf-8') as f:
                 json.dump(metrics, f)  # No indent for faster writes
-            tmp_file.replace(metrics_file)  # Atomic on POSIX, near-atomic on Windows
+            # Atomic on POSIX; may fail on Windows if file is being read (dashboard)
+            try:
+                tmp_file.replace(metrics_file)
+            except PermissionError:
+                import shutil
+                try:
+                    shutil.copy2(tmp_file, metrics_file)
+                    tmp_file.unlink(missing_ok=True)
+                except Exception:
+                    with open(metrics_file, 'w', encoding='utf-8') as f:
+                        json.dump(metrics, f)
+                    tmp_file.unlink(missing_ok=True)
                 
             # Debug: confirm file was written
             if len(self._ep_rewards) <= 5:

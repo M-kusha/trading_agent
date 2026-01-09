@@ -1000,8 +1000,15 @@ def get_timing_student_config() -> CurriculumStageConfig:
             
             hard_block_penalty=0.02,
             soft_block_penalty=0.01,
-            per_step_shaping_enabled=False,
-            holding_cost_per_bar=0.0,
+            
+            # PER-STEP SHAPING: Enable patience teaching
+            per_step_shaping_enabled=True,
+            holding_cost_per_bar=0.0,     # No holding cost yet
+            patience_shaping_enabled=True,
+            patience_bonus_per_bar=0.001, # Small bonus for waiting when setups are weak
+            patience_quality_threshold=0.35,
+            per_step_min=-0.03,
+            per_step_max=0.03,
             
             exploration_bonus=0.02,
             directional_accuracy_weight=1.1,
@@ -1227,8 +1234,15 @@ def get_integrator_config() -> CurriculumStageConfig:
             
             hard_block_penalty=0.025,
             soft_block_penalty=0.012,
-            per_step_shaping_enabled=False,
-            holding_cost_per_bar=0.0,
+            
+            # PER-STEP SHAPING: Strengthen patience teaching
+            per_step_shaping_enabled=True,
+            holding_cost_per_bar=0.0002,  # Light holding cost - encourage selectivity
+            patience_shaping_enabled=True,
+            patience_bonus_per_bar=0.0012, # Slightly stronger patience bonus
+            patience_quality_threshold=0.38,
+            per_step_min=-0.04,
+            per_step_max=0.04,
             
             exploration_bonus=0.015,
             directional_accuracy_weight=1.05,
@@ -1457,8 +1471,15 @@ def get_risk_manager_config() -> CurriculumStageConfig:
             
             hard_block_penalty=0.03,
             soft_block_penalty=0.015,
-            per_step_shaping_enabled=False,
-            holding_cost_per_bar=0.0,
+            
+            # PER-STEP SHAPING: Full patience teaching
+            per_step_shaping_enabled=True,
+            holding_cost_per_bar=0.0003,  # Light holding cost
+            patience_shaping_enabled=True,
+            patience_bonus_per_bar=0.0015, # Stronger patience bonus
+            patience_quality_threshold=0.40,
+            per_step_min=-0.04,
+            per_step_max=0.04,
             
             exploration_bonus=0.01,
             directional_accuracy_weight=1.0,
@@ -1687,8 +1708,15 @@ def get_strategist_config() -> CurriculumStageConfig:
             
             hard_block_penalty=0.035,
             soft_block_penalty=0.018,
-            per_step_shaping_enabled=False,
-            holding_cost_per_bar=0.0,
+            
+            # PER-STEP SHAPING: Strong patience discipline
+            per_step_shaping_enabled=True,
+            holding_cost_per_bar=0.0004,  # Moderate holding cost
+            patience_shaping_enabled=True,
+            patience_bonus_per_bar=0.0018, # Strong patience bonus
+            patience_quality_threshold=0.42,
+            per_step_min=-0.05,
+            per_step_max=0.05,
             
             exploration_bonus=0.005,
             directional_accuracy_weight=1.0,
@@ -1922,8 +1950,15 @@ def get_professional_config() -> CurriculumStageConfig:
             
             hard_block_penalty=0.04,
             soft_block_penalty=0.02,
-            per_step_shaping_enabled=False,
-            holding_cost_per_bar=0.0,
+            
+            # PER-STEP SHAPING: Professional patience mastery
+            per_step_shaping_enabled=True,
+            holding_cost_per_bar=0.0005,  # Real holding cost
+            patience_shaping_enabled=True,
+            patience_bonus_per_bar=0.002,  # Full patience bonus
+            patience_quality_threshold=0.45,
+            per_step_min=-0.05,
+            per_step_max=0.05,
             
             exploration_bonus=0.0,
             directional_accuracy_weight=1.0,
@@ -2171,8 +2206,15 @@ def get_live_ready_config() -> CurriculumStageConfig:
             
             hard_block_penalty=0.045,
             soft_block_penalty=0.022,
-            per_step_shaping_enabled=False,
-            holding_cost_per_bar=0.0,
+            
+            # PER-STEP SHAPING: Live-ready patience mastery
+            per_step_shaping_enabled=True,
+            holding_cost_per_bar=0.0005,  # Real holding cost
+            patience_shaping_enabled=True,
+            patience_bonus_per_bar=0.002,  # Full patience bonus
+            patience_quality_threshold=0.48,
+            per_step_min=-0.05,
+            per_step_max=0.05,
             
             exploration_bonus=0.0,
             directional_accuracy_weight=1.0,
