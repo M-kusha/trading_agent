@@ -497,8 +497,12 @@ class PropFirmTradingEnv(
         last_idx = (self._min_data_len - 1)
         remaining_bars_next = last_idx - next_step
 
-        # Entry requires at least 1 bar AFTER fill so position isn't instantly truncated
-        can_enter_fill = remaining_bars_next >= (latency + 1)
+        # Entry gating: account for fill ordering (fill check happens at START of step).
+        # An entry created this step with fill_step = current_step + latency fills when
+        # current_step >= fill_step, i.e., NEXT step at earliest = implicit +1 delay.
+        # We also need 1 bar AFTER fill so position isn't instantly truncated.
+        # Total: effective_entry_delay = latency + 1 (implicit) + 1 (post-fill) = latency + 2
+        can_enter_fill = remaining_bars_next >= (latency + 2)
         # Exit can fill right at the end (no post-fill bar required)
         can_exit_fill = remaining_bars_next >= latency
 
@@ -644,9 +648,11 @@ class PropFirmTradingEnv(
         inst = str(instrument)
 
         if self._quote_cache_step == step and self._quote_cache_inst == inst:
-            # Validate request matches cached parameters (tolerant to tiny float noise)
+            # Validate request matches cached parameters (tolerant to float noise)
             mid_tol = max(1e-9, 1e-6 * abs(float(mid)))
-            vol_tol = 1e-9
+            # vol_proxy is computed via np.std() which has inherent float noise;
+            # 1e-6 tolerance prevents spurious cache misses while catching real changes
+            vol_tol = 1e-6
             if abs(float(mid) - float(self._quote_cache_mid)) <= mid_tol and abs(float(vol_proxy) - float(self._quote_cache_vol)) <= vol_tol:
                 return float(self._quote_cache_bid), float(self._quote_cache_ask)
 
@@ -975,6 +981,10 @@ class PropFirmTradingEnv(
 
         self._episode_reward_components = {}
         self._episode_reward_component_counts = {}
+        
+        # Cost erosion tracking (v6.0)
+        self._episode_gross_profit = 0.0
+        self._episode_total_costs = 0.0
 
         self._ohlcv_cache_key = None
         self._ohlcv_cache = {}
@@ -1064,7 +1074,8 @@ class PropFirmTradingEnv(
         last_idx = (self._min_data_len - 1)
         remaining_bars = last_idx - int(self.current_step)
 
-        can_entry_fill = remaining_bars >= (latency + 1)
+        # Entry gating: effective_entry_delay = latency + 1 (implicit fill ordering) + 1 (post-fill bar)
+        can_entry_fill = remaining_bars >= (latency + 2)
         can_exit_fill = remaining_bars >= latency
 
         reward = 0.0
@@ -1298,12 +1309,12 @@ class PropFirmTradingEnv(
             truncated = True
             termination_reason = "episode_length"
 
-        # Flatten on truncation
+        # Flatten on truncation (reuse same-step mid/vol_proxy for determinism)
         if truncated and not terminated and self.position is not None:
-            mid_now = self._get_price_mid(inst)
-            vol_now = self._atr_vol_proxy(inst)
+            # IMPORTANT: Reuse mid and vol_proxy computed earlier in this step.
+            # Recomputing can introduce floating-point non-determinism in rewards.
             close_result = self._close_position_now(
-                reason=CloseReason.EPISODE_TRUNCATE.value, dt=dt, mid=mid_now, vol_proxy=vol_now
+                reason=CloseReason.EPISODE_TRUNCATE.value, dt=dt, mid=mid, vol_proxy=vol_proxy
             )
             trade_closed = True
             current_dd, current_daily_dd = self._calc_dds()
@@ -1586,11 +1597,13 @@ class PropFirmTradingEnv(
 
         total_net = sum(r.net_pnl for r in results)
         avg_r = sum(r.net_pnl / max(r.initial_risk_eur, 1) for r in results) / len(results) if results else 0.0
-        pf = (
-            (sum(r.net_pnl for r in wins) / abs(sum(r.net_pnl for r in losses)))
-            if losses and sum(r.net_pnl for r in losses) != 0
-            else float("inf")
-        )
+        # Cap profit factor to prevent inf from destabilizing composite scoring
+        MAX_PROFIT_FACTOR = 99.0
+        if losses and sum(r.net_pnl for r in losses) != 0:
+            pf = sum(r.net_pnl for r in wins) / abs(sum(r.net_pnl for r in losses))
+            pf = min(pf, MAX_PROFIT_FACTOR)
+        else:
+            pf = MAX_PROFIT_FACTOR
 
         hit_max_consec_losses = self.consecutive_losses >= self.config.max_consecutive_losses
 

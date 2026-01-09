@@ -106,6 +106,28 @@ class RewardConfig:
     loss_multiplier: float = 1.0
 
     # --------------------
+    # PnL Dominance Scaling (v6.0 - CRITICAL FOR PROFITABILITY)
+    # --------------------
+    # Multiplier to make base_pnl reward numerically competitive with shaping.
+    # Without this, a €100 profit = 0.001 * reward_scale = 0.006, while shaped
+    # bonuses are ~0.1-0.2. This causes reward optimization to decouple from profitability.
+    # Recommended: 150-300 so €100 profit → 0.15-0.30 base reward (dominant over shaping)
+    pnl_scale_factor: float = 200.0
+
+    # Cap shaping rewards relative to base_pnl magnitude (prevents shaping from
+    # overwhelming PnL signal). Set to 0.0 to disable capping.
+    # E.g., 0.5 means total shaping cannot exceed 50% of |base_pnl|
+    max_shaping_to_pnl_ratio: float = 0.5
+
+    # --------------------
+    # Execution Cost Visibility (v6.0)
+    # --------------------
+    # Make execution costs (spread + slippage + commission) visible in reward.
+    # This teaches the agent that frequent trading has a real cost.
+    execution_cost_visibility_enabled: bool = True
+    execution_cost_reward_scale: float = 0.5  # Multiplier for cost penalty in reward
+
+    # --------------------
     # R-multiple bonuses
     # --------------------
     r_multiple_bonus_threshold: float = 1.5
@@ -140,6 +162,17 @@ class RewardConfig:
     premature_close_capture_threshold: float = 0.7  # If captured < 70% of MFE, penalize
     premature_close_penalty_scale: float = 0.25
     premature_close_penalty_cap: float = 0.15
+
+    # --------------------
+    # Good Loss Cut Rewards (v6.0 - CRITICAL FOR AGENT CONTROL)
+    # --------------------
+    # Reward agent for voluntarily cutting losses BEFORE they hit hard stop.
+    # This teaches the agent that controlled exits are better than letting stops hit.
+    # Without this, agent learns to "let the environment handle exits" = reward hacking.
+    good_loss_cut_enabled: bool = True
+    good_loss_cut_bonus: float = 0.08           # Base bonus for cutting a loser early
+    good_loss_cut_efficiency_threshold: float = 0.3  # Min efficiency to qualify (1 - |pnl|/mae)
+    good_loss_cut_max_bonus: float = 0.15       # Cap on loss cut bonus
 
     # --------------------
     # Truncation handling
@@ -215,7 +248,15 @@ class RewardConfig:
     # Small cost for taking actions while flat to discourage “button mashing”.
     # Keep tiny; shaping is bounded anyway.
     churn_action_cost: float = 0.0  # recommended 0.001–0.003 when enabled
-
+    # --------------------
+    # Cost-Aware Anti-Churn (v6.0)
+    # --------------------
+    # Penalize when execution costs exceed a threshold of gross profits.
+    # This directly teaches "overtrading erodes edge" rather than just counting trades.
+    cost_erosion_penalty_enabled: bool = True
+    cost_erosion_threshold: float = 0.5        # Trigger when costs > 50% of gross profit
+    cost_erosion_penalty_scale: float = 0.15   # Penalty multiplier
+    cost_erosion_penalty_cap: float = 0.30     # Maximum penalty
     # --------------------
     # Trade activity consistency (episode-end)
     # --------------------

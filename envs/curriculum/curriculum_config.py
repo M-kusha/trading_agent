@@ -138,6 +138,21 @@ def get_explorer_config() -> CurriculumStageConfig:
             reward_scale=5.0,                 # STANDARDIZED: Same scale across stages to reduce critic shock
             loss_multiplier=1.0,
             
+            # PnL DOMINANCE (v6.0): Low during discovery - don't overwhelm exploration
+            pnl_scale_factor=50.0,            # Lower: let exploration dominate
+            max_shaping_to_pnl_ratio=2.0,     # Higher: allow more shaping freedom
+            
+            # Execution costs: DISABLED during discovery - frictionless exploration
+            execution_cost_visibility_enabled=False,
+            execution_cost_reward_scale=0.0,
+            
+            # Good loss cuts: DISABLED during discovery
+            good_loss_cut_enabled=False,
+            good_loss_cut_bonus=0.0,
+            
+            # Cost erosion: DISABLED during discovery
+            cost_erosion_penalty_enabled=False,
+            
             # NO profit incentives yet - just observe
             r_multiple_bonus_threshold=99.0,
             r_multiple_bonus_scale=0.0,
@@ -332,6 +347,23 @@ def get_experimenter_config() -> CurriculumStageConfig:
             reward_scale=5.0,                 # STANDARDIZED: Same scale across stages
             loss_multiplier=1.0,
             
+            # PnL DOMINANCE (v6.0): Light during discovery - start feeling outcomes
+            pnl_scale_factor=80.0,            # Starting to feel PnL
+            max_shaping_to_pnl_ratio=1.5,     # Still allowing shaping freedom
+            
+            # Execution costs: LIGHT during discovery
+            execution_cost_visibility_enabled=True,
+            execution_cost_reward_scale=0.2,  # Light cost signal
+            
+            # Good loss cuts: Starting to enable
+            good_loss_cut_enabled=True,
+            good_loss_cut_bonus=0.03,
+            good_loss_cut_efficiency_threshold=0.4,
+            good_loss_cut_max_bonus=0.06,
+            
+            # Cost erosion: DISABLED during discovery
+            cost_erosion_penalty_enabled=False,
+            
             # TINY profit incentive - just a hint
             r_multiple_bonus_threshold=2.0,
             r_multiple_bonus_scale=0.01,
@@ -525,6 +557,26 @@ def get_trend_student_config() -> CurriculumStageConfig:
             # ============================================================================
             reward_scale=5.0,
             loss_multiplier=1.0,
+            
+            # PnL DOMINANCE (v6.0): Foundation phase - PnL starts to matter
+            pnl_scale_factor=120.0,           # Growing PnL signal
+            max_shaping_to_pnl_ratio=0.8,     # Tightening shaping cap
+            
+            # Execution costs: Moderate visibility
+            execution_cost_visibility_enabled=True,
+            execution_cost_reward_scale=0.35,
+            
+            # Good loss cuts: Enabled
+            good_loss_cut_enabled=True,
+            good_loss_cut_bonus=0.05,
+            good_loss_cut_efficiency_threshold=0.35,
+            good_loss_cut_max_bonus=0.10,
+            
+            # Cost erosion: Light
+            cost_erosion_penalty_enabled=True,
+            cost_erosion_threshold=0.6,       # Trigger at 60% cost ratio
+            cost_erosion_penalty_scale=0.08,
+            cost_erosion_penalty_cap=0.15,
             
             # R-multiple bonus - reward good trades
             r_multiple_bonus_threshold=1.5,
@@ -733,6 +785,26 @@ def get_session_student_config() -> CurriculumStageConfig:
             reward_scale=5.5,
             loss_multiplier=1.0,
             
+            # PnL DOMINANCE (v6.0): SESSION_STUDENT - Ramping up PnL signal
+            pnl_scale_factor=160.0,           # Growing PnL dominance
+            max_shaping_to_pnl_ratio=0.6,     # Moderate shaping cap
+            
+            # Execution costs: Growing visibility
+            execution_cost_visibility_enabled=True,
+            execution_cost_reward_scale=0.4,
+            
+            # Good loss cuts: Enabled
+            good_loss_cut_enabled=True,
+            good_loss_cut_bonus=0.06,
+            good_loss_cut_efficiency_threshold=0.3,
+            good_loss_cut_max_bonus=0.12,
+            
+            # Cost erosion: Moderate
+            cost_erosion_penalty_enabled=True,
+            cost_erosion_threshold=0.55,
+            cost_erosion_penalty_scale=0.12,
+            cost_erosion_penalty_cap=0.25,
+            
             r_multiple_bonus_threshold=1.5,
             r_multiple_bonus_scale=0.03,
             r_multiple_bonus_cap=0.06,
@@ -934,6 +1006,31 @@ def get_timing_student_config() -> CurriculumStageConfig:
         rewards=RewardShaping(
             reward_scale=6.0,
             loss_multiplier=1.0,
+            
+            # ================================================================
+            # PnL DOMINANCE (v6.0): TIMING_STUDENT - PnL must drive learning!
+            # ================================================================
+            # This is the stage where profitability decoupling was most severe.
+            # With pnl_scale_factor=200, a €100 profit → 0.001 * 200 * 6.0 = 1.2
+            # This is NOW dominant over shaping bonuses (0.1-0.2 range)
+            pnl_scale_factor=200.0,           # FULL PnL dominance
+            max_shaping_to_pnl_ratio=0.5,     # Strict: shaping <= 50% of |base_pnl|
+            
+            # Execution costs: FULLY visible - agent must feel costs
+            execution_cost_visibility_enabled=True,
+            execution_cost_reward_scale=0.5,  # Full cost signal
+            
+            # Good loss cuts: ENABLED - teach agent to control exits
+            good_loss_cut_enabled=True,
+            good_loss_cut_bonus=0.08,
+            good_loss_cut_efficiency_threshold=0.3,
+            good_loss_cut_max_bonus=0.15,
+            
+            # Cost erosion: ENABLED - penalize overtrading
+            cost_erosion_penalty_enabled=True,
+            cost_erosion_threshold=0.5,       # Trigger at 50% cost ratio
+            cost_erosion_penalty_scale=0.15,
+            cost_erosion_penalty_cap=0.30,
             
             r_multiple_bonus_threshold=1.5,
             r_multiple_bonus_scale=0.04,

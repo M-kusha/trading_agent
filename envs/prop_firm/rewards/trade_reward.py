@@ -92,13 +92,35 @@ class TradeRewardMixin:
         else:
             shape_scale = 1.0
 
-        # 1) Base PnL reward (asymmetric optional)
+        # =====================================================================
+        # 1) Base PnL reward - NOW WITH PNL DOMINANCE SCALING (v6.0)
+        # =====================================================================
+        # The pnl_scale_factor ensures base_pnl is numerically dominant over shaping.
+        # Without this: €100 profit → 0.001 * 10 = 0.01 (dwarfed by 0.1-0.2 shaping)
+        # With pnl_scale_factor=200: €100 → 0.001 * 200 * 10 = 2.0 (dominant!)
+        pnl_scale_factor = float(getattr(cfg, "pnl_scale_factor", 200.0))
+        scaled_pnl_pct = pnl_pct * pnl_scale_factor
+        
         if net_pnl > 0:
-            base_reward = pnl_pct * cfg.reward_scale
+            base_reward = scaled_pnl_pct * cfg.reward_scale
             add("base_pnl", base_reward)
         else:
-            base_penalty = abs(pnl_pct) * cfg.reward_scale * cfg.loss_multiplier
+            base_penalty = abs(scaled_pnl_pct) * cfg.reward_scale * cfg.loss_multiplier
             add("base_pnl", -base_penalty)
+        
+        # Store base_pnl magnitude for shaping cap calculation later
+        base_pnl_magnitude = abs(reward_components.get("base_pnl", 0.0))
+
+        # =====================================================================
+        # 2) Execution Cost Visibility (v6.0) - Make costs felt in reward
+        # =====================================================================
+        execution_cost_enabled = bool(getattr(cfg, "execution_cost_visibility_enabled", True))
+        if execution_cost_enabled and total_fees > 0:
+            fee_pct = total_fees / initial_balance
+            fee_scale = float(getattr(cfg, "execution_cost_reward_scale", 0.5))
+            # Scale fees same as PnL so they're comparable
+            cost_penalty = fee_pct * pnl_scale_factor * cfg.reward_scale * fee_scale
+            add("execution_costs", -cost_penalty)
 
         # 2) R-multiple bonus (winners only)
         if net_pnl > 0 and r_multiple >= cfg.r_multiple_bonus_threshold:
@@ -141,7 +163,7 @@ class TradeRewardMixin:
             )
             add("time_penalty", -time_penalty)
 
-        # 5) Exit quality modifier
+        # 5) Exit quality modifier - WITH GOOD LOSS CUT REWARDS (v6.0)
         if cfg.exit_quality_enabled:
             exit_modifier = 0.0
 
@@ -149,19 +171,51 @@ class TradeRewardMixin:
                 exit_modifier = cfg.trailing_stop_bonus
 
             elif close_reason == CloseReason.AGENT_CLOSE:
-                exit_modifier = cfg.agent_close_bonus
+                # =========================================================
+                # GOOD LOSS CUT LOGIC (v6.0) - Reward controlled exits
+                # =========================================================
+                # If agent voluntarily closes a LOSING trade before it hits
+                # hard stop, this is GOOD behavior (controlled risk management).
+                # Without this, agent learns to "let environment handle exits."
+                good_loss_cut_enabled = bool(getattr(cfg, "good_loss_cut_enabled", True))
+                
+                if net_pnl < 0 and good_loss_cut_enabled and mae > 0:
+                    # Loss cut efficiency: how much worse could it have been?
+                    # efficiency = 1 - (|realized_loss| / mae)
+                    # High efficiency = cut loss well before maximum adverse excursion
+                    loss_cut_efficiency = 1.0 - (abs(net_pnl) / max(mae, abs(net_pnl), 1e-6))
+                    loss_cut_efficiency = self._clamp(loss_cut_efficiency, 0.0, 1.0)
+                    
+                    efficiency_threshold = float(getattr(cfg, "good_loss_cut_efficiency_threshold", 0.3))
+                    if loss_cut_efficiency >= efficiency_threshold:
+                        # Agent cut the loss before it got too bad - reward this!
+                        base_bonus = float(getattr(cfg, "good_loss_cut_bonus", 0.08))
+                        max_bonus = float(getattr(cfg, "good_loss_cut_max_bonus", 0.15))
+                        # Scale bonus by how efficient the cut was
+                        loss_cut_bonus = min(base_bonus * (1.0 + loss_cut_efficiency), max_bonus)
+                        add("good_loss_cut_bonus", loss_cut_bonus)
+                        # Don't apply the regular agent_close_bonus penalty for good loss cuts
+                        exit_modifier = 0.0
+                    else:
+                        # Poor loss cut (let it run too far) - still penalize
+                        exit_modifier = cfg.agent_close_bonus
+                elif net_pnl >= 0:
+                    # Winner closed by agent - check if premature
+                    exit_modifier = cfg.agent_close_bonus
 
-                # Premature close penalty if captured too little of MFE
-                if net_pnl > 0 and mfe > 0:
-                    capture_ratio = gross_pnl / max(mfe, 1e-9)
-                    capture_ratio = self._clamp(capture_ratio, 0.0, 1.5)
-                    if capture_ratio < cfg.premature_close_capture_threshold:
-                        left_on_table = 1.0 - capture_ratio
-                        premature_close_penalty = min(
-                            left_on_table * cfg.premature_close_penalty_scale,
-                            cfg.premature_close_penalty_cap,
-                        )
-                        add("premature_close_penalty", -premature_close_penalty)
+                    # Premature close penalty if captured too little of MFE
+                    if net_pnl > 0 and mfe > 0:
+                        capture_ratio = gross_pnl / max(mfe, 1e-9)
+                        capture_ratio = self._clamp(capture_ratio, 0.0, 1.5)
+                        if capture_ratio < cfg.premature_close_capture_threshold:
+                            left_on_table = 1.0 - capture_ratio
+                            premature_close_penalty = min(
+                                left_on_table * cfg.premature_close_penalty_scale,
+                                cfg.premature_close_penalty_cap,
+                            )
+                            add("premature_close_penalty", -premature_close_penalty)
+                else:
+                    exit_modifier = cfg.agent_close_bonus
 
             elif close_reason == CloseReason.HARD_STOP:
                 exit_modifier = -cfg.hard_stop_penalty
@@ -317,12 +371,43 @@ class TradeRewardMixin:
                 if streak_pen > 0:
                     add("loss_streak_penalty", -streak_pen)
 
-        # 9) Anti-churn penalty
+        # 9) Anti-churn penalty (trade count based)
         if cfg.anti_churn_enabled and self.daily_trades > cfg.daily_trade_soft_limit:
             excess = self.daily_trades - cfg.daily_trade_soft_limit
             excess_factor = min(1.5 ** min(excess, 8) - 1, 25.0)
             churn_pen = excess_factor * cfg.churn_penalty_per_trade
             add("churn_penalty", -churn_pen)
+
+        # =====================================================================
+        # 9b) Cost Erosion Penalty (v6.0) - Penalize when costs eat the edge
+        # =====================================================================
+        # This teaches "overtrading erodes edge" by looking at cumulative costs
+        # vs cumulative profits. If costs > threshold% of gross profit, penalize.
+        cost_erosion_enabled = bool(getattr(cfg, "cost_erosion_penalty_enabled", True))
+        if cost_erosion_enabled and gross_pnl > 0:
+            # Get episode-level totals (if available)
+            episode_gross = getattr(self, "_episode_gross_profit", 0.0)
+            episode_costs = getattr(self, "_episode_total_costs", 0.0)
+            
+            # Update episode totals
+            if gross_pnl > 0:
+                self._episode_gross_profit = float(episode_gross) + float(gross_pnl)
+            self._episode_total_costs = float(episode_costs) + float(total_fees)
+            
+            # Check cost erosion ratio
+            updated_gross = getattr(self, "_episode_gross_profit", 0.0)
+            updated_costs = getattr(self, "_episode_total_costs", 0.0)
+            
+            if updated_gross > 0:
+                cost_ratio = updated_costs / updated_gross
+                erosion_threshold = float(getattr(cfg, "cost_erosion_threshold", 0.5))
+                
+                if cost_ratio > erosion_threshold:
+                    # Costs are eating too much of the profit
+                    erosion_scale = float(getattr(cfg, "cost_erosion_penalty_scale", 0.15))
+                    erosion_cap = float(getattr(cfg, "cost_erosion_penalty_cap", 0.30))
+                    erosion_penalty = min((cost_ratio - erosion_threshold) * erosion_scale, erosion_cap)
+                    add("cost_erosion_penalty", -erosion_penalty)
 
         # 10) Drawdown shaping
         if cfg.dd_shaping_enabled and current_dd > cfg.dd_threshold:
@@ -333,6 +418,39 @@ class TradeRewardMixin:
                 dd_severity = dd_ratio ** cfg.dd_severity_exponent
                 dd_pen = dd_severity * cfg.dd_penalty_scale * 0.5
                 add("dd_shaping", -dd_pen)
+
+        # =====================================================================
+        # 11) SHAPING CAP (v6.0) - Ensure PnL remains dominant
+        # =====================================================================
+        # Cap total shaping so it cannot overwhelm base_pnl signal.
+        # This prevents reward hacking where agent optimizes for shaping bonuses
+        # while losing money on actual trades.
+        max_shaping_ratio = float(getattr(cfg, "max_shaping_to_pnl_ratio", 0.5))
+        if max_shaping_ratio > 0 and base_pnl_magnitude > 0:
+            # Calculate total shaping (everything except base_pnl and execution_costs)
+            non_pnl_keys = [k for k in reward_components.keys() 
+                          if k not in ("base_pnl", "execution_costs")]
+            shaping_total = sum(reward_components.get(k, 0.0) for k in non_pnl_keys)
+            
+            max_shaping = base_pnl_magnitude * max_shaping_ratio
+            
+            if abs(shaping_total) > max_shaping:
+                # Scale down shaping components proportionally
+                scale_factor = max_shaping / abs(shaping_total)
+                shaping_adjustment = 0.0
+                
+                for k in non_pnl_keys:
+                    old_val = reward_components.get(k, 0.0)
+                    new_val = old_val * scale_factor
+                    adjustment = new_val - old_val
+                    reward_components[k] = new_val
+                    shaping_adjustment += adjustment
+                
+                # Apply adjustment to total reward
+                reward += shaping_adjustment
+                
+                # Track that capping occurred
+                reward_components["shaping_cap_applied"] = shaping_adjustment
 
         # Final clip
         reward = float(np.clip(reward, cfg.min_reward, cfg.max_reward))

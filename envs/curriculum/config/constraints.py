@@ -27,6 +27,21 @@ class RewardShaping:
     reward_scale: float = 10.0
     loss_multiplier: float = 1.0
 
+    # --------------------
+    # PnL Dominance Scaling (v6.0 - CRITICAL FOR PROFITABILITY)
+    # --------------------
+    # Multiplier to make base_pnl reward numerically competitive with shaping.
+    # Without this, a €100 profit = 0.001 * reward_scale = 0.006, while shaped
+    # bonuses are ~0.1-0.2. This causes reward optimization to decouple from profitability.
+    pnl_scale_factor: float = 200.0
+    max_shaping_to_pnl_ratio: float = 0.5  # Cap shaping to 50% of |base_pnl|
+
+    # --------------------
+    # Execution Cost Visibility (v6.0)
+    # --------------------
+    execution_cost_visibility_enabled: bool = True
+    execution_cost_reward_scale: float = 0.5
+
     # R-multiple bonuses
     r_multiple_bonus_threshold: float = 1.5
     r_multiple_bonus_scale: float = 0.3
@@ -57,6 +72,14 @@ class RewardShaping:
     premature_close_capture_threshold: float = 0.7
     premature_close_penalty_scale: float = 0.25
     premature_close_penalty_cap: float = 0.15
+
+    # --------------------
+    # Good Loss Cut Rewards (v6.0 - CRITICAL FOR AGENT CONTROL)
+    # --------------------
+    good_loss_cut_enabled: bool = True
+    good_loss_cut_bonus: float = 0.08
+    good_loss_cut_efficiency_threshold: float = 0.3
+    good_loss_cut_max_bonus: float = 0.15
 
     # Truncation handling
     truncation_winner_discount: float = 0.30
@@ -110,7 +133,13 @@ class RewardShaping:
 
     # Optional: small cost for “button mashing” while flat (only meaningful if per-step shaping enabled)
     churn_action_cost: float = 0.0
-
+    # --------------------
+    # Cost-Aware Anti-Churn (v6.0)
+    # --------------------
+    cost_erosion_penalty_enabled: bool = True
+    cost_erosion_threshold: float = 0.5
+    cost_erosion_penalty_scale: float = 0.15
+    cost_erosion_penalty_cap: float = 0.30
     # Trade activity consistency (episode-end)
     activity_consistency_enabled: bool = False
     target_trades_per_1k_steps: float = 10.0
