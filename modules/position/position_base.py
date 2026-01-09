@@ -34,7 +34,7 @@ from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
 from modules.monitoring.performance_tracker import PerformanceTracker
 from modules.utils.info_bus import InfoBusManager
 from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
-from envs.config import TradingConfig
+from envs.core.config import TradingConfig
 from modules.utils.audit_utils import RotatingLogger, format_operator_message, AuditConfiguration
 
 # Debug system

@@ -20,15 +20,13 @@ Promotion requires:
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, field, asdict
 from enum import Enum
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from envs.shared_utils import (
+from envs.core.shared_utils import (
     safe_float as _sf,
     clamp as _clamp,
     get_envs_logger,
@@ -37,6 +35,28 @@ from envs.shared_utils import (
 
 
 logger = get_envs_logger("validation_gates")
+
+
+def _is_finite(x: Any) -> bool:
+    try:
+        return bool(np.isfinite(float(x)))
+    except Exception:
+        return False
+
+
+def _finite_or(x: Any, default: float) -> float:
+    v = _sf(x, default)
+    return v if _is_finite(v) else default
+
+
+def _finite_mean(xs: List[float], default: float = 0.0) -> float:
+    vals = [float(v) for v in xs if _is_finite(v)]
+    return float(np.mean(vals)) if vals else float(default)
+
+
+def _finite_max(xs: List[float], default: float = 0.0) -> float:
+    vals = [float(v) for v in xs if _is_finite(v)]
+    return float(max(vals)) if vals else float(default)
 
 
 # =============================================================================
@@ -59,6 +79,10 @@ def compute_performance_score(
     - Profit factor capped and normalized (capped to [0, 1.5])
     - R-multiple shifted to positive range (capped to [0, 1.5])
     """
+    mean_win_rate = _finite_or(mean_win_rate, 0.0)
+    mean_profit_factor = _finite_or(mean_profit_factor, 0.0)
+    mean_r_multiple = _finite_or(mean_r_multiple, 0.0)
+
     # Cap each component individually BEFORE averaging to prevent unbounded values
     wr_component = _clamp(mean_win_rate / 0.5, 0.0, 1.5)           # Normalize: 50% WR -> 1.0
     pf_component = _clamp(mean_profit_factor / 1.5, 0.0, 1.5)      # Cap at 1.5
@@ -78,8 +102,43 @@ def _get_episode_value(ep: Dict[str, Any], *keys: str, default: float = 0.0) -> 
     """
     for key in keys:
         if key in ep and ep[key] is not None:
-            return _sf(ep[key], default)
+            v = _sf(ep[key], default)
+            if _is_finite(v):
+                return v
     return default
+
+
+def _get_training_value(stats: Dict[str, Any], *keys: str, default: float = 0.0) -> float:
+    """Training-stats accessor with naming drift handling and finite-only values."""
+    for key in keys:
+        if key in stats and stats[key] is not None:
+            v = _sf(stats[key], default)
+            if _is_finite(v):
+                return v
+    return default
+
+
+def _estimate_training_confidence(stats: Dict[str, Any]) -> float:
+    """
+    Estimate confidence in training statistics.
+    Preference order:
+      1) explicit 'confidence' / 'training_confidence'
+      2) episode count / window size heuristics
+    """
+    conf = _get_training_value(stats, "confidence", "training_confidence", default=-1.0)
+    if conf >= 0.0:
+        return float(_clamp(conf, 0.0, 1.0))
+
+    n = _get_training_value(
+        stats,
+        "episodes_in_window",
+        "n_episodes",
+        "num_episodes",
+        "window_size",
+        default=0.0,
+    )
+    # Heuristic: ~100 episodes ~= high confidence
+    return float(_clamp(n / 100.0, 0.0, 1.0))
 
 
 # =============================================================================
@@ -407,19 +466,31 @@ class ValidationGateChecker:
             drawdowns.append(_get_episode_value(
                 ep, "max_drawdown", "drawdown", "dd", default=0.0
             ))
-            
-            if ep.get("dd_breach", False):
+
+            # DD breach: accept boolean or numeric episode-level indicators
+            if bool(ep.get("dd_breach", False)):
                 dd_breaches += 1
-            if ep.get("risk_liquidation_exits", 0) > 0:
+            else:
+                dd_breaches += int(_finite_or(ep.get("dd_breach_count", 0), 0.0))
+
+            # Liquidations: treat as episode-level "had any liquidation"
+            liq = 0.0
+            liq = max(liq, _finite_or(ep.get("risk_liquidation_exits", 0), 0.0))
+            liq = max(liq, _finite_or(ep.get("liquidation_exits", 0), 0.0))
+            liq = max(liq, _finite_or(ep.get("liquidations", 0), 0.0))
+            liq = max(liq, _finite_or(ep.get("liquidation_count", 0), 0.0))
+            if liq > 0:
                 liquidations += 1
-        
-        result.total_trades = int(sum(trade_counts))
-        result.mean_win_rate = float(np.mean(win_rates)) if win_rates else 0.0
-        result.mean_profit_factor = float(np.mean(profit_factors)) if profit_factors else 0.0
-        result.mean_pnl = float(np.mean(pnls)) if pnls else 0.0
-        result.mean_r_multiple = float(np.mean(r_multiples)) if r_multiples else 0.0
-        result.mean_trade_count = float(np.mean(trade_counts)) if trade_counts else 0.0
-        result.max_drawdown_seen = float(max(drawdowns)) if drawdowns else 0.0
+
+        # Finite-only aggregation (prevents NaN poisoning)
+        safe_trade_counts = [float(v) for v in trade_counts if _is_finite(v)]
+        result.total_trades = int(sum(safe_trade_counts)) if safe_trade_counts else 0
+        result.mean_win_rate = _finite_mean(win_rates, 0.0)
+        result.mean_profit_factor = _finite_mean(profit_factors, 0.0)
+        result.mean_pnl = _finite_mean(pnls, 0.0)
+        result.mean_r_multiple = _finite_mean(r_multiples, 0.0)
+        result.mean_trade_count = _finite_mean(safe_trade_counts, 0.0)
+        result.max_drawdown_seen = _finite_max(drawdowns, 0.0)
         result.dd_breach_count = dd_breaches
         result.dd_breach_rate = dd_breaches / max(len(episodes), 1)
         result.liquidation_count = liquidations
@@ -451,13 +522,19 @@ class ValidationGateChecker:
         result.safety_score = _clamp(1.0 - dd_penalty - liq_penalty, 0.0, 1.0)
         
         # Behavior score: check for catastrophic patterns
-        train_trade_count = training_stats.get("mean_trade_count")
-        
+        train_trade_count = _get_training_value(
+            training_stats,
+            "mean_trade_count",
+            "mean_trade_count_avg",
+            "avg_trade_count",
+            default=float("nan"),
+        )
+
         behavior_ok = True
         # Only check trade ratio if training trade count is available and meaningful
-        if train_trade_count is not None and _sf(train_trade_count, 0.0) > 1.0:
-            trade_ratio = result.mean_trade_count / _sf(train_trade_count, 1.0)
-            
+        if _is_finite(train_trade_count) and float(train_trade_count) > 1.0:
+            trade_ratio = result.mean_trade_count / max(float(train_trade_count), 1e-6)
+
             if trade_ratio > self.config.max_trade_count_ratio:
                 result.failure_reasons.append(
                     f"Overtrading in validation ({trade_ratio:.1f}x training)"
@@ -530,7 +607,21 @@ class ValidationGateChecker:
             threshold_mult = self.config.late_stage_strictness
         else:
             threshold_mult = 1.0
-        
+
+        # Training stats completeness / confidence checks (previously unused config)
+        train_conf = _estimate_training_confidence(training_stats or {})
+        essential_train_keys = ["mean_win_rate", "mean_profit_factor", "mean_r_multiple"]
+        missing_train = [k for k in essential_train_keys if training_stats.get(k, None) is None]
+        if self.config.require_training_stats:
+            if missing_train:
+                result.blocking_reasons.append(
+                    f"Training stats missing required keys: {', '.join(missing_train)}"
+                )
+            if train_conf < self.config.min_training_confidence:
+                result.blocking_reasons.append(
+                    f"Training stats confidence too low ({train_conf:.2f} < {self.config.min_training_confidence:.2f})"
+                )
+
         # Evaluate each scenario
         scenario_weights = []
         for scenario in self.scenarios:
@@ -565,25 +656,28 @@ class ValidationGateChecker:
         # Compute performance ratio (validation vs training)
         # CRITICAL: Use the SAME scoring function for train and validation
         train_perf = compute_performance_score(
-            _sf(training_stats.get("mean_win_rate"), 0.5),
-            _sf(training_stats.get("mean_profit_factor"), 1.0),
-            _sf(training_stats.get("mean_r_multiple"), 0.0),
+            _finite_or(training_stats.get("mean_win_rate"), 0.5),
+            _finite_or(training_stats.get("mean_profit_factor"), 1.0),
+            _finite_or(training_stats.get("mean_r_multiple"), 0.0),
         )
-        
-        if train_perf > 0:
+
+        if train_perf > 1e-8:
             result.performance_ratio = result.weighted_performance / train_perf
         else:
             result.performance_ratio = 1.0
-        
+
         # Gate determination
         adjusted_min_pass_rate = self.config.min_pass_rate * threshold_mult
         adjusted_min_perf_ratio = self.config.min_performance_ratio * threshold_mult
-        
+        # Relax/tighten scenario-count requirements with stage, too
+        adjusted_min_scenarios_passed = int(np.ceil(self.config.min_scenarios_passed * threshold_mult))
+        adjusted_min_scenarios_passed = int(_clamp(adjusted_min_scenarios_passed, 1, len(self.scenarios)))
+
         blocking = []
-        
-        if result.scenarios_passed < self.config.min_scenarios_passed:
+
+        if result.scenarios_passed < adjusted_min_scenarios_passed:
             blocking.append(
-                f"Too few scenarios passed ({result.scenarios_passed}/{self.config.min_scenarios_passed})"
+                f"Too few scenarios passed ({result.scenarios_passed}/{adjusted_min_scenarios_passed})"
             )
         
         if result.pass_rate < adjusted_min_pass_rate:
@@ -612,8 +706,25 @@ class ValidationGateChecker:
             blocking.append(
                 f"Safety score too low ({result.weighted_safety:.2f} < {adjusted_min_safety:.2f})"
             )
-        
-        result.blocking_reasons = blocking
+
+        # No-catastrophe rule for later stages:
+        # Even if pass-rate is sufficient, catastrophic safety/behavior failures should block promotion.
+        if stage_index >= 6:
+            catastrophic = []
+            for name, sr in result.scenario_results.items():
+                # Safety catastrophes
+                if sr.dd_breach_rate > self.config.max_dd_breach_rate:
+                    catastrophic.append(f"{name}: DD breaches")
+                if sr.liquidation_rate > self.config.max_liquidation_rate:
+                    catastrophic.append(f"{name}: liquidations")
+                # Behavior catastrophes
+                if any("Overtrading" in r or "Under-trading" in r for r in sr.failure_reasons):
+                    catastrophic.append(f"{name}: trade-pattern drift")
+            if catastrophic:
+                blocking.append("Catastrophic behavior/safety failures in validation: " + ", ".join(sorted(set(catastrophic))))
+
+        # Merge any earlier training-stat blocks
+        result.blocking_reasons = list(dict.fromkeys(result.blocking_reasons + blocking))
         result.gate_passed = len(blocking) == 0
         
         # Confidence based on sample size and consistency
@@ -817,21 +928,29 @@ class StressTestRunner:
             result.passed = False
             result.failure_reason = "No episodes"
             return result
-        
-        # Compute metrics
-        win_rates = [_sf(ep.get("win_rate"), 0.0) for ep in episodes]
-        pnls = [_sf(ep.get("total_pnl"), 0.0) for ep in episodes]
-        
-        result.mean_win_rate = float(np.mean(win_rates))
-        result.mean_pnl = float(np.mean(pnls))
-        
-        # Compare to baseline
-        baseline_wr = _sf(baseline_stats.get("mean_win_rate"), 0.5)
-        if baseline_wr > 0:
-            result.performance_vs_baseline = result.mean_win_rate / baseline_wr
-        else:
-            result.performance_vs_baseline = 1.0
-        
+
+        # Compute metrics (finite-only)
+        win_rates = [_get_episode_value(ep, "win_rate", "wr", default=0.0) for ep in episodes]
+        profit_factors = [_get_episode_value(ep, "profit_factor", "pf", default=0.0) for ep in episodes]
+        r_multiples = [_get_episode_value(ep, "avg_r_multiple", "mean_r_multiple", "r_multiple", default=0.0) for ep in episodes]
+        pnls = [_get_episode_value(ep, "total_pnl", "pnl", "episode_pnl", "net_pnl", default=0.0) for ep in episodes]
+
+        result.mean_win_rate = _finite_mean(win_rates, 0.0)
+        result.mean_pnl = _finite_mean(pnls, 0.0)
+
+        # Compare to baseline using the SAME unified score as validation
+        stress_perf = compute_performance_score(
+            result.mean_win_rate,
+            _finite_mean(profit_factors, 0.0),
+            _finite_mean(r_multiples, 0.0),
+        )
+        baseline_perf = compute_performance_score(
+            _finite_or(baseline_stats.get("mean_win_rate"), 0.5),
+            _finite_or(baseline_stats.get("mean_profit_factor"), 1.0),
+            _finite_or(baseline_stats.get("mean_r_multiple"), 0.0),
+        )
+        result.performance_vs_baseline = (stress_perf / baseline_perf) if baseline_perf > 1e-8 else 1.0
+
         # Check degradation
         max_allowed_degradation = self.config.max_performance_degradation
         

@@ -16,17 +16,16 @@ This module provides:
 
 from __future__ import annotations
 
-import logging
 import math
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from typing import Any, ClassVar, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
-from envs.shared_utils import (
+from envs.core.shared_utils import (
     safe_float as _sf,
     safe_int as _si,
     clamp as _clamp,
@@ -36,6 +35,23 @@ from envs.shared_utils import (
 
 
 logger = get_envs_logger("curriculum_invariants")
+
+def _is_finite(x: Any) -> bool:
+    try:
+        return bool(np.isfinite(float(x)))
+    except Exception:
+        return False
+
+def _finite_or(x: Any, default: float) -> float:
+    v = _sf(x, default)
+    return v if _is_finite(v) else default
+
+def _finite_int(x: Any, default: int = 0) -> int:
+    try:
+        v = int(_si(x, default))
+    except Exception:
+        v = default
+    return max(0, v)
 
 
 # =============================================================================
@@ -124,9 +140,9 @@ class RateLimitedInvariantLogger:
         # Count per (stage_name, epoch) for overflow protection
         self._epoch_counts: Dict[Tuple[str, int], int] = defaultdict(int)
         
-        # Accumulated violations (for batch export)
-        self._violations: List[InvariantViolation] = []
+        # Accumulated violations (for batch export) - keep most recent
         self._max_stored = 1000
+        self._violations: deque[InvariantViolation] = deque(maxlen=self._max_stored)
     
     def log(self, violation: InvariantViolation) -> bool:
         """
@@ -162,8 +178,7 @@ class RateLimitedInvariantLogger:
         self._epoch_counts[epoch_key] += 1
         
         # Store for batch export
-        if len(self._violations) < self._max_stored:
-            self._violations.append(violation)
+        self._violations.append(violation)
         
         # Actual logging
         log_msg = str(violation)
@@ -195,7 +210,15 @@ class RateLimitedInvariantLogger:
             del self._epoch_counts[k]
         
         # Bounded cleanup of _last_log_time to prevent unbounded growth
-        # Keep only entries for current stage OR recent entries (last 10 min)
+        # 1) remove entries for same stage older than last 2 epochs
+        old_stage_epoch_keys = [
+            k for k in self._last_log_time.keys()
+            if k[2] == stage_name and k[3] < epoch - 1
+        ]
+        for k in old_stage_epoch_keys:
+            del self._last_log_time[k]
+
+        # 2) keep only recent entries for other stages (last 10 min)
         cutoff_time = time.time() - 600  # 10 minutes
         stale_keys = [
             k for k, t in self._last_log_time.items()
@@ -208,7 +231,7 @@ class RateLimitedInvariantLogger:
         """Get accumulated violations as dicts."""
         result = [v.to_dict() for v in self._violations]
         if clear:
-            self._violations = []
+            self._violations.clear()
         return result
     
     def get_summary(self) -> Dict[str, int]:
@@ -267,6 +290,13 @@ def reconcile_trade_accounting(
     Returns:
         TradeAccountingResult with reconciled values and any violations
     """
+    # Sanitize inputs (defensive: avoid negative and NaN/Inf)
+    trade_count = _finite_int(trade_count, 0)
+    winning_trades = _finite_int(winning_trades, 0)
+    losing_trades = _finite_int(losing_trades, 0)
+    win_rate = _finite_or(win_rate, 0.0)
+    win_rate = float(_clamp(win_rate, 0.0, 1.0))
+
     original = TradeAccountingResult(
         original_trade_count=trade_count,
         original_wins=winning_trades,
@@ -283,7 +313,7 @@ def reconcile_trade_accounting(
         return original
     
     # Case 2: wins + losses > trade_count (inconsistency)
-    if computed_sum > trade_count and trade_count > 0:
+    if computed_sum > trade_count:
         original.reconciled_trade_count = computed_sum
         original.reconciled_wins = winning_trades
         original.reconciled_losses = losing_trades
@@ -306,7 +336,7 @@ def reconcile_trade_accounting(
     
     # Case 3: wins + losses == 0 but trade_count > 0 (derive from win_rate)
     if computed_sum == 0 and trade_count > 0:
-        approx_wins = int(round(_clamp(win_rate, 0.0, 1.0) * trade_count))
+        approx_wins = int(round(win_rate * trade_count))
         approx_losses = trade_count - approx_wins
         original.reconciled_wins = max(0, min(trade_count, approx_wins))
         original.reconciled_losses = max(0, approx_losses)
@@ -656,21 +686,21 @@ class AntiGamingChecker:
         results = {}
         
         # Extract values with safe defaults
-        pf = _sf(stats.get("mean_profit_factor"), 1.0)
-        wr = _sf(stats.get("mean_win_rate"), 0.5)
-        dd = _sf(stats.get("mean_drawdown"), 0.05)
-        r_mult = _sf(stats.get("mean_r_multiple"), 0.0)
-        trade_count = _sf(stats.get("mean_trade_count"), 1.0)
-        pnl = _sf(stats.get("mean_pnl"), 0.0)
-        mae = _sf(stats.get("mean_mae", stats.get("avg_mae")), 0.01)
-        mfe = _sf(stats.get("mean_mfe", stats.get("avg_mfe")), 0.01)
-        bars_held = _sf(stats.get("avg_bars_held"), 10.0)
-        wr_std = _sf(stats.get("std_win_rate"), 0.1)
+        pf = _finite_or(stats.get("mean_profit_factor"), 1.0)
+        wr = _finite_or(stats.get("mean_win_rate"), 0.5)
+        dd = _finite_or(stats.get("mean_drawdown"), 0.05)
+        r_mult = _finite_or(stats.get("mean_r_multiple"), 0.0)
+        trade_count = _finite_or(stats.get("mean_trade_count"), 1.0)
+        pnl = _finite_or(stats.get("mean_pnl"), 0.0)
+        mae = _finite_or(stats.get("mean_mae", stats.get("avg_mae")), 0.01)
+        mfe = _finite_or(stats.get("mean_mfe", stats.get("avg_mfe")), 0.01)
+        bars_held = _finite_or(stats.get("avg_bars_held"), 10.0)
+        wr_std = _finite_or(stats.get("std_win_rate"), 0.1)
         
         # Extract additional metrics that may be available
-        episode_length = _sf(stats.get("mean_episode_length", stats.get("episode_length")), 2000.0)
-        position_size_pct = _sf(stats.get("mean_position_size_pct", stats.get("avg_position_size_pct")), 0.01)
-        loss_recovery = _sf(stats.get("loss_recovery_rate", stats.get("recovery_rate")), 0.5)
+        episode_length = _finite_or(stats.get("mean_episode_length", stats.get("episode_length")), 2000.0)
+        position_size_pct = _finite_or(stats.get("mean_position_size_pct", stats.get("avg_position_size_pct")), 0.01)
+        loss_recovery = _finite_or(stats.get("loss_recovery_rate", stats.get("recovery_rate")), 0.5)
         regime_coverage = stats.get("regime_coverage", {})
         perf_by_regime = stats.get("performance_by_regime", {})
         
@@ -772,16 +802,18 @@ class MetricBounds:
 # Helper functions for NaN/Inf that work with both Python float and numpy types
 def _is_nan(x: Any) -> bool:
     """Check if value is NaN, handling both float and np.floating."""
-    if isinstance(x, (float, np.floating)):
-        return bool(math.isnan(float(x)))
-    return False
+    try:
+        return bool(np.isnan(float(x)))
+    except Exception:
+        return False
 
 
 def _is_inf(x: Any) -> bool:
     """Check if value is infinite, handling both float and np.floating."""
-    if isinstance(x, (float, np.floating)):
-        return bool(math.isinf(float(x)))
-    return False
+    try:
+        return bool(np.isinf(float(x)))
+    except Exception:
+        return False
 
 
 DEFAULT_METRIC_BOUNDS = [
@@ -806,6 +838,10 @@ DEFAULT_METRIC_BOUNDS = [
     # Trade counts
     MetricBounds("trade_count", 0.0, 10000.0),
     MetricBounds("mean_trade_count", 0.0, 10000.0),
+    MetricBounds("std_win_rate", 0.0, 1.0),
+    MetricBounds("mean_pnl", -1e9, 1e9, allow_nan=False, allow_inf=False),
+    MetricBounds("avg_mae", 0.0, 1.0),
+    MetricBounds("avg_mfe", 0.0, 1.0),
     MetricBounds("episode_length", 0.0, 100000.0),
     # Other
     MetricBounds("policy_entropy", -1.0, 10.0),  # -1 = not available
@@ -866,6 +902,17 @@ def check_metric_bounds(
         # Check bounds
         try:
             fval = float(value)
+            if not _is_finite(fval):
+                violations.append(InvariantViolation(
+                    invariant_type=InvariantType.NUMERIC_SANITY,
+                    severity=InvariantSeverity.ERROR,
+                    message=f"Non-finite value for {bound.name}",
+                    context={"metric": bound.name, "value": str(value)},
+                    stage_name=stage_name,
+                    stage_epoch=stage_epoch,
+                    episode_idx=episode_idx,
+                ))
+                continue
             if fval < bound.min_value or fval > bound.max_value:
                 violations.append(InvariantViolation(
                     invariant_type=InvariantType.METRIC_BOUNDS,
@@ -898,6 +945,7 @@ def check_exit_distribution(
     risk_liquidation_exits: int,
     other_exits: int,
     trade_count: int,
+    pooled_trades: Optional[int] = None,
     stage_name: str = "",
     stage_epoch: int = 0,
     episode_idx: int = 0,
@@ -910,19 +958,22 @@ def check_exit_distribution(
     violations = []
     
     total_exits = trailing_stop_exits + agent_close_exits + hard_stop_exits + risk_liquidation_exits + other_exits
+    trade_count = max(0, int(trade_count))
+    denom = int(pooled_trades) if pooled_trades is not None and int(pooled_trades) > 0 else trade_count
     
     # Total exits should approximately match trade count
-    if trade_count > 0:
-        ratio = total_exits / trade_count
+    if denom > 0:
+        ratio = total_exits / denom
         if ratio > 1.5:  # More than 50% extra exits
             violations.append(InvariantViolation(
                 invariant_type=InvariantType.EXIT_DISTRIBUTION,
                 severity=InvariantSeverity.WARNING,
-                message=f"Exit count ({total_exits}) >> trade count ({trade_count})",
+                message=f"Exit count ({total_exits}) >> trade count ({denom})",
                 context={
                     "total_exits": total_exits,
-                    "trade_count": trade_count,
+                    "trade_count": denom,
                     "ratio": ratio,
+                    "pooled_trades": pooled_trades,
                 },
                 stage_name=stage_name,
                 stage_epoch=stage_epoch,
@@ -998,10 +1049,10 @@ class CurriculumInvariantChecker:
         
         # 1. Trade accounting
         trade_result = reconcile_trade_accounting(
-            trade_count=_si(metrics.get("trade_count"), 0),
-            winning_trades=_si(metrics.get("winning_trades"), 0),
-            losing_trades=_si(metrics.get("losing_trades"), 0),
-            win_rate=_sf(metrics.get("win_rate"), 0.0),
+            trade_count=_finite_int(metrics.get("trade_count"), 0),
+            winning_trades=_finite_int(metrics.get("winning_trades"), 0),
+            losing_trades=_finite_int(metrics.get("losing_trades"), 0),
+            win_rate=_finite_or(metrics.get("win_rate"), 0.0),
             stage_name=stage_name,
             stage_epoch=stage_epoch,
             episode_idx=episode_idx,
@@ -1024,7 +1075,8 @@ class CurriculumInvariantChecker:
             hard_stop_exits=_si(metrics.get("hard_stop_exits"), 0),
             risk_liquidation_exits=_si(metrics.get("risk_liquidation_exits"), 0),
             other_exits=_si(metrics.get("other_exits"), 0),
-            trade_count=_si(metrics.get("trade_count"), 0),
+            trade_count=trade_result.reconciled_trade_count,
+            pooled_trades=trade_result.pooled_trades,
             stage_name=stage_name,
             stage_epoch=stage_epoch,
             episode_idx=episode_idx,
@@ -1087,6 +1139,9 @@ class CurriculumInvariantChecker:
         is_promotion: bool,
         is_demotion: bool,
         cooldown_remaining: int,
+        old_stage_index: Optional[int] = None,
+        new_stage_index: Optional[int] = None,
+        min_stage_index: int = 0,
     ) -> List[InvariantViolation]:
         """
         Check stage transition invariants.
@@ -1117,6 +1172,22 @@ class CurriculumInvariantChecker:
                     "cooldown_remaining": cooldown_remaining,
                 },
             ))
+
+        # Optional: cannot demote below foundation (if indices are provided by caller)
+        if is_demotion and new_stage_index is not None:
+            if int(new_stage_index) < int(min_stage_index):
+                violations.append(InvariantViolation(
+                    invariant_type=InvariantType.STAGE_PROGRESSION,
+                    severity=InvariantSeverity.ERROR,
+                    message="Demotion below minimum stage index",
+                    context={
+                        "old_stage": old_stage,
+                        "new_stage": new_stage,
+                        "old_stage_index": old_stage_index,
+                        "new_stage_index": new_stage_index,
+                        "min_stage_index": min_stage_index,
+                    },
+                ))
         
         for v in violations:
             self.logger.log(v)

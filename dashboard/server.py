@@ -173,7 +173,7 @@ def get_requirements_by_stage() -> Dict[str, Any]:
     }
 
     try:
-        from envs.curriculum_config import CurriculumStage, get_stage_config  # type: ignore
+        from envs.curriculum import CurriculumStage, get_stage_config  # type: ignore
 
         stages_out: Dict[str, Any] = {}
         for stage in list(CurriculumStage):
@@ -652,6 +652,7 @@ class MetricsReader:
             out["regime_assessment"] = {
                 "status": ra.get("status", "unknown"),
                 "total_trades": self._safe_int(ra.get("total_trades", 0)),
+                "min_required": self._safe_int(ra.get("min_required", 50)),
                 "confidence": self._safe_float(ra.get("confidence", 0)),
                 "regime_coverage": self._safe_float(ra.get("regime_coverage", 0)),
                 "scores": self._safe_dict(ra.get("scores", {})),

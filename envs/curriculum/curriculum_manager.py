@@ -43,7 +43,7 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 
-from envs.curriculum_config import (
+from envs.curriculum.curriculum_config import (
     CurriculumStage,
     CurriculumStageConfig,
     CompetenceThresholds,
@@ -64,7 +64,7 @@ from envs.curriculum_config import (
 )
 
 # DUP-2 FIX: Use shared utilities for common functions
-from envs.shared_utils import (
+from envs.core.shared_utils import (
     safe_float as _sf,
     safe_int as _si,
     clamp as _cl,
@@ -74,20 +74,39 @@ from envs.shared_utils import (
     iso_timestamp,
 )
 
+# Import from curriculum subpackage
+from envs.curriculum.metrics import (
+    EpisodeMetrics,
+    RollingStats,
+    LearningVelocity,
+    CompositeScore,
+    compute_composite_score,
+    compute_adjusted_thresholds,
+)
+from envs.curriculum.skills import (
+    SkillAssessment,
+    DemotionRecord,
+    DemotionAnalyzer,
+)
+from envs.curriculum.protocols import (
+    RecoveryProtocolState,
+    ReviewSessionState,
+)
+
 # Phase 1-4 hardening modules
-from envs.curriculum_invariants import (
+from envs.curriculum.curriculum_invariants import (
     CurriculumInvariantChecker,
     reconcile_trade_accounting,
     AntiGamingChecker,
     InvariantViolation,
 )
-from envs.validation_gates import (
+from envs.curriculum.validation_gates import (
     ValidationGateChecker,
     ValidationGateConfig,
     StressTestRunner,
     StressTestConfig,
 )
-from envs.regime_skill_assessment import (
+from envs.curriculum.regime_skill_assessment import (
     RegimeSkillAssessment,
     TradeWithRegime,
 )
@@ -99,6 +118,7 @@ DEFAULT_TZ = "Europe/Berlin"
 
 # Limits for persistence
 DEMOTION_HISTORY_LIMIT = 200
+PROCESSED_EPISODE_ID_LIMIT = 5000
 MIN_TRADES_FOR_WILSON_GATE_DEFAULT = 30
 
 
@@ -193,1039 +213,6 @@ def _linear_regression_slope(y: np.ndarray) -> float:
         return 0.0
 
 
-# =============================================================================
-# Data Classes
-# =============================================================================
-
-@dataclass
-class EpisodeMetrics:
-    """Metrics collected from a single episode."""
-    # Core performance
-    total_pnl: float = 0.0
-    win_rate: float = 0.0
-    trade_count: int = 0
-    winning_trades: int = 0
-    losing_trades: int = 0
-
-    # Risk metrics
-    max_drawdown: float = 0.0
-    daily_drawdown: float = 0.0
-    dd_breach: bool = False
-
-    # Quality metrics
-    avg_r_multiple: float = 0.0
-    profit_factor: float = 0.0
-    avg_mae: float = 0.0
-    avg_mfe: float = 0.0
-    avg_bars_held: float = 0.0
-    avg_entry_quality: float = 0.5
-
-    # Behavior metrics
-    consecutive_losses: int = 0
-    consecutive_wins: int = 0
-    max_consecutive_losses_reached: int = 0  # Peak consecutive losses during episode
-    hit_max_consecutive_losses: bool = False
-
-    # Exit quality tracking
-    trailing_stop_exits: int = 0
-    agent_close_exits: int = 0
-    hard_stop_exits: int = 0
-    risk_liquidation_exits: int = 0
-    other_exits: int = 0
-
-    # Episode metadata
-    episode_length: int = 0
-    episode_reward: float = 0.0
-    termination_reason: str = ""
-
-    # Curriculum metadata
-    stage_name: str = ""
-    stage_epoch: int = 0
-    global_episode_idx: int = 0
-
-    # Entropy tracking (if available)
-    policy_entropy: float = -1.0  # -1 indicates not available
-
-    timestamp: str = field(default_factory=lambda: _now_iso(DEFAULT_TZ))
-
-    @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "EpisodeMetrics":
-        """Backward/forward compatible constructor."""
-        allowed = {f.name for f in fields(cls)}
-        payload = {k: v for k, v in (d or {}).items() if k in allowed}
-        return cls(**payload)
-
-
-@dataclass
-class RollingStats:
-    """Rolling statistics computed over a window of episodes."""
-    window_size: int
-
-    # Performance stats
-    mean_pnl: float = 0.0
-    std_pnl: float = 0.0
-    mean_win_rate: float = 0.0      # Episode-averaged win rate
-    std_win_rate: float = 0.0
-    mean_trade_count: float = 0.0
-    total_trades: int = 0
-    total_wins: int = 0
-    total_losses: int = 0
-    win_rate_trade_weighted: float = 0.0  # Trade-pooled: total_wins / total_trades
-
-    # Risk stats
-    mean_drawdown: float = 0.0
-    max_drawdown_seen: float = 0.0
-    dd_breach_rate: float = 0.0
-
-    # Quality stats
-    mean_profit_factor: float = 0.0
-    mean_r_multiple: float = 0.0
-    mean_entry_quality: float = 0.5
-
-    # Behavior stats
-    consecutive_loss_breach_rate: float = 0.0
-    avg_max_consecutive_losses: float = 0.0  # Average of peak consecutive losses per episode
-    consecutive_loss_streak_rate: float = 0.0  # Rate of episodes with 3+ consecutive losses
-
-    # Computed metrics
-    sharpe_ratio: float = 0.0
-    sortino_ratio: float = 0.0
-    win_loss_ratio: float = 0.0
-
-    # Statistical confidence
-    win_rate_wilson_low: float = 0.0
-    win_rate_wilson_high: float = 0.0
-    pnl_mean_ci_low: float = 0.0
-    pnl_mean_ci_high: float = 0.0
-
-    # Entropy stats
-    mean_entropy: float = -1.0
-    std_entropy: float = 0.0
-    entropy_samples: int = 0  # Number of valid entropy samples (for gating)
-
-    # Exit quality stats
-    trailing_stop_rate: float = 0.0
-    agent_close_rate: float = 0.0
-    hard_stop_rate: float = 0.0
-    risk_liquidation_rate: float = 0.0
-
-
-@dataclass
-class LearningVelocity:
-    """
-    Tracks rate of improvement for plateau detection.
-    
-    Monitors multiple metrics over time to determine if agent is still learning
-    or has plateaued at current performance level.
-    """
-    # Rolling history per metric (metric_name -> deque of values)
-    metric_history: Dict[str, Deque[float]] = field(default_factory=dict)
-    
-    # Computed improvement rates (metric_name -> slope)
-    improvement_rates: Dict[str, float] = field(default_factory=dict)
-    
-    # Plateau tracking
-    plateau_episodes: int = 0
-    plateau_threshold: float = 0.005  # Minimum improvement to not count as plateau
-    
-    # History window size
-    history_window: int = 100
-    
-    # Minimum samples for rate calculation
-    min_samples: int = 20
-    
-    # Metrics where LOWER is better (inverted direction)
-    LOWER_IS_BETTER: ClassVar[set] = {
-        "max_drawdown", "daily_drawdown", "avg_mae", "consecutive_losses",
-        "hard_stop_exits", "risk_liquidation_exits",
-    }
-    
-    def has_sufficient_samples(self) -> bool:
-        """True if at least one metric has enough samples to compute an improvement rate."""
-        for hist in self.metric_history.values():
-            if len(hist) >= self.min_samples:
-                return True
-        return False
-    
-    def update(self, metrics: Dict[str, float]) -> None:
-        """Update velocity tracking with new metrics."""
-        any_improving = False
-        has_rate_estimates = False  # Track if ANY metric has enough samples
-        
-        for name, value in metrics.items():
-            if name not in self.metric_history:
-                self.metric_history[name] = deque(maxlen=self.history_window)
-            
-            self.metric_history[name].append(value)
-            
-            # Compute improvement rate via linear regression
-            if len(self.metric_history[name]) >= self.min_samples:
-                has_rate_estimates = True  # We can compute at least one slope
-                y = np.array(list(self.metric_history[name]), dtype=np.float64)
-                slope = _linear_regression_slope(y)
-                
-                # Normalize by mean to get relative improvement
-                mean_val = np.mean(y)
-                if abs(mean_val) > 1e-8:
-                    normalized_slope = slope / abs(mean_val)
-                else:
-                    normalized_slope = slope
-                
-                # For "lower is better" metrics, negate slope for storage
-                # (so positive means improvement regardless of direction)
-                if name in self.LOWER_IS_BETTER:
-                    normalized_slope = -normalized_slope
-                
-                self.improvement_rates[name] = float(normalized_slope)
-                
-                # Check if this metric is improving
-                if normalized_slope > self.plateau_threshold:
-                    any_improving = True
-        
-        # Update plateau counter ONLY if we have enough data to measure improvement
-        # Don't count early episodes as "plateaued" when we can't compute slopes yet
-        if not has_rate_estimates:
-            # Not enough data yet - don't increment plateau (stay at 0 or current)
-            pass
-        elif any_improving:
-            self.plateau_episodes = 0
-        else:
-            self.plateau_episodes += 1
-    
-    def is_plateaued(self, threshold_episodes: int = 100) -> bool:
-        """Check if learning has plateaued."""
-        return self.plateau_episodes >= threshold_episodes
-    
-    def get_average_improvement(self) -> float:
-        """Get average improvement rate across all metrics."""
-        if not self.improvement_rates:
-            return 0.0
-        return float(np.mean(list(self.improvement_rates.values())))
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "improvement_rates": dict(self.improvement_rates),
-            "plateau_episodes": self.plateau_episodes,
-            "plateau_threshold": self.plateau_threshold,
-            "average_improvement": self.get_average_improvement(),
-            "has_sufficient_samples": self.has_sufficient_samples(),
-            # Note: is_plateaued should be checked with stage-specific threshold externally
-            "is_plateaued_default": self.is_plateaued(),
-        }
-
-
-@dataclass
-class SkillAssessment:
-    """
-    Per-skill competence assessment.
-    
-    Decomposes overall trading competence into specific skills for targeted improvement.
-    """
-    skill_scores: Dict[TradingSkill, float] = field(default_factory=dict)
-    skill_confidence: Dict[TradingSkill, float] = field(default_factory=dict)
-    
-    # Aggregated metrics
-    weighted_average: float = 0.5
-    weakest_skills: List[TradingSkill] = field(default_factory=list)
-    strongest_skills: List[TradingSkill] = field(default_factory=list)
-    
-    @classmethod
-    def from_episode_results(
-        cls,
-        episodes: List[EpisodeMetrics],
-        stats: RollingStats,
-        bars_per_trading_day: int = 96,
-    ) -> "SkillAssessment":
-        """Compute skill assessment from episode history.
-        
-        Args:
-            episodes: List of episode metrics
-            stats: Rolling statistics
-            bars_per_trading_day: Bars per trading day for patience calculation
-                                  (default 96 for M15 = 4 bars/hour * 24 hours)
-        """
-        scores: Dict[TradingSkill, float] = {}
-        confidence: Dict[TradingSkill, float] = {}
-        
-        n = len(episodes)
-        if n == 0:
-            return cls()
-        
-        base_conf = min(1.0, n / 50)  # More episodes = more confidence
-        
-        # Entry timing: average entry quality
-        entry_qualities = [e.avg_entry_quality for e in episodes if e.trade_count > 0]
-        if entry_qualities:
-            scores[TradingSkill.ENTRY_TIMING] = float(np.mean(entry_qualities))
-            confidence[TradingSkill.ENTRY_TIMING] = base_conf
-        
-        # Exit quality: ratio of good exits (trailing stop + agent close)
-        total_exits = sum(
-            e.trailing_stop_exits + e.agent_close_exits + e.hard_stop_exits + 
-            e.risk_liquidation_exits + e.other_exits
-            for e in episodes
-        )
-        good_exits = sum(e.trailing_stop_exits + e.agent_close_exits for e in episodes)
-        if total_exits > 0:
-            scores[TradingSkill.EXIT_QUALITY] = good_exits / total_exits
-            confidence[TradingSkill.EXIT_QUALITY] = min(1.0, total_exits / 50)
-        
-        # Drawdown control: 1 - dd_breach_rate
-        scores[TradingSkill.DRAWDOWN_CONTROL] = 1.0 - stats.dd_breach_rate
-        confidence[TradingSkill.DRAWDOWN_CONTROL] = base_conf
-        
-        # Patience: trades per trading day (normalized from episode data)
-        # Delta Force discipline: quality over quantity
-        # 
-        # Normalization: Use actual episode length from metrics instead of 
-        # hardcoded M15/2000 bars assumption. This makes the calculation
-        # robust to different timeframes and episode lengths.
-        avg_trades_per_episode = stats.mean_trade_count
-        
-        # Compute average episode length in bars from the episodes
-        episode_lengths = [e.episode_length for e in episodes if e.episode_length > 0]
-        if episode_lengths:
-            avg_episode_bars = float(np.mean(episode_lengths))
-        else:
-            avg_episode_bars = 2000.0  # Default fallback
-        
-        # Convert to trading days (at least 10 days minimum for stability)
-        # Use actual episode length (min 1 day) - don't inflate short episodes
-        # Previously hardcoded to max(10.0, ...) which masked overtrading in short episodes
-        est_trading_days_per_episode = max(1.0, avg_episode_bars / bars_per_trading_day)
-        
-        # Convert to trades per day
-        trades_per_day = avg_trades_per_episode / est_trading_days_per_episode
-        
-        # RECALIBRATED: More realistic for intraday gold trading
-        # Target: 1-2 trades/day is acceptable for quality setups
-        # Previous: 0.3-0.5 trades/day was too strict (unrealistic)
-        # 
-        # M15 on gold can legitimately have 2-3 quality setups per day
-        # during London/NY overlap. The key is quality over quantity.
-        if trades_per_day <= 0.5:
-            patience_score = 1.0      # Exceptional discipline (1 trade/2 days)
-        elif trades_per_day <= 1.0:
-            patience_score = 0.90     # Excellent (daily trading)
-        elif trades_per_day <= 1.5:
-            patience_score = 0.75     # Good (~1.5 trades/day)
-        elif trades_per_day <= 2.0:
-            patience_score = 0.60     # Acceptable (2 trades/day)
-        elif trades_per_day <= 3.0:
-            patience_score = 0.40     # Needs improvement
-        elif trades_per_day <= 4.0:
-            patience_score = 0.20     # Poor discipline
-        else:
-            # Severe penalty for extreme overtrading (>4/day = churning)
-            patience_score = max(0.0, 0.20 - (trades_per_day - 4.0) / 5.0)
-        scores[TradingSkill.PATIENCE] = patience_score
-        confidence[TradingSkill.PATIENCE] = base_conf
-        
-        # Risk-reward: based on average R-multiple
-        r_mult = stats.mean_r_multiple
-        # Map R-multiple to [0, 1]: -0.5 -> 0, 0 -> 0.5, 0.5+ -> 1.0
-        r_score = _clamp((r_mult + 0.5) / 1.0, 0.0, 1.0)
-        scores[TradingSkill.RISK_REWARD] = r_score
-        confidence[TradingSkill.RISK_REWARD] = base_conf
-        
-        # Consistency: based on win rate stability
-        wr_std = stats.std_win_rate
-        # Lower std is better: 0 -> 1.0, 0.3 -> 0.0
-        cons_score = _clamp(1.0 - wr_std / 0.3, 0.0, 1.0)
-        scores[TradingSkill.CONSISTENCY] = cons_score
-        confidence[TradingSkill.CONSISTENCY] = base_conf
-        
-        # Loss management: based on consecutive loss breach rate
-        cl_breach = stats.consecutive_loss_breach_rate
-        scores[TradingSkill.LOSS_MANAGEMENT] = 1.0 - cl_breach
-        confidence[TradingSkill.LOSS_MANAGEMENT] = base_conf
-        
-        # Trend alignment: based on win rate (proxy)
-        wr = stats.mean_win_rate
-        scores[TradingSkill.TREND_ALIGNMENT] = _clamp(wr * 1.5, 0.0, 1.0)
-        confidence[TradingSkill.TREND_ALIGNMENT] = base_conf
-        
-        # Adaptation: based on profit factor consistency across time
-        # (would need more data to properly assess; use profit factor as proxy)
-        pf = stats.mean_profit_factor
-        adapt_score = _clamp(pf / 2.0, 0.0, 1.0)
-        scores[TradingSkill.ADAPTATION] = adapt_score
-        confidence[TradingSkill.ADAPTATION] = base_conf * 0.7  # Lower confidence
-        
-        # Position sizing: based on drawdown relative to trade count
-        # More trades with same DD is better sizing
-        if stats.mean_drawdown > 0 and stats.mean_trade_count > 0:
-            dd_per_trade = stats.mean_drawdown / stats.mean_trade_count
-            # Lower DD per trade is better
-            sizing_score = _clamp(1.0 - dd_per_trade * 10, 0.0, 1.0)
-        else:
-            sizing_score = 0.5
-        scores[TradingSkill.POSITION_SIZING] = sizing_score
-        confidence[TradingSkill.POSITION_SIZING] = base_conf * 0.8
-        
-        # Compute weighted average
-        total_weight = sum(confidence.values())
-        if total_weight > 0:
-            weighted_avg = sum(
-                scores[skill] * confidence[skill]
-                for skill in scores
-            ) / total_weight
-        else:
-            weighted_avg = 0.5
-        
-        # Find weakest and strongest skills
-        weighted_scores = {
-            skill: scores[skill] * confidence.get(skill, 0.5)
-            for skill in scores
-        }
-        sorted_skills = sorted(weighted_scores.items(), key=lambda x: x[1])
-        weakest = [s[0] for s in sorted_skills[:3]]
-        strongest = [s[0] for s in sorted_skills[-3:][::-1]]
-        
-        return cls(
-            skill_scores=scores,
-            skill_confidence=confidence,
-            weighted_average=weighted_avg,
-            weakest_skills=weakest,
-            strongest_skills=strongest,
-        )
-    
-    def check_requirements(
-        self,
-        requirements: SkillRequirements,
-    ) -> Tuple[bool, Dict[str, Any]]:
-        """Check if skill requirements are met."""
-        results: Dict[str, Any] = {"checks": {}, "passed_all": True}
-        passed_count = 0
-        total_required = len(requirements.required_skills)
-        
-        for skill, min_score in requirements.required_skills.items():
-            actual = self.skill_scores.get(skill, 0.0)
-            conf = self.skill_confidence.get(skill, 0.0)
-            
-            # Require both score AND confidence
-            passed = (actual >= min_score) and (conf >= requirements.min_confidence)
-            
-            results["checks"][skill.value] = {
-                "required": min_score,
-                "actual": actual,
-                "confidence": conf,
-                "passed": passed,
-            }
-            
-            if passed:
-                passed_count += 1
-            else:
-                results["passed_all"] = False
-        
-        # If not requiring all skills, check weighted average using requirements.skill_weights
-        if not requirements.require_all_skills:
-            # Compute weighted average using stage-configured skill_weights (not confidence)
-            numer = 0.0
-            denom = 0.0
-            for skill, min_score in requirements.required_skills.items():
-                s = float(self.skill_scores.get(skill, 0.0))
-                c = float(self.skill_confidence.get(skill, 0.0))
-                w = float(requirements.get_weight(skill))  # Use stage-configured weight
-                # Only include skills with sufficient confidence
-                if c >= requirements.min_confidence:
-                    numer += s * w
-                    denom += w
-            
-            weighted = (numer / denom) if denom > 0 else 0.0
-            meets_weighted = weighted >= requirements.weighted_threshold
-            results["weighted_average"] = weighted
-            results["weighted_threshold"] = requirements.weighted_threshold
-            results["meets_weighted"] = meets_weighted
-            results["overall_passed"] = meets_weighted or results["passed_all"]
-        else:
-            results["overall_passed"] = results["passed_all"]
-        
-        results["passed_count"] = passed_count
-        results["total_required"] = total_required
-        
-        return results["overall_passed"], results
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "skill_scores": {k.value: v for k, v in self.skill_scores.items()},
-            "skill_confidence": {k.value: v for k, v in self.skill_confidence.items()},
-            "weighted_average": self.weighted_average,
-            "weakest_skills": [s.value for s in self.weakest_skills],
-            "strongest_skills": [s.value for s in self.strongest_skills],
-        }
-
-
-@dataclass
-class DemotionRecord:
-    """Record of a demotion event for analysis."""
-    from_stage: CurriculumStage
-    to_stage: CurriculumStage
-    timestamp: str
-    failure_reasons: List[str]
-    skill_assessment: Optional[Dict[str, Any]]
-    stats_snapshot: Optional[Dict[str, Any]]
-    global_episode: int
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "from_stage": self.from_stage.name,
-            "to_stage": self.to_stage.name,
-            "timestamp": self.timestamp,
-            "failure_reasons": self.failure_reasons,
-            "skill_assessment": self.skill_assessment,
-            "stats_snapshot": self.stats_snapshot,
-            "global_episode": self.global_episode,
-        }
-    
-    @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "DemotionRecord":
-        """Restore record from dict safely (backward/forward compatible)."""
-        from_stage = _foundation_stage()
-        to_stage = _foundation_stage()
-        try:
-            if d.get("from_stage"):
-                from_stage = CurriculumStage[d["from_stage"]]
-            if d.get("to_stage"):
-                to_stage = CurriculumStage[d["to_stage"]]
-        except Exception as e:
-            logger.debug(f"Could not parse stage names from demotion record: {e}")
-        return cls(
-            from_stage=from_stage,
-            to_stage=to_stage,
-            timestamp=str(d.get("timestamp", "")),
-            failure_reasons=list(d.get("failure_reasons", []) or []),
-            skill_assessment=d.get("skill_assessment", None),
-            stats_snapshot=d.get("stats_snapshot", None),
-            global_episode=_safe_int(d.get("global_episode", 0), 0),
-        )
-
-
-@dataclass
-class RecoveryProtocolState:
-    """State for active recovery protocol."""
-    triggered: bool = False
-    focus_skill: Optional[TradingSkill] = None
-    reward_modifications: Dict[str, float] = field(default_factory=dict)
-    constraint_modifications: Dict[str, float] = field(default_factory=dict)
-    episodes_remaining: int = 0
-    trigger_reason: str = ""
-    
-    def is_active(self) -> bool:
-        return self.triggered and self.episodes_remaining > 0
-    
-    def tick(self) -> None:
-        """Decrease episode counter."""
-        if self.episodes_remaining > 0:
-            self.episodes_remaining -= 1
-            if self.episodes_remaining <= 0:
-                self.triggered = False
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "triggered": self.triggered,
-            "focus_skill": self.focus_skill.value if self.focus_skill else None,
-            "reward_modifications": self.reward_modifications,
-            "constraint_modifications": self.constraint_modifications,
-            "episodes_remaining": self.episodes_remaining,
-            "trigger_reason": self.trigger_reason,
-            "is_active": self.is_active(),
-        }
-    
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "RecoveryProtocolState":
-        """Restore state from dictionary."""
-        focus_skill = None
-        if data.get("focus_skill"):
-            try:
-                focus_skill = TradingSkill(data["focus_skill"])
-            except (ValueError, KeyError):
-                logger.debug(f"Unknown focus_skill in recovery state: {data.get('focus_skill')}")
-        
-        return cls(
-            triggered=data.get("triggered", False),
-            focus_skill=focus_skill,
-            reward_modifications=data.get("reward_modifications", {}),
-            constraint_modifications=data.get("constraint_modifications", {}),
-            episodes_remaining=data.get("episodes_remaining", 0),
-            trigger_reason=data.get("trigger_reason", ""),
-        )
-
-
-@dataclass
-class ReviewSessionState:
-    """State for review session management."""
-    episodes_since_review: int = 0
-    in_review: bool = False
-    review_stage: Optional[CurriculumStage] = None
-    review_episodes_remaining: int = 0
-    home_stage: Optional[CurriculumStage] = None
-    return_to_home_latch: bool = False  # One-episode latch after review ends
-    
-    def is_active(self) -> bool:
-        return self.in_review and self.review_episodes_remaining > 0
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "episodes_since_review": self.episodes_since_review,
-            "in_review": self.in_review,
-            "review_stage": self.review_stage.name if self.review_stage else None,
-            "review_episodes_remaining": self.review_episodes_remaining,
-            "home_stage": self.home_stage.name if self.home_stage else None,
-            "return_to_home_latch": self.return_to_home_latch,
-            "is_active": self.is_active(),
-        }
-    
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ReviewSessionState":
-        """Restore state from dictionary."""
-        review_stage = None
-        if data.get("review_stage"):
-            try:
-                review_stage = CurriculumStage[data["review_stage"]]
-            except KeyError:
-                logger.debug(f"Unknown review_stage: {data.get('review_stage')}")
-        
-        home_stage = None
-        if data.get("home_stage"):
-            try:
-                home_stage = CurriculumStage[data["home_stage"]]
-            except KeyError:
-                logger.debug(f"Unknown home_stage: {data.get('home_stage')}")
-        
-        return cls(
-            episodes_since_review=data.get("episodes_since_review", 0),
-            in_review=data.get("in_review", False),
-            review_stage=review_stage,
-            review_episodes_remaining=data.get("review_episodes_remaining", 0),
-            home_stage=home_stage,
-            return_to_home_latch=bool(data.get("return_to_home_latch", False)),
-        )
-
-
-@dataclass
-class CompositeScore:
-    """Result of composite competence scoring."""
-    total_score: float = 0.0
-    component_scores: Dict[str, float] = field(default_factory=dict)
-    meets_hard_floors: bool = True
-    hard_floor_failures: List[str] = field(default_factory=list)
-    promotion_ready: bool = False
-    demotion_risk: bool = False
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "total_score": self.total_score,
-            "component_scores": self.component_scores,
-            "meets_hard_floors": self.meets_hard_floors,
-            "hard_floor_failures": self.hard_floor_failures,
-            "promotion_ready": self.promotion_ready,
-            "demotion_risk": self.demotion_risk,
-        }
-
-
-# =============================================================================
-# Demotion Analyzer
-# =============================================================================
-
-class DemotionAnalyzer:
-    """
-    Analyzes demotion patterns to diagnose recurring issues.
-    
-    Tracks demotion history and generates targeted recovery recommendations.
-    """
-    
-    def __init__(self) -> None:
-        self.demotion_history: List[DemotionRecord] = []
-        self.stage_failure_counts: Dict[CurriculumStage, int] = {}
-    
-    def record_demotion(
-        self,
-        from_stage: CurriculumStage,
-        to_stage: CurriculumStage,
-        failure_reasons: List[str],
-        skill_assessment: Optional[SkillAssessment],
-        stats: Optional[RollingStats],
-        global_episode: int,
-    ) -> None:
-        """Record a demotion event."""
-        record = DemotionRecord(
-            from_stage=from_stage,
-            to_stage=to_stage,
-            timestamp=_now_iso(),
-            failure_reasons=failure_reasons,
-            skill_assessment=skill_assessment.to_dict() if skill_assessment else None,
-            stats_snapshot=asdict(stats) if stats else None,
-            global_episode=global_episode,
-        )
-        self.demotion_history.append(record)
-        self.stage_failure_counts[from_stage] = self.stage_failure_counts.get(from_stage, 0) + 1
-    
-    def get_failure_count(self, stage: CurriculumStage) -> int:
-        """Get number of demotions from a specific stage."""
-        return self.stage_failure_counts.get(stage, 0)
-    
-    def diagnose_repeated_failures(self, stage: CurriculumStage) -> Dict[str, Any]:
-        """Analyze why agent keeps failing at a stage."""
-        relevant = [d for d in self.demotion_history if d.from_stage == stage]
-        
-        if len(relevant) < 2:
-            return {"status": "insufficient_data", "failure_count": len(relevant)}
-        
-        # Aggregate failure reasons
-        reason_counts: Dict[str, int] = {}
-        for d in relevant:
-            for reason in d.failure_reasons:
-                reason_counts[reason] = reason_counts.get(reason, 0) + 1
-        
-        # Aggregate skill weaknesses
-        skill_scores_all: Dict[str, List[float]] = {}
-        for d in relevant:
-            if d.skill_assessment:
-                for skill_name, score in d.skill_assessment.get("skill_scores", {}).items():
-                    if skill_name not in skill_scores_all:
-                        skill_scores_all[skill_name] = []
-                    skill_scores_all[skill_name].append(score)
-        
-        avg_skills: Dict[str, float] = {
-            skill: float(np.mean(scores))
-            for skill, scores in skill_scores_all.items()
-        }
-        
-        # Generate recommendation
-        recommendation = self._generate_recommendation(reason_counts, avg_skills)
-        
-        return {
-            "status": "analyzed",
-            "failure_count": len(relevant),
-            "top_failure_reasons": sorted(reason_counts.items(), key=lambda x: -x[1])[:3],
-            "weak_skills": sorted(avg_skills.items(), key=lambda x: x[1])[:3],
-            "recommendation": recommendation,
-        }
-    
-    def _generate_recommendation(
-        self,
-        reasons: Dict[str, int],
-        skills: Dict[str, float],
-    ) -> Dict[str, Any]:
-        """Generate targeted recovery recommendation."""
-        focus_skill: Optional[TradingSkill] = None
-        reward_mods: Dict[str, float] = {}
-        constraint_mods: Dict[str, float] = {}
-        description = "general_practice"
-        
-        # Check for dominant issues
-        if reasons.get("drawdown_critical", 0) + reasons.get("dd_breach_critical", 0) > 1:
-            focus_skill = TradingSkill.DRAWDOWN_CONTROL
-            reward_mods = {"dd_penalty_scale": 2.0, "reward_scale": 0.8}
-            constraint_mods = {"max_trades_per_day": 0.7}  # Reduce by 30%
-            description = "focus_drawdown_control"
-        
-        elif reasons.get("win_rate_critical", 0) > 1:
-            focus_skill = TradingSkill.ENTRY_TIMING
-            reward_mods = {"entry_quality_weight": 0.5, "soft_block_penalty": 0.1}
-            description = "focus_entry_quality"
-        
-        elif reasons.get("profit_factor_critical", 0) > 1:
-            focus_skill = TradingSkill.RISK_REWARD
-            reward_mods = {"r_multiple_bonus_scale": 0.5, "time_efficiency_scale": 0.25}
-            description = "focus_risk_reward"
-        
-        elif skills.get(TradingSkill.PATIENCE.value, 1.0) < 0.4:
-            focus_skill = TradingSkill.PATIENCE
-            reward_mods = {"churn_penalty_per_trade": 0.05}
-            constraint_mods = {"daily_trade_soft_limit": 0.5}
-            description = "reduce_trade_frequency"
-        
-        elif skills.get(TradingSkill.LOSS_MANAGEMENT.value, 1.0) < 0.4:
-            focus_skill = TradingSkill.LOSS_MANAGEMENT
-            reward_mods = {"loss_streak_penalty_per_loss": 0.05}
-            description = "focus_loss_management"
-        
-        return {
-            "focus_skill": focus_skill.value if focus_skill else None,
-            "reward_modifications": reward_mods,
-            "constraint_modifications": constraint_mods,
-            "description": description,
-        }
-    
-    def create_recovery_protocol(
-        self,
-        stage: CurriculumStage,
-        config: RecoveryProtocolConfig,
-    ) -> RecoveryProtocolState:
-        """Create a recovery protocol based on diagnosis."""
-        if not config.enabled:
-            return RecoveryProtocolState()
-        
-        failure_count = self.get_failure_count(stage)
-        if failure_count < config.trigger_after_demotions:
-            return RecoveryProtocolState()
-        
-        diagnosis = self.diagnose_repeated_failures(stage)
-        if diagnosis.get("status") != "analyzed":
-            return RecoveryProtocolState()
-        
-        rec = diagnosis.get("recommendation", {})
-        
-        focus_skill = None
-        if rec.get("focus_skill"):
-            try:
-                focus_skill = TradingSkill(rec["focus_skill"])
-            except ValueError:
-                logger.debug(f"Unknown focus_skill in recommendation: {rec.get('focus_skill')}")
-        
-        # Override with config if specified
-        if config.focus_skill:
-            focus_skill = config.focus_skill
-        
-        # Merge modifications
-        reward_mods = {**rec.get("reward_modifications", {}), **config.reward_modifications}
-        constraint_mods = {**rec.get("constraint_modifications", {}), **config.constraint_modifications}
-        
-        return RecoveryProtocolState(
-            triggered=True,
-            focus_skill=focus_skill,
-            reward_modifications=reward_mods,
-            constraint_modifications=constraint_mods,
-            episodes_remaining=config.recovery_duration_episodes,
-            trigger_reason=rec.get("description", "repeated_failures"),
-        )
-    
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "demotion_count": len(self.demotion_history),
-            "stage_failure_counts": {s.name: c for s, c in self.stage_failure_counts.items()},
-            "recent_demotions": [d.to_dict() for d in self.demotion_history[-5:]],
-            # Full history (bounded) for proper restoration
-            "demotion_history": [d.to_dict() for d in self.demotion_history[-DEMOTION_HISTORY_LIMIT:]],
-        }
-    
-    def load_from_dict(self, data: Dict[str, Any]) -> None:
-        """Restore state from dictionary."""
-        self.stage_failure_counts = {}
-        for stage_name, count in data.get("stage_failure_counts", {}).items():
-            try:
-                stage = CurriculumStage[stage_name]
-                self.stage_failure_counts[stage] = count
-            except KeyError:
-                logger.debug(f"Unknown stage name in failure counts: {stage_name}")
-        
-        # Restore demotion history - prefer full history, fall back to recent_demotions
-        self.demotion_history = []
-        history_data = data.get("demotion_history") or data.get("recent_demotions") or []
-        for d in history_data[-DEMOTION_HISTORY_LIMIT:]:
-            try:
-                self.demotion_history.append(DemotionRecord.from_dict(d))
-            except Exception as e:
-                logger.debug(f"Skipping malformed demotion record: {e}")
-
-
-# =============================================================================
-# Composite Scoring
-# =============================================================================
-
-def compute_composite_score(
-    stats: RollingStats,
-    thresholds: CompetenceThresholds,
-    config: CompositeScoringConfig,
-) -> CompositeScore:
-    """
-    Compute weighted composite competence score.
-    
-    Allows nuanced evaluation rather than all-or-nothing gating.
-    """
-    if not config.enabled:
-        return CompositeScore()
-    
-    components: Dict[str, float] = {}
-    
-    # Win rate: score 0-1 based on distance to threshold
-    wr_score = min(stats.mean_win_rate / max(thresholds.min_win_rate, 0.01), 1.5) / 1.5
-    components["win_rate"] = wr_score
-    
-    # Profit factor
-    pf_score = min(stats.mean_profit_factor / max(thresholds.min_profit_factor, 0.01), 2.0) / 2.0
-    components["profit_factor"] = pf_score
-    
-    # Drawdown (inverted - lower is better)
-    if thresholds.max_avg_drawdown > 0:
-        dd_ratio = stats.mean_drawdown / thresholds.max_avg_drawdown
-        dd_score = 1.0 - min(dd_ratio, 1.5) / 1.5
-    else:
-        dd_score = 1.0 if stats.mean_drawdown <= 0.01 else 0.5
-    components["drawdown"] = max(0, dd_score)
-    
-    # Consistency
-    if thresholds.max_win_rate_std > 0:
-        cons_ratio = stats.std_win_rate / thresholds.max_win_rate_std
-        cons_score = 1.0 - min(cons_ratio, 1.5) / 1.5
-    else:
-        cons_score = 1.0 if stats.std_win_rate <= 0.05 else 0.5
-    components["consistency"] = max(0, cons_score)
-    
-    # R-multiple
-    r_score = _clamp((stats.mean_r_multiple + 0.5) / 1.0, 0.0, 1.0)
-    components["r_multiple"] = r_score
-    
-    # DD breach rate (inverted)
-    if thresholds.max_dd_breach_rate > 0:
-        breach_ratio = stats.dd_breach_rate / thresholds.max_dd_breach_rate
-        breach_score = 1.0 - min(breach_ratio, 1.5) / 1.5
-    else:
-        breach_score = 1.0 if stats.dd_breach_rate <= 0.05 else 0.5
-    components["dd_breach_rate"] = max(0, breach_score)
-    
-    # Trade activity
-    if thresholds.min_trade_count_avg > 0:
-        trade_score = min(stats.mean_trade_count / thresholds.min_trade_count_avg, 2.0) / 2.0
-    else:
-        trade_score = 0.5
-    components["trade_activity"] = trade_score
-    
-    # Consecutive loss rate (inverted)
-    if thresholds.max_consecutive_loss_rate > 0:
-        cl_ratio = stats.consecutive_loss_breach_rate / thresholds.max_consecutive_loss_rate
-        cl_score = 1.0 - min(cl_ratio, 1.5) / 1.5
-    else:
-        cl_score = 1.0 if stats.consecutive_loss_breach_rate <= 0.05 else 0.5
-    components["consecutive_loss_rate"] = max(0, cl_score)
-    
-    # Compute weighted composite (normalized by weight sum for stable scale)
-    weight_sum = sum(config.weights.values())
-    if weight_sum <= 0:
-        weight_sum = 1.0  # Avoid division by zero
-    
-    total_score = sum(
-        components.get(name, 0.5) * weight
-        for name, weight in config.weights.items()
-    ) / weight_sum  # Normalize to [0, 1] range
-    
-    # Check hard floors
-    hard_floor_failures: List[str] = []
-    meets_floors = True
-    
-    if "win_rate" in config.hard_floors:
-        if stats.mean_win_rate < config.hard_floors["win_rate"]:
-            meets_floors = False
-            hard_floor_failures.append("win_rate")
-    
-    if "max_drawdown" in config.hard_floors:
-        if stats.mean_drawdown > config.hard_floors["max_drawdown"]:
-            meets_floors = False
-            hard_floor_failures.append("max_drawdown")
-    
-    if "dd_breach_rate" in config.hard_floors:
-        if stats.dd_breach_rate > config.hard_floors["dd_breach_rate"]:
-            meets_floors = False
-            hard_floor_failures.append("dd_breach_rate")
-    
-    # NEW: Check profit_factor hard floor
-    if "profit_factor" in config.hard_floors:
-        if stats.mean_profit_factor < config.hard_floors["profit_factor"]:
-            meets_floors = False
-            hard_floor_failures.append("profit_factor")
-    
-    # NEW: Check r_multiple hard floor
-    if "r_multiple" in config.hard_floors:
-        if stats.mean_r_multiple < config.hard_floors["r_multiple"]:
-            meets_floors = False
-            hard_floor_failures.append("r_multiple")
-    
-    # Determine promotion/demotion status
-    promotion_ready = meets_floors and (total_score >= config.promotion_threshold)
-    demotion_risk = total_score < config.demotion_threshold
-    
-    return CompositeScore(
-        total_score=total_score,
-        component_scores=components,
-        meets_hard_floors=meets_floors,
-        hard_floor_failures=hard_floor_failures,
-        promotion_ready=promotion_ready,
-        demotion_risk=demotion_risk,
-    )
-
-
-# =============================================================================
-# Adaptive Thresholds
-# =============================================================================
-
-def compute_adjusted_thresholds(
-    base: CompetenceThresholds,
-    velocity: LearningVelocity,
-    config: AdaptiveThresholdConfig,
-    composite_score: Optional["CompositeScore"] = None,
-    promotion_threshold: float = 0.7,
-) -> CompetenceThresholds:
-    """
-    Compute adjusted thresholds based on learning velocity.
-    
-    Slightly relaxes thresholds if agent is plateaued AND close to promotion.
-    The proximity check prevents wasting relaxation on agents that are nowhere
-    near promotion anyway.
-    """
-    if not config.enabled:
-        return base
-    
-    if velocity.plateau_episodes < config.plateau_episodes_threshold:
-        return base  # No adjustment needed
-    
-    # PROXIMITY CHECK: Only relax if agent is reasonably close to promotion
-    # This prevents wasting relaxation on agents that are far from ready.
-    if composite_score is not None:
-        proximity_margin = 0.15  # Must be within 15% of promotion threshold
-        if composite_score.total_score < (promotion_threshold - proximity_margin):
-            return base  # Too far from promotion, don't relax
-    
-    # Calculate relaxation factor
-    # Linear buildup from 0 to max_relaxation over relaxation_buildup_episodes
-    plateau_beyond_threshold = velocity.plateau_episodes - config.plateau_episodes_threshold
-    relax_progress = min(1.0, plateau_beyond_threshold / config.relaxation_buildup_episodes)
-    relax_factor = config.max_relaxation * relax_progress
-    
-    # Create adjusted thresholds
-    adjusted = copy.deepcopy(base)
-    
-    # Apply relaxation to allowed metrics
-    if "min_win_rate" in config.relaxable_metrics:
-        adjusted.min_win_rate = base.min_win_rate * (1 - relax_factor * 0.5)
-    
-    if "min_profit_factor" in config.relaxable_metrics:
-        adjusted.min_profit_factor = base.min_profit_factor * (1 - relax_factor * 0.3)
-    
-    if "min_avg_pnl" in config.relaxable_metrics:
-        if base.min_avg_pnl < 0:
-            # FIX: To make a negative number "less negative", multiply by (1 - factor)
-            # e.g., -100 * (1 - 0.2) = -80 (closer to 0, easier threshold)
-            adjusted.min_avg_pnl = base.min_avg_pnl * (1 - relax_factor)
-        else:
-            adjusted.min_avg_pnl = base.min_avg_pnl * (1 - relax_factor * 0.3)
-    
-    if "min_trade_count_avg" in config.relaxable_metrics:
-        adjusted.min_trade_count_avg = base.min_trade_count_avg * (1 - relax_factor * 0.3)
-    
-    if "max_win_rate_std" in config.relaxable_metrics:
-        adjusted.max_win_rate_std = base.max_win_rate_std * (1 + relax_factor * 0.3)
-    
-    if "max_pnl_std" in config.relaxable_metrics:
-        adjusted.max_pnl_std = base.max_pnl_std * (1 + relax_factor * 0.3)
-    
-    # NEVER relax safety metrics
-    for metric in config.never_relax:
-        if hasattr(base, metric) and hasattr(adjusted, metric):
-            setattr(adjusted, metric, getattr(base, metric))
-    
-    # CLAMP all thresholds to valid domains to prevent pathological configs
-    adjusted.min_win_rate = _clamp(adjusted.min_win_rate, 0.0, 1.0)
-    adjusted.min_profit_factor = max(0.0, adjusted.min_profit_factor)
-    adjusted.min_trade_count_avg = max(0.0, adjusted.min_trade_count_avg)
-    adjusted.max_win_rate_std = max(0.0, adjusted.max_win_rate_std)
-    adjusted.max_pnl_std = max(0.0, adjusted.max_pnl_std)
-    adjusted.max_avg_drawdown = _clamp(adjusted.max_avg_drawdown, 0.0, 1.0)
-    adjusted.max_dd_breach_rate = _clamp(adjusted.max_dd_breach_rate, 0.0, 1.0)
-    
-    return adjusted
-
 
 # =============================================================================
 # Main Curriculum Manager
@@ -1307,6 +294,8 @@ class CurriculumManager:
         self._transition_cooldown_remaining: int = 0
         self._reward_blend_remaining: int = 0
         self._previous_stage_config: Optional[CurriculumStageConfig] = None
+        # Persistable provenance for reward blending across resumes
+        self._previous_stage_name: Optional[str] = None
         self._lr_warmup_active: bool = False
         self._lr_warmup_steps_remaining: int = 0
         self._lr_warmup_factor: float = 1.0
@@ -1336,7 +325,7 @@ class CurriculumManager:
         self._last_episode_end_idx: int = -1
         
         # True idempotency tracking: track processed episode IDs (bounded to avoid memory leak)
-        self._processed_episode_ids: Deque[int] = deque(maxlen=5000)
+        self._processed_episode_ids: Deque[int] = deque()
         self._processed_episode_id_set: Set[int] = set()
         
         # Review tick latch: prevents double-ticking review counters within same episode
@@ -1377,6 +366,7 @@ class CurriculumManager:
         # Save previous config for reward blending
         if hasattr(self, 'current_stage') and self.current_stage != stage:
             self._previous_stage_config = get_stage_config(self.current_stage)
+            self._previous_stage_name = self.current_stage.name
         
         self._stage_epoch_counter[stage] += 1
         self._current_stage_epoch = self._stage_epoch_counter[stage]
@@ -1539,11 +529,12 @@ class CurriculumManager:
     
     def _mark_episode_id(self, eid: int) -> None:
         """Mark an episode ID as processed (bounded to prevent memory leak)."""
+        # Manual bounded eviction so the set stays consistent without O(n) rebuilds.
+        if len(self._processed_episode_ids) >= PROCESSED_EPISODE_ID_LIMIT:
+            old = self._processed_episode_ids.popleft()
+            self._processed_episode_id_set.discard(old)
         self._processed_episode_ids.append(eid)
         self._processed_episode_id_set.add(eid)
-        # Maintain set consistency when deque overflows
-        if len(self._processed_episode_id_set) > len(self._processed_episode_ids):
-            self._processed_episode_id_set = set(self._processed_episode_ids)
     
     def episode_transition_tick(self) -> None:
         """Update per-episode transition counters."""
@@ -1605,7 +596,13 @@ class CurriculumManager:
         
         # True idempotency check using episode ID (not just sequential counter)
         # Use global_episode_idx from metrics if available, otherwise fall back to sequential
-        episode_id = int(metrics.global_episode_idx) if metrics.global_episode_idx > 0 else (self.total_episodes + 1)
+        gid = int(getattr(metrics, "global_episode_idx", 0) or 0)
+        # If gid is missing/stale (common after resume or per-env counters), fall back to manager sequence.
+        # This avoids permanent "duplicate" skipping after resume.
+        if gid <= 0 or gid <= self.total_episodes:
+            episode_id = self.total_episodes + 1
+        else:
+            episode_id = gid
         
         if self._seen_episode_id(episode_id):
             logger.debug(f"on_episode_end: duplicate episode_id={episode_id}, skipping")
@@ -1754,6 +751,10 @@ class CurriculumManager:
         if not config.enabled:
             return None
         
+        # min_stage_for_review is guaranteed non-None by ReviewSessionConfig.__post_init__
+        if config.min_stage_for_review is None:
+            return None  # Should never happen, but satisfies type checker
+        
         # Use progression index for comparison (not .value)
         cur_idx = _stage_to_index(self.current_stage)
         min_review_idx = _stage_to_index(config.min_stage_for_review)
@@ -1778,14 +779,18 @@ class CurriculumManager:
             if not already_ticked:
                 self._review_state.review_episodes_remaining -= 1
             if self._review_state.review_episodes_remaining <= 0:
+                # End review AFTER running the final intended review episode.
+                # Previously this returned home immediately, effectively shortening review by 1.
+                final_review_stage = self._review_state.review_stage
+
                 # End review, set latch to return home for next episode
                 self._review_state.in_review = False
                 self._review_state.episodes_since_review = 0
                 self._review_state.return_to_home_latch = True  # Will return home next call
                 if self.verbose:
                     home_name = self._review_state.home_stage.name if self._review_state.home_stage else "current"
-                    logger.info(f"Review session complete, returning to {home_name}")
-                return self.current_stage  # Return home stage NOW, not None
+                    logger.info(f"Review session complete, returning to {home_name} next episode")
+                return final_review_stage  # Run the last review episode on the review stage
             return self._review_state.review_stage
         
         # Check if review should start (only tick counter if not already ticked)
@@ -1950,11 +955,12 @@ class CurriculumManager:
         """
         ep_stats = info.get("episode_stats", {}) or {}
         
-        # Parse metrics
+        # Parse metrics - using canonical naming (trade_count, max_drawdown)
         total_pnl = _safe_float(info.get("total_pnl", ep_stats.get("total_pnl", 0.0)), 0.0)
         win_rate = _clamp(_safe_float(info.get("win_rate", ep_stats.get("win_rate", 0.0)), 0.0), 0.0, 1.0)
         
-        trade_count = _safe_int(info.get("trade_count", ep_stats.get("total_trades", ep_stats.get("trade_count", 0))), 0)
+        # trade_count: from step info or episode_stats (both now use same name)
+        trade_count = _safe_int(info.get("trade_count", ep_stats.get("trade_count", 0)), 0)
         winning_trades = _safe_int(ep_stats.get("winning_trades", info.get("winning_trades", 0)), 0)
         losing_trades = _safe_int(ep_stats.get("losing_trades", info.get("losing_trades", 0)), 0)
         
@@ -1974,7 +980,8 @@ class CurriculumManager:
             winning_trades = max(0, min(trade_count, approx_wins))
             losing_trades = max(0, trade_count - winning_trades)
         
-        max_dd = _clamp(_safe_float(info.get("drawdown", ep_stats.get("max_drawdown", 0.0)), 0.0), 0.0, 1.0)
+        # max_drawdown: prefer episode_stats (peak DD) over step info current drawdown
+        max_dd = _clamp(_safe_float(info.get("max_drawdown", ep_stats.get("max_drawdown", info.get("drawdown", 0.0))), 0.0), 0.0, 1.0)
         daily_dd = _clamp(_safe_float(info.get("daily_drawdown", ep_stats.get("daily_drawdown", 0.0)), 0.0), 0.0, 1.0)
         
         termination_reason = str(info.get("termination_reason", ep_stats.get("termination_reason", "")) or "")
@@ -2093,7 +1100,7 @@ class CurriculumManager:
             return
         
         # Map string regime names to enums
-        from envs.regime_skill_assessment import (
+        from envs.curriculum.regime_skill_assessment import (
             VolatilityRegime, TrendRegime, SessionRegime, SpreadRegime
         )
         
@@ -3364,6 +2371,8 @@ class CurriculumManager:
             # Transition counters (prevents behavior change on resume)
             "transition_cooldown_remaining": self._transition_cooldown_remaining,
             "reward_blend_remaining": self._reward_blend_remaining,
+            # Needed to restore reward blending correctly across resumes
+            "previous_stage": self._previous_stage_name,
             "lr_warmup_active": self._lr_warmup_active,
             "lr_warmup_steps_remaining": self._lr_warmup_steps_remaining,
             "lr_warmup_factor": self._lr_warmup_factor,
@@ -3483,6 +2492,17 @@ class CurriculumManager:
         manager._lr_warmup_active = bool(state.get("lr_warmup_active", False))
         manager._lr_warmup_steps_remaining = _safe_int(state.get("lr_warmup_steps_remaining", 0), 0)
         manager._lr_warmup_factor = _safe_float(state.get("lr_warmup_factor", 1.0), 1.0)
+
+        # Restore reward blend provenance (prevents behavior change on resume)
+        prev_stage_name = state.get("previous_stage", None)
+        manager._previous_stage_name = prev_stage_name
+        if prev_stage_name and manager._reward_blend_remaining > 0:
+            try:
+                manager._previous_stage_config = get_stage_config(CurriculumStage[prev_stage_name])
+            except Exception as e:
+                logger.warning(f"Could not restore previous_stage_config for blending: {e}; disabling blend.")
+                manager._previous_stage_config = None
+                manager._reward_blend_remaining = 0
         
         # Restore episode tracking
         manager._last_episode_end_idx = _safe_int(state.get("last_episode_end_idx", -1), -1)
@@ -3490,8 +2510,10 @@ class CurriculumManager:
         # Restore true idempotency tracking
         processed_ids = state.get("processed_episode_ids", [])
         if processed_ids:
-            manager._processed_episode_ids = deque(processed_ids, maxlen=5000)
-            manager._processed_episode_id_set = set(manager._processed_episode_ids)
+            # Keep only the most recent IDs (bounded)
+            trimmed = list(processed_ids)[-PROCESSED_EPISODE_ID_LIMIT:]
+            manager._processed_episode_ids = deque(trimmed)
+            manager._processed_episode_id_set = set(trimmed)
         
         # Restore current entropy state
         manager._current_entropy = _safe_float(state.get("current_entropy", -1.0), -1.0)

@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
 import numpy as np
 
 if TYPE_CHECKING:
-    from envs.curriculum_config import ExecutionDifficulty
+    from envs.curriculum.curriculum_config import ExecutionDifficulty
 
 
 @dataclass
@@ -432,7 +432,7 @@ def create_execution_model_for_stage(
         Configured ExecutionModel
     """
     # Import here to avoid circular dependency
-    from envs.curriculum_config import ExecutionDifficulty
+    from envs.curriculum.curriculum_config import ExecutionDifficulty
     
     config = ExecutionConfig(
         base_spread_points=stage_execution.base_spread_points,

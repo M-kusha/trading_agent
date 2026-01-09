@@ -5,6 +5,9 @@ Curriculum Configuration for Trading RL Agent
 
 Defines curriculum progression from early learning to live-ready discipline.
 
+This file re-exports TYPES from envs/curriculum/config/ subpackage for backward compatibility,
+and defines the stage factory functions + validators in one place.
+
 Enhancements in this version (v2.0):
 - Skill-based competency requirements per stage
 - Entropy targets for exploration management
@@ -18,673 +21,51 @@ Enhancements in this version (v2.0):
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from enum import Enum, IntEnum
-from typing import Callable, Dict, List, Optional, Tuple, Set
+from typing import Callable, Dict, List, Optional
+
+# Import all types from curriculum.config subpackage
+from envs.curriculum.config import (
+    # Stages
+    CurriculumStage,
+    TradingSkill,
+    MarketRegime,
+    CurriculumStageConfig,
+    # Execution
+    ExecutionDifficulty,
+    DataDifficulty,
+    TransitionSettings,
+    # Thresholds
+    CompetenceThresholds,
+    SkillRequirements,
+    EntropyTargets,
+    CompositeScoringConfig,
+    AdaptiveThresholdConfig,
+    MIN_EVALUATION_EPISODES,
+    # Constraints
+    TradingConstraints,
+    RewardShaping,
+    # Protocols
+    RecoveryProtocolConfig,
+    MixedStageSamplingConfig,
+    ReviewSessionConfig,
+    ValidationConfig,
+    # Registry
+    OBSERVED_METRICS,
+    OBSERVED_ALIASES,
+    THRESHOLD_FIELDS,
+    THRESHOLD_ALIASES,
+    METRIC_TO_THRESHOLD,
+    COMPOSITE_WEIGHT_KEYS,
+    COMPOSITE_HARD_FLOOR_KEYS,
+    METRIC_CANONICAL_NAMES,
+    canonicalize_observed_metric,
+    canonicalize_threshold_field,
+    canonicalize_metric,
+    is_valid_observed_metric,
+    is_valid_threshold_field,
+    get_threshold_for_metric,
+)
 
-
-# =============================================================================
-# CANONICAL METRIC REGISTRY (Split Namespaces)
-# =============================================================================
-# Separates OBSERVED METRICS (what evaluators produce) from THRESHOLD FIELDS
-# (what CompetenceThresholds contains). This prevents silent failures from
-# metric name mismatches.
-
-# ---- Namespace 1: Observed Metrics ----
-# These are the keys produced by evaluation (RollingStats, composite scoring)
-OBSERVED_METRICS: Set[str] = {
-    "win_rate",
-    "profit_factor",
-    "avg_pnl",
-    "r_multiple",
-    "max_drawdown",
-    "dd_breach_rate",
-    "consecutive_loss_rate",
-    "win_rate_std",
-    "pnl_std",
-    "trade_count_avg",
-    "entropy",
-    "consistency",
-    "trade_activity",
-}
-
-# Aliases within observed metrics namespace (observed -> observed canonical)
-OBSERVED_ALIASES: Dict[str, str] = {
-    "drawdown": "max_drawdown",
-    "max_avg_drawdown": "max_drawdown",
-    "dd": "max_drawdown",
-    "pf": "profit_factor",
-    "winrate": "win_rate",
-    "r_mult": "r_multiple",
-}
-
-# ---- Namespace 2: Threshold Fields ----
-# These are the field names in CompetenceThresholds
-THRESHOLD_FIELDS: Set[str] = {
-    "min_win_rate",
-    "min_profit_factor",
-    "min_avg_pnl",
-    "min_avg_r_multiple",
-    "max_avg_drawdown",
-    "max_dd_breach_rate",
-    "max_consecutive_loss_rate",
-    "max_win_rate_std",
-    "max_pnl_std",
-    "min_trade_count_avg",
-    "min_entropy",
-}
-
-# Aliases within threshold fields namespace (threshold -> threshold canonical)
-THRESHOLD_ALIASES: Dict[str, str] = {
-    "max_drawdown": "max_avg_drawdown",
-    "min_r_multiple": "min_avg_r_multiple",
-}
-
-# ---- Bridge: Observed Metric -> Threshold Field ----
-# Maps observed metric keys to corresponding threshold field names
-METRIC_TO_THRESHOLD: Dict[str, str] = {
-    "win_rate": "min_win_rate",
-    "profit_factor": "min_profit_factor",
-    "avg_pnl": "min_avg_pnl",
-    "r_multiple": "min_avg_r_multiple",
-    "max_drawdown": "max_avg_drawdown",
-    "dd_breach_rate": "max_dd_breach_rate",
-    "consecutive_loss_rate": "max_consecutive_loss_rate",
-    "win_rate_std": "max_win_rate_std",
-    "pnl_std": "max_pnl_std",
-    "trade_count_avg": "min_trade_count_avg",
-    "entropy": "min_entropy",
-}
-
-# ---- Composite Scoring Component Keys ----
-# These are the exact keys produced by compute_composite_score() in curriculum_manager.py.
-# CompositeScoringConfig.weights and .hard_floors MUST use only these keys.
-COMPOSITE_WEIGHT_KEYS: Set[str] = {
-    "win_rate",
-    "profit_factor",
-    "drawdown",
-    "consistency",
-    "r_multiple",
-    "dd_breach_rate",
-    "trade_activity",
-    "consecutive_loss_rate",
-}
-
-COMPOSITE_HARD_FLOOR_KEYS: Set[str] = {
-    "win_rate",
-    "max_drawdown",
-    "dd_breach_rate",
-    "profit_factor",
-    "r_multiple",
-}
-
-# Legacy: Combined set for backward compatibility
-METRIC_CANONICAL_NAMES: Set[str] = OBSERVED_METRICS | THRESHOLD_FIELDS
-
-
-def canonicalize_observed_metric(name: str) -> str:
-    """
-    Canonicalize an observed metric name.
-    Always lowercases and applies observed aliases.
-    """
-    lower = name.lower()
-    return OBSERVED_ALIASES.get(lower, lower)
-
-
-def canonicalize_threshold_field(name: str) -> str:
-    """
-    Canonicalize a threshold field name.
-    Always lowercases and applies threshold aliases.
-    """
-    lower = name.lower()
-    return THRESHOLD_ALIASES.get(lower, lower)
-
-
-def canonicalize_metric(name: str) -> str:
-    """
-    DEPRECATED: Use canonicalize_observed_metric or canonicalize_threshold_field.
-    
-    Legacy function that tries to canonicalize in observed namespace first,
-    then threshold namespace. Always lowercases for case-insensitive matching.
-    """
-    lower = name.lower()
-    # Try observed first
-    if lower in OBSERVED_METRICS or lower in OBSERVED_ALIASES:
-        return canonicalize_observed_metric(lower)
-    # Then threshold
-    if lower in THRESHOLD_FIELDS or lower in THRESHOLD_ALIASES:
-        return canonicalize_threshold_field(lower)
-    # Unknown metric - return lowercased
-    return lower
-
-
-def is_valid_observed_metric(name: str) -> bool:
-    """Check if name is a valid observed metric (after canonicalization)."""
-    canonical = canonicalize_observed_metric(name)
-    return canonical in OBSERVED_METRICS
-
-
-def is_valid_threshold_field(name: str) -> bool:
-    """Check if name is a valid threshold field (after canonicalization)."""
-    canonical = canonicalize_threshold_field(name)
-    return canonical in THRESHOLD_FIELDS
-
-
-def get_threshold_for_metric(metric: str) -> Optional[str]:
-    """
-    Get the threshold field name for an observed metric.
-    Returns None if no mapping exists.
-    """
-    canonical = canonicalize_observed_metric(metric)
-    return METRIC_TO_THRESHOLD.get(canonical)
-
-
-class CurriculumStage(IntEnum):
-    """
-    10-Stage Curriculum: "First Grade to University"
-    
-    PHASE 0: DISCOVERY (Stages 0-1) - Pure exploration, learn market patterns
-    PHASE 1: FOUNDATION (Stages 2-4) - One concept per stage
-    PHASE 2: DEVELOPMENT (Stages 5-7) - Combine skills into strategies
-    PHASE 3: MASTERY (Stages 8-9) - Prop firm constraints, live-ready
-    """
-    # Phase 0: DISCOVERY - "Kindergarten"
-    EXPLORER = 0           # Pure observation, no penalties
-    EXPERIMENTER = 1       # Light outcome signals
-    
-    # Phase 1: FOUNDATION - "Elementary School"
-    TREND_STUDENT = 2      # Learn trend alignment
-    SESSION_STUDENT = 3    # Learn session awareness
-    TIMING_STUDENT = 4     # Learn entry quality
-    
-    # Phase 2: DEVELOPMENT - "High School"
-    INTEGRATOR = 5         # Combine trend + session + entry
-    RISK_MANAGER = 6       # Add risk control
-    STRATEGIST = 7         # Full strategy formation
-    
-    # Phase 3: MASTERY - "University"
-    PROFESSIONAL = 8       # Prop firm constraints
-    LIVE_READY = 9         # Live execution robustness
-
-
-class TradingSkill(Enum):
-    """Decomposed trading competencies for granular assessment."""
-    ENTRY_TIMING = "entry_timing"           # Enters at good prices
-    EXIT_QUALITY = "exit_quality"           # Trailing stops > hard stops
-    DRAWDOWN_CONTROL = "drawdown_control"   # Stays within limits
-    POSITION_SIZING = "position_sizing"     # Uses appropriate size
-    PATIENCE = "patience"                   # Doesn't overtrade
-    TREND_ALIGNMENT = "trend_alignment"     # Trades with trend
-    RISK_REWARD = "risk_reward"             # Good R-multiples
-    CONSISTENCY = "consistency"             # Low variance
-    LOSS_MANAGEMENT = "loss_management"     # Handles losing streaks
-    ADAPTATION = "adaptation"               # Adjusts to market regimes
-
-
-class MarketRegime(Enum):
-    """Market regime classification for validation."""
-    TRENDING_UP = "trending_up"
-    TRENDING_DOWN = "trending_down"
-    RANGING = "ranging"
-    HIGH_VOLATILITY = "high_volatility"
-    LOW_VOLATILITY = "low_volatility"
-
-
-@dataclass
-class ExecutionDifficulty:
-    base_spread_points: float = 0.05
-    spread_mult_range: Tuple[float, float] = (0.9, 1.1)
-    max_spread_points: float = 0.5
-
-    slippage_points_sigma: float = 0.0
-    slippage_mult_range: Tuple[float, float] = (0.5, 1.5)
-    max_slippage_points: float = 0.1
-
-    commission_per_lot: float = 0.0
-    latency_bars: int = 0
-
-    enable_randomization: bool = False
-    spread_randomization_range: Tuple[float, float] = (0.95, 1.05)
-    slippage_randomization_range: Tuple[float, float] = (0.95, 1.05)
-    latency_randomization_range: Tuple[int, int] = (0, 0)
-    volatility_scale_range: Tuple[float, float] = (1.0, 1.0)
-    
-    # Spread shock events (for live-robustness testing)
-    spread_shock_enabled: bool = False
-    spread_shock_probability: float = 0.02  # 2% of steps
-    spread_shock_multiplier: float = 3.0    # 3x normal spread during shock
-
-
-@dataclass
-class DataDifficulty:
-    """
-    Data difficulty settings for curriculum-based data filtering.
-    
-    Allows early stages to train on "easier" market conditions
-    (clear trends, lower volatility) before introducing complex regimes.
-    """
-    volatility_percentile_range: Tuple[float, float] = (0.0, 1.0)
-    min_trend_clarity: float = 0.0
-    
-    include_asian_session: bool = True
-    include_london_session: bool = True
-    include_ny_session: bool = True
-    include_overlap_sessions: bool = True
-    
-    exclude_high_impact_news: bool = False
-    exclude_market_open_close: bool = False
-    
-    prefer_recent_data: bool = False
-    recent_data_weight: float = 1.0
-
-
-@dataclass
-class TransitionSettings:
-    """
-    Settings for smooth stage transitions.
-    
-    Prevents sudden destabilization when moving to harder stages.
-    """
-    lr_warmup_enabled: bool = True
-    lr_warmup_factor: float = 0.3
-    lr_warmup_steps: int = 10_000
-    
-    reward_blend_enabled: bool = True
-    reward_blend_episodes: int = 20
-    
-    checkpoint_on_transition: bool = True
-    transition_cooldown_episodes: int = 50
-
-
-@dataclass
-class RewardShaping:
-    reward_scale: float = 10.0
-    loss_multiplier: float = 1.0
-
-    r_multiple_bonus_threshold: float = 1.5
-    r_multiple_bonus_scale: float = 0.3
-    r_multiple_bonus_cap: float = 0.6
-
-    mae_efficiency_enabled: bool = False
-    mae_efficiency_scale: float = 0.25
-    mae_efficiency_threshold: float = 2.0
-
-    time_efficiency_enabled: bool = False
-    time_efficiency_scale: float = 0.15
-    optimal_trade_bars: int = 8
-    max_trade_bars_for_bonus: int = 24
-
-    exit_quality_enabled: bool = False
-    trailing_stop_bonus: float = 0.15
-    agent_close_bonus: float = 0.05
-    hard_stop_penalty: float = 0.15
-    risk_liquidation_penalty: float = 0.30
-
-    truncation_winner_discount: float = 0.30
-    truncation_loser_extra_penalty: float = 0.15
-
-    entry_quality_integration: bool = False
-    entry_quality_weight: float = 0.2
-
-    # Session timing rewards (teach trading hours)
-    session_timing_enabled: bool = False
-    off_hours_trade_penalty: float = 0.15
-    prime_hours_trade_bonus: float = 0.05
-
-    # Market structure rewards (teach WHERE to trade - v5.3)
-    market_structure_enabled: bool = False
-    sr_proximity_bonus: float = 0.10       # Bonus for entering near S/R
-    sr_proximity_penalty: float = 0.08     # Penalty for entering far from S/R
-    structure_alignment_bonus: float = 0.12 # Bonus for trading with structure (HH/HL or LL/LH)
-    bos_alignment_bonus: float = 0.08      # Bonus for trading after BOS confirmation
-    order_block_entry_bonus: float = 0.06  # Bonus for entering at order block levels
-    
-    # Divergence/momentum rewards (teach reversal awareness - v5.3)
-    divergence_awareness_enabled: bool = False
-    divergence_contra_penalty: float = 0.15 # Penalty for trading against divergence
-    divergence_aligned_bonus: float = 0.10  # Bonus for trading with divergence
-    overbought_long_penalty: float = 0.12   # Penalty for going long when overbought
-    oversold_short_penalty: float = 0.12    # Penalty for going short when oversold
-    
-    # Regime awareness rewards (teach context sensitivity - v5.3)
-    regime_awareness_enabled: bool = False
-    risk_off_aggressive_penalty: float = 0.10  # Penalty for aggressive trades in risk-off
-    high_vol_size_penalty: float = 0.08        # Penalty for large positions in high volatility
-
-    dd_shaping_enabled: bool = False
-    dd_threshold: float = 0.02
-    dd_penalty_scale: float = 1.0
-    dd_severity_exponent: float = 1.5
-    dd_severity_cap: float = 1.5
-
-    streak_modifier_enabled: bool = False
-    win_streak_bonus_per_win: float = 0.02
-    loss_streak_penalty_per_loss: float = 0.03
-
-    anti_churn_enabled: bool = False
-    daily_trade_soft_limit: int = 20
-    churn_penalty_per_trade: float = 0.02
-
-    hard_block_penalty: float = 0.02
-    soft_block_penalty: float = 0.01
-
-    per_step_shaping_enabled: bool = False
-    holding_cost_per_bar: float = 0.0
-    opportunity_bonus_scale: float = 0.0
-
-    min_reward: float = -5.0
-    max_reward: float = 5.0
-
-    exploration_bonus: float = 0.0
-    directional_accuracy_weight: float = 1.0
-
-
-@dataclass
-class TradingConstraints:
-    max_positions: int = 1
-
-    max_trades_per_day: int = 100
-    max_trades_per_session: int = 50
-    max_consecutive_losses: int = 10
-
-    enforce_session_windows: bool = False
-    enforce_no_new_trades_window: bool = False
-    enforce_weekend_block: bool = False
-    enforce_hard_close: bool = False
-    min_minutes_between_entries: int = 0
-    min_minutes_after_loss: int = 0
-
-    daily_drawdown_limit: float = 1.0
-    max_drawdown_limit: float = 1.0
-    daily_dd_safety_buffer: float = 0.0
-    max_dd_safety_buffer: float = 0.0
-    emergency_close_threshold: float = 1.0
-
-    entry_quality_gate_enabled: bool = False
-    entry_quality_threshold: float = 0.0
-
-    hard_stop_loss_eur: float = 10000.0
-    soft_stop_loss_eur: float = 10000.0
-    trailing_activation_eur: float = 10000.0
-    trailing_retrace_pct: float = 0.50
-    time_decay_hours: float = 24.0
-
-    risk_per_trade_pct: float = 0.01
-    max_risk_per_trade_pct: float = 0.02
-
-
-MIN_EVALUATION_EPISODES = 25
-
-
-@dataclass
-class CompetenceThresholds:
-    min_episodes: int = 100
-    min_timesteps: int = 50_000
-
-    min_win_rate: float = 0.40
-    min_profit_factor: float = 0.8
-    max_avg_drawdown: float = 0.20
-    min_avg_pnl: float = -1000.0
-    
-    min_avg_r_multiple: float = 0.0
-    min_entropy: float = 0.0
-
-    max_win_rate_std: float = 0.30
-    max_pnl_std: float = 10000.0
-    min_trade_count_avg: float = 1.0
-
-    max_dd_breach_rate: float = 0.50
-    max_consecutive_loss_rate: float = 0.30
-
-    evaluation_window: int = 50
-
-
-@dataclass
-class SkillRequirements:
-    """
-    Per-stage skill requirements for promotion.
-    
-    Maps skills to minimum scores [0, 1] required to pass.
-    """
-    required_skills: Dict[TradingSkill, float] = field(default_factory=dict)
-    
-    # Minimum confidence required for skill assessment to count
-    min_confidence: float = 0.5
-    
-    # Whether all skills must pass or just weighted average
-    require_all_skills: bool = False
-    weighted_threshold: float = 0.6  # If not require_all_skills, weighted avg must exceed this
-    
-    # Skill weights for weighted average (default equal weights)
-    skill_weights: Dict[TradingSkill, float] = field(default_factory=dict)
-    
-    def get_weight(self, skill: TradingSkill) -> float:
-        """Get weight for a skill, defaulting to 1.0."""
-        return self.skill_weights.get(skill, 1.0)
-
-
-@dataclass
-class EntropyTargets:
-    """
-    Entropy targets for exploration management.
-    
-    Prevents policy collapse (too low entropy) or random behavior (too high).
-    """
-    min_entropy: float = 0.1
-    max_entropy: float = 0.8
-    
-    # Penalty coefficient when outside range
-    low_entropy_penalty_scale: float = 0.1
-    high_entropy_penalty_scale: float = 0.05
-    
-    # Whether to use entropy in promotion criteria
-    use_in_promotion: bool = True
-
-
-@dataclass
-class CompositeScoringConfig:
-    """
-    Configuration for weighted composite competence scoring.
-    
-    Allows nuanced evaluation rather than all-or-nothing gating.
-    
-    IMPORTANT: The weight keys and hard_floor keys must match the component
-    names produced by compute_composite_score() in curriculum_manager.py:
-        - "win_rate", "profit_factor", "drawdown", "consistency",
-        - "r_multiple", "dd_breach_rate", "trade_activity", "consecutive_loss_rate"
-    """
-    enabled: bool = True
-    
-    # Weights for composite score (must sum to ~1.0)
-    weights: Dict[str, float] = field(default_factory=lambda: {
-        "win_rate": 0.20,
-        "profit_factor": 0.20,
-        "drawdown": 0.15,
-        "consistency": 0.15,
-        "r_multiple": 0.10,
-        "dd_breach_rate": 0.10,
-        "trade_activity": 0.05,
-        "consecutive_loss_rate": 0.05,
-    })
-    
-    # Hard floors: must meet regardless of composite score
-    hard_floors: Dict[str, float] = field(default_factory=lambda: {
-        "win_rate": 0.30,
-        "max_drawdown": 0.25,
-        "dd_breach_rate": 0.40,
-    })
-    
-    # Threshold composite score must exceed for promotion
-    promotion_threshold: float = 0.70
-    
-    # Threshold below which demotion is triggered
-    demotion_threshold: float = 0.35
-
-
-@dataclass
-class AdaptiveThresholdConfig:
-    """
-    Configuration for adaptive threshold relaxation.
-    
-    Slightly relaxes thresholds if agent is plateaued but close to promotion.
-    """
-    enabled: bool = True
-    
-    # Plateau detection
-    plateau_episodes_threshold: int = 100  # Episodes without improvement
-    plateau_improvement_threshold: float = 0.01  # Min improvement to not count as plateau
-    
-    # Maximum relaxation allowed (as fraction)
-    max_relaxation: float = 0.10  # Up to 10% relaxation
-    
-    # Episodes over which relaxation builds up
-    relaxation_buildup_episodes: int = 500
-    
-    # Which metrics can be relaxed (safety metrics excluded)
-    relaxable_metrics: Set[str] = field(default_factory=lambda: {
-        "min_win_rate",
-        "min_profit_factor",
-        "min_avg_pnl",
-        "min_trade_count_avg",
-        "max_win_rate_std",
-        "max_pnl_std",
-    })
-    
-    # Metrics that should NEVER be relaxed (safety-critical)
-    never_relax: Set[str] = field(default_factory=lambda: {
-        "max_avg_drawdown",
-        "max_dd_breach_rate",
-        "max_consecutive_loss_rate",
-    })
-
-
-@dataclass
-class RecoveryProtocolConfig:
-    """
-    Configuration for recovery protocol after repeated failures.
-    """
-    enabled: bool = True
-    
-    # Trigger after this many demotions from the same stage
-    trigger_after_demotions: int = 2
-    
-    # Duration of recovery protocol in episodes
-    recovery_duration_episodes: int = 200
-    
-    # Focus skill override (if None, determined from diagnosis)
-    focus_skill: Optional[TradingSkill] = None
-    
-    # Reward modifications during recovery
-    reward_modifications: Dict[str, float] = field(default_factory=dict)
-    
-    # Constraint modifications during recovery (stricter limits)
-    constraint_modifications: Dict[str, float] = field(default_factory=dict)
-
-
-@dataclass
-class MixedStageSamplingConfig:
-    """
-    Configuration for training on mixture of stages.
-    
-    Prevents catastrophic forgetting by occasionally training on earlier stages.
-    """
-    enabled: bool = True
-    
-    # Weight for current stage
-    current_stage_weight: float = 0.70
-    
-    # Weight for recent stages (1-2 stages back)
-    recent_stages_weight: float = 0.20
-    
-    # Weight for foundation stage (always some basics)
-    foundation_weight: float = 0.10
-    
-    # How many stages back to sample from
-    recent_stage_depth: int = 2
-
-
-@dataclass
-class ReviewSessionConfig:
-    """
-    Configuration for periodic review sessions on earlier stages.
-    
-    Ensures agent hasn't forgotten earlier skills.
-    """
-    enabled: bool = True
-    
-    # Episodes between review sessions
-    review_frequency: int = 500
-    
-    # Episodes per review session
-    review_duration: int = 50
-    
-    # How many stages back to review
-    review_depth: int = 2
-    
-    # Minimum stage to trigger reviews (no reviews in early discovery)
-    min_stage_for_review: CurriculumStage = CurriculumStage.INTEGRATOR
-
-
-@dataclass
-class ValidationConfig:
-    """
-    Configuration for hold-out validation before promotion.
-    """
-    enabled: bool = False  # Disabled by default (requires separate validation data)
-    
-    # Number of validation episodes
-    validation_episodes: int = 100
-    
-    # Minimum performance ratio (validation / training)
-    min_performance_ratio: float = 0.85
-    
-    # Maximum acceptable performance drop
-    max_performance_drop: float = 0.15
-    
-    # Required regimes to validate on
-    required_regimes: List[MarketRegime] = field(default_factory=lambda: [
-        MarketRegime.TRENDING_UP,
-        MarketRegime.TRENDING_DOWN,
-        MarketRegime.RANGING,
-    ])
-    
-    # Minimum episodes per regime
-    min_episodes_per_regime: int = 20
-
-
-@dataclass
-class CurriculumStageConfig:
-    stage: CurriculumStage
-    name: str
-    description: str
-
-    execution: ExecutionDifficulty
-    rewards: RewardShaping
-    constraints: TradingConstraints
-    competence: CompetenceThresholds
-
-    max_steps_per_episode: int = 2000
-
-    include_memory_features: bool = True
-    include_world_model_features: bool = True
-    include_expert_signals: bool = True
-    expert_signal_dropout: float = 0.0  # Probability of dropping expert signals (0.0 = never, 1.0 = always)
-
-    allow_demotion: bool = False
-    is_terminal: bool = False
-    
-    data_difficulty: DataDifficulty = field(default_factory=DataDifficulty)
-    transition: TransitionSettings = field(default_factory=TransitionSettings)
-    
-    # New v2.0 configurations
-    skill_requirements: SkillRequirements = field(default_factory=SkillRequirements)
-    entropy_targets: EntropyTargets = field(default_factory=EntropyTargets)
-    composite_scoring: CompositeScoringConfig = field(default_factory=CompositeScoringConfig)
-    adaptive_thresholds: AdaptiveThresholdConfig = field(default_factory=AdaptiveThresholdConfig)
-    recovery_protocol: RecoveryProtocolConfig = field(default_factory=RecoveryProtocolConfig)
-    mixed_stage_sampling: MixedStageSamplingConfig = field(default_factory=MixedStageSamplingConfig)
-    review_session: ReviewSessionConfig = field(default_factory=ReviewSessionConfig)
-    validation: ValidationConfig = field(default_factory=ValidationConfig)
 
 
 # =============================================================================
@@ -2832,7 +2213,7 @@ def get_live_ready_config() -> CurriculumStageConfig:
             max_avg_drawdown=0.055,
             min_avg_pnl=120.0,
             min_avg_r_multiple=0.14,
-            min_entropy=0.04,
+            min_entropy=0.05,
             max_win_rate_std=0.12,
             max_pnl_std=4500.0,
             min_trade_count_avg=5.5,
@@ -3029,6 +2410,74 @@ def validate_stage_config(cfg: CurriculumStageConfig) -> List[str]:
             f"This causes promotion gating confusion - pick ONE value for both."
         )
     
+    # -------------------------------------------------------------------------
+    # Constraint sanity checks (prevents silent "impossible" or "unsafe" stages)
+    # -------------------------------------------------------------------------
+    tc = cfg.constraints
+    if tc.max_positions < 1:
+        issues.append(f"{cfg.stage.name}: constraints.max_positions < 1 (invalid)")
+
+    # Risk per trade should be sane and ordered
+    if not (0.0 < tc.risk_per_trade_pct <= tc.max_risk_per_trade_pct <= 1.0):
+        issues.append(
+            f"{cfg.stage.name}: risk_per_trade_pct ({tc.risk_per_trade_pct}) and/or "
+            f"max_risk_per_trade_pct ({tc.max_risk_per_trade_pct}) invalid or unordered"
+        )
+
+    # Drawdown limits must be ordered and within [0,1]
+    if not (0.0 < tc.daily_drawdown_limit <= 1.0 and 0.0 < tc.max_drawdown_limit <= 1.0):
+        issues.append(f"{cfg.stage.name}: drawdown limits must be within (0,1]")
+    if tc.daily_drawdown_limit > tc.max_drawdown_limit + 1e-9:
+        issues.append(
+            f"{cfg.stage.name}: daily_drawdown_limit ({tc.daily_drawdown_limit}) > "
+            f"max_drawdown_limit ({tc.max_drawdown_limit})"
+        )
+
+    # Emergency close should not exceed max DD limit
+    if tc.emergency_close_threshold > tc.max_drawdown_limit + 1e-9:
+        issues.append(
+            f"{cfg.stage.name}: emergency_close_threshold ({tc.emergency_close_threshold}) > "
+            f"max_drawdown_limit ({tc.max_drawdown_limit})"
+        )
+
+    # Trailing retrace should be a percentage in (0,1)
+    if not (0.0 < tc.trailing_retrace_pct < 1.0):
+        issues.append(f"{cfg.stage.name}: trailing_retrace_pct out of (0,1): {tc.trailing_retrace_pct}")
+
+    # -------------------------------------------------------------------------
+    # Execution sanity checks (ranges, ordering, and non-negative friction)
+    # -------------------------------------------------------------------------
+    ex = cfg.execution
+    def _range_ok(r) -> bool:
+        return isinstance(r, tuple) and len(r) == 2 and r[0] <= r[1]
+
+    if ex.base_spread_points < 0.0 or ex.max_spread_points < 0.0:
+        issues.append(f"{cfg.stage.name}: spread points must be >= 0")
+    if ex.max_spread_points + 1e-12 < ex.base_spread_points:
+        issues.append(
+            f"{cfg.stage.name}: max_spread_points ({ex.max_spread_points}) < base_spread_points ({ex.base_spread_points})"
+        )
+    if ex.slippage_points_sigma < 0.0 or ex.max_slippage_points < 0.0:
+        issues.append(f"{cfg.stage.name}: slippage params must be >= 0")
+
+    if not _range_ok(ex.spread_mult_range) or ex.spread_mult_range[0] <= 0.0:
+        issues.append(f"{cfg.stage.name}: invalid spread_mult_range: {ex.spread_mult_range}")
+    if not _range_ok(ex.slippage_mult_range) or ex.slippage_mult_range[0] <= 0.0:
+        issues.append(f"{cfg.stage.name}: invalid slippage_mult_range: {ex.slippage_mult_range}")
+    if not _range_ok(ex.volatility_scale_range) or ex.volatility_scale_range[0] <= 0.0:
+        issues.append(f"{cfg.stage.name}: invalid volatility_scale_range: {ex.volatility_scale_range}")
+    if not (isinstance(ex.latency_randomization_range, tuple) and len(ex.latency_randomization_range) == 2 and ex.latency_randomization_range[0] <= ex.latency_randomization_range[1]):
+        issues.append(f"{cfg.stage.name}: invalid latency_randomization_range: {ex.latency_randomization_range}")
+
+    # -------------------------------------------------------------------------
+    # Reward sanity checks (clipping + per-step bounds)
+    # -------------------------------------------------------------------------
+    rw = cfg.rewards
+    if rw.min_reward > rw.max_reward:
+        issues.append(f"{cfg.stage.name}: rewards.min_reward > rewards.max_reward")
+    if rw.per_step_shaping_enabled and getattr(rw, "per_step_min", -0.01) > getattr(rw, "per_step_max", 0.01):
+        issues.append(f"{cfg.stage.name}: per-step shaping bounds invalid (per_step_min > per_step_max)")
+
     # Validate composite scoring weights - keys must match compute_composite_score() components
     cs = cfg.composite_scoring
     if cs.enabled:
@@ -3036,13 +2485,18 @@ def validate_stage_config(cfg: CurriculumStageConfig) -> List[str]:
         if abs(weight_sum - 1.0) > 0.1:
             issues.append(f"{cfg.stage.name}: composite scoring weights sum to {weight_sum:.2f}, expected ~1.0")
         
+        # Canonicalize composite keys so legacy configs ("max_drawdown") validate correctly
+        from envs.curriculum.config.registry import canonicalize_composite_key
+        canon_weight_keys = {canonicalize_composite_key(k) for k in cs.weights.keys()}
+        canon_floor_keys = {canonicalize_composite_key(k) for k in cs.hard_floors.keys()}
+
         # Validate weight keys against allowed composite weight keys
-        bad_weight_keys = set(cs.weights.keys()) - COMPOSITE_WEIGHT_KEYS
+        bad_weight_keys = canon_weight_keys - COMPOSITE_WEIGHT_KEYS
         if bad_weight_keys:
             issues.append(f"{cfg.stage.name}: composite_scoring.weights has unknown keys: {sorted(bad_weight_keys)}. Allowed: {sorted(COMPOSITE_WEIGHT_KEYS)}")
         
         # Validate hard_floors keys against allowed hard floor keys
-        bad_floor_keys = set(cs.hard_floors.keys()) - COMPOSITE_HARD_FLOOR_KEYS
+        bad_floor_keys = canon_floor_keys - COMPOSITE_HARD_FLOOR_KEYS
         if bad_floor_keys:
             issues.append(f"{cfg.stage.name}: composite_scoring.hard_floors has unknown keys: {sorted(bad_floor_keys)}. Allowed: {sorted(COMPOSITE_HARD_FLOOR_KEYS)}")
     
@@ -3113,6 +2567,47 @@ def validate_curriculum_monotonicity() -> List[str]:
         # Commission should be non-decreasing (more realistic over time)
         if curr.execution.commission_per_lot < prev.execution.commission_per_lot:
             issues.append(f"{curr_name}: commission_per_lot ({curr.execution.commission_per_lot}) < {prev_name} ({prev.execution.commission_per_lot})")
+
+        # -------------------------------------------------------------
+        # NEW: Constraint monotonicity (risk + DD tightening over stages)
+        # -------------------------------------------------------------
+        if curr.constraints.daily_drawdown_limit > prev.constraints.daily_drawdown_limit + 1e-9:
+            issues.append(
+                f"{curr_name}: constraints.daily_drawdown_limit ({curr.constraints.daily_drawdown_limit}) > "
+                f"{prev_name} ({prev.constraints.daily_drawdown_limit})"
+            )
+        if curr.constraints.max_drawdown_limit > prev.constraints.max_drawdown_limit + 1e-9:
+            issues.append(
+                f"{curr_name}: constraints.max_drawdown_limit ({curr.constraints.max_drawdown_limit}) > "
+                f"{prev_name} ({prev.constraints.max_drawdown_limit})"
+            )
+        if curr.constraints.risk_per_trade_pct > prev.constraints.risk_per_trade_pct + 1e-12:
+            issues.append(
+                f"{curr_name}: risk_per_trade_pct ({curr.constraints.risk_per_trade_pct}) > "
+                f"{prev_name} ({prev.constraints.risk_per_trade_pct})"
+            )
+
+        # New: pacing should generally tighten (prevents late-stage churn)
+        if curr.constraints.min_minutes_between_entries < prev.constraints.min_minutes_between_entries:
+            issues.append(
+                f"{curr_name}: min_minutes_between_entries ({curr.constraints.min_minutes_between_entries}) < "
+                f"{prev_name} ({prev.constraints.min_minutes_between_entries})"
+            )
+
+        # -------------------------------------------------------------
+        # NEW: Entropy floor should be non-increasing across curriculum
+        # -------------------------------------------------------------
+        if curr.entropy_targets.min_entropy > prev.entropy_targets.min_entropy + 1e-9:
+            issues.append(
+                f"{curr_name}: entropy_targets.min_entropy ({curr.entropy_targets.min_entropy}) > "
+                f"{prev_name} ({prev.entropy_targets.min_entropy})"
+            )
+
+        # -------------------------------------------------------------
+        # NEW: Once randomization is enabled, it should not be disabled later
+        # -------------------------------------------------------------
+        if prev.execution.enable_randomization and not curr.execution.enable_randomization:
+            issues.append(f"{curr_name}: enable_randomization turned OFF after being ON in {prev_name}")
     
     # Validate never_relax vs relaxable_metrics for adaptive thresholds
     for cfg in configs:

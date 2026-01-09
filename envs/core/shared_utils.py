@@ -2,8 +2,8 @@
 """
 Shared utility functions for envs module.
 
-This module consolidates common helper functions that were previously duplicated
-across curriculum_env_wrapper.py, curriculum_manager.py, and prop_firm_env.py.
+This module consolidates common helper functions used by
+curriculum_manager.py and prop_firm_env.py.
 
 Audit Reference: DUP-2 - Consolidated from Week 3-4 fixes.
 """
