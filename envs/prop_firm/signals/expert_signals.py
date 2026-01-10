@@ -717,22 +717,46 @@ class ExpertSignalsMixin(MarketStructureMixin):
         return 0.20
 
     def _pivot_lows(self, x: np.ndarray, left: int, right: int) -> List[int]:
-        idxs: List[int] = []
+        """Vectorized pivot low detection."""
         n = int(x.size)
-        for i in range(left, n - right):
-            v = x[i]
-            if np.all(v < x[i - left:i]) and np.all(v < x[i + 1:i + right + 1]):
-                idxs.append(i)
-        return idxs
+        if n < left + right + 1:
+            return []
+        
+        # Use stride tricks for rolling windows
+        window_size = left + right + 1
+        shape = (n - window_size + 1, window_size)
+        strides = (x.strides[0], x.strides[0])
+        windows = np.lib.stride_tricks.as_strided(x, shape=shape, strides=strides)
+        
+        center = windows[:, left]
+        is_min = center == np.min(windows, axis=1)
+        
+        # Check strict less than on both sides
+        left_ok = np.all(windows[:, :left] > center[:, None], axis=1)
+        right_ok = np.all(windows[:, left+1:] > center[:, None], axis=1)
+        
+        valid = is_min & left_ok & right_ok
+        return (np.where(valid)[0] + left).tolist()
 
     def _pivot_highs(self, x: np.ndarray, left: int, right: int) -> List[int]:
-        idxs: List[int] = []
+        """Vectorized pivot high detection."""
         n = int(x.size)
-        for i in range(left, n - right):
-            v = x[i]
-            if np.all(v > x[i - left:i]) and np.all(v > x[i + 1:i + right + 1]):
-                idxs.append(i)
-        return idxs
+        if n < left + right + 1:
+            return []
+        
+        window_size = left + right + 1
+        shape = (n - window_size + 1, window_size)
+        strides = (x.strides[0], x.strides[0])
+        windows = np.lib.stride_tricks.as_strided(x, shape=shape, strides=strides)
+        
+        center = windows[:, left]
+        is_max = center == np.max(windows, axis=1)
+        
+        left_ok = np.all(windows[:, :left] < center[:, None], axis=1)
+        right_ok = np.all(windows[:, left+1:] < center[:, None], axis=1)
+        
+        valid = is_max & left_ok & right_ok
+        return (np.where(valid)[0] + left).tolist()
 
     def _detect_divergence_pivot(self, prices: np.ndarray, rsi_series: np.ndarray) -> Optional[str]:
         """

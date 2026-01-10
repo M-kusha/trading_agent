@@ -4,9 +4,10 @@ import pandas as pd
 import numpy as np
 
 def load_data(data_dir: str = "data/processed") -> Dict[str, Dict[str, pd.DataFrame]]:
+    # FIXED: Include M15 (primary training timeframe) - was missing, causing spread fallback to synthetic
     instruments = {
-        "XAUUSD": {"H1": "XAUUSD_H1_features.csv", "H4": "XAUUSD_H4_features.csv", "D1": "XAUUSD_D1_features.csv"},
-        "EURUSD": {"H1": "EURUSD_H1_features.csv", "H4": "EURUSD_H4_features.csv", "D1": "EURUSD_D1_features.csv"},
+        "XAUUSD": {"M15": "XAUUSD_M15_features.csv", "H1": "XAUUSD_H1_features.csv", "H4": "XAUUSD_H4_features.csv", "D1": "XAUUSD_D1_features.csv"},
+        "EURUSD": {"M15": "EURUSD_M15_features.csv", "H1": "EURUSD_H1_features.csv", "H4": "EURUSD_H4_features.csv", "D1": "EURUSD_D1_features.csv"},
     }
 
     data: Dict[str, Dict[str, pd.DataFrame]] = {}

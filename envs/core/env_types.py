@@ -284,8 +284,10 @@ class RewardConfig:
     # NEW (optional, used by upgraded RewardShapingMixin):
     patience_shaping_enabled: bool = False
     patience_bonus_per_bar: float = 0.0          # recommended 0.0005–0.002 when enabled
-    patience_quality_threshold: float = 0.35     # if best(q_long,q_short) < threshold, reward waiting
-
+    patience_quality_threshold: float = 0.35     # if best(q_long,q_short) < threshold, reward waiting    
+    # C4 FIX: exploration_bonus must be in RewardConfig for shaping to read it
+    # Used in early curriculum stages to encourage trade attempts
+    exploration_bonus: float = 0.0
     # NEW: explicit bounds for per-step shaping so it can’t dominate trade-close reward
     per_step_min: float = -0.05
     per_step_max: float = 0.05
@@ -299,7 +301,8 @@ class RewardConfig:
 
 def load_risk_policy() -> Dict[str, Any]:
     """Load risk policy from config file."""
-    config_path = Path(__file__).parent.parent / "config" / "risk_policy.yaml"
+    # C8 FIX: Correct path to repo root config/risk_policy.yaml (was envs/config/)
+    config_path = Path(__file__).resolve().parent.parent.parent / "config" / "risk_policy.yaml"
     if config_path.exists():
         with open(config_path, "r", encoding="utf-8") as f:
             return yaml.safe_load(f) or {}

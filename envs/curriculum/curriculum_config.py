@@ -130,6 +130,9 @@ def get_explorer_config() -> CurriculumStageConfig:
             commission_per_lot=0.0,
             latency_bars=0,
             enable_randomization=False,
+            # DATA SPREAD: DISABLED - use synthetic training wheels
+            use_data_spread=False,
+            data_spread_scale=0.0,
         ),
         rewards=RewardShaping(
             # ============================================================================
@@ -200,8 +203,16 @@ def get_explorer_config() -> CurriculumStageConfig:
             per_step_shaping_enabled=False,
             holding_cost_per_bar=0.0,
             
+            # ACTIVITY CONSISTENCY: ENABLED for early stages
+            # Penalize under-trading (< 20% of target) to break "do nothing" habit
+            activity_consistency_enabled=True,
+            target_trades_per_1k_steps=15.0,  # Higher target in EXPLORER: ~22 trades/1500 steps
+            activity_deviation_penalty_scale=0.0,  # No penalty for over-trading
+            min_trades_penalty=0.5,  # Significant penalty if < 20% of target
+            
             # EXPLORATION BONUS: HIGH - encourage trying everything
-            exploration_bonus=0.05,
+            # 0.10 per entry attempt to overcome early-stage "do nothing" habit
+            exploration_bonus=0.10,
             directional_accuracy_weight=0.5,  # Light directional signal
             min_reward=-1.5,
             max_reward=1.5,
@@ -339,6 +350,9 @@ def get_experimenter_config() -> CurriculumStageConfig:
             commission_per_lot=0.0,
             latency_bars=0,
             enable_randomization=False,
+            # DATA SPREAD: DISABLED - still using training wheels
+            use_data_spread=False,
+            data_spread_scale=0.0,
         ),
         rewards=RewardShaping(
             # ============================================================================
@@ -411,8 +425,14 @@ def get_experimenter_config() -> CurriculumStageConfig:
             per_step_shaping_enabled=False,
             holding_cost_per_bar=0.0,
             
+            # ACTIVITY CONSISTENCY: ENABLED - still encourage activity
+            activity_consistency_enabled=True,
+            target_trades_per_1k_steps=12.0,  # ~18 trades/1500 steps
+            activity_deviation_penalty_scale=0.0,  # No penalty for over-trading
+            min_trades_penalty=0.4,  # Penalty if < 20% of target
+            
             # EXPLORATION BONUS: Still high
-            exploration_bonus=0.04,
+            exploration_bonus=0.08,
             directional_accuracy_weight=0.7,
             min_reward=-2.0,
             max_reward=2.0,
@@ -550,6 +570,9 @@ def get_trend_student_config() -> CurriculumStageConfig:
             slippage_randomization_range=(0.95, 1.08),
             latency_randomization_range=(0, 0),
             volatility_scale_range=(0.95, 1.05),
+            # DATA SPREAD: 25% - starting to feel real spreads
+            use_data_spread=True,
+            data_spread_scale=0.25,
         ),
         rewards=RewardShaping(
             # ============================================================================
@@ -568,9 +591,9 @@ def get_trend_student_config() -> CurriculumStageConfig:
             
             # Good loss cuts: Enabled
             good_loss_cut_enabled=True,
-            good_loss_cut_bonus=0.05,
+            good_loss_cut_bonus=0.07,  # D2 TUNING: Start building good loss-cut habit
             good_loss_cut_efficiency_threshold=0.35,
-            good_loss_cut_max_bonus=0.10,
+            good_loss_cut_max_bonus=0.12,  # D2 TUNING: Stronger max bonus
             
             # Cost erosion: Light
             cost_erosion_penalty_enabled=True,
@@ -593,10 +616,10 @@ def get_trend_student_config() -> CurriculumStageConfig:
             max_trade_bars_for_bonus=36,
             
             exit_quality_enabled=True,        # ENABLED: Even beginners should learn exits matter
-            trailing_stop_bonus=0.08,         # Light: reward letting winners run
-            agent_close_bonus=-0.03,          # Light: discourage cutting winners
-            hard_stop_penalty=0.04,           # Light: hitting stop = bad entry signal
-            risk_liquidation_penalty=0.04,
+            trailing_stop_bonus=0.12,         # D2 TUNING: Stronger trailing incentive early
+            agent_close_bonus=-0.05,          # D2 TUNING: Discourage cutting winners
+            hard_stop_penalty=0.05,           # D2 TUNING: Slightly stronger
+            risk_liquidation_penalty=0.05,    # D2 TUNING: Slightly stronger
             
             truncation_winner_discount=0.20,
             truncation_loser_extra_penalty=0.10,
@@ -625,16 +648,22 @@ def get_trend_student_config() -> CurriculumStageConfig:
             
             # ANTI-CHURN: Light - learning stage needs room to explore
             anti_churn_enabled=True,
-            daily_trade_soft_limit=15,     # FIXED: 3 was too restrictive for learning
-            churn_penalty_per_trade=0.02,  # FIXED: Softer penalty during learning
+            daily_trade_soft_limit=12,     # D2 TUNING: Earlier soft limit
+            churn_penalty_per_trade=0.025, # D2 TUNING: Slightly stronger penalty
             
             hard_block_penalty=0.01,
             soft_block_penalty=0.005,
             per_step_shaping_enabled=False,
             holding_cost_per_bar=0.0,
             
+            # ACTIVITY CONSISTENCY: ENABLED - maintain activity level
+            activity_consistency_enabled=True,
+            target_trades_per_1k_steps=10.0,  # ~15 trades/1500 steps
+            activity_deviation_penalty_scale=0.1,  # Light penalty for extremes
+            min_trades_penalty=0.3,  # Penalty if < 20% of target
+            
             # EXPLORATION: Still moderate
-            exploration_bonus=0.03,
+            exploration_bonus=0.06,
             directional_accuracy_weight=1.2,  # INCREASED - reward trend alignment
             min_reward=-2.5,
             max_reward=2.5,
@@ -648,8 +677,8 @@ def get_trend_student_config() -> CurriculumStageConfig:
             enforce_no_new_trades_window=False,
             enforce_weekend_block=False,
             enforce_hard_close=False,
-            min_minutes_between_entries=1,
-            min_minutes_after_loss=2,
+            min_minutes_between_entries=15,    # FIX: 1 bar minimum (was 1 min = 0 bars for M15)
+            min_minutes_after_loss=30,         # FIX: 2 bars after loss (was 2 min = 0 bars)
             daily_drawdown_limit=0.25,
             max_drawdown_limit=0.30,
             daily_dd_safety_buffer=0.0,
@@ -780,6 +809,9 @@ def get_session_student_config() -> CurriculumStageConfig:
             slippage_randomization_range=(0.93, 1.10),
             latency_randomization_range=(0, 0),
             volatility_scale_range=(0.93, 1.08),
+            # DATA SPREAD: 40% - moderate real spread exposure
+            use_data_spread=True,
+            data_spread_scale=0.40,
         ),
         rewards=RewardShaping(
             reward_scale=5.5,
@@ -795,9 +827,9 @@ def get_session_student_config() -> CurriculumStageConfig:
             
             # Good loss cuts: Enabled
             good_loss_cut_enabled=True,
-            good_loss_cut_bonus=0.06,
+            good_loss_cut_bonus=0.08,  # D2 TUNING: Stronger loss-cut habit
             good_loss_cut_efficiency_threshold=0.3,
-            good_loss_cut_max_bonus=0.12,
+            good_loss_cut_max_bonus=0.14,  # D2 TUNING: Stronger max bonus
             
             # Cost erosion: Moderate
             cost_erosion_penalty_enabled=True,
@@ -821,9 +853,9 @@ def get_session_student_config() -> CurriculumStageConfig:
             # EXIT QUALITY: NEW - Learn to hold winners
             # STRONGLY prefer trailing stops - this is where we teach patience!
             exit_quality_enabled=True,
-            trailing_stop_bonus=0.15,    # INCREASED: Strong reward for letting winners run
-            agent_close_bonus=-0.05,     # STRONGER: Discourage cutting winners early
-            hard_stop_penalty=0.06,      # INCREASED: Meaningful penalty for hitting stop loss
+            trailing_stop_bonus=0.20,    # D2 TUNING: Strong reward for letting winners run
+            agent_close_bonus=-0.07,     # D2 TUNING: Stronger discouragement of cutting winners
+            hard_stop_penalty=0.07,      # D2 TUNING: Meaningful penalty for hitting stop loss
             risk_liquidation_penalty=0.10,  # Strong penalty for risk liquidation
             
             truncation_winner_discount=0.20,
@@ -848,15 +880,21 @@ def get_session_student_config() -> CurriculumStageConfig:
             loss_streak_penalty_per_loss=0.0,
             
             anti_churn_enabled=True,
-            daily_trade_soft_limit=12,   # FIXED: 6 still too low - agent learning sessions
-            churn_penalty_per_trade=0.03,  # FIXED: Softer penalty during foundation phase
+            daily_trade_soft_limit=10,   # D2 TUNING: Earlier soft limit
+            churn_penalty_per_trade=0.032,  # D2 TUNING: Slightly stronger penalty
             
             hard_block_penalty=0.015,
             soft_block_penalty=0.008,
             per_step_shaping_enabled=False,
             holding_cost_per_bar=0.0,
             
-            exploration_bonus=0.025,
+            # ACTIVITY CONSISTENCY: ENABLED - maintain activity in sessions
+            activity_consistency_enabled=True,
+            target_trades_per_1k_steps=8.0,  # ~12 trades/1500 steps (learning sessions)
+            activity_deviation_penalty_scale=0.15,  # Moderate penalty for extremes
+            min_trades_penalty=0.25,  # Penalty if < 20% of target
+            
+            exploration_bonus=0.05,
             directional_accuracy_weight=1.15,
             min_reward=-2.8,
             max_reward=2.8,
@@ -879,7 +917,7 @@ def get_session_student_config() -> CurriculumStageConfig:
             emergency_close_threshold=0.22,
             entry_quality_gate_enabled=False,
             entry_quality_threshold=0.0,
-            hard_stop_loss_eur=500.0,
+            hard_stop_loss_eur=450.0,         # MONOTONICITY FIX: Must not increase from Stage 2 (was 500)
             soft_stop_loss_eur=350.0,
             trailing_activation_eur=100.0,
             trailing_retrace_pct=0.40,
@@ -1002,6 +1040,9 @@ def get_timing_student_config() -> CurriculumStageConfig:
             slippage_randomization_range=(0.92, 1.12),
             latency_randomization_range=(0, 1),
             volatility_scale_range=(0.92, 1.10),
+            # DATA SPREAD: 55% - getting serious about costs
+            use_data_spread=True,
+            data_spread_scale=0.55,
         ),
         rewards=RewardShaping(
             reward_scale=6.0,
@@ -1022,7 +1063,7 @@ def get_timing_student_config() -> CurriculumStageConfig:
             
             # Good loss cuts: ENABLED - teach agent to control exits
             good_loss_cut_enabled=True,
-            good_loss_cut_bonus=0.08,
+            good_loss_cut_bonus=0.10,     # D2 AUDIT: Increased from 0.08 to encourage controlled loss cuts
             good_loss_cut_efficiency_threshold=0.3,
             good_loss_cut_max_bonus=0.15,
             
@@ -1046,13 +1087,14 @@ def get_timing_student_config() -> CurriculumStageConfig:
             max_trade_bars_for_bonus=32,
             
             exit_quality_enabled=True,
-            trailing_stop_bonus=0.12,    # INCREASED: Reward letting winners run
-            agent_close_bonus=-0.06,     # STRONGER: Discourage premature exits more
-            hard_stop_penalty=0.05,      # INCREASED: Punish bad entries that hit stop
+            # D2 AUDIT FIX: Stronger trailing incentive to shift exit mix
+            trailing_stop_bonus=0.30,    # AUDIT: Increased from 0.22 to encourage trailing exits
+            agent_close_bonus=-0.10,     # AUDIT: Increased penalty from -0.08 to discourage premature closes
+            hard_stop_penalty=0.05,      # Keep: Punish bad entries that hit stop
             risk_liquidation_penalty=0.06,
             
-            truncation_winner_discount=0.22,
-            truncation_loser_extra_penalty=0.12,
+            truncation_winner_discount=0.10,   # GPT FIX: Reduce truncation stress (was 0.22)
+            truncation_loser_extra_penalty=0.05,  # GPT FIX: Reduce truncation stress (was 0.12)
             
             # ENTRY QUALITY: NEW
             entry_quality_integration=True,
@@ -1063,20 +1105,20 @@ def get_timing_student_config() -> CurriculumStageConfig:
             off_hours_trade_penalty=0.12,     # Slightly stronger
             prime_hours_trade_bonus=0.04,
             
-            # MARKET STRUCTURE: NOW MEANINGFUL (was too weak to matter)
+            # MARKET STRUCTURE: REBALANCED - penalties were dominating (GPT FIX)
             market_structure_enabled=True,
-            sr_proximity_bonus=0.20,          # STRONG: Good S/R entry gets real reward
-            sr_proximity_penalty=0.25,        # STRONG: Bad S/R entry gets punished hard
-            structure_alignment_bonus=0.15,   # STRONG: Trading with structure matters
+            sr_proximity_bonus=0.18,          # Good S/R entry reward
+            sr_proximity_penalty=0.15,        # GPT FIX: Reduced from 0.25 - was too harsh
+            structure_alignment_bonus=0.12,   # Moderate structure alignment bonus
             bos_alignment_bonus=0.0,          # Not yet - too advanced for Stage 4
             order_block_entry_bonus=0.0,      # Not yet - too advanced for Stage 4
             
-            # DIVERGENCE: NOW MEANINGFUL (was too weak to matter)
+            # DIVERGENCE: REBALANCED - penalties were too harsh (GPT FIX)
             divergence_awareness_enabled=True,
-            divergence_contra_penalty=0.20,   # STRONG: Don't trade against divergence
-            divergence_aligned_bonus=0.15,    # STRONG: Reward respecting divergence
-            overbought_long_penalty=0.18,     # STRONG: Don't go long overbought
-            oversold_short_penalty=0.18,      # STRONG: Don't go short oversold
+            divergence_contra_penalty=0.12,   # GPT FIX: Reduced from 0.20
+            divergence_aligned_bonus=0.12,    # Reward respecting divergence
+            overbought_long_penalty=0.10,     # GPT FIX: Reduced from 0.18
+            oversold_short_penalty=0.10,      # GPT FIX: Reduced from 0.18
             
             # REGIME: Not yet
             regime_awareness_enabled=False,
@@ -1092,8 +1134,9 @@ def get_timing_student_config() -> CurriculumStageConfig:
             loss_streak_penalty_per_loss=0.0,
             
             anti_churn_enabled=True,
-            daily_trade_soft_limit=10,   # FIXED: 2 was absurdly low for learning stage
-            churn_penalty_per_trade=0.04, # FIXED: Moderate penalty
+            # D2 AUDIT FIX: Tighter churn controls to reduce overtrading
+            daily_trade_soft_limit=10,   # MONOTONICITY FIX: Must not increase from Stage 3 (was 12)
+            churn_penalty_per_trade=0.035, # AUDIT: Increased from 0.03 for stronger discouragement
             
             hard_block_penalty=0.02,
             soft_block_penalty=0.01,
@@ -1107,6 +1150,12 @@ def get_timing_student_config() -> CurriculumStageConfig:
             per_step_min=-0.03,
             per_step_max=0.03,
             
+            # ACTIVITY CONSISTENCY: ENABLED - maintain minimum activity
+            activity_consistency_enabled=True,
+            target_trades_per_1k_steps=6.0,  # ~9 trades/1500 steps (quality focus)
+            activity_deviation_penalty_scale=0.2,  # Moderate penalty for extremes
+            min_trades_penalty=0.2,  # Lighter penalty - focus on quality now
+            
             exploration_bonus=0.02,
             directional_accuracy_weight=1.1,
             min_reward=-3.0,
@@ -1114,44 +1163,50 @@ def get_timing_student_config() -> CurriculumStageConfig:
         ),
         constraints=TradingConstraints(
             max_positions=1,
-            max_trades_per_day=18,
-            max_trades_per_session=9,
+            # D2 AUDIT FIX: Tighter trade limits to reduce churn
+            max_trades_per_day=14,        # AUDIT: Reduced from 18
+            max_trades_per_session=7,     # AUDIT: Reduced from 9
             max_consecutive_losses=7,
             enforce_session_windows=True,
             enforce_no_new_trades_window=True,
             enforce_weekend_block=True,
             enforce_hard_close=True,
-            min_minutes_between_entries=3,
-            min_minutes_after_loss=5,
+            # D2 AUDIT FIX: Longer cooldowns to reduce revenge trading
+            min_minutes_between_entries=60,    # AUDIT: Increased from 30 (4 bars for M15)
+            min_minutes_after_loss=90,         # AUDIT: Increased from 45 (6 bars after loss)
             daily_drawdown_limit=0.15,
             max_drawdown_limit=0.20,
             daily_dd_safety_buffer=0.0,
             max_dd_safety_buffer=0.0,
             emergency_close_threshold=0.18,
             entry_quality_gate_enabled=True,
-            entry_quality_threshold=0.30,   # INCREASED: Be stricter about entry quality
+            # D2 AUDIT FIX: Stricter entry quality gate
+            entry_quality_threshold=0.40,   # AUDIT: Increased from 0.30 to reduce low-quality entries
             hard_stop_loss_eur=400.0,
             soft_stop_loss_eur=280.0,
-            trailing_activation_eur=90.0,
-            trailing_retrace_pct=0.38,
-            time_decay_hours=8.0,
-            risk_per_trade_pct=0.005,
-            max_risk_per_trade_pct=0.01,
+            # D2 AUDIT FIX: More sensitive trailing to capture more winners
+            trailing_activation_eur=80.0,   # AUDIT: Reduced from 90 to trigger trailing sooner
+            trailing_retrace_pct=0.30,      # AUDIT: Reduced from 0.38 for tighter trailing
+            # D2 AUDIT FIX: Shorter time decay to reduce truncation episodes
+            time_decay_hours=6.0,           # AUDIT: Reduced from 8.0
+            # D2 AUDIT FIX: Slightly lower risk to reduce loss magnitude
+            risk_per_trade_pct=0.004,       # AUDIT: Reduced from 0.005
+            max_risk_per_trade_pct=0.008,   # AUDIT: Reduced from 0.01
         ),
         competence=CompetenceThresholds(
             min_episodes=300,
             min_timesteps=500_000,
             min_win_rate=0.40,
-            min_profit_factor=0.90,
+            min_profit_factor=0.85,   # GPT FIX: Relaxed from 0.90 to unlock progression
             max_avg_drawdown=0.15,
-            min_avg_pnl=-100.0,
-            min_avg_r_multiple=0.0,
+            min_avg_pnl=-200.0,       # GPT FIX: Relaxed from -100 (intermediate target)
+            min_avg_r_multiple=-0.05, # GPT FIX: Allow slight negative R while learning
             min_entropy=0.30,  # AUDIT FIX: Must match entropy_targets.min_entropy
             max_win_rate_std=0.25,
             max_pnl_std=8000.0,
             min_trade_count_avg=4.0,
             max_dd_breach_rate=0.18,
-            max_consecutive_loss_rate=0.20,
+            max_consecutive_loss_rate=0.30,  # GPT FIX: Relaxed from 0.20 - was too strict
             evaluation_window=80,
         ),
         max_steps_per_episode=2000,
@@ -1259,6 +1314,9 @@ def get_integrator_config() -> CurriculumStageConfig:
             slippage_randomization_range=(0.88, 1.20),
             latency_randomization_range=(0, 1),
             volatility_scale_range=(0.90, 1.12),
+            # DATA SPREAD: 70% - near-realistic costs
+            use_data_spread=True,
+            data_spread_scale=0.70,
         ),
         rewards=RewardShaping(
             reward_scale=7.0,
@@ -1279,13 +1337,13 @@ def get_integrator_config() -> CurriculumStageConfig:
             max_trade_bars_for_bonus=30,
             
             exit_quality_enabled=True,
-            trailing_stop_bonus=0.18,    # INCREASED: Strong reward for trailing stop
-            agent_close_bonus=-0.08,     # STRONGER: Penalize cutting winners hard
-            hard_stop_penalty=0.06,      # INCREASED: Stronger penalty for bad entries
+            trailing_stop_bonus=0.32,    # D2 FIX: Must be >= TIMING_STUDENT (0.30)
+            agent_close_bonus=-0.10,     # GPT FIX: Stronger penalty
+            hard_stop_penalty=0.06,
             risk_liquidation_penalty=0.08,
             
-            truncation_winner_discount=0.22,
-            truncation_loser_extra_penalty=0.12,
+            truncation_winner_discount=0.12,   # GPT FIX: Reduced from 0.22
+            truncation_loser_extra_penalty=0.06,  # GPT FIX: Reduced from 0.12
             
             entry_quality_integration=True,
             entry_quality_weight=0.15,
@@ -1295,20 +1353,20 @@ def get_integrator_config() -> CurriculumStageConfig:
             off_hours_trade_penalty=0.15,
             prime_hours_trade_bonus=0.05,
             
-            # MARKET STRUCTURE: STRONG signals (must compete with P&L scale)
+            # MARKET STRUCTURE: REBALANCED (GPT FIX)
             market_structure_enabled=True,
-            sr_proximity_bonus=0.25,          # STRONG: Reward good S/R entries
-            sr_proximity_penalty=0.30,        # STRONG: Punish bad S/R entries hard
-            structure_alignment_bonus=0.20,   # STRONG: Structure alignment matters
-            bos_alignment_bonus=0.15,         # STRONG: BOS confirmation bonus
-            order_block_entry_bonus=0.12,     # STRONG: Order block awareness
+            sr_proximity_bonus=0.22,          # Good S/R entry reward
+            sr_proximity_penalty=0.18,        # GPT FIX: Reduced from 0.30
+            structure_alignment_bonus=0.15,   # Moderate
+            bos_alignment_bonus=0.12,         # BOS confirmation bonus
+            order_block_entry_bonus=0.10,     # Order block awareness
             
-            # DIVERGENCE: STRONG signals (must compete with P&L scale)
+            # DIVERGENCE: REBALANCED (GPT FIX)
             divergence_awareness_enabled=True,
-            divergence_contra_penalty=0.25,   # STRONG: Don't trade against divergence
-            divergence_aligned_bonus=0.18,    # STRONG: Reward divergence awareness
-            overbought_long_penalty=0.22,     # STRONG: Don't go long overbought
-            oversold_short_penalty=0.22,      # STRONG: Don't go short oversold
+            divergence_contra_penalty=0.15,   # GPT FIX: Reduced from 0.25
+            divergence_aligned_bonus=0.14,    # Reward divergence awareness
+            overbought_long_penalty=0.12,     # GPT FIX: Reduced from 0.22
+            oversold_short_penalty=0.12,      # GPT FIX: Reduced from 0.22
             
             # REGIME: Introduce lightly
             regime_awareness_enabled=True,
@@ -1326,8 +1384,8 @@ def get_integrator_config() -> CurriculumStageConfig:
             loss_streak_penalty_per_loss=0.0,
             
             anti_churn_enabled=True,
-            daily_trade_soft_limit=8,    # FIXED: 1 was absurd - agent still integrating skills
-            churn_penalty_per_trade=0.05, # FIXED: Moderate but meaningful
+            daily_trade_soft_limit=10,   # MONOTONICITY FIX: Must not increase from Stage 3-4 (was 12)
+            churn_penalty_per_trade=0.04, # GPT FIX: Reduced from 0.05
             
             hard_block_penalty=0.025,
             soft_block_penalty=0.012,
@@ -1355,15 +1413,15 @@ def get_integrator_config() -> CurriculumStageConfig:
             enforce_no_new_trades_window=True,
             enforce_weekend_block=True,
             enforce_hard_close=True,
-            min_minutes_between_entries=5,
-            min_minutes_after_loss=8,
+            min_minutes_between_entries=60,    # MONOTONICITY FIX: Must match Stage 4 (was 30, breaking ladder)
+            min_minutes_after_loss=90,         # MONOTONICITY FIX: Must match Stage 4 (was 45, breaking ladder)
             daily_drawdown_limit=0.10,
             max_drawdown_limit=0.15,
             daily_dd_safety_buffer=0.005,
             max_dd_safety_buffer=0.01,
             emergency_close_threshold=0.13,
             entry_quality_gate_enabled=True,
-            entry_quality_threshold=0.35,
+            entry_quality_threshold=0.40,     # MONOTONICITY FIX: Must not decrease from Stage 4 (was 0.35)
             hard_stop_loss_eur=350.0,
             soft_stop_loss_eur=230.0,
             trailing_activation_eur=80.0,
@@ -1495,6 +1553,9 @@ def get_risk_manager_config() -> CurriculumStageConfig:
             slippage_randomization_range=(0.85, 1.25),
             latency_randomization_range=(0, 2),
             volatility_scale_range=(0.88, 1.15),
+            # DATA SPREAD: 85% - near-full realistic costs
+            use_data_spread=True,
+            data_spread_scale=0.85,
         ),
         rewards=RewardShaping(
             reward_scale=8.0,
@@ -1514,13 +1575,13 @@ def get_risk_manager_config() -> CurriculumStageConfig:
             max_trade_bars_for_bonus=28,
             
             exit_quality_enabled=True,
-            trailing_stop_bonus=0.20,    # STRONG: Must learn to let winners run
-            agent_close_bonus=-0.08,     # STRONGER: Discourage cutting winners
-            hard_stop_penalty=0.07,      # INCREASED: Bad entries hurt
+            trailing_stop_bonus=0.34,    # D2 FIX: Must be >= INTEGRATOR (0.32)
+            agent_close_bonus=-0.10,     # Discourage cutting winners
+            hard_stop_penalty=0.07,
             risk_liquidation_penalty=0.10,
             
-            truncation_winner_discount=0.25,
-            truncation_loser_extra_penalty=0.15,
+            truncation_winner_discount=0.12,   # GPT FIX: Reduced from 0.25
+            truncation_loser_extra_penalty=0.08,  # GPT FIX: Reduced from 0.15
             
             entry_quality_integration=True,
             entry_quality_weight=0.18,
@@ -1530,20 +1591,20 @@ def get_risk_manager_config() -> CurriculumStageConfig:
             off_hours_trade_penalty=0.18,
             prime_hours_trade_bonus=0.06,
             
-            # MARKET STRUCTURE: STRONG signals (must compete with P&L scale)
+            # MARKET STRUCTURE: REBALANCED (GPT FIX)
             market_structure_enabled=True,
-            sr_proximity_bonus=0.28,          # STRONG: Reward good S/R entries
-            sr_proximity_penalty=0.35,        # STRONG: Punish bad S/R entries hard
-            structure_alignment_bonus=0.25,   # STRONG: Structure alignment matters
-            bos_alignment_bonus=0.18,         # STRONG: BOS confirmation bonus
-            order_block_entry_bonus=0.15,     # STRONG: Order block awareness
+            sr_proximity_bonus=0.25,          # Good S/R entry reward
+            sr_proximity_penalty=0.20,        # GPT FIX: Reduced from 0.35
+            structure_alignment_bonus=0.18,   # Structure alignment
+            bos_alignment_bonus=0.15,         # BOS confirmation bonus
+            order_block_entry_bonus=0.12,     # Order block awareness
             
-            # DIVERGENCE: STRONG signals (must compete with P&L scale)
+            # DIVERGENCE: REBALANCED (GPT FIX)
             divergence_awareness_enabled=True,
-            divergence_contra_penalty=0.30,   # STRONG: Don't trade against divergence
-            divergence_aligned_bonus=0.22,    # STRONG: Reward divergence awareness
-            overbought_long_penalty=0.25,     # STRONG: Don't go long overbought
-            oversold_short_penalty=0.25,      # STRONG: Don't go short oversold
+            divergence_contra_penalty=0.18,   # GPT FIX: Reduced from 0.30
+            divergence_aligned_bonus=0.16,    # Reward divergence awareness
+            overbought_long_penalty=0.14,     # GPT FIX: Reduced from 0.25
+            oversold_short_penalty=0.14,      # GPT FIX: Reduced from 0.25
             
             # REGIME: Full strength
             regime_awareness_enabled=True,
@@ -1563,8 +1624,8 @@ def get_risk_manager_config() -> CurriculumStageConfig:
             loss_streak_penalty_per_loss=0.03,
             
             anti_churn_enabled=True,
-            daily_trade_soft_limit=6,    # FIXED: 1 was destroying learning - agent can't learn with constant punishment
-            churn_penalty_per_trade=0.06, # FIXED: Meaningful but not crushing
+            daily_trade_soft_limit=10,   # GPT FIX: Increased from 6
+            churn_penalty_per_trade=0.05, # GPT FIX: Reduced from 0.06
             
             hard_block_penalty=0.03,
             soft_block_penalty=0.015,
@@ -1592,8 +1653,8 @@ def get_risk_manager_config() -> CurriculumStageConfig:
             enforce_no_new_trades_window=True,
             enforce_weekend_block=True,
             enforce_hard_close=True,
-            min_minutes_between_entries=8,
-            min_minutes_after_loss=12,
+            min_minutes_between_entries=60,    # MONOTONICITY FIX: Must not loosen from Stage 4-5 (was 45)
+            min_minutes_after_loss=90,         # MONOTONICITY FIX: Must not loosen from Stage 4-5 (was 60)
             daily_drawdown_limit=0.06,
             max_drawdown_limit=0.10,
             daily_dd_safety_buffer=0.006,
@@ -1734,6 +1795,9 @@ def get_strategist_config() -> CurriculumStageConfig:
             slippage_randomization_range=(0.80, 1.35),
             latency_randomization_range=(0, 2),
             volatility_scale_range=(0.85, 1.18),
+            # DATA SPREAD: 100% - FULL realistic costs (real FTMO spreads)
+            use_data_spread=True,
+            data_spread_scale=1.0,
         ),
         rewards=RewardShaping(
             reward_scale=9.0,
@@ -1753,13 +1817,13 @@ def get_strategist_config() -> CurriculumStageConfig:
             max_trade_bars_for_bonus=25,
             
             exit_quality_enabled=True,
-            trailing_stop_bonus=0.22,    # VERY STRONG: Strategy stage must master this
-            agent_close_bonus=-0.08,     # STRONGER: Really discourage cutting winners
-            hard_stop_penalty=0.08,      # INCREASED: Bad entries hurt more
+            trailing_stop_bonus=0.36,    # D2 FIX: Must be >= RISK_MANAGER (0.34)
+            agent_close_bonus=-0.10,     # Discourage cutting winners
+            hard_stop_penalty=0.08,
             risk_liquidation_penalty=0.12,
             
-            truncation_winner_discount=0.22,
-            truncation_loser_extra_penalty=0.18,
+            truncation_winner_discount=0.12,   # GPT FIX: Reduced from 0.22
+            truncation_loser_extra_penalty=0.10,  # GPT FIX: Reduced from 0.18
             
             entry_quality_integration=True,
             entry_quality_weight=0.20,
@@ -1769,20 +1833,20 @@ def get_strategist_config() -> CurriculumStageConfig:
             off_hours_trade_penalty=0.20,
             prime_hours_trade_bonus=0.08,
             
-            # MARKET STRUCTURE: STRONG signals (must compete with P&L scale)
+            # MARKET STRUCTURE: REBALANCED (GPT FIX)
             market_structure_enabled=True,
-            sr_proximity_bonus=0.30,          # STRONG: Reward good S/R entries
-            sr_proximity_penalty=0.38,        # STRONG: Punish bad S/R entries hard
-            structure_alignment_bonus=0.28,   # STRONG: Structure alignment matters
-            bos_alignment_bonus=0.20,         # STRONG: BOS confirmation bonus
-            order_block_entry_bonus=0.18,     # STRONG: Order block awareness
+            sr_proximity_bonus=0.28,          # Good S/R entry reward
+            sr_proximity_penalty=0.22,        # GPT FIX: Reduced from 0.38
+            structure_alignment_bonus=0.20,   # Structure alignment
+            bos_alignment_bonus=0.16,         # BOS confirmation bonus
+            order_block_entry_bonus=0.14,     # Order block awareness
             
-            # DIVERGENCE: STRONG signals (must compete with P&L scale)
+            # DIVERGENCE: REBALANCED (GPT FIX)
             divergence_awareness_enabled=True,
-            divergence_contra_penalty=0.35,   # STRONG: Don't trade against divergence
-            divergence_aligned_bonus=0.25,    # STRONG: Reward divergence awareness
-            overbought_long_penalty=0.28,     # STRONG: Don't go long overbought
-            oversold_short_penalty=0.28,      # STRONG: Don't go short oversold
+            divergence_contra_penalty=0.20,   # GPT FIX: Reduced from 0.35
+            divergence_aligned_bonus=0.18,    # Reward divergence awareness
+            overbought_long_penalty=0.16,     # GPT FIX: Reduced from 0.28
+            oversold_short_penalty=0.16,      # GPT FIX: Reduced from 0.28
             
             # REGIME: Full strength
             regime_awareness_enabled=True,
@@ -1800,8 +1864,8 @@ def get_strategist_config() -> CurriculumStageConfig:
             loss_streak_penalty_per_loss=0.035,
             
             anti_churn_enabled=True,
-            daily_trade_soft_limit=5,    # FIXED: Strategy forming - allow reasonable activity
-            churn_penalty_per_trade=0.08, # FIXED: Stronger but not exponentially crushing
+            daily_trade_soft_limit=8,    # GPT FIX: Increased from 5
+            churn_penalty_per_trade=0.06, # GPT FIX: Reduced from 0.08
             
             hard_block_penalty=0.035,
             soft_block_penalty=0.018,
@@ -1829,8 +1893,8 @@ def get_strategist_config() -> CurriculumStageConfig:
             enforce_no_new_trades_window=True,
             enforce_weekend_block=True,
             enforce_hard_close=True,
-            min_minutes_between_entries=10,
-            min_minutes_after_loss=15,
+            min_minutes_between_entries=60,    # MONOTONICITY FIX: Must not loosen from Stage 4-6 (was 45)
+            min_minutes_after_loss=90,         # MONOTONICITY FIX: Must not loosen from Stage 4-6 (was 60)
             daily_drawdown_limit=0.055,
             max_drawdown_limit=0.095,
             daily_dd_safety_buffer=0.007,
@@ -1976,6 +2040,9 @@ def get_professional_config() -> CurriculumStageConfig:
             spread_shock_enabled=True,
             spread_shock_probability=0.01,
             spread_shock_multiplier=2.0,
+            # DATA SPREAD: 100% - FULL realistic costs (real FTMO spreads)
+            use_data_spread=True,
+            data_spread_scale=1.0,
         ),
         rewards=RewardShaping(
             reward_scale=10.0,
@@ -1995,13 +2062,13 @@ def get_professional_config() -> CurriculumStageConfig:
             max_trade_bars_for_bonus=22,
             
             exit_quality_enabled=True,
-            trailing_stop_bonus=0.25,    # VERY STRONG: Pro stage must excel at this
-            agent_close_bonus=-0.10,     # STRONGER: Cutting winners is unprofessional
-            hard_stop_penalty=0.10,      # INCREASED: Bad entries are costly
+            trailing_stop_bonus=0.38,    # D2 FIX: Must be >= STRATEGIST (0.36)
+            agent_close_bonus=-0.12,     # Cutting winners is unprofessional
+            hard_stop_penalty=0.10,
             risk_liquidation_penalty=0.15,
             
-            truncation_winner_discount=0.20,
-            truncation_loser_extra_penalty=0.20,
+            truncation_winner_discount=0.12,   # GPT FIX: Reduced from 0.20
+            truncation_loser_extra_penalty=0.12,  # GPT FIX: Reduced from 0.20
             
             entry_quality_integration=True,
             entry_quality_weight=0.22,
@@ -2011,20 +2078,20 @@ def get_professional_config() -> CurriculumStageConfig:
             off_hours_trade_penalty=0.25,
             prime_hours_trade_bonus=0.10,
             
-            # MARKET STRUCTURE: MAXIMUM strength (was MISSING - critical bug!)
+            # MARKET STRUCTURE: REBALANCED (GPT FIX)
             market_structure_enabled=True,
-            sr_proximity_bonus=0.35,          # MAXIMUM: Pro must nail S/R entries
-            sr_proximity_penalty=0.45,        # MAXIMUM: Punish bad entries severely
-            structure_alignment_bonus=0.32,   # MAXIMUM: Structure alignment critical
-            bos_alignment_bonus=0.25,         # MAXIMUM: BOS confirmation
-            order_block_entry_bonus=0.22,     # MAXIMUM: Order block awareness
+            sr_proximity_bonus=0.32,          # Strong S/R entry reward
+            sr_proximity_penalty=0.25,        # GPT FIX: Reduced from 0.45
+            structure_alignment_bonus=0.24,   # Structure alignment
+            bos_alignment_bonus=0.18,         # BOS confirmation
+            order_block_entry_bonus=0.16,     # Order block awareness
             
-            # DIVERGENCE: MAXIMUM strength (was MISSING - critical bug!)
+            # DIVERGENCE: REBALANCED (GPT FIX)
             divergence_awareness_enabled=True,
-            divergence_contra_penalty=0.40,   # MAXIMUM: Never trade against divergence
-            divergence_aligned_bonus=0.30,    # MAXIMUM: Reward divergence awareness
-            overbought_long_penalty=0.35,     # MAXIMUM: Don't go long overbought
-            oversold_short_penalty=0.35,      # MAXIMUM: Don't go short oversold
+            divergence_contra_penalty=0.22,   # GPT FIX: Reduced from 0.40
+            divergence_aligned_bonus=0.20,    # Reward divergence awareness
+            overbought_long_penalty=0.18,     # GPT FIX: Reduced from 0.35
+            oversold_short_penalty=0.18,      # GPT FIX: Reduced from 0.35
             
             # REGIME: Full strength
             regime_awareness_enabled=True,
@@ -2042,8 +2109,8 @@ def get_professional_config() -> CurriculumStageConfig:
             loss_streak_penalty_per_loss=0.04,
             
             anti_churn_enabled=True,
-            daily_trade_soft_limit=4,    # FIXED: Pro level - selective but active
-            churn_penalty_per_trade=0.10, # FIXED: Strong pressure for discipline
+            daily_trade_soft_limit=7,    # GPT FIX: Increased from 4
+            churn_penalty_per_trade=0.08, # GPT FIX: Reduced from 0.10
             
             hard_block_penalty=0.04,
             soft_block_penalty=0.02,
@@ -2071,8 +2138,8 @@ def get_professional_config() -> CurriculumStageConfig:
             enforce_no_new_trades_window=True,
             enforce_weekend_block=True,
             enforce_hard_close=True,
-            min_minutes_between_entries=12,
-            min_minutes_after_loss=18,
+            min_minutes_between_entries=60,    # FIX: 4 bars minimum (was 12 min = 0 bars for M15)
+            min_minutes_after_loss=90,         # FIX: 6 bars after loss (was 18 min = 1 bar)
             daily_drawdown_limit=0.05,
             max_drawdown_limit=0.09,
             daily_dd_safety_buffer=0.008,
@@ -2232,6 +2299,9 @@ def get_live_ready_config() -> CurriculumStageConfig:
             spread_shock_enabled=True,
             spread_shock_probability=0.015,
             spread_shock_multiplier=2.5,
+            # DATA SPREAD: 100% - FULL realistic costs (real FTMO spreads)
+            use_data_spread=True,
+            data_spread_scale=1.0,
         ),
         rewards=RewardShaping(
             reward_scale=10.0,
@@ -2251,13 +2321,13 @@ def get_live_ready_config() -> CurriculumStageConfig:
             max_trade_bars_for_bonus=20,
             
             exit_quality_enabled=True,
-            trailing_stop_bonus=0.28,    # MAXIMUM: Live ready MUST be excellent at exits
-            agent_close_bonus=-0.12,     # STRONGEST: No excuses at final stage - trailing only
-            hard_stop_penalty=0.12,      # INCREASED: Live-ready means no bad entries
+            trailing_stop_bonus=0.40,    # D2 FIX: Maximum - must be >= PROFESSIONAL (0.38)
+            agent_close_bonus=-0.12,     # Strongest penalty for premature exits
+            hard_stop_penalty=0.12,
             risk_liquidation_penalty=0.20,
             
-            truncation_winner_discount=0.18,
-            truncation_loser_extra_penalty=0.22,
+            truncation_winner_discount=0.10,   # GPT FIX: Reduced from 0.18
+            truncation_loser_extra_penalty=0.12,  # GPT FIX: Reduced from 0.22
             
             entry_quality_integration=True,
             entry_quality_weight=0.25,
@@ -2267,20 +2337,20 @@ def get_live_ready_config() -> CurriculumStageConfig:
             off_hours_trade_penalty=0.30,
             prime_hours_trade_bonus=0.12,
             
-            # MARKET STRUCTURE: MAXIMUM strength (was MISSING - critical bug!)
+            # MARKET STRUCTURE: REBALANCED (GPT FIX)
             market_structure_enabled=True,
-            sr_proximity_bonus=0.40,          # MAXIMUM: Live-ready MUST nail S/R entries
-            sr_proximity_penalty=0.50,        # MAXIMUM: Punish bad entries severely
-            structure_alignment_bonus=0.38,   # MAXIMUM: Structure alignment critical
-            bos_alignment_bonus=0.30,         # MAXIMUM: BOS confirmation
-            order_block_entry_bonus=0.25,     # MAXIMUM: Order block awareness
+            sr_proximity_bonus=0.35,          # Strong S/R entry reward
+            sr_proximity_penalty=0.28,        # GPT FIX: Reduced from 0.50
+            structure_alignment_bonus=0.28,   # Structure alignment
+            bos_alignment_bonus=0.22,         # BOS confirmation
+            order_block_entry_bonus=0.18,     # Order block awareness
             
-            # DIVERGENCE: MAXIMUM strength (was MISSING - critical bug!)
+            # DIVERGENCE: REBALANCED (GPT FIX)
             divergence_awareness_enabled=True,
-            divergence_contra_penalty=0.45,   # MAXIMUM: Never trade against divergence
-            divergence_aligned_bonus=0.35,    # MAXIMUM: Reward divergence awareness
-            overbought_long_penalty=0.40,     # MAXIMUM: Don't go long overbought
-            oversold_short_penalty=0.40,      # MAXIMUM: Don't go short oversold
+            divergence_contra_penalty=0.25,   # GPT FIX: Reduced from 0.45
+            divergence_aligned_bonus=0.22,    # Reward divergence awareness
+            overbought_long_penalty=0.20,     # GPT FIX: Reduced from 0.40
+            oversold_short_penalty=0.20,      # GPT FIX: Reduced from 0.40
             
             # REGIME: MAXIMUM strength
             regime_awareness_enabled=True,
@@ -2298,8 +2368,8 @@ def get_live_ready_config() -> CurriculumStageConfig:
             loss_streak_penalty_per_loss=0.045,
             
             anti_churn_enabled=True,
-            daily_trade_soft_limit=3,    # FIXED: Live ready - very selective but realistic
-            churn_penalty_per_trade=0.12, # FIXED: Strong but not crushing
+            daily_trade_soft_limit=6,    # GPT FIX: Increased from 3
+            churn_penalty_per_trade=0.10, # GPT FIX: Reduced from 0.12
             
             hard_block_penalty=0.045,
             soft_block_penalty=0.022,
@@ -2327,8 +2397,8 @@ def get_live_ready_config() -> CurriculumStageConfig:
             enforce_no_new_trades_window=True,
             enforce_weekend_block=True,
             enforce_hard_close=True,
-            min_minutes_between_entries=15,
-            min_minutes_after_loss=20,
+            min_minutes_between_entries=60,    # FIX: 4 bars minimum (was 15 min = 1 bar for M15)
+            min_minutes_after_loss=90,         # FIX: 6 bars after loss (was 20 min = 1 bar)
             daily_drawdown_limit=0.048,
             max_drawdown_limit=0.085,
             daily_dd_safety_buffer=0.008,

@@ -208,6 +208,9 @@ class PropFirmTradingEnv(
         self._curriculum_stage_idx: int = 0  # Stage index for stage-specific reward settings
         if curriculum_manager is not None and CURRICULUM_AVAILABLE:
             self.curriculum = curriculum_manager
+            # CRITICAL: Set pending=True so first reset() applies stage overrides
+            # Without this, the stage name matches and overrides are never applied!
+            self._pending_stage_apply = True
             self._last_stage_name = getattr(self.curriculum.current_stage, "name", "")
             self._last_stage_epoch = int(getattr(self.curriculum, "current_stage_epoch", 0))
             current_stage = getattr(self.curriculum, "current_stage", None)
@@ -615,6 +618,15 @@ class PropFirmTradingEnv(
         else:
             out["volume"] = np.ones(end - start, dtype=np.float64)
 
+        # Extract spread from data if available (real FTMO spreads)
+        spread_col = None
+        for s in ["spread", "Spread", "SPREAD"]:
+            if s in df.columns:
+                spread_col = s
+                break
+        if spread_col:
+            out["spread"] = df[spread_col].iloc[start:end].to_numpy(dtype=np.float64, copy=False)
+
         self._ohlcv_cache[lb] = out
         return out
 
@@ -636,11 +648,54 @@ class PropFirmTradingEnv(
         vol = float(np.clip(vol * 100.0, 0.0, 1.0))
         return float(np.clip(vol * self._episode_vol_scale, 0.0, 2.0))
 
+    def _get_current_data_spread(self, instrument: str) -> Optional[float]:
+        """
+        Get the actual spread from the data file for the current bar.
+        Returns spread in PRICE UNITS (not points).
+        
+        UNIT CONVERSION (Jan 2026 - Issue 2 Fix):
+        CSV spread column stores integer points (e.g., EURUSD=2, XAUUSD=7).
+        These must be converted to price deltas before use in bid/ask calculation:
+        - FX pairs: 1 point = 0.0001 (4th decimal place)
+        - XAU/GOLD: 1 point = 0.01 (cents)
+        - XAG/SILVER: 1 point = 0.001
+        
+        This is critical for realistic training with actual FTMO broker spreads
+        instead of synthetic/hardcoded values.
+        """
+        o = self._get_ohlcv(instrument, lookback=1, timeframe=None)
+        if not o or "spread" not in o:
+            return None
+        spread_arr = o.get("spread")
+        if spread_arr is None or len(spread_arr) == 0:
+            return None
+        
+        raw_points = float(spread_arr[-1])
+        if raw_points <= 0:
+            return None
+        
+        # Convert points to price delta based on instrument type
+        # This matches the pip value conventions in _get_pip_value()
+        inst_upper = instrument.upper().replace("_", "").replace("/", "")
+        if "XAU" in inst_upper or "GOLD" in inst_upper:
+            point_value = 0.01  # $0.01 per point for gold
+        elif "XAG" in inst_upper or "SILVER" in inst_upper:
+            point_value = 0.001  # $0.001 per point for silver
+        else:
+            point_value = 0.0001  # 1 pip = 0.0001 for FX pairs
+        
+        return raw_points * point_value
+
     def _get_step_bid_ask(self, instrument: str, mid: float, vol_proxy: float) -> Tuple[float, float]:
         """
         Quote caching: call quote() at most once per step, but validate mid/vol inputs.
 
         If mid/vol differ materially within the same step, re-quote to avoid stale bid/ask reuse.
+        
+        DATA SPREAD CONTROL (Jan 2026):
+        - Respects config.execution.use_data_spread flag
+        - Applies config.execution.data_spread_scale discount
+        - Curriculum can disable data spreads for training wheels in early stages
         """
         assert self._exec is not None
 
@@ -656,7 +711,18 @@ class PropFirmTradingEnv(
             if abs(float(mid) - float(self._quote_cache_mid)) <= mid_tol and abs(float(vol_proxy) - float(self._quote_cache_vol)) <= vol_tol:
                 return float(self._quote_cache_bid), float(self._quote_cache_ask)
 
-        bid, ask, _ = self._exec.quote(mid, vol_proxy)
+        # Get actual spread from data if curriculum/config allows
+        data_spread: Optional[float] = None
+        exec_cfg = getattr(self.config, "execution", None)
+        use_data = getattr(exec_cfg, "use_data_spread", True) if exec_cfg else True
+        spread_scale = getattr(exec_cfg, "data_spread_scale", 1.0) if exec_cfg else 1.0
+        
+        if use_data:
+            raw_spread = self._get_current_data_spread(inst)
+            if raw_spread is not None and raw_spread > 0:
+                data_spread = float(raw_spread) * float(spread_scale)
+        
+        bid, ask, _ = self._exec.quote(mid, vol_proxy, data_spread=data_spread)
         self._quote_cache_step = step
         self._quote_cache_inst = inst
         self._quote_cache_mid = float(mid)
@@ -734,8 +800,10 @@ class PropFirmTradingEnv(
         mfe = max(0.0, float(pos.peak_pnl))
         bars_held = self.episode_bars - pos.entry_bar
         entry_quality = float(pos.entry_quality)
-
-        exit_fill, exit_fee, _ = self._exec.fill_exit(mid, pos.direction, pos.lot_size, vol_proxy)
+        
+        # C2 FIX: Pass data_spread for consistent execution with mark-to-market
+        data_spread = self._get_current_data_spread(pos.instrument)
+        exit_fill, exit_fee, _ = self._exec.fill_exit(mid, pos.direction, pos.lot_size, vol_proxy, data_spread=data_spread)
         realized_pnl = float(self._realize_pnl_on_exit(pos, exit_fill, exit_fee))
         net_trade_pnl = float(realized_pnl - entry_fee)
         total_fees = float(entry_fee + exit_fee)
@@ -1194,8 +1262,10 @@ class PropFirmTradingEnv(
                     lot = float(self.pending_entry["lot"])
                     initial_risk = float(self.pending_entry["initial_risk"])
                     entry_quality = float(self.pending_entry.get("entry_quality", 0.5))
-
-                    entry_fill, entry_fee, _ = self._exec.fill_entry(mid, direction, lot, vol_proxy)
+                    
+                    # C2 FIX: Pass data_spread for consistent execution with mark-to-market
+                    data_spread = self._get_current_data_spread(inst)
+                    entry_fill, entry_fee, _ = self._exec.fill_entry(mid, direction, lot, vol_proxy, data_spread=data_spread)
 
                     entry_fee = float(entry_fee)
                     if entry_fee > 0:
@@ -1364,14 +1434,23 @@ class PropFirmTradingEnv(
 
             if should_apply_penalty:
                 trade_ratio = actual_trades / expected_trades
+                activity_penalty = 0.0
                 if trade_ratio < 0.2:
-                    under_trade_penalty = getattr(reward_cfg, "min_trades_penalty", 0.0)
-                    reward -= under_trade_penalty
+                    activity_penalty = getattr(reward_cfg, "min_trades_penalty", 0.0)
                 elif abs(trade_ratio - 1.0) > 0.5:
                     deviation = abs(trade_ratio - 1.0) - 0.5
                     scale = getattr(reward_cfg, "activity_deviation_penalty_scale", 0.0)
-                    deviation_penalty = min(deviation * scale, 0.2)
-                    reward -= deviation_penalty
+                    activity_penalty = min(deviation * scale, 0.2)
+                
+                # C7 FIX: Log activity penalty as a named component for attribution
+                if activity_penalty > 0:
+                    reward -= activity_penalty
+                    self._episode_reward_components["activity_consistency_penalty"] = (
+                        self._episode_reward_components.get("activity_consistency_penalty", 0.0) - activity_penalty
+                    )
+                    self._episode_reward_component_counts["activity_consistency_penalty"] = (
+                        self._episode_reward_component_counts.get("activity_consistency_penalty", 0) + 1
+                    )
 
         # Compute qualities using step cache (computed once per step, reused)
         q_long = self._get_step_entry_quality(inst, "long")

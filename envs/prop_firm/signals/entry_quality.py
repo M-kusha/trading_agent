@@ -81,6 +81,31 @@ class EntryQualityMixin:
             return 0.0
         return float(np.std(x))
 
+    @staticmethod
+    def _dir_sign(direction_str: str) -> float:
+        """Convert direction string to numerical sign: +1 (long/bull), -1 (short/bear), 0 (neutral)."""
+        d = str(direction_str).lower().strip()
+        if d in ("long", "buy", "bull", "bullish", "up"):
+            return 1.0
+        elif d in ("short", "sell", "bear", "bearish", "down"):
+            return -1.0
+        return 0.0
+
+    @staticmethod
+    def _compute_rsi(close: np.ndarray, period: int = 14) -> float:
+        """Compute RSI from close prices."""
+        if len(close) < period + 1:
+            return 50.0
+        deltas = np.diff(close[-(period + 1):])
+        gains = np.where(deltas > 0, deltas, 0.0)
+        losses = np.where(deltas < 0, -deltas, 0.0)
+        avg_gain = float(np.mean(gains))
+        avg_loss = float(np.mean(losses))
+        if avg_loss < 1e-10:
+            return 100.0 if avg_gain > 0 else 50.0
+        rs = avg_gain / avg_loss
+        return float(100.0 - (100.0 / (1.0 + rs)))
+
     # -------------------------------------------------------------------------
     # Entry quality public-ish accessors
     # -------------------------------------------------------------------------

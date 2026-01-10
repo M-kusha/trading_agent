@@ -1087,7 +1087,14 @@ class CurriculumManager:
         # Extract regime-tagged trades for skill assessment (Phase 2.2)
         self._accumulate_regime_trades(ep_stats.get("trades_with_regime", []))
         
-        self.record_episode(metrics, timesteps=episode_length, effective_stage=effective_stage)
+        # Use on_episode_end to record AND check transitions (promotion/demotion)
+        # Previously this called record_episode directly, which skipped transition checks!
+        self.on_episode_end(
+            metrics=metrics,
+            timesteps=episode_length,
+            effective_stage=effective_stage,
+            check_transitions=True,  # Enable automatic promotion/demotion
+        )
     
     def _accumulate_regime_trades(self, trades_data: List[Dict[str, Any]]) -> None:
         """

@@ -581,10 +581,10 @@ class CurriculumTrainingCallback(BaseCallback):
             return True
         
         # Update transition state and all adaptive controls
-        # F-6 FIX: Skip step_transition_state here - PropFirmTradingEnv already calls it
-        # per env step (timesteps=1). Calling again here would double-count transitions.
+        # CRITICAL FIX (Jan 2026): step_transition_state MUST be called here!
+        # The env does NOT call it - this was causing LR warmup to stay stuck forever.
         if self.curriculum_manager is not None:
-            # self.curriculum_manager.step_transition_state(timesteps=self._n_envs)  # F-6: REMOVED - env handles this
+            self.curriculum_manager.step_transition_state(timesteps=self._n_envs)  # RESTORED - was incorrectly removed
             self._apply_lr_warmup()
             self._apply_entropy_schedule()  # Adapt entropy by stage
             self._apply_adaptive_clip_range()  # Adapt clip range by KL
@@ -668,8 +668,16 @@ class CurriculumTrainingCallback(BaseCallback):
                 reward=ep_reward,
             )
             
-            # NOTE: episode_transition_tick is called by PropFirmTradingEnv._episode_end_hook()
-            # via record_episode_from_info(), so we don't call it here to avoid double-counting
+            # Record episode to curriculum manager for rolling stats and promotion checks
+            if self.curriculum_manager is not None:
+                try:
+                    self.curriculum_manager.record_episode_from_info(
+                        info=finfo,
+                        episode_reward=ep_reward,
+                        episode_length=ep_len,
+                    )
+                except Exception as e:
+                    logger.debug(f"record_episode_from_info failed: {e}")
             
             # Track stage transitions (get from curriculum manager directly)
             if self.curriculum_manager is not None:
@@ -978,6 +986,69 @@ class CurriculumTrainingCallback(BaseCallback):
             "total_stages_visited": len(stages_data),
         }
     
+    def _get_stage_config_version(self) -> Dict[str, Any]:
+        """
+        G1.4 FIX: Get stage config version/hash for drift detection.
+        Returns key parameters from current stage config so runtime can be verified against disk.
+        """
+        if self.curriculum_manager is None:
+            return {"stage": "N/A", "hash": "N/A"}
+        
+        try:
+            import hashlib
+            stage = self.curriculum_manager.current_stage
+            # Use the stage_config property (not a method)
+            config = self.curriculum_manager.stage_config
+            
+            # Extract key parameters that affect promotion
+            key_params = {
+                "stage": stage.name,
+                "max_steps_per_episode": config.max_steps_per_episode,
+                "trailing_stop_bonus": getattr(config.rewards, "trailing_stop_bonus", None),
+                "agent_close_bonus": getattr(config.rewards, "agent_close_bonus", None),
+                "good_loss_cut_bonus": getattr(config.rewards, "good_loss_cut_bonus", None),
+                "daily_trade_soft_limit": getattr(config.rewards, "daily_trade_soft_limit", None),
+                "entry_quality_threshold": getattr(config.constraints, "entry_quality_threshold", None),
+                "min_profit_factor": getattr(config.competence, "min_profit_factor", None),
+                "min_avg_pnl": getattr(config.competence, "min_avg_pnl", None),
+                "max_consecutive_loss_rate": getattr(config.competence, "max_consecutive_loss_rate", None),
+            }
+            
+            # Compute hash of key params for quick drift check
+            param_str = str(sorted(key_params.items()))
+            config_hash = hashlib.md5(param_str.encode()).hexdigest()[:12]
+            
+            return {
+                "stage": stage.name,
+                "hash": config_hash,
+                "key_params": key_params,
+            }
+        except Exception as e:
+            return {"stage": "ERROR", "hash": str(e)[:50]}
+    
+    def _get_curriculum_progress(self) -> Dict[str, Any]:
+        """
+        Get curriculum progress report from curriculum manager.
+        Provides promotion checks, skill assessment, blockers, etc. for dashboard.
+        """
+        if self.curriculum_manager is None:
+            return {}
+        
+        try:
+            # Get full progress report from curriculum manager
+            report = self.curriculum_manager.get_progress_report()
+            return report
+        except Exception as e:
+            logger.warning(f"Failed to get curriculum progress: {e}")
+            return {
+                "current_stage": self.curriculum_manager.current_stage.name,
+                "stage_index": self.curriculum_manager.current_stage.value,
+                "stage_episodes": self.curriculum_manager.stage_episodes,
+                "stage_timesteps": self.curriculum_manager.stage_timesteps,
+                "total_episodes": self.curriculum_manager.total_episodes,
+                "total_timesteps": self.curriculum_manager.total_timesteps,
+            }
+    
     def _log_progress(self) -> None:
         """Log training progress."""
         if not self._ep_rewards:
@@ -1071,11 +1142,13 @@ class CurriculumTrainingCallback(BaseCallback):
                     "total_pnl": total_pnl,
                     "policy_loss": self._ppo_diagnostics.get('policy_loss', 0),
                     "value_loss": self._ppo_diagnostics.get('value_loss', 0),
-                    "entropy": self._ppo_diagnostics.get('entropy', 0),
+                    # C5 FIX: Use abs(entropy) to match curriculum manager convention
+                    # Raw entropy may be negative if sourced from entropy_loss
+                    "entropy": abs(self._ppo_diagnostics.get('entropy', 0)),
                     "kl_divergence": self._ppo_diagnostics.get('kl_divergence', 0),
                     "clip_fraction": self._ppo_diagnostics.get('clip_fraction', 0),
                     "explained_variance": self._ppo_diagnostics.get('explained_variance', 0),
-                    "learning_rate": self._ppo_diagnostics.get('learning_rate', 0),
+                    "learning_rate": self._ppo_diagnostics.get('learning_rate', self._current_lr or 0),
                 },
                 "trading": {
                     "total_trades": total_trades,
@@ -1083,24 +1156,32 @@ class CurriculumTrainingCallback(BaseCallback):
                     "mean_win_rate": mean_win_rate * 100,
                     "max_drawdown": max_drawdown * 100,
                 },
-                # NEW: Quality metrics for dashboard "Quality" tab
+                # Quality metrics for dashboard "Quality" tab
                 "quality": {
                     "mean_profit_factor": mean_profit_factor,
                     "mean_r_multiple": mean_r_multiple,
                     "mean_entry_quality": mean_entry_quality,
                 },
-                # NEW: Exit reason distribution for dashboard "Exits" tab
-                "exit_stats": dict(self._exit_reason_counts),
-                # NEW: Reward components for dashboard "Signals" tab
+                # Exit reason distribution for dashboard "Exits" tab (nested under "distribution")
+                "exit_stats": {"distribution": dict(self._exit_reason_counts)},
+                # Reward components for dashboard "Signals" tab
                 "reward_components": reward_component_avgs,
+                # C6 FIX: Also persist totals/counts for attribution analysis
+                "reward_component_totals": dict(self._reward_component_totals),
+                "reward_component_counts": dict(self._reward_component_counts),
                 "curriculum_stage": self.curriculum_manager.current_stage.name if self.curriculum_manager else "N/A",
+                # G1.4 FIX: Add stage config version for drift detection
+                "stage_config_version": self._get_stage_config_version(),
+                # Curriculum progress for dashboard Curriculum tab (full report from manager)
+                "curriculum_progress": self._get_curriculum_progress(),
                 "recent_rewards": [float(x) for x in list(self._ep_rewards)[-n_recent:]],
                 "recent_pnls": [float(x) for x in list(self._ep_pnls)[-n_recent:]],
-                # NEW: Additional recent arrays for dashboard charts
+                # Additional recent arrays for dashboard charts
                 "recent_win_rates": [float(x) for x in list(self._ep_win_rates)[-n_recent:]],
                 "recent_drawdowns": [float(x) for x in list(self._ep_drawdowns)[-n_recent:]],
                 "recent_trades": [int(x) for x in list(self._ep_trades)[-n_recent:]],
                 "recent_profit_factors": [float(x) for x in list(self._ep_profit_factors)[-n_recent:]],
+                "recent_r_multiples": [float(x) for x in list(self._ep_r_multiples)[-n_recent:]],
                 "stage_history": list(self._stage_history),
                 "stage_comparison": self._get_stage_comparison_data(),
                 # Legacy flat fields for backward compatibility

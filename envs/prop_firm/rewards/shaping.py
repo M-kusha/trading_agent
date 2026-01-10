@@ -109,6 +109,7 @@ class RewardShapingMixin:
         - Keep shaping small and bounded.
         - Encourage: not churning, holding cost realism.
         - Encourage patience: don't enter when both entry qualities are low.
+        - Encourage exploration: bonus for taking trades in early stages.
         - Avoid: rewarding "do nothing" forever.
 
         Returns:
@@ -116,9 +117,21 @@ class RewardShapingMixin:
         """
         cfg = self.config.reward
         if not bool(getattr(cfg, "per_step_shaping_enabled", False)):
+            # Even if per_step_shaping is disabled, still apply exploration bonus
+            # This is critical for early-stage trade encouragement
+            exploration_bonus = float(getattr(cfg, "exploration_bonus", 0.0))
+            if exploration_bonus > 0.0 and took_action and not has_position:
+                # Bonus for attempting to enter a trade (long/short action while flat)
+                return exploration_bonus
             return 0.0
 
         shaping = 0.0
+
+        # 0) Exploration bonus: encourage trading in early stages
+        # Applied when agent takes entry action while flat
+        exploration_bonus = float(getattr(cfg, "exploration_bonus", 0.0))
+        if exploration_bonus > 0.0 and took_action and not has_position:
+            shaping += exploration_bonus
 
         # 1) Holding cost (your original behavior)
         holding_cost = float(getattr(cfg, "holding_cost_per_bar", 0.0))

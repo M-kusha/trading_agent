@@ -725,31 +725,43 @@ def score_trading_metrics(m: Dict[str, float], eval_episodes: int) -> float:
 # =============================================================================
 # OPTUNA (WALK-FORWARD + EVAL-BASED PRUNING)
 # =============================================================================
+# NOTE: This Optuna setup is for finding PPO hyperparameters (not curriculum/stage params).
+# It does NOT use curriculum stages - it runs on a fixed PropFirmConfig.
+# For curriculum training, use --curriculum flag instead.
+#
+# IMPORTANT: ent_coef is FIXED at 0.10 (not tuned) because:
+# 1. Curriculum training uses adaptive entropy that overrides ent_coef
+# 2. Tuning ent_coef here would find values incompatible with adaptive entropy
+# 3. 0.10 is a good baseline that curriculum can adjust from
+# =============================================================================
 
 def sample_ppo_hyperparams(trial: Any) -> Dict[str, Any]:
     """
-    Optimized search space based on Trial 12 success:
-    - Higher ent_coef to prevent policy collapse
-    - Narrower ranges around proven good values
-    - Favor larger networks (512) that showed better capacity
+    PPO hyperparameter search space for NON-CURRICULUM training.
+    
+    NOTE: ent_coef is FIXED at 0.10, not tuned, because:
+    - Curriculum training uses adaptive entropy (EntropyTargets)
+    - Values tuned here wouldn't transfer to curriculum mode
+    - 0.10 provides good baseline for curriculum to adjust from
+    
+    To tune curriculum stage parameters, use a separate curriculum-aware search.
     """
     return {
-        # Trial 12: 1.16e-5 worked well, explore nearby
+        # Core PPO params
         "learning_rate": trial.suggest_float("learning_rate", 5e-6, 5e-4, log=True),
-        # Larger n_steps showed better stability
         "n_steps": trial.suggest_categorical("n_steps", [2048, 4096, 8192]),
         "batch_size": trial.suggest_categorical("batch_size", [128, 256, 512]),
         "n_epochs": trial.suggest_int("n_epochs", 8, 20),
-        # Trial 12: 0.945, explore higher gammas for longer-term credit
         "gamma": trial.suggest_float("gamma", 0.93, 0.995),
         "gae_lambda": trial.suggest_float("gae_lambda", 0.94, 0.99),
         "clip_range": trial.suggest_float("clip_range", 0.15, 0.30),
-        # CRITICAL: Minimum 0.05 to prevent entropy collapse (0.03 still collapses sometimes)
-        "ent_coef": trial.suggest_float("ent_coef", 0.05, 0.15, log=True),
+        # FIXED: ent_coef NOT tuned - curriculum uses adaptive entropy
+        # Set to 0.10 as baseline; curriculum's EntropyTargets will adjust dynamically
+        "ent_coef": 0.10,  # FIXED - not tuned (curriculum has adaptive entropy)
         "vf_coef": trial.suggest_float("vf_coef", 0.5, 1.0),
         "max_grad_norm": trial.suggest_float("max_grad_norm", 0.4, 0.8),
         "target_kl": trial.suggest_float("target_kl", 0.008, 0.05),
-        # Favor larger networks - Trial 12's 512 worked best
+        # Network architecture
         "policy_hidden": trial.suggest_categorical("policy_hidden", [256, 512]),
         "value_hidden": trial.suggest_categorical("value_hidden", [256, 512]),
     }
@@ -786,7 +798,15 @@ def _sanity_adjust_ppo_params(n_envs: int, ppo_params: Dict[str, Any]) -> Dict[s
 def _make_eval_config_adversarial(base: PropFirmConfig, adversity: float) -> PropFirmConfig:
     """
     adversity in [0..1]: increases execution harshness without touching prop limits.
-    The env is written to safely ignore missing fields.
+    
+    At adversity=1.0:
+    - Spread: 1.2x to 1.6x base
+    - Slippage: 1.25x to 1.8x base  
+    - Latency: 2-5 bars
+    - Volatility: up to 1.35x
+    - Spread shocks: 5% probability, 4x multiplier
+    
+    This ensures evaluation is HARDER than training, validating robustness.
     """
     cfg = copy.deepcopy(base)  # deep copy preserves nested dataclasses
 
@@ -796,6 +816,13 @@ def _make_eval_config_adversarial(base: PropFirmConfig, adversity: float) -> Pro
     cfg.slippage_mult_range = (1.0 + 0.25 * adversity, 1.0 + 0.80 * adversity)
     cfg.latency_bars_range = (int(1 + 1 * adversity), int(2 + 3 * adversity))
     cfg.volatility_scale_range = (1.0, 1.0 + 0.35 * adversity)
+    
+    # Spread shocks: simulate news events & liquidity gaps during evaluation
+    # At adversity=1.0: 5% of quotes have 4x spread (harsh but realistic for news)
+    cfg.execution.spread_shock_enabled = True
+    cfg.execution.spread_shock_probability = 0.02 + 0.03 * adversity  # 2% -> 5%
+    cfg.execution.spread_shock_multiplier = 2.0 + 2.0 * adversity     # 2x -> 4x
+    
     return cfg
 
 
@@ -1526,10 +1553,14 @@ def train_curriculum_agent(
     # AUDIT FIX (CRIT-3): Create eval env for best model saving
     # Use standard env (no curriculum) for consistent evaluation
     from envs.prop_firm_env import PropFirmConfig as _PropFirmConfig
+    # G1.3 FIX: Set max_steps_per_episode to match current curriculum stage config
+    # This ensures eval episodes have same length as training episodes
+    current_stage_config = curriculum_manager.stage_config
     eval_config = _PropFirmConfig(
         initial_balance=100_000.0,
         daily_drawdown_limit=0.05,
         max_drawdown_limit=0.10,
+        max_steps_per_episode=current_stage_config.max_steps_per_episode,  # Dynamic: match current stage
     )
     eval_env = create_vec_envs(
         data=data,
@@ -1656,7 +1687,7 @@ def train_curriculum_agent(
             total_timesteps=total_timesteps,
             log_interval_steps=50_000,
             save_path=str(save_dir),
-            metrics_file=str(save_dir / "live_metrics.json"),  # Curriculum-specific metrics
+            metrics_file="logs/training/live_metrics.json",  # Dashboard expects this path
             # Pass user's hyperparameters as base for adaptive controllers
             base_ent_coef=ent_coef,
             base_clip_range=clip_range,  # Pass CLI clip-range to adaptive controller
@@ -1814,6 +1845,12 @@ def main() -> None:
         default=100,
         help="Episodes at LIVE_READY to confirm completion (goal-based)",
     )
+    parser.add_argument(
+        "--load-optuna-params",
+        type=str,
+        default=None,
+        help="Load best hyperparams from Optuna JSON file (e.g., logs/optuna/best_params.json)",
+    )
 
     parser.add_argument("--timesteps", type=int, default=10_000_000, help="Total training timesteps")
     default_n_envs = 2 if platform.system() == "Windows" else 4
@@ -1930,6 +1967,41 @@ def main() -> None:
         # Curriculum learning mode
         if not CURRICULUM_AVAILABLE:
             raise RuntimeError("Curriculum system not available. Check curriculum imports.")
+        
+        # INTEGRATION: Load Optuna best params if provided
+        if args.load_optuna_params:
+            optuna_params_path = Path(args.load_optuna_params)
+            if optuna_params_path.exists():
+                with open(optuna_params_path, "r", encoding="utf-8") as f:
+                    optuna_best = json.load(f)
+                logger.info(f"Loaded Optuna best params from {optuna_params_path}")
+                # Apply Optuna params (EXCEPT ent_coef - curriculum has adaptive entropy)
+                # Only override if not explicitly set by user
+                param_map = {
+                    "learning_rate": "lr",
+                    "batch_size": "batch_size",
+                    "n_steps": "n_steps",
+                    "n_epochs": "n_epochs",
+                    "gamma": "gamma",
+                    "gae_lambda": "gae_lambda",
+                    "clip_range": "clip_range",
+                    "vf_coef": "vf_coef",
+                    "max_grad_norm": "max_grad_norm",
+                    "target_kl": "target_kl",
+                    "policy_hidden": "policy_hidden",
+                    "value_hidden": "value_hidden",
+                    # ent_coef EXCLUDED - curriculum uses adaptive entropy
+                }
+                for optuna_key, args_key in param_map.items():
+                    if optuna_key in optuna_best:
+                        old_val = getattr(args, args_key)
+                        new_val = optuna_best[optuna_key]
+                        setattr(args, args_key, new_val)
+                        logger.info(f"  Optuna override: {args_key} {old_val} -> {new_val}")
+                if "ent_coef" in optuna_best:
+                    logger.info(f"  Optuna ent_coef={optuna_best['ent_coef']} IGNORED (curriculum uses adaptive entropy)")
+            else:
+                logger.warning(f"Optuna params file not found: {optuna_params_path}")
         
         logger.info("=" * 70)
         logger.info("CURRICULUM LEARNING MODE")

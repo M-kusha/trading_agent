@@ -195,6 +195,22 @@ class CurriculumStageConfig:
         keys = [
             # Core
             "reward_scale", "loss_multiplier",
+            # v6.0 PnL DOMINANCE (CRITICAL FOR PROFITABILITY)
+            "pnl_scale_factor",
+            "max_shaping_to_pnl_ratio",
+            # v6.0 Execution cost visibility
+            "execution_cost_visibility_enabled",
+            "execution_cost_reward_scale",
+            # v6.0 Good loss cut rewards
+            "good_loss_cut_enabled",
+            "good_loss_cut_bonus",
+            "good_loss_cut_efficiency_threshold",
+            "good_loss_cut_max_bonus",
+            # v6.0 Cost erosion penalty
+            "cost_erosion_penalty_enabled",
+            "cost_erosion_threshold",
+            "cost_erosion_penalty_scale",
+            "cost_erosion_penalty_cap",
             # R-multiple / MAE / time
             "r_multiple_bonus_threshold", "r_multiple_bonus_scale", "r_multiple_bonus_cap",
             "mae_efficiency_enabled", "mae_efficiency_scale", "mae_efficiency_threshold",
@@ -228,6 +244,9 @@ class CurriculumStageConfig:
             "per_step_min", "per_step_max",
             # Clipping
             "min_reward", "max_reward",
+            # C4 FIX: Exploration bonus (was missing, causing stage config to be silently ignored)
+            "exploration_bonus",
+            "directional_accuracy_weight",
         ]
         out: Dict[str, Any] = {}
         for k in keys:
@@ -249,6 +268,9 @@ class CurriculumStageConfig:
             "spread_shock_enabled",
             "spread_shock_probability",
             "spread_shock_multiplier",
+            # Data spread control (Jan 2026)
+            "use_data_spread",
+            "data_spread_scale",
         ):
             if hasattr(e, k):
                 out[k] = getattr(e, k)

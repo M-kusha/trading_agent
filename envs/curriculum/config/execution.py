@@ -31,6 +31,14 @@ class ExecutionDifficulty:
     commission_per_lot: float = 0.0
     latency_bars: int = 0
 
+    # DATA SPREAD CONTROL (Jan 2026)
+    # If True, use actual spreads from data file (real FTMO conditions)
+    # If False, use synthetic spreads (training wheels for early stages)
+    use_data_spread: bool = False
+    # Discount factor applied to data spread (1.0 = full spread, 0.5 = half)
+    # Only relevant when use_data_spread=True
+    data_spread_scale: float = 1.0
+
     # Domain randomization controls (wired to PropFirmConfig ranges by env.set_execution_params)
     enable_randomization: bool = False
 

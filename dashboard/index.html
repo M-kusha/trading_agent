@@ -1779,9 +1779,21 @@
     }
     
     const scores = ra.scores || {};
-    const weaknesses = ra.weaknesses || [];
+    const rawWeaknesses = ra.weaknesses || [];
     const coverage = Number(ra.regime_coverage || 0) * 100;
     const confidence = Number(ra.confidence || 0) * 100;
+    
+    // Parse weakness strings like "Low volatility_handling: 0.27" into objects
+    const weaknesses = rawWeaknesses.map(w => {
+      if (typeof w === 'string') {
+        const match = w.match(/Low\s+(\w+):\s*([\d.]+)/i);
+        if (match) {
+          return { type: match[1], regime: match[1].replace("_", " "), score: parseFloat(match[2]) };
+        }
+        return { type: 'unknown', regime: w, score: 0 };
+      }
+      return w;
+    });
     
     const scoreEntries = [
       { key: "adaptation", label: "Adaptation", icon: "🔄", value: Number(scores.adaptation || 0) * 100 },
@@ -1916,57 +1928,72 @@
           {/* Regime Breakdowns Column */}
           <div className="p-4">
             <div className="text-[10px] uppercase tracking-wider text-slate-500 font-black mb-3">Regime Performance</div>
-            <div className="space-y-3 max-h-48 overflow-y-auto">
+            <div className="space-y-3">
               {/* Volatility */}
               {volatilityData.length > 0 && (
-                <div>
-                  <div className="text-[9px] text-cyan-400 font-bold mb-1">📊 Volatility</div>
-                  <div className="space-y-1">
-                    {volatilityData.map(b => (
-                      <div key={b.regime} className="flex items-center justify-between text-[9px] px-2 py-1 bg-slate-800/30 rounded">
-                        <span className="text-slate-400 capitalize">{b.regime}</span>
-                        <div className="flex items-center gap-2">
-                          <span className="text-slate-500">{b.trades}t</span>
-                          <span className={b.winRate >= 50 ? "text-emerald-400" : "text-rose-400"}>{fmt.int(b.winRate)}%</span>
-                          <span className={b.avgR >= 0 ? "text-emerald-400" : "text-rose-400"}>{fmt.num(b.avgR, 2)}R</span>
-                        </div>
-                      </div>
-                    ))}
+                <div className="space-y-1.5">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-cyan-400">📊</span>
+                    <span className="text-[9px] text-cyan-400 font-bold">Volatility</span>
                   </div>
+                  {volatilityData.slice(0, 3).map(b => (
+                    <div key={b.regime} className="flex items-center gap-2 px-2 py-1.5 rounded-lg bg-slate-800/40">
+                      <span className="text-[10px] font-medium text-slate-300 capitalize w-14">{b.regime}</span>
+                      <div className="flex-1 h-1.5 rounded-full bg-slate-700/50 overflow-hidden">
+                        <div className={"h-full rounded-full " + (b.winRate >= 50 ? "bg-emerald-500" : "bg-rose-500")}
+                          style={{ width: `${b.winRate}%` }} />
+                      </div>
+                      <div className="flex items-center gap-2 text-[9px] mono">
+                        <span className="text-slate-500 w-7">{b.trades}t</span>
+                        <span className={"w-8 text-right font-bold " + (b.winRate >= 50 ? "text-emerald-400" : "text-rose-400")}>{fmt.int(b.winRate)}%</span>
+                        <span className={"w-10 text-right " + (b.avgR >= 0 ? "text-emerald-400" : "text-rose-400")}>{fmt.num(b.avgR, 2)}R</span>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               )}
               {/* Trend */}
               {trendData.length > 0 && (
-                <div>
-                  <div className="text-[9px] text-amber-400 font-bold mb-1">📈 Trend</div>
-                  <div className="space-y-1">
-                    {trendData.map(b => (
-                      <div key={b.regime} className="flex items-center justify-between text-[9px] px-2 py-1 bg-slate-800/30 rounded">
-                        <span className="text-slate-400 capitalize">{b.regime.replace("_", " ")}</span>
-                        <div className="flex items-center gap-2">
-                          <span className="text-slate-500">{b.trades}t</span>
-                          <span className={b.winRate >= 50 ? "text-emerald-400" : "text-rose-400"}>{fmt.int(b.winRate)}%</span>
-                        </div>
-                      </div>
-                    ))}
+                <div className="space-y-1.5">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-amber-400">📈</span>
+                    <span className="text-[9px] text-amber-400 font-bold">Trend</span>
                   </div>
+                  {trendData.slice(0, 3).map(b => (
+                    <div key={b.regime} className="flex items-center gap-2 px-2 py-1.5 rounded-lg bg-slate-800/40">
+                      <span className="text-[10px] font-medium text-slate-300 capitalize w-20 truncate">{b.regime.replace("_", " ")}</span>
+                      <div className="flex-1 h-1.5 rounded-full bg-slate-700/50 overflow-hidden">
+                        <div className={"h-full rounded-full " + (b.winRate >= 50 ? "bg-emerald-500" : "bg-amber-500")}
+                          style={{ width: `${b.winRate}%` }} />
+                      </div>
+                      <div className="flex items-center gap-2 text-[9px] mono">
+                        <span className="text-slate-500 w-7">{b.trades}t</span>
+                        <span className={"w-8 text-right font-bold " + (b.winRate >= 50 ? "text-emerald-400" : "text-amber-400")}>{fmt.int(b.winRate)}%</span>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               )}
               {/* Session */}
               {sessionData.length > 0 && (
-                <div>
-                  <div className="text-[9px] text-purple-400 font-bold mb-1">🕐 Session</div>
-                  <div className="space-y-1">
-                    {sessionData.map(b => (
-                      <div key={b.regime} className="flex items-center justify-between text-[9px] px-2 py-1 bg-slate-800/30 rounded">
-                        <span className="text-slate-400 capitalize">{b.regime.replace("_", " ")}</span>
-                        <div className="flex items-center gap-2">
-                          <span className="text-slate-500">{b.trades}t</span>
-                          <span className={b.winRate >= 50 ? "text-emerald-400" : "text-rose-400"}>{fmt.int(b.winRate)}%</span>
-                        </div>
-                      </div>
-                    ))}
+                <div className="space-y-1.5">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-purple-400">🕐</span>
+                    <span className="text-[9px] text-purple-400 font-bold">Session</span>
                   </div>
+                  {sessionData.slice(0, 4).map(b => (
+                    <div key={b.regime} className="flex items-center gap-2 px-2 py-1.5 rounded-lg bg-slate-800/40">
+                      <span className="text-[10px] font-medium text-slate-300 capitalize w-14">{b.regime.replace("_", " ")}</span>
+                      <div className="flex-1 h-1.5 rounded-full bg-slate-700/50 overflow-hidden">
+                        <div className={"h-full rounded-full " + (b.winRate >= 50 ? "bg-emerald-500" : "bg-purple-500")}
+                          style={{ width: `${b.winRate}%` }} />
+                      </div>
+                      <div className="flex items-center gap-2 text-[9px] mono">
+                        <span className="text-slate-500 w-7">{b.trades}t</span>
+                        <span className={"w-8 text-right font-bold " + (b.winRate >= 50 ? "text-emerald-400" : "text-purple-400")}>{fmt.int(b.winRate)}%</span>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
@@ -1982,19 +2009,15 @@
                 <div className="text-[9px] text-slate-500 mt-1">All regime skills above threshold</div>
               </div>
             ) : (
-              <div className="space-y-2">
-                {weaknesses.map((w, i) => (
-                  <div key={i} className="p-2 rounded-lg bg-rose-500/10 border border-rose-500/30">
-                    <div className="flex items-center gap-2">
-                      <span className="text-rose-400 text-sm">⚠️</span>
-                      <div className="flex-1">
-                        <div className="text-[10px] font-bold text-rose-300 capitalize">
-                          {w.type?.replace("_", " ")}
-                        </div>
-                        <div className="text-[9px] text-rose-400/70 mt-0.5">
-                          {w.regime}: {fmt.int((w.score || 0) * 100)}% (need &gt;40%)
-                        </div>
-                      </div>
+              <div className="space-y-1">
+                {weaknesses.slice(0, 5).map((w, i) => (
+                  <div key={i} className="flex items-center gap-2 p-1.5 rounded bg-rose-500/10 border border-rose-500/20">
+                    <span className="text-rose-400 text-xs">⚠️</span>
+                    <div className="flex-1 text-[9px]">
+                      <span className="text-rose-300 capitalize font-medium">{w.type?.replace("_", " ")}</span>
+                      <span className="text-rose-400/60 ml-1">
+                        {fmt.int((w.score || 0) * 100)}% (need &gt;40%)
+                      </span>
                     </div>
                   </div>
                 ))}
@@ -3684,9 +3707,9 @@
 
     const rows = [
       { id:"policy_loss", label: "Policy Loss", value: fmt.sci(learning.policy_loss, 4), status: learning.policy_loss_status, ideal: "< 0 (negative)", higherIsBetter: false, format:"num" },
-      { id:"value_loss", label: "Value Loss", value: fmt.sci(learning.value_loss, 4), status: learning.value_loss_status, ideal: "< 0.1", higherIsBetter: false, format:"num" },
+      { id:"value_loss", label: "Value Loss", value: fmt.num(learning.value_loss, 4), status: learning.value_loss_status, ideal: "< 0.1", higherIsBetter: false, format:"num" },
       { id:"entropy", label: "Entropy", value: fmt.num(learning.entropy, 2), status: learning.entropy_status, ideal: "0.25 – 0.85", higherIsBetter: null, format:"num" },  // Range-based, not directional
-      { id:"kl", label: "KL Divergence", value: fmt.sci(learning.approx_kl, 5), status: learning.approx_kl_status, ideal: "< 0.015", higherIsBetter: false, format:"num" },
+      { id:"kl", label: "KL Divergence", value: fmt.num(learning.approx_kl, 4), status: learning.approx_kl_status, ideal: "< 0.015", higherIsBetter: false, format:"num" },
       { id:"clip", label: "Clip Fraction", value: fmt.num(learning.clip_fraction, 3), status: learning.clip_fraction_status, ideal: "0.05 – 0.20", higherIsBetter: false, format:"num" },
       { id:"ev", label: "Explained Var", value: fmt.num(learning.explained_variance, 3), status: learning.explained_variance_status, ideal: "> 0.5", higherIsBetter: true, format:"num" },
     ];
