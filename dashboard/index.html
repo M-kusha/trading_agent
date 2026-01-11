@@ -1286,6 +1286,165 @@
     );
   }
 
+  // Direction Stats Panel (Buy/Sell Breakdown)
+  function DirectionStatsPanel({ data }) {
+    const dirStats = data.direction_stats || {};
+    const longCount = dirStats.long_count || 0;
+    const shortCount = dirStats.short_count || 0;
+    const totalTrades = longCount + shortCount;
+    const longWinRate = dirStats.long_win_rate || 0;
+    const shortWinRate = dirStats.short_win_rate || 0;
+    const longPnl = dirStats.long_pnl || 0;
+    const shortPnl = dirStats.short_pnl || 0;
+    const directionRatio = dirStats.direction_ratio || 1;
+
+    if (totalTrades === 0) {
+      return null; // Don't show if no data yet
+    }
+
+    const longPct = totalTrades > 0 ? (longCount / totalTrades) * 100 : 50;
+    const shortPct = totalTrades > 0 ? (shortCount / totalTrades) * 100 : 50;
+
+    // Determine which direction is dominant and better performing
+    const longBetter = longWinRate > shortWinRate;
+    const shortBetter = shortWinRate > longWinRate;
+
+    return (
+      <Glass className="p-0 overflow-hidden">
+        <div className="px-4 py-3 border-b border-white/5">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-green-500 flex items-center justify-center shadow-lg shadow-blue-500/25">
+                <span className="text-lg">⚖️</span>
+              </div>
+              <div>
+                <div className="text-sm font-black text-white">Direction Analysis</div>
+                <div className="text-[10px] text-slate-500">
+                  <span className="mono text-blue-400 font-bold">{fmt.int(totalTrades)}</span> trades analyzed
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className={"px-2 py-1 rounded-lg text-[10px] font-black " + 
+                (Math.abs(longPct - 50) > 20 ? "bg-amber-500/20 text-amber-400" : "bg-emerald-500/20 text-emerald-400")}>
+                {Math.abs(longPct - 50) > 20 ? "⚠ IMBALANCED" : "● BALANCED"}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="p-4">
+          {/* Direction balance bar */}
+          <div className="mb-4">
+            <div className="flex justify-between text-[10px] mb-1">
+              <span className="text-emerald-400 font-bold">🟢 LONG {fmt.num(longPct, 1)}%</span>
+              <span className="text-rose-400 font-bold">SHORT {fmt.num(shortPct, 1)}% 🔴</span>
+            </div>
+            <div className="h-3 rounded-full overflow-hidden flex bg-slate-800/50">
+              <div 
+                className="bg-gradient-to-r from-emerald-600 to-emerald-500 h-full transition-all duration-500"
+                style={{ width: `${longPct}%` }}
+              />
+              <div 
+                className="bg-gradient-to-r from-rose-500 to-rose-600 h-full transition-all duration-500"
+                style={{ width: `${shortPct}%` }}
+              />
+            </div>
+          </div>
+
+          {/* Stats grid */}
+          <div className="grid grid-cols-2 gap-3">
+            {/* Long stats */}
+            <div className={"rounded-xl border p-3 " + (longBetter ? "border-emerald-500/30 bg-emerald-500/5" : "border-white/5 bg-black/20")}>
+              <div className="flex items-center gap-2 mb-2">
+                <div className="w-8 h-8 rounded-lg bg-emerald-500/20 flex items-center justify-center">
+                  <span className="text-emerald-400 font-bold">↑</span>
+                </div>
+                <div>
+                  <div className="text-xs font-bold text-emerald-400">LONG</div>
+                  <div className="text-[10px] text-slate-500">Buy positions</div>
+                </div>
+              </div>
+              <div className="space-y-1">
+                <div className="flex justify-between">
+                  <span className="text-[10px] text-slate-500">Count</span>
+                  <span className="mono text-xs font-bold text-white">{fmt.int(longCount)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-[10px] text-slate-500">Win Rate</span>
+                  <span className={"mono text-xs font-bold " + (longWinRate >= 50 ? "text-emerald-400" : "text-rose-400")}>
+                    {fmt.num(longWinRate, 1)}%
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-[10px] text-slate-500">P&L</span>
+                  <span className={"mono text-xs font-bold " + (longPnl >= 0 ? "text-emerald-400" : "text-rose-400")}>
+                    {longPnl >= 0 ? "+" : ""}{fmt.currency(longPnl, 0)}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Short stats */}
+            <div className={"rounded-xl border p-3 " + (shortBetter ? "border-rose-500/30 bg-rose-500/5" : "border-white/5 bg-black/20")}>
+              <div className="flex items-center gap-2 mb-2">
+                <div className="w-8 h-8 rounded-lg bg-rose-500/20 flex items-center justify-center">
+                  <span className="text-rose-400 font-bold">↓</span>
+                </div>
+                <div>
+                  <div className="text-xs font-bold text-rose-400">SHORT</div>
+                  <div className="text-[10px] text-slate-500">Sell positions</div>
+                </div>
+              </div>
+              <div className="space-y-1">
+                <div className="flex justify-between">
+                  <span className="text-[10px] text-slate-500">Count</span>
+                  <span className="mono text-xs font-bold text-white">{fmt.int(shortCount)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-[10px] text-slate-500">Win Rate</span>
+                  <span className={"mono text-xs font-bold " + (shortWinRate >= 50 ? "text-emerald-400" : "text-rose-400")}>
+                    {fmt.num(shortWinRate, 1)}%
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-[10px] text-slate-500">P&L</span>
+                  <span className={"mono text-xs font-bold " + (shortPnl >= 0 ? "text-emerald-400" : "text-rose-400")}>
+                    {shortPnl >= 0 ? "+" : ""}{fmt.currency(shortPnl, 0)}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Insights */}
+          <div className="mt-3 pt-3 border-t border-white/5">
+            <div className="flex items-center justify-between text-[10px]">
+              <div className="flex items-center gap-4">
+                <div>
+                  <span className="text-slate-500">Ratio L:S </span>
+                  <span className="mono text-blue-400 font-bold">{fmt.num(directionRatio, 2)}:1</span>
+                </div>
+                <div>
+                  <span className="text-slate-500">Best: </span>
+                  <span className={"font-bold " + (longBetter ? "text-emerald-400" : shortBetter ? "text-rose-400" : "text-slate-400")}>
+                    {longBetter ? "LONG" : shortBetter ? "SHORT" : "EQUAL"}
+                  </span>
+                </div>
+              </div>
+              <div>
+                <span className="text-slate-500">Net P&L: </span>
+                <span className={"mono font-bold " + ((longPnl + shortPnl) >= 0 ? "text-emerald-400" : "text-rose-400")}>
+                  {(longPnl + shortPnl) >= 0 ? "+" : ""}{fmt.currency(longPnl + shortPnl, 0)}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </Glass>
+    );
+  }
+
   function HealthMatrix({ data, derived, baseline=null, compareOn=false, focusMode=false }) {
     const h = data?.history || {};
     const cp = data?.curriculum_progress || {};
@@ -1849,7 +2008,12 @@
               </div>
               <div>
                 <div className="text-sm font-black text-white">Regime Skills</div>
-                <div className="text-[10px] text-slate-500 mt-0.5">{ra.total_trades} trades analyzed</div>
+                <div className="text-[10px] text-slate-500 mt-0.5">
+                  {ra.total_trades >= 2000 
+                    ? <span>Rolling <span className="text-blue-400">2000</span> trade window</span>
+                    : <span>{ra.total_trades} trades analyzed</span>
+                  }
+                </div>
               </div>
             </div>
             
@@ -2527,6 +2691,9 @@
             )}
           </Glass>
         </div>
+
+        {/* Direction Stats (Buy/Sell Breakdown) */}
+        <DirectionStatsPanel data={data} />
       </div>
     );
   }

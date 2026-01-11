@@ -56,17 +56,19 @@ class SmartEntropyController:
     }
 
     # ent_coef output bounds by stage
+    # Lower ent_coef = less entropy bonus = more deterministic policy
+    # Higher stages need lower ent_coef to achieve lower entropy targets
     STAGE_ENT_COEF_BOUNDS: Dict[int, Tuple[float, float]] = {
-        0: (0.12, 0.20),
-        1: (0.10, 0.18),
-        2: (0.08, 0.15),
-        3: (0.07, 0.14),
-        4: (0.06, 0.12),
-        5: (0.05, 0.10),
-        6: (0.04, 0.09),
-        7: (0.035, 0.08),
-        8: (0.03, 0.07),
-        9: (0.02, 0.06),
+        0: (0.05, 0.15),    # Discovery: high exploration
+        1: (0.04, 0.12),    # Foundation: moderate exploration
+        2: (0.03, 0.10),    # Trend Student: learning patterns
+        3: (0.025, 0.08),   # Session Student: time awareness
+        4: (0.02, 0.06),    # Timing Student: entry timing
+        5: (0.015, 0.05),   # Integrator: combining skills
+        6: (0.01, 0.04),    # Risk Manager: capital preservation
+        7: (0.008, 0.03),   # Optimizer: fine-tuning
+        8: (0.005, 0.02),   # Consistency: stable execution
+        9: (0.003, 0.015),  # Live Ready: minimal exploration
     }
 
     # Default action space size

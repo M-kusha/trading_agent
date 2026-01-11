@@ -236,7 +236,7 @@ class CurriculumStageConfig:
             "anti_churn_enabled", "daily_trade_soft_limit", "churn_penalty_per_trade", "churn_action_cost",
             # Activity consistency
             "activity_consistency_enabled", "target_trades_per_1k_steps", "stage_activity_targets",
-            "activity_deviation_penalty_scale", "min_trades_penalty",
+            "activity_deviation_penalty_scale", "activity_deviation_penalty_cap", "min_trades_penalty",
             # Block penalties / per-step shaping
             "hard_block_penalty", "soft_block_penalty",
             "per_step_shaping_enabled", "holding_cost_per_bar", "opportunity_bonus_scale",

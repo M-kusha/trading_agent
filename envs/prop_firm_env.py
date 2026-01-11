@@ -100,8 +100,8 @@ try:
     OBS_BUILDER_AVAILABLE = True
 except Exception:
     PPOObservationBuilder = None  # type: ignore
-    PPO_OBS_SIZE = 64
-    PPO_OBS_VERSION = "5.0"
+    PPO_OBS_SIZE = 76  # Updated for v5.4 HTF expansion
+    PPO_OBS_VERSION = "5.4"
     OBS_BUILDER_AVAILABLE = False
 
 
@@ -570,9 +570,14 @@ class PropFirmTradingEnv(
         """
         OHLCV slice for (instrument, timeframe) ending at current_step (inclusive).
 
+        IMPROVED (Jan 2025): Now properly time-aligns higher timeframe data.
+        When requesting H1/H4/D1 data, finds the HTF bar that corresponds to
+        the current M15 timestamp instead of using the same index.
+        
         IMPORTANT: timeframe param exists to satisfy mixin contracts and prevent future TypeErrors.
         """
         tf = str(timeframe) if timeframe is not None else self._primary_tf()
+        primary_tf = self._primary_tf()
 
         key = (instrument, tf, int(self.current_step))
         if self._ohlcv_cache_key != key:
@@ -588,8 +593,44 @@ class PropFirmTradingEnv(
             self._ohlcv_cache[lb] = {}
             return {}
 
-        end = min(self.current_step + 1, len(df))
-        start = max(0, end - lb)
+        # Time alignment for HTF data
+        if tf != primary_tf:
+            # Get current timestamp from primary timeframe
+            primary_df = self.data.get(instrument, {}).get(primary_tf)
+            if primary_df is not None and not primary_df.empty and self.current_step < len(primary_df):
+                time_col = None
+                for tc in ["time", "Time", "timestamp", "datetime"]:
+                    if tc in primary_df.columns:
+                        time_col = tc
+                        break
+                
+                if time_col and time_col in df.columns:
+                    # Get current primary timestamp
+                    current_time = primary_df[time_col].iloc[self.current_step]
+                    
+                    # Find the HTF bar at or before this timestamp
+                    htf_times = df[time_col]
+                    mask = htf_times <= current_time
+                    valid_idx = mask.sum() - 1  # Index of last valid HTF bar
+                    
+                    if valid_idx >= 0:
+                        end = valid_idx + 1
+                        start = max(0, end - lb)
+                    else:
+                        # No valid HTF bars yet
+                        self._ohlcv_cache[lb] = {}
+                        return {}
+                else:
+                    # No time column, fall back to index-based (synthetic ratio)
+                    end = min(self.current_step + 1, len(df))
+                    start = max(0, end - lb)
+            else:
+                end = min(self.current_step + 1, len(df))
+                start = max(0, end - lb)
+        else:
+            # Primary timeframe - use index directly
+            end = min(self.current_step + 1, len(df))
+            start = max(0, end - lb)
 
         try:
             open_col = self._resolve_column(df, "open")
@@ -1440,7 +1481,10 @@ class PropFirmTradingEnv(
                 elif abs(trade_ratio - 1.0) > 0.5:
                     deviation = abs(trade_ratio - 1.0) - 0.5
                     scale = getattr(reward_cfg, "activity_deviation_penalty_scale", 0.0)
-                    activity_penalty = min(deviation * scale, 0.2)
+                    # FIX: Cap was hardcoded at 0.2, now scales with deviation for extreme overtrading
+                    # With 375 trades vs 12 target, deviation=29.75, penalty should be severe
+                    max_penalty = getattr(reward_cfg, "activity_deviation_penalty_cap", 2.0)
+                    activity_penalty = min(deviation * scale, max_penalty)
                 
                 # C7 FIX: Log activity penalty as a named component for attribution
                 if activity_penalty > 0:
@@ -1559,14 +1603,16 @@ class PropFirmTradingEnv(
 
     def _prepare_market_data(self, instrument: str) -> Dict[str, Any]:
         """
-        Build multi-timeframe market_data from primary TF bars.
+        Build multi-timeframe market_data using REAL HTF data when available.
 
-        Upgrade: aggregation ratios are computed dynamically from primary_timeframe minutes.
+        IMPROVED (Jan 2025): Now uses actual H1/H4/D1 data from loaded files instead
+        of synthetically aggregating M15 bars. Falls back to aggregation only if
+        real HTF data is not available.
+
         For compatibility with existing PPOObservationBuilder contracts, the keys remain:
           {"M15","H1","H4","D1"}.
-
-        Note: If primary_timeframe is not M15, "M15" here still represents the *primary* bars.
         """
+        # Get primary timeframe data (M15)
         o = self._get_ohlcv(instrument, lookback=120, timeframe=None)
         if not o or len(o.get("close", [])) < 2:
             return {"M15": {"close": [0.0], "high": [0.0], "low": [0.0], "open": [0.0], "volume": [1.0]}}
@@ -1583,9 +1629,23 @@ class PropFirmTradingEnv(
             "volume": o["volume"].tolist(),
         }
 
+        def _get_real_htf_data(tf: str, lookback: int) -> Optional[Dict[str, Any]]:
+            """Try to get real HTF data, return None if not available."""
+            htf_data = self._get_ohlcv(instrument, lookback=lookback, timeframe=tf)
+            if htf_data and len(htf_data.get("close", [])) >= 5:
+                return {
+                    "close": htf_data["close"].tolist(),
+                    "high": htf_data["high"].tolist(),
+                    "low": htf_data["low"].tolist(),
+                    "open": htf_data["open"].tolist(),
+                    "volume": htf_data["volume"].tolist(),
+                }
+            return None
+
         base_min = max(1, int(timeframe_to_minutes(base_tf))) if base_tf else 15
 
-        def agg(target_tf: str, max_bars: int) -> Dict[str, Any]:
+        def _agg_fallback(target_tf: str, max_bars: int) -> Dict[str, Any]:
+            """Fallback: aggregate from primary TF if real HTF data unavailable."""
             try:
                 tgt_min = max(1, int(timeframe_to_minutes(target_tf)))
             except Exception:
@@ -1622,11 +1682,16 @@ class PropFirmTradingEnv(
                 "volume": out_v[-max_bars:] or [1.0],
             }
 
+        # Try to get REAL HTF data first, fall back to aggregation
+        h1_data = _get_real_htf_data("H1", 50) or _agg_fallback("H1", 50)
+        h4_data = _get_real_htf_data("H4", 30) or _agg_fallback("H4", 30)
+        d1_data = _get_real_htf_data("D1", 20) or _agg_fallback("D1", 20)
+
         return {
             "M15": base,
-            "H1": agg("H1", 50),
-            "H4": agg("H4", 30),
-            "D1": agg("D1", 20),
+            "H1": h1_data,
+            "H4": h4_data,
+            "D1": d1_data,
         }
 
     def _fallback_observation(self) -> np.ndarray:
@@ -1695,6 +1760,23 @@ class PropFirmTradingEnv(
                 "avg": float(total / count) if count > 0 else 0.0,
             }
 
+        # Direction breakdown (buy/sell stats)
+        long_trades = [r for r in results if r.direction in ("buy", "long")]
+        short_trades = [r for r in results if r.direction in ("sell", "short")]
+        long_wins = [r for r in long_trades if r.net_pnl > 0]
+        short_wins = [r for r in short_trades if r.net_pnl > 0]
+        
+        direction_stats = {
+            "long_count": len(long_trades),
+            "short_count": len(short_trades),
+            "long_win_rate": len(long_wins) / len(long_trades) if long_trades else 0.0,
+            "short_win_rate": len(short_wins) / len(short_trades) if short_trades else 0.0,
+            "long_pnl": float(sum(r.net_pnl for r in long_trades)),
+            "short_pnl": float(sum(r.net_pnl for r in short_trades)),
+            "long_avg_pnl": float(sum(r.net_pnl for r in long_trades) / len(long_trades)) if long_trades else 0.0,
+            "short_avg_pnl": float(sum(r.net_pnl for r in short_trades) / len(short_trades)) if short_trades else 0.0,
+        }
+
         return {
             "trade_count": len(results),
             "max_drawdown": float(self._episode_max_drawdown),
@@ -1711,6 +1793,7 @@ class PropFirmTradingEnv(
             "avg_bars_held": float(sum(r.bars_held for r in results) / len(results)) if results else 0.0,
             "avg_entry_quality": float(sum(r.entry_quality for r in results) / len(results)) if results else 0.5,
             "exit_quality_distribution": exit_dist,
+            "direction_stats": direction_stats,  # NEW: Buy/Sell breakdown
             "profit_factor": float(pf),
             "consecutive_losses": int(self.consecutive_losses),
             "consecutive_wins": int(self.consecutive_wins),

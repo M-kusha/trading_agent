@@ -99,6 +99,9 @@ class ExpertSignalsMixin(MarketStructureMixin):
     # Cache sizing
     _MIN_LOOKBACK = 260  # enough for slow EMA + MACD/ATR windows
 
+    # HTF timeframes for multi-timeframe analysis
+    _HTF_TIMEFRAMES = ["H1", "H4", "D1"]
+
     # ═══════════════════════════════════════════════════════════════════
     # PUBLIC API
     # ═══════════════════════════════════════════════════════════════════
@@ -106,6 +109,9 @@ class ExpertSignalsMixin(MarketStructureMixin):
     def _prepare_expert_signals(self, instrument: str) -> Dict[str, Any]:
         """
         Prepare expert signals with per-step, per-instrument caching.
+        
+        UPGRADED (Jan 2026): Now computes signals for EACH timeframe (M15, H1, H4, D1)
+        and includes HTF expert signals in the output for multi-timeframe confluence.
 
         Correctness rule:
         - Cache MUST reset when current_step changes (prevents stale signals).
@@ -126,9 +132,10 @@ class ExpertSignalsMixin(MarketStructureMixin):
         if instrument in cache:
             return cache[instrument]
 
+        # Compute PRIMARY timeframe signals (M15)
         o = self._get_ohlcv(instrument, lookback=max(self._MIN_LOOKBACK, self._SLOW_MA_PERIOD + 60))
         if not o or len(o.get("close", [])) < self._SLOW_MA_PERIOD + 5:
-            result = {"experts": {}, "market": {"regime": "unknown", "regime_strength": 0.5}}
+            result = {"experts": {}, "htf_experts": {}, "market": {"regime": "unknown", "regime_strength": 0.5}}
             cache[instrument] = result
             return result
 
@@ -144,7 +151,7 @@ class ExpertSignalsMixin(MarketStructureMixin):
         volume = np.asarray(o.get("volume", np.ones(len(close))), dtype=np.float64)
 
         if close.size < 30:
-            result = {"experts": {}, "market": {"regime": "unknown", "regime_strength": 0.5}}
+            result = {"experts": {}, "htf_experts": {}, "market": {"regime": "unknown", "regime_strength": 0.5}}
             cache[instrument] = result
             return result
 
@@ -154,10 +161,13 @@ class ExpertSignalsMixin(MarketStructureMixin):
         near_support, near_resistance = self._compute_market_structure_signals(high, low, close)
         adv_struct = self._compute_advanced_market_structure(high, low, close, open_)
 
-        # Experts
+        # Primary TF Experts
         trend_result = self._compute_trend_signals(high, low, close, current_price)
         momentum_result = self._compute_momentum_signals_advanced(high, low, close, volume)
         theme_result = self._compute_theme_signals_advanced(high, low, close, trend_result, momentum_result)
+
+        # Compute HTF expert signals
+        htf_experts = self._compute_htf_expert_signals(instrument)
 
         result: Dict[str, Any] = {
             "experts": {
@@ -219,6 +229,7 @@ class ExpertSignalsMixin(MarketStructureMixin):
                 },
                 "seasonality": {"direction": "neutral", "score": 0.0, "confidence": 0.5},
             },
+            "htf_experts": htf_experts,  # NEW: HTF signals for each timeframe
             "market": {
                 "regime": theme_result["volatility_regime"],
                 "regime_strength": theme_result["vol_percentile"],
@@ -227,6 +238,112 @@ class ExpertSignalsMixin(MarketStructureMixin):
 
         cache[instrument] = result
         return result
+
+    def _compute_htf_expert_signals(self, instrument: str) -> Dict[str, Dict[str, Any]]:
+        """
+        Compute expert signals for each higher timeframe (H1, H4, D1).
+        
+        Returns a dict keyed by timeframe with trend/momentum signals for each.
+        This allows the agent to see multi-timeframe confluence.
+        """
+        htf_signals: Dict[str, Dict[str, Any]] = {}
+        
+        for tf in self._HTF_TIMEFRAMES:
+            htf_signals[tf] = self._compute_single_htf_signals(instrument, tf)
+        
+        return htf_signals
+    
+    def _compute_single_htf_signals(self, instrument: str, timeframe: str) -> Dict[str, Any]:
+        """Compute simplified expert signals for a single higher timeframe."""
+        o = self._get_ohlcv(instrument, lookback=100, timeframe=timeframe)
+        
+        # Default neutral signals
+        default = {
+            "trend_direction": "neutral",
+            "trend_strength": 0.0,
+            "momentum_direction": "neutral",
+            "momentum_strength": 0.0,
+            "rsi": 50.0,
+            "rsi_signal": "neutral",  # overbought, oversold, neutral
+            "ma_alignment": 0,  # +1 bullish, -1 bearish, 0 mixed
+            "adx": 0.0,
+            "structure_bias": 0.0,  # +1 HH/HL, -1 LH/LL
+        }
+        
+        if not o or len(o.get("close", [])) < 30:
+            return default
+            
+        close = np.asarray(o["close"], dtype=np.float64)
+        high = np.asarray(o.get("high", close), dtype=np.float64)
+        low = np.asarray(o.get("low", close), dtype=np.float64)
+        
+        if close.size < 30:
+            return default
+        
+        current_price = float(close[-1])
+        
+        # Compute trend signals
+        trend_result = self._compute_trend_signals(high, low, close, current_price)
+        
+        # Compute simplified momentum - use _rsi_series and take last value
+        rsi_arr = self._rsi_series(close, min(14, close.size - 1))
+        rsi = float(rsi_arr[-1]) if len(rsi_arr) > 0 else 50.0
+        
+        # Determine RSI signal
+        if rsi > self._RSI_OVERBOUGHT:
+            rsi_signal = "overbought"
+        elif rsi < self._RSI_OVERSOLD:
+            rsi_signal = "oversold"
+        else:
+            rsi_signal = "neutral"
+        
+        # Compute structure bias (HH/HL vs LH/LL)
+        structure_bias = 0.0
+        if close.size >= 20:
+            mid = close.size // 2
+            first_high = float(np.max(high[:mid]))
+            first_low = float(np.min(low[:mid]))
+            second_high = float(np.max(high[mid:]))
+            second_low = float(np.min(low[mid:]))
+            
+            # Higher high and higher low = bullish structure
+            if second_high > first_high:
+                structure_bias += 0.5
+            elif second_high < first_high:
+                structure_bias -= 0.5
+            
+            if second_low > first_low:
+                structure_bias += 0.5
+            elif second_low < first_low:
+                structure_bias -= 0.5
+        
+        # Momentum direction based on ROC
+        if close.size >= 10:
+            roc = (close[-1] - close[-10]) / max(abs(close[-10]), 1e-8) * 100
+            if roc > 1.0:
+                mom_dir = "bullish"
+                mom_str = min(abs(roc) / 5.0, 1.0)
+            elif roc < -1.0:
+                mom_dir = "bearish"
+                mom_str = min(abs(roc) / 5.0, 1.0)
+            else:
+                mom_dir = "neutral"
+                mom_str = 0.0
+        else:
+            mom_dir = "neutral"
+            mom_str = 0.0
+        
+        return {
+            "trend_direction": trend_result["direction"],
+            "trend_strength": float(trend_result["strength"]),
+            "momentum_direction": mom_dir,
+            "momentum_strength": float(mom_str),
+            "rsi": float(rsi),
+            "rsi_signal": rsi_signal,
+            "ma_alignment": int(trend_result["ma_alignment"]),
+            "adx": float(trend_result["adx"]),
+            "structure_bias": float(structure_bias),
+        }
 
     # ═══════════════════════════════════════════════════════════════════
     # TREND EXPERT

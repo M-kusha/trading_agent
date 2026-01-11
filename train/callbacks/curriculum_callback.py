@@ -133,6 +133,16 @@ class CurriculumTrainingCallback(BaseCallback):
         self._reward_component_totals: Dict[str, float] = {}
         self._reward_component_counts: Dict[str, int] = {}
         
+        # Direction tracking (buy/sell breakdown)
+        self._direction_stats: Dict[str, Any] = {
+            "long_count": 0,
+            "short_count": 0,
+            "long_wins": 0,
+            "short_wins": 0,
+            "long_pnl": 0.0,
+            "short_pnl": 0.0,
+        }
+        
         # Per-stage statistics tracking for dashboard Stage Progress tab
         # Maps stage_name -> {metrics dict}
         self._per_stage_stats: Dict[str, Dict[str, Any]] = {}
@@ -351,6 +361,17 @@ class CurriculumTrainingCallback(BaseCallback):
             n_valid_actions=n_valid_actions,
         )
         
+        # Log status periodically even when not applying (every 50k steps)
+        if self.verbose >= 1 and self.num_timesteps % 50_000 < self._n_envs:
+            max_h = self._smart_entropy_controller._get_max_entropy(n_valid_actions)
+            norm_current = current_entropy / max_h if max_h > 0 else 0
+            norm_target = self._smart_entropy_controller.STAGE_TARGETS_NORMALIZED[stage_value]
+            logger.info(
+                f"🔍 Entropy Status: {reason} | should_apply={should_apply} | "
+                f"entropy: {current_entropy:.3f} (norm: {norm_current:.2f}) | "
+                f"target_norm: {norm_target:.2f} | ent_coef: {current_ent_coef:.4f}"
+            )
+        
         # Apply if recommended
         if should_apply and hasattr(self.model, 'ent_coef'):
             setattr(self.model, 'ent_coef', new_ent_coef)
@@ -449,6 +470,14 @@ class CurriculumTrainingCallback(BaseCallback):
         # 4. Clamp to reasonable bounds
         target_clip = max(0.1, min(0.4, target_clip))  # PPO typically uses 0.1-0.3
         
+        # Log status periodically even when not applying (every 50k steps)
+        if self.verbose >= 1 and self.num_timesteps % 50_000 < self._n_envs:
+            logger.info(
+                f"🔍 Clip Range Status: {adjustment_reason} | "
+                f"clip_range: {current_clip:.3f} -> {target_clip:.3f} | "
+                f"KL: {current_kl:.4f}, clip_frac: {current_clip_frac:.3f}"
+            )
+        
         # === APPLY CHANGE ===
         if hasattr(self.model, 'clip_range') and abs(current_clip - target_clip) > 0.01:
             # SB3 expects clip_range as a callable schedule, not raw float
@@ -459,9 +488,65 @@ class CurriculumTrainingCallback(BaseCallback):
             setattr(self.model, 'clip_range', constant_clip_schedule)
             if self.verbose >= 1:
                 logger.info(
-                    f"Adaptive clip_range: {adjustment_reason} | "
+                    f"🎚️ Adaptive clip_range: {adjustment_reason} | "
                     f"{current_clip:.3f} -> {target_clip:.3f} | "
                     f"KL: {current_kl:.4f}, clip_frac: {current_clip_frac:.2f}"
+                )
+
+    def _apply_adaptive_vf_coef(self) -> None:
+        """ADAPTIVE vf_coef controller for high value loss.
+        
+        When value loss is consistently high (>1.0), increase vf_coef to give
+        the value function more weight in the loss, helping it learn faster.
+        
+        Value loss > 1.0 indicates the value function is not predicting returns well,
+        which leads to poor advantage estimates and noisy policy gradients.
+        """
+        if self.model is None:
+            return
+        
+        # Check every 25k steps
+        if self.num_timesteps - getattr(self, '_last_vf_update_step', 0) < 25_000:
+            return
+        
+        self._last_vf_update_step = self.num_timesteps
+        
+        if len(self._value_loss_history) < 5:
+            return
+        
+        avg_v_loss = sum(list(self._value_loss_history)[-10:]) / min(10, len(self._value_loss_history))
+        current_vf_coef = float(getattr(self.model, 'vf_coef', 0.5))
+        
+        target_vf_coef = current_vf_coef
+        adjustment_reason = "stable"
+        
+        # High value loss - increase vf_coef to prioritize value learning
+        if avg_v_loss > 2.0:
+            target_vf_coef = min(1.5, current_vf_coef * 1.25)  # 25% increase, cap at 1.5
+            adjustment_reason = f"HIGH_VALUE_LOSS: {avg_v_loss:.2f} - boosting vf_coef"
+        elif avg_v_loss > 1.0:
+            target_vf_coef = min(1.0, current_vf_coef * 1.1)  # 10% increase, cap at 1.0
+            adjustment_reason = f"ELEVATED_VALUE_LOSS: {avg_v_loss:.2f} - slight boost"
+        elif avg_v_loss < 0.1 and current_vf_coef > 0.5:
+            # Value loss healthy, can reduce vf_coef slightly
+            target_vf_coef = max(0.5, current_vf_coef * 0.95)
+            adjustment_reason = f"HEALTHY_VALUE_LOSS: {avg_v_loss:.2f} - reducing vf_coef"
+        
+        # Log status periodically
+        if self.verbose >= 1 and self.num_timesteps % 50_000 < self._n_envs:
+            logger.info(
+                f"🔍 VF Coef Status: {adjustment_reason} | "
+                f"vf_coef: {current_vf_coef:.3f} -> {target_vf_coef:.3f} | "
+                f"avg_v_loss: {avg_v_loss:.3f}"
+            )
+        
+        # Apply if significant change
+        if hasattr(self.model, 'vf_coef') and abs(current_vf_coef - target_vf_coef) > 0.02:
+            setattr(self.model, 'vf_coef', target_vf_coef)
+            if self.verbose >= 1:
+                logger.info(
+                    f"🎛️ Adaptive vf_coef: {adjustment_reason} | "
+                    f"{current_vf_coef:.3f} -> {target_vf_coef:.3f}"
                 )
 
     def _apply_adaptive_learning_rate(self) -> None:
@@ -547,6 +632,14 @@ class CurriculumTrainingCallback(BaseCallback):
         # Clamp to reasonable bounds - CRITICAL: floor at 30% of base, not 1e-6!
         target_lr = max(lr_floor, min(self._base_lr * 2, target_lr))
         
+        # Log status periodically even when not applying (every 100k steps)
+        if self.verbose >= 1 and self.num_timesteps % 100_000 < self._n_envs:
+            logger.info(
+                f"🔍 LR Status: {adjustment_reason} | "
+                f"lr: {current_lr:.2e} -> {target_lr:.2e} | "
+                f"p_slope: {p_loss_slope:.4f}, v_slope: {v_loss_slope:.4f}, reward_improving: {reward_improving}"
+            )
+        
         if abs(current_lr - target_lr) / current_lr > 0.05:  # >5% change
             # Apply to model schedule
             if hasattr(self.model, 'lr_schedule'):
@@ -588,6 +681,7 @@ class CurriculumTrainingCallback(BaseCallback):
             self._apply_lr_warmup()
             self._apply_entropy_schedule()  # Adapt entropy by stage
             self._apply_adaptive_clip_range()  # Adapt clip range by KL
+            self._apply_adaptive_vf_coef()  # Adapt vf_coef for high value loss
             self._apply_adaptive_learning_rate()  # Adapt LR by training dynamics
 
         rewards_arr = np.array(rewards, dtype=np.float64).reshape(-1)
@@ -651,6 +745,21 @@ class CurriculumTrainingCallback(BaseCallback):
                     count = 1
                 self._reward_component_totals[comp_name] = self._reward_component_totals.get(comp_name, 0.0) + total
                 self._reward_component_counts[comp_name] = self._reward_component_counts.get(comp_name, 0) + count
+            
+            # Track direction stats (buy/sell breakdown) for dashboard
+            dir_stats = ep_stats.get("direction_stats", {})
+            if dir_stats:
+                self._direction_stats["long_count"] += int(dir_stats.get("long_count", 0))
+                self._direction_stats["short_count"] += int(dir_stats.get("short_count", 0))
+                # Track wins based on win rates
+                long_cnt = int(dir_stats.get("long_count", 0))
+                short_cnt = int(dir_stats.get("short_count", 0))
+                long_wr = float(dir_stats.get("long_win_rate", 0))
+                short_wr = float(dir_stats.get("short_win_rate", 0))
+                self._direction_stats["long_wins"] += int(long_cnt * long_wr)
+                self._direction_stats["short_wins"] += int(short_cnt * short_wr)
+                self._direction_stats["long_pnl"] += float(dir_stats.get("long_pnl", 0))
+                self._direction_stats["short_pnl"] += float(dir_stats.get("short_pnl", 0))
             
             # Track per-stage statistics for Stage Progress dashboard tab
             if self.curriculum_manager is not None:
@@ -1155,6 +1264,18 @@ class CurriculumTrainingCallback(BaseCallback):
                     "mean_trades": mean_trades,
                     "mean_win_rate": mean_win_rate * 100,
                     "max_drawdown": max_drawdown * 100,
+                },
+                # Direction stats (buy/sell breakdown) for dashboard
+                "direction_stats": {
+                    "long_count": self._direction_stats["long_count"],
+                    "short_count": self._direction_stats["short_count"],
+                    "long_wins": self._direction_stats["long_wins"],
+                    "short_wins": self._direction_stats["short_wins"],
+                    "long_pnl": self._direction_stats["long_pnl"],
+                    "short_pnl": self._direction_stats["short_pnl"],
+                    "long_win_rate": (self._direction_stats["long_wins"] / max(self._direction_stats["long_count"], 1)) * 100,
+                    "short_win_rate": (self._direction_stats["short_wins"] / max(self._direction_stats["short_count"], 1)) * 100,
+                    "direction_ratio": self._direction_stats["long_count"] / max(self._direction_stats["short_count"], 1),
                 },
                 # Quality metrics for dashboard "Quality" tab
                 "quality": {

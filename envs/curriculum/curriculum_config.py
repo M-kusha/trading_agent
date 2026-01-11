@@ -142,8 +142,8 @@ def get_explorer_config() -> CurriculumStageConfig:
             loss_multiplier=1.0,
             
             # PnL DOMINANCE (v6.0): Low during discovery - don't overwhelm exploration
-            pnl_scale_factor=50.0,            # Lower: let exploration dominate
-            max_shaping_to_pnl_ratio=2.0,     # Higher: allow more shaping freedom
+            pnl_scale_factor=150.0,           # FIX: PnL must dominate over exploration bonus
+            max_shaping_to_pnl_ratio=0.5,     # FIX: Reduce shaping freedom to prevent reward hacking
             
             # Execution costs: DISABLED during discovery - frictionless exploration
             execution_cost_visibility_enabled=False,
@@ -193,29 +193,32 @@ def get_explorer_config() -> CurriculumStageConfig:
             win_streak_bonus_per_win=0.0,
             loss_streak_penalty_per_loss=0.0,
             
-            # ANTI-CHURN: DISABLED - let agent trade freely
-            anti_churn_enabled=False,
-            daily_trade_soft_limit=100,
-            churn_penalty_per_trade=0.0,
+            # ANTI-CHURN: ENABLED with mild penalty to prevent overtrading habit
+            # FIX: Was disabled, causing 380 trades/ep. Now soft limit at 25.
+            anti_churn_enabled=True,
+            daily_trade_soft_limit=25,
+            churn_penalty_per_trade=0.02,  # Mild penalty to discourage excessive trading
             
             hard_block_penalty=0.0,
             soft_block_penalty=0.0,
             per_step_shaping_enabled=False,
             holding_cost_per_bar=0.0,
             
-            # ACTIVITY CONSISTENCY: ENABLED for early stages
-            # Penalize under-trading (< 20% of target) to break "do nothing" habit
+            # ACTIVITY CONSISTENCY: MILD for exploration stage
+            # Let agent explore, but gently nudge away from extreme overtrading
+            # Real learning comes from PnL signal (execution costs hurt naturally)
             activity_consistency_enabled=True,
-            target_trades_per_1k_steps=15.0,  # Higher target in EXPLORER: ~22 trades/1500 steps
-            activity_deviation_penalty_scale=0.0,  # No penalty for over-trading
-            min_trades_penalty=0.5,  # Significant penalty if < 20% of target
+            target_trades_per_1k_steps=8.0,  # Target ~12 trades/1500 steps
+            activity_deviation_penalty_scale=0.3,  # MILD: allow exploration
+            activity_deviation_penalty_cap=10.0,  # Cap at -10 (not -30)
+            min_trades_penalty=0.3,  # Penalty if < 20% of target
             
-            # EXPLORATION BONUS: HIGH - encourage trying everything
-            # 0.10 per entry attempt to overcome early-stage "do nothing" habit
-            exploration_bonus=0.10,
+            # EXPLORATION BONUS: SMALL - encourage activity but PnL must dominate
+            # FIX: Was 0.10 which dominated PnL signal causing reward hacking
+            exploration_bonus=0.02,
             directional_accuracy_weight=0.5,  # Light directional signal
-            min_reward=-1.5,
-            max_reward=1.5,
+            min_reward=-5.0,  # FIX: Was -1.5, clipping destroyed gradients
+            max_reward=5.0,   # FIX: Was 1.5
         ),
         constraints=TradingConstraints(
             max_positions=1,
@@ -233,8 +236,8 @@ def get_explorer_config() -> CurriculumStageConfig:
             daily_dd_safety_buffer=0.0,
             max_dd_safety_buffer=0.0,
             emergency_close_threshold=0.45,
-            entry_quality_gate_enabled=False,
-            entry_quality_threshold=0.0,
+            entry_quality_gate_enabled=True,  # FIX: Enable mild quality gate
+            entry_quality_threshold=0.10,  # FIX: Lowest threshold (EXPERIMENTER=0.12, increases from here)
             hard_stop_loss_eur=1000.0,
             soft_stop_loss_eur=800.0,
             trailing_activation_eur=200.0,
@@ -361,9 +364,9 @@ def get_experimenter_config() -> CurriculumStageConfig:
             reward_scale=5.0,                 # STANDARDIZED: Same scale across stages
             loss_multiplier=1.0,
             
-            # PnL DOMINANCE (v6.0): Light during discovery - start feeling outcomes
-            pnl_scale_factor=80.0,            # Starting to feel PnL
-            max_shaping_to_pnl_ratio=1.5,     # Still allowing shaping freedom
+            # PnL DOMINANCE (v6.0): CRITICAL - PnL must dominate exploration bonus
+            pnl_scale_factor=150.0,           # FIX: Was 80, exploration bonus was 2.3x PnL signal!
+            max_shaping_to_pnl_ratio=0.5,     # FIX: Reduce shaping freedom to prevent reward hacking
             
             # Execution costs: LIGHT during discovery
             execution_cost_visibility_enabled=True,
@@ -415,32 +418,35 @@ def get_experimenter_config() -> CurriculumStageConfig:
             win_streak_bonus_per_win=0.0,
             loss_streak_penalty_per_loss=0.0,
             
-            # ANTI-CHURN: Still disabled
-            anti_churn_enabled=False,
-            daily_trade_soft_limit=50,
-            churn_penalty_per_trade=0.0,
+            # ANTI-CHURN: ENABLED with light penalty (between EXPLORER=25 and TREND_STUDENT=12)
+            # FIX: Was disabled, now soft limit at 18 with light penalty
+            anti_churn_enabled=True,
+            daily_trade_soft_limit=18,
+            churn_penalty_per_trade=0.018,
             
-            hard_block_penalty=0.0,
-            soft_block_penalty=0.0,
+            hard_block_penalty=0.005,
+            soft_block_penalty=0.002,
             per_step_shaping_enabled=False,
             holding_cost_per_bar=0.0,
             
-            # ACTIVITY CONSISTENCY: ENABLED - still encourage activity
+            # ACTIVITY CONSISTENCY: Slightly stronger than EXPLORER
             activity_consistency_enabled=True,
-            target_trades_per_1k_steps=12.0,  # ~18 trades/1500 steps
-            activity_deviation_penalty_scale=0.0,  # No penalty for over-trading
-            min_trades_penalty=0.4,  # Penalty if < 20% of target
+            target_trades_per_1k_steps=8.0,  # Target ~12 trades/1500 steps
+            activity_deviation_penalty_scale=0.4,  # Gradual increase
+            activity_deviation_penalty_cap=12.0,  # Gradual increase
+            min_trades_penalty=0.35,
             
-            # EXPLORATION BONUS: Still high
-            exploration_bonus=0.08,
+            # EXPLORATION BONUS: REDUCED - PnL must be primary signal
+            # FIX: Was 0.08 which dominated PnL signal causing reward hacking
+            exploration_bonus=0.015,
             directional_accuracy_weight=0.7,
-            min_reward=-2.0,
-            max_reward=2.0,
+            min_reward=-5.0,  # FIX: Was -2.0, clipping destroyed gradients
+            max_reward=5.0,   # FIX: Was 2.0
         ),
         constraints=TradingConstraints(
             max_positions=1,
-            max_trades_per_day=40,
-            max_trades_per_session=20,
+            max_trades_per_day=30,  # FIX: Reduced from 40 (soft limit is 18)
+            max_trades_per_session=15,  # FIX: Reduced from 20
             max_consecutive_losses=15,
             enforce_session_windows=False,
             enforce_no_new_trades_window=False,
@@ -453,8 +459,8 @@ def get_experimenter_config() -> CurriculumStageConfig:
             daily_dd_safety_buffer=0.0,
             max_dd_safety_buffer=0.0,
             emergency_close_threshold=0.35,
-            entry_quality_gate_enabled=False,
-            entry_quality_threshold=0.0,
+            entry_quality_gate_enabled=True,  # FIX: Enable mild quality gate
+            entry_quality_threshold=0.12,  # FIX: Light filter (lower than TREND_STUDENT)
             hard_stop_loss_eur=800.0,
             soft_stop_loss_eur=600.0,
             trailing_activation_eur=150.0,
@@ -582,8 +588,8 @@ def get_trend_student_config() -> CurriculumStageConfig:
             loss_multiplier=1.0,
             
             # PnL DOMINANCE (v6.0): Foundation phase - PnL starts to matter
-            pnl_scale_factor=120.0,           # Growing PnL signal
-            max_shaping_to_pnl_ratio=0.8,     # Tightening shaping cap
+            pnl_scale_factor=150.0,           # FIX: Was 120, exploration bonus ratio was 0.57x
+            max_shaping_to_pnl_ratio=0.5,     # FIX: Tighten shaping cap to prevent reward hacking
             
             # Execution costs: Moderate visibility
             execution_cost_visibility_enabled=True,
@@ -658,15 +664,16 @@ def get_trend_student_config() -> CurriculumStageConfig:
             
             # ACTIVITY CONSISTENCY: ENABLED - maintain activity level
             activity_consistency_enabled=True,
-            target_trades_per_1k_steps=10.0,  # ~15 trades/1500 steps
-            activity_deviation_penalty_scale=0.1,  # Light penalty for extremes
-            min_trades_penalty=0.3,  # Penalty if < 20% of target
+            target_trades_per_1k_steps=8.0,
+            activity_deviation_penalty_scale=0.5,  # Moderate - still learning
+            activity_deviation_penalty_cap=15.0,
+            min_trades_penalty=0.3,
             
-            # EXPLORATION: Still moderate
-            exploration_bonus=0.06,
+            # EXPLORATION: Reduced to keep PnL dominant
+            exploration_bonus=0.025,          # FIX: Was 0.06, now subordinate to PnL
             directional_accuracy_weight=1.2,  # INCREASED - reward trend alignment
-            min_reward=-2.5,
-            max_reward=2.5,
+            min_reward=-5.0,  # FIX: Was -2.5
+            max_reward=5.0,   # FIX: Was 2.5
         ),
         constraints=TradingConstraints(
             max_positions=1,
@@ -684,8 +691,8 @@ def get_trend_student_config() -> CurriculumStageConfig:
             daily_dd_safety_buffer=0.0,
             max_dd_safety_buffer=0.0,
             emergency_close_threshold=0.25,
-            entry_quality_gate_enabled=False,
-            entry_quality_threshold=0.0,
+            entry_quality_gate_enabled=True,  # FIX: Enable for monotonicity
+            entry_quality_threshold=0.20,  # FIX: Between EXPERIMENTER(0.12) and TIMING_STUDENT(0.40)
             hard_stop_loss_eur=450.0,         # REDUCED from 600 - limit max damage
             soft_stop_loss_eur=320.0,         # REDUCED from 400
             trailing_activation_eur=100.0,    # REDUCED from 120
@@ -819,7 +826,7 @@ def get_session_student_config() -> CurriculumStageConfig:
             
             # PnL DOMINANCE (v6.0): SESSION_STUDENT - Ramping up PnL signal
             pnl_scale_factor=160.0,           # Growing PnL dominance
-            max_shaping_to_pnl_ratio=0.6,     # Moderate shaping cap
+            max_shaping_to_pnl_ratio=0.5,     # FIX: Was 0.6, must be <= TREND_STUDENT (0.5)
             
             # Execution costs: Growing visibility
             execution_cost_visibility_enabled=True,
@@ -890,14 +897,15 @@ def get_session_student_config() -> CurriculumStageConfig:
             
             # ACTIVITY CONSISTENCY: ENABLED - maintain activity in sessions
             activity_consistency_enabled=True,
-            target_trades_per_1k_steps=8.0,  # ~12 trades/1500 steps (learning sessions)
-            activity_deviation_penalty_scale=0.15,  # Moderate penalty for extremes
-            min_trades_penalty=0.25,  # Penalty if < 20% of target
+            target_trades_per_1k_steps=8.0,
+            activity_deviation_penalty_scale=0.6,  # Progressive increase
+            activity_deviation_penalty_cap=18.0,
+            min_trades_penalty=0.25,
             
             exploration_bonus=0.05,
             directional_accuracy_weight=1.15,
-            min_reward=-2.8,
-            max_reward=2.8,
+            min_reward=-6.0,  # FIX: Was -2.8
+            max_reward=6.0,   # FIX: Was 2.8
         ),
         constraints=TradingConstraints(
             max_positions=1,
@@ -915,8 +923,8 @@ def get_session_student_config() -> CurriculumStageConfig:
             daily_dd_safety_buffer=0.0,
             max_dd_safety_buffer=0.0,
             emergency_close_threshold=0.22,
-            entry_quality_gate_enabled=False,
-            entry_quality_threshold=0.0,
+            entry_quality_gate_enabled=True,  # FIX: Enable for monotonicity
+            entry_quality_threshold=0.30,  # FIX: Between TREND_STUDENT(0.20) and TIMING_STUDENT(0.40)
             hard_stop_loss_eur=450.0,         # MONOTONICITY FIX: Must not increase from Stage 2 (was 500)
             soft_stop_loss_eur=350.0,
             trailing_activation_eur=100.0,
@@ -1152,14 +1160,15 @@ def get_timing_student_config() -> CurriculumStageConfig:
             
             # ACTIVITY CONSISTENCY: ENABLED - maintain minimum activity
             activity_consistency_enabled=True,
-            target_trades_per_1k_steps=6.0,  # ~9 trades/1500 steps (quality focus)
-            activity_deviation_penalty_scale=0.2,  # Moderate penalty for extremes
-            min_trades_penalty=0.2,  # Lighter penalty - focus on quality now
+            target_trades_per_1k_steps=6.0,
+            activity_deviation_penalty_scale=0.7,  # Progressive increase
+            activity_deviation_penalty_cap=20.0,
+            min_trades_penalty=0.2,
             
             exploration_bonus=0.02,
             directional_accuracy_weight=1.1,
-            min_reward=-3.0,
-            max_reward=3.0,
+            min_reward=-8.0,  # FIX: Was -3.0
+            max_reward=8.0,   # FIX: Was 3.0
         ),
         constraints=TradingConstraints(
             max_positions=1,
@@ -1399,10 +1408,17 @@ def get_integrator_config() -> CurriculumStageConfig:
             per_step_min=-0.04,
             per_step_max=0.04,
             
+            # ACTIVITY CONSISTENCY: Maintain discipline
+            activity_consistency_enabled=True,
+            target_trades_per_1k_steps=6.0,  # FIX: Same as TIMING_STUDENT for smooth transition
+            activity_deviation_penalty_scale=0.8,  # Strong
+            activity_deviation_penalty_cap=20.0,
+            min_trades_penalty=0.2,
+            
             exploration_bonus=0.015,
             directional_accuracy_weight=1.05,
-            min_reward=-3.5,
-            max_reward=3.5,
+            min_reward=-10.0,  # FIX: Was -3.5
+            max_reward=10.0,   # FIX: Was 3.5
         ),
         constraints=TradingConstraints(
             max_positions=1,
@@ -1639,10 +1655,17 @@ def get_risk_manager_config() -> CurriculumStageConfig:
             per_step_min=-0.04,
             per_step_max=0.04,
             
+            # ACTIVITY CONSISTENCY: Quality over quantity
+            activity_consistency_enabled=True,
+            target_trades_per_1k_steps=5.0,
+            activity_deviation_penalty_scale=0.8,  # STRONG: match PnL signal
+            activity_deviation_penalty_cap=12.0,  # Match PnL scale
+            min_trades_penalty=0.15,
+            
             exploration_bonus=0.01,
             directional_accuracy_weight=1.0,
-            min_reward=-4.0,
-            max_reward=4.0,
+            min_reward=-10.0,  # FIX: Was -4.0
+            max_reward=10.0,   # FIX: Was 4.0
         ),
         constraints=TradingConstraints(
             max_positions=1,
@@ -1879,10 +1902,17 @@ def get_strategist_config() -> CurriculumStageConfig:
             per_step_min=-0.05,
             per_step_max=0.05,
             
+            # ACTIVITY CONSISTENCY: Quality focus
+            activity_consistency_enabled=True,
+            target_trades_per_1k_steps=4.0,
+            activity_deviation_penalty_scale=0.8,  # STRONG: match PnL signal
+            activity_deviation_penalty_cap=12.0,  # Match PnL scale
+            min_trades_penalty=0.1,
+            
             exploration_bonus=0.005,
             directional_accuracy_weight=1.0,
-            min_reward=-4.5,
-            max_reward=4.5,
+            min_reward=-12.0,  # FIX: Was -4.5
+            max_reward=12.0,   # FIX: Was 4.5
         ),
         constraints=TradingConstraints(
             max_positions=1,
@@ -2124,10 +2154,17 @@ def get_professional_config() -> CurriculumStageConfig:
             per_step_min=-0.05,
             per_step_max=0.05,
             
+            # ACTIVITY CONSISTENCY: Near-live discipline
+            activity_consistency_enabled=True,
+            target_trades_per_1k_steps=3.0,
+            activity_deviation_penalty_scale=0.8,  # STRONG: match PnL signal
+            activity_deviation_penalty_cap=10.0,  # Match PnL scale
+            min_trades_penalty=0.1,
+            
             exploration_bonus=0.0,
             directional_accuracy_weight=1.0,
-            min_reward=-5.0,
-            max_reward=5.0,
+            min_reward=-15.0,  # FIX: Was -5.0
+            max_reward=15.0,   # FIX: Was 5.0
         ),
         constraints=TradingConstraints(
             max_positions=1,
@@ -2383,10 +2420,17 @@ def get_live_ready_config() -> CurriculumStageConfig:
             per_step_min=-0.05,
             per_step_max=0.05,
             
+            # ACTIVITY CONSISTENCY: Live-ready discipline
+            activity_consistency_enabled=True,
+            target_trades_per_1k_steps=3.0,
+            activity_deviation_penalty_scale=0.8,  # STRONG: match PnL signal
+            activity_deviation_penalty_cap=10.0,  # Match PnL scale
+            min_trades_penalty=0.1,
+            
             exploration_bonus=0.0,
             directional_accuracy_weight=1.0,
-            min_reward=-5.0,
-            max_reward=5.0,
+            min_reward=-15.0,  # FIX: Was -5.0
+            max_reward=15.0,   # FIX: Was 5.0
         ),
         constraints=TradingConstraints(
             max_positions=1,

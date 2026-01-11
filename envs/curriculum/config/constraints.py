@@ -145,6 +145,7 @@ class RewardShaping:
     target_trades_per_1k_steps: float = 10.0
     stage_activity_targets: Optional[Dict[int, float]] = None
     activity_deviation_penalty_scale: float = 0.2
+    activity_deviation_penalty_cap: float = 2.0  # FIX: Max penalty for episode-level overtrading
     min_trades_penalty: float = 0.3
 
     # Blocked action penalties

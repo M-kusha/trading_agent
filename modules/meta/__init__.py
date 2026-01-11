@@ -16,8 +16,8 @@ Types:
 - RiskInfo: Normalized risk data
 - GatingResult: Combined gating result
 
-Observation Builder (v4.0):
-- PPOObservationBuilder: Builds 64-dim observations
+Observation Builder (v5.4):
+- PPOObservationBuilder: Builds 76-dim observations (expanded HTF features)
 - build_ppo_observation: Global observation builder
 - build_ppo_observation_for_instrument: Per-instrument observation builder
 

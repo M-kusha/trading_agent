@@ -389,7 +389,7 @@ class PropFirmConfig:
     # --------------------
     # PPO env
     # --------------------
-    observation_size: int = 64
+    observation_size: int = 76  # Updated for v5.4 HTF expansion
     max_steps_per_episode: int = 2000
     gamma: float = 0.95
 

@@ -73,7 +73,7 @@ class PPOCoreConfig:
     """
 
     # Network dimensions
-    obs_size: int = 64
+    obs_size: int = 76  # Updated for v5.4 HTF expansion
     act_size: int = 2  # (direction_score, size_score)
     hidden_size: int = 128
 

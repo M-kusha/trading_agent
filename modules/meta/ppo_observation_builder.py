@@ -53,43 +53,52 @@ except ImportError:
 
 
 # ═══════════════════════════════════════════════════════════════════
-# OBSERVATION SCHEMA (v5.3) - Master/Advisor + Advanced Signals
+# OBSERVATION SCHEMA (v5.4) - Expanded HTF Features
 # ═══════════════════════════════════════════════════════════════════
 #
-# Total: 64 dimensions
+# Total: 76 dimensions (+12 from v5.3)
 #
 # [0-9]   M15 Price Features (PRIMARY) - 10 dims
 #         [3] = S/R Proximity Signal (SIGNED: +support/-resistance)
-# [10-15] Higher TF Context (H1/H4/D1 aggregated) - 6 dims
-# [16-23] Expert ADVISOR Signals (SIGNED: +bull/-bear) - 8 dims
+# [10-27] Higher TF Context (H1/H4/D1 EXPANDED) - 18 dims (6 per TF)
+#         Per TF: [trend, momentum, RSI, ATR_norm, S/R_proximity, HH/HL_bias]
+#         H1:  [10-15]
+#         H4:  [16-21]
+#         D1:  [22-27]
+# [28-35] Expert ADVISOR Signals (SIGNED: +bull/-bear) - 8 dims
 #         [2,3] = Momentum (direction boosted by divergence, conf + OB/OS)
 #         [4,5] = Theme (direction, conf + regime risk)
-# [24-31] Committee Consensus (SIGNED + structure) - 8 dims
+# [36-43] Committee Consensus (SIGNED + structure) - 8 dims
 #         [7] = Composite Market Structure (40% S/R + 30% HH/HL + 20% BOS + 10% OB)
-# [32-39] Risk/Memory Signals - 8 dims
-# [40-47] Account/Position State - 8 dims
-# [48-55] World Model Predictions - 8 dims
-# [56-63] Trading Mode State (incl. timing features) - 8 dims
+# [44-51] Risk/Memory Signals - 8 dims
+# [52-59] Account/Position State - 8 dims
+# [60-67] World Model Predictions - 8 dims
+# [68-75] Trading Mode State (incl. timing features) - 8 dims
 #
-# EXPERT SIGNALS NOW INCLUDE (v5.3):
-# - TrendExpert: near_support, near_resistance, structure_trend, bos_signal,
-#                liquidity_above/below, order_block_bull/bear
-# - MomentumExpert: divergence_signal (bullish/bearish), overbought, oversold, rsi_value
-# - ThemeExpert: volatility_regime (low/normal/high), risk_regime (risk_on/off/neutral)
+# HTF FEATURE EXPANSION (v5.4):
+# Each higher timeframe (H1, H4, D1) now gets 6 dedicated features:
+# - [0] Trend direction: signed EMA slope (-1 to +1)
+# - [1] Momentum: 5-bar momentum normalized
+# - [2] RSI: normalized to -1 (oversold) to +1 (overbought)
+# - [3] ATR_norm: volatility as % of price (0 to 1)
+# - [4] S/R_proximity: signed distance to nearest S/R (-1=resistance, +1=support)
+# - [5] HH/HL_bias: recent price structure bias (-1 lower lows, +1 higher highs)
+#
+# This gives the agent REAL higher timeframe signals instead of crushed averages!
 # ═══════════════════════════════════════════════════════════════════
 
-PPO_OBS_VERSION = "5.3"
-PPO_OBS_SIZE = 64
+PPO_OBS_VERSION = "5.4"
+PPO_OBS_SIZE = 76
 
 FEATURE_GROUPS: Dict[str, tuple[int, int]] = {
     "m15_price": (0, 10),
-    "htf_context": (10, 16),
-    "voting": (16, 24),
-    "committee": (24, 32),
-    "risk": (32, 40),
-    "account": (40, 48),
-    "world_model": (48, 56),
-    "trading_mode": (56, 64),
+    "htf_context": (10, 28),
+    "voting": (28, 36),
+    "committee": (36, 44),
+    "risk": (44, 52),
+    "account": (52, 60),
+    "world_model": (60, 68),
+    "trading_mode": (68, 76),
 }
 
 
@@ -183,13 +192,13 @@ class PPOObservationBuilder:
             trading_mode_state = trading_mode_state or self._fetch_trading_mode_state(smart_bus, module_name)
 
         obs[0:10] = self._build_m15_features(market_data)
-        obs[10:16] = self._build_htf_context(market_data)
-        obs[16:24] = self._build_voting_features(expert_signals)
-        obs[24:32] = self._build_committee_features(committee_state, expert_signals)
-        obs[32:40] = self._build_risk_features(risk_state, memory_state, account_state)
-        obs[40:48] = self._build_account_features(account_state)
-        obs[48:56] = self._build_world_model_features(world_model_state)
-        obs[56:64] = self._build_trading_mode_features(trading_mode_state)
+        obs[10:28] = self._build_htf_context(market_data, expert_signals)
+        obs[28:36] = self._build_voting_features(expert_signals)
+        obs[36:44] = self._build_committee_features(committee_state, expert_signals)
+        obs[44:52] = self._build_risk_features(risk_state, memory_state, account_state)
+        obs[52:60] = self._build_account_features(account_state)
+        obs[60:68] = self._build_world_model_features(world_model_state)
+        obs[68:76] = self._build_trading_mode_features(trading_mode_state)
 
         return np.nan_to_num(obs, nan=0.0, posinf=1.0, neginf=-1.0)
 
@@ -231,13 +240,13 @@ class PPOObservationBuilder:
             )
 
         obs[0:10] = self._build_m15_features_for_instrument(market_data, instrument)
-        obs[10:16] = self._build_htf_context_for_instrument(market_data, instrument)
-        obs[16:24] = self._build_voting_features_for_instrument(expert_signals, instrument)
-        obs[24:32] = self._build_committee_features(committee_state, expert_signals)
-        obs[32:40] = self._build_risk_features(risk_state, memory_state, account_state)
-        obs[40:48] = self._build_account_features(account_state)
-        obs[48:56] = self._build_world_model_features(world_model_state)
-        obs[56:64] = self._build_trading_mode_features(trading_mode_state)
+        obs[10:28] = self._build_htf_context_for_instrument(market_data, instrument, expert_signals)
+        obs[28:36] = self._build_voting_features_for_instrument(expert_signals, instrument)
+        obs[36:44] = self._build_committee_features(committee_state, expert_signals)
+        obs[44:52] = self._build_risk_features(risk_state, memory_state, account_state)
+        obs[52:60] = self._build_account_features(account_state)
+        obs[60:68] = self._build_world_model_features(world_model_state)
+        obs[68:76] = self._build_trading_mode_features(trading_mode_state)
 
         return np.nan_to_num(obs, nan=0.0, posinf=1.0, neginf=-1.0)
 
@@ -530,16 +539,16 @@ class PPOObservationBuilder:
 
         return np.zeros(10, dtype=np.float32)
 
-    def _build_htf_context_for_instrument(self, market_data: Optional[Dict[str, Any]], instrument: str) -> np.ndarray:
+    def _build_htf_context_for_instrument(self, market_data: Optional[Dict[str, Any]], instrument: str, expert_signals: Optional[Dict[str, Any]] = None) -> np.ndarray:
         """Build HTF context for a specific instrument safely."""
         if self._is_timeframe_dict(market_data):
-            return self._build_htf_context(market_data)
+            return self._build_htf_context(market_data, expert_signals)
 
         block = self._lookup_symbol_block(market_data, instrument)
         if isinstance(block, dict):
-            return self._build_htf_context(block)
+            return self._build_htf_context(block, expert_signals)
 
-        return np.zeros(6, dtype=np.float32)
+        return np.zeros(18, dtype=np.float32)
 
     def _build_voting_features_for_instrument(self, expert_signals: Optional[Dict[str, Any]], instrument: str) -> np.ndarray:
         """Build voting features for a specific instrument."""
@@ -629,20 +638,36 @@ class PPOObservationBuilder:
         return feats
 
     # ======================================================================
-    # Higher TF Context (H1/H4/D1) - 6 dims
+    # Higher TF Context (H1/H4/D1) - 18 dims (6 per timeframe)
     # ======================================================================
 
-    def _build_htf_context(self, market_data: Optional[Dict[str, Any]]) -> np.ndarray:
-        """Build higher timeframe context features."""
-        feats = np.zeros(6, dtype=np.float32)
+    def _build_htf_context(self, market_data: Optional[Dict[str, Any]], expert_signals: Optional[Dict[str, Any]] = None) -> np.ndarray:
+        """
+        Build EXPANDED higher timeframe context features.
+        
+        v5.4: Each HTF gets 6 dedicated features instead of crushed averages:
+        - [0] Trend direction: signed EMA slope (-1 to +1), enhanced by HTF expert if available
+        - [1] Momentum: 5-bar return normalized by ATR, enhanced by HTF expert if available
+        - [2] RSI: normalized to -1 (oversold 30) to +1 (overbought 70), 0=neutral
+        - [3] ATR_norm: volatility as % of price (0 to 1)
+        - [4] S/R_proximity: signed distance to nearest S/R (-1=at resistance, +1=at support)
+        - [5] HH/HL_bias: recent price structure (-1=lower lows, +1=higher highs)
+        
+        Total: 18 dims (H1: [0-5], H4: [6-11], D1: [12-17])
+        
+        When htf_experts are available in expert_signals, they provide more sophisticated
+        indicators (ADX, MA alignment) that enhance the raw price-based features.
+        """
+        feats = np.zeros(18, dtype=np.float32)
         if not market_data:
             return feats
 
-        trends: list[float] = []
-        vols: list[float] = []
-        moms: list[float] = []
+        # Get HTF expert signals if available
+        htf_experts = {}
+        if expert_signals and isinstance(expert_signals, dict):
+            htf_experts = expert_signals.get("htf_experts", {})
 
-        for i, tf in enumerate(CONTEXT_TIMEFRAMES):
+        for tf_idx, tf in enumerate(CONTEXT_TIMEFRAMES):  # H1, H4, D1
             tf_data = self._extract_timeframe_data(market_data, tf)
             if tf_data is None or not isinstance(tf_data, dict):
                 continue
@@ -656,35 +681,133 @@ class PPOObservationBuilder:
             close_arr = np.asarray(close, dtype=np.float64)
             if close_arr.size < 5:
                 continue
+                
+            high_arr = np.asarray(high, dtype=np.float64) if high is not None else close_arr
+            low_arr = np.asarray(low, dtype=np.float64) if low is not None else close_arr
 
+            base_idx = tf_idx * 6  # 0, 6, 12 for H1, H4, D1
+            
+            # Get HTF expert signal for this timeframe if available
+            htf_sig = htf_experts.get(tf, {}) if isinstance(htf_experts, dict) else {}
+
+            # Feature 0: Trend direction (EMA slope normalized)
+            # Enhanced by HTF expert trend signal if available
             trend = self._compute_trend_direction(close_arr)
-            trends.append(trend)
-            if i < 3:
-                feats[i] = float(trend)
+            if htf_sig:
+                # Blend raw trend with expert trend (weighted)
+                expert_trend_str = htf_sig.get("trend_strength", 0.0)
+                expert_trend_dir = htf_sig.get("trend_direction", "neutral")
+                if expert_trend_dir == "bullish":
+                    expert_trend = float(expert_trend_str)
+                elif expert_trend_dir == "bearish":
+                    expert_trend = -float(expert_trend_str)
+                else:
+                    expert_trend = 0.0
+                # MA alignment provides confirmation
+                ma_align = htf_sig.get("ma_alignment", 0)
+                if ma_align != 0:
+                    trend = 0.6 * trend + 0.4 * expert_trend  # Blend
+                    if ma_align * np.sign(trend) > 0:  # Alignment confirms
+                        trend = np.sign(trend) * min(abs(trend) * 1.2, 1.0)
+            feats[base_idx + 0] = float(np.clip(trend, -1.0, 1.0))
 
-            if high is not None and low is not None:
-                high_arr = np.asarray(high, dtype=np.float64)
-                low_arr = np.asarray(low, dtype=np.float64)
+            # Feature 1: Momentum (5-bar return normalized by ATR)
+            # Enhanced by HTF expert momentum if available
+            if close_arr.size >= 6:
+                ret_5 = (close_arr[-1] - close_arr[-6]) / max(abs(close_arr[-6]), self._eps)
                 atr = self._compute_atr(high_arr, low_arr, close_arr, min(14, close_arr.size - 1))
-                vols.append(float(atr / max(close_arr[-1], self._eps)))
+                atr_pct = atr / max(close_arr[-1], self._eps)
+                mom_norm = ret_5 / max(atr_pct * 5, self._eps)  # Normalize by 5 ATRs
+                
+                if htf_sig:
+                    expert_mom_str = htf_sig.get("momentum_strength", 0.0)
+                    expert_mom_dir = htf_sig.get("momentum_direction", "neutral")
+                    if expert_mom_dir == "bullish":
+                        expert_mom = float(expert_mom_str)
+                    elif expert_mom_dir == "bearish":
+                        expert_mom = -float(expert_mom_str)
+                    else:
+                        expert_mom = 0.0
+                    mom_norm = 0.6 * mom_norm + 0.4 * expert_mom  # Blend
+                
+                feats[base_idx + 1] = float(np.clip(mom_norm, -1.0, 1.0))
 
-            if close_arr.size >= 5:
-                base = float(close_arr[-5])
-                mom = (float(close_arr[-1]) - base) / max(abs(base), self._eps)
-                moms.append(mom)
+            # Feature 2: RSI (normalized: -1 = oversold, +1 = overbought)
+            # Use expert RSI if available (more accurate with proper period)
+            if htf_sig and "rsi" in htf_sig:
+                rsi = float(htf_sig["rsi"])
+            else:
+                rsi = self._compute_rsi(close_arr, min(14, close_arr.size - 1))
+            # Map RSI 30 -> -1, RSI 50 -> 0, RSI 70 -> +1
+            rsi_norm = (rsi - 50.0) / 20.0  # Linear mapping
+            feats[base_idx + 2] = float(np.clip(rsi_norm, -1.0, 1.0))
 
-        if len(trends) >= 2:
-            signs = [np.sign(t) for t in trends if abs(t) > 0.1]
-            if len(signs) >= 2:
-                feats[3] = float(1.0 if len(set(signs)) == 1 else -abs(np.mean(trends)))
+            # Feature 3: ATR normalized (volatility as % of price)
+            atr = self._compute_atr(high_arr, low_arr, close_arr, min(14, close_arr.size - 1))
+            atr_norm = atr / max(close_arr[-1], self._eps)
+            # Scale so typical values are in 0-1 range (0.5% = 0.5, 2% = 1.0)
+            feats[base_idx + 3] = float(np.clip(atr_norm * 50.0, 0.0, 1.0))
 
-        if vols:
-            feats[4] = float(np.clip(np.mean(vols) * 100.0, 0.0, 1.0))
+            # Feature 4: S/R proximity (signed: +1=at support, -1=at resistance)
+            if high_arr.size >= 10 and low_arr.size >= 10:
+                support, resistance = self._find_swing_points(high_arr[-30:], low_arr[-30:])
+                near_support, near_resistance = self._compute_sr_proximity(
+                    close_arr[-1], support, resistance
+                )
+                feats[base_idx + 4] = float(np.clip(near_support - near_resistance, -1.0, 1.0))
 
-        if moms:
-            feats[5] = float(np.clip(np.mean(moms) * 10.0, -1.0, 1.0))
+            # Feature 5: HH/HL bias (price structure)
+            # Use expert structure_bias if available
+            if htf_sig and "structure_bias" in htf_sig:
+                hh_hl_bias = float(htf_sig["structure_bias"])
+            elif close_arr.size >= 10 and high_arr.size >= 10 and low_arr.size >= 10:
+                hh_hl_bias = self._compute_hh_hl_bias(high_arr[-20:], low_arr[-20:])
+            else:
+                hh_hl_bias = 0.0
+            feats[base_idx + 5] = float(np.clip(hh_hl_bias, -1.0, 1.0))
 
         return feats
+
+    def _compute_hh_hl_bias(self, high: np.ndarray, low: np.ndarray) -> float:
+        """
+        Compute higher-high / lower-low bias for price structure.
+        
+        Returns:
+            +1.0: Clear uptrend (higher highs AND higher lows)
+            -1.0: Clear downtrend (lower highs AND lower lows)
+            0.0: Consolidation / mixed
+        """
+        if len(high) < 6 or len(low) < 6:
+            return 0.0
+            
+        # Compare recent peak/trough to earlier peak/trough
+        # Split into two halves
+        mid = len(high) // 2
+        
+        # First half peaks/troughs
+        first_high = float(np.max(high[:mid]))
+        first_low = float(np.min(low[:mid]))
+        
+        # Second half peaks/troughs  
+        second_high = float(np.max(high[mid:]))
+        second_low = float(np.min(low[mid:]))
+        
+        # Count bullish/bearish signals
+        score = 0.0
+        
+        # Higher high = bullish
+        if second_high > first_high:
+            score += 0.5
+        elif second_high < first_high:
+            score -= 0.5
+            
+        # Higher low = bullish
+        if second_low > first_low:
+            score += 0.5
+        elif second_low < first_low:
+            score -= 0.5
+            
+        return score
 
     # ======================================================================
     # Voting Expert Signals - 8 dims
@@ -1458,7 +1581,127 @@ class PPOObservationBuilder:
                 "regime_strength": float(bus.get("regime_strength", module) or 0.5),
             }
 
-            return {"experts": experts, "market": market}
+            # Extract HTF expert signals for train/live parity (v5.4)
+            htf_experts = self._extract_htf_experts_from_bus(bus, module)
+
+            return {"experts": experts, "htf_experts": htf_experts, "market": market}
+        except Exception:
+            return {}
+
+    def _extract_htf_experts_from_bus(self, bus: Any, module: str) -> Dict[str, Dict[str, Any]]:
+        """
+        Extract HTF (higher timeframe) expert signals from live SmartBus data.
+        
+        Maps live TrendExpert mtf_analysis to the training env schema:
+        - Live: trend_analysis.per_instrument[*].mtf_analysis.trends.{H1,H4,D1}
+        - Training expects: htf_experts.{H1,H4,D1}.{trend_direction, trend_strength, ...}
+        
+        This ensures train/live parity for HTF context features (v5.4).
+        """
+        htf_experts: Dict[str, Dict[str, Any]] = {}
+        
+        # Default neutral values for each timeframe
+        default_htf = {
+            "trend_direction": "neutral",
+            "trend_strength": 0.0,
+            "momentum_direction": "neutral",
+            "momentum_strength": 0.0,
+            "rsi": 50.0,
+            "rsi_signal": "neutral",
+            "ma_alignment": 0,
+            "adx": 0.0,
+            "structure_bias": 0.0,
+        }
+        
+        try:
+            # Get trend_analysis which contains mtf_analysis per instrument
+            trend_analysis = bus.get("trend_analysis", module)
+            if not isinstance(trend_analysis, dict):
+                return {}
+            
+            per_inst = trend_analysis.get("per_instrument", {})
+            if not isinstance(per_inst, dict) or not per_inst:
+                return {}
+            
+            # Get first instrument's analysis (typically the active trading instrument)
+            inst_data = None
+            for inst_analysis in per_inst.values():
+                if isinstance(inst_analysis, dict):
+                    inst_data = inst_analysis
+                    break
+            
+            if not inst_data:
+                return {}
+            
+            # Extract mtf_analysis.trends which has per-TF trend data
+            mtf_analysis = inst_data.get("mtf_analysis", {})
+            if not isinstance(mtf_analysis, dict):
+                return {}
+            
+            mtf_trends = mtf_analysis.get("trends", {})
+            if not isinstance(mtf_trends, dict):
+                return {}
+            
+            # Get momentum analysis for RSI (if available)
+            mom_analysis = bus.get("momentum_analysis", module)
+            per_inst_mom = {}
+            if isinstance(mom_analysis, dict):
+                per_inst_mom = mom_analysis.get("per_instrument", {})
+            
+            # Map each HTF to training schema
+            for tf in ["H1", "H4", "D1"]:
+                tf_trend = mtf_trends.get(tf, {})
+                if not isinstance(tf_trend, dict):
+                    htf_experts[tf] = default_htf.copy()
+                    continue
+                
+                # Map live schema to training schema
+                direction = tf_trend.get("direction", "neutral")
+                strength = float(tf_trend.get("strength", 0.0))
+                ma_spread = float(tf_trend.get("ma_spread", 0.0))
+                slope = float(tf_trend.get("slope", 0.0))
+                
+                # Determine MA alignment from ma_spread
+                if ma_spread > 0.001:
+                    ma_alignment = 1
+                elif ma_spread < -0.001:
+                    ma_alignment = -1
+                else:
+                    ma_alignment = 0
+                
+                # RSI from momentum analysis (if available for this TF)
+                rsi = 50.0
+                rsi_signal = "neutral"
+                for inst_mom in per_inst_mom.values():
+                    if isinstance(inst_mom, dict):
+                        # Momentum may have per-TF RSI or just primary TF
+                        rsi = float(inst_mom.get("rsi", 50.0))
+                        if rsi > 70:
+                            rsi_signal = "overbought"
+                        elif rsi < 30:
+                            rsi_signal = "oversold"
+                        break
+                
+                # Structure bias from slope
+                structure_bias = float(np.clip(slope * 50.0, -1.0, 1.0))
+                
+                # ADX from instrument data (may not be per-TF in live)
+                adx = float(inst_data.get("adx", 0.0))
+                
+                htf_experts[tf] = {
+                    "trend_direction": direction,
+                    "trend_strength": strength,
+                    "momentum_direction": direction,  # Use trend direction as proxy
+                    "momentum_strength": strength * 0.8,  # Slightly lower for momentum
+                    "rsi": rsi,
+                    "rsi_signal": rsi_signal,
+                    "ma_alignment": ma_alignment,
+                    "adx": adx,
+                    "structure_bias": structure_bias,
+                }
+            
+            return htf_experts
+            
         except Exception:
             return {}
 
