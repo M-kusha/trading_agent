@@ -103,11 +103,25 @@ def get_status_color(value: float, good_threshold: float, ok_threshold: float, h
 
 
 def get_range_status(value: float, good_min: float, good_max: float) -> str:
+    """
+    Determine status for a value that should be within a target range.
+    - good: within [good_min, good_max]
+    - ok: slightly outside (within 50% of range width on either side)
+    - bad: far outside the target range
+    """
     if good_min <= value <= good_max:
         return "good"
-    mid = (good_min + good_max) / 2
-    # "ok" if relatively close to target band, else bad
-    return "ok" if abs(value - mid) <= (good_max - good_min) else "bad"
+    
+    range_width = good_max - good_min
+    ok_buffer = range_width * 0.5  # 50% buffer on each side for "ok"
+    
+    # Check if slightly below or above
+    if value < good_min:
+        distance_below = good_min - value
+        return "ok" if distance_below <= ok_buffer else "bad"
+    else:  # value > good_max
+        distance_above = value - good_max
+        return "ok" if distance_above <= ok_buffer else "bad"
 
 
 # ───────────────────────────────────────────────────────────────────────────────
@@ -503,6 +517,9 @@ class MetricsReader:
 
         stage_history = self._normalize_stage_history(raw.get("stage_history", []))
 
+        # Direction stats (buy/sell breakdown)
+        direction_stats = self._safe_dict(raw.get("direction_stats", {}))
+
         return {
             "status": "active",
             "message": "",
@@ -517,6 +534,7 @@ class MetricsReader:
             "exit_stats": exit_stats_out,
             "reward_components": reward_components,
             "stage_comparison": stage_comparison,
+            "direction_stats": direction_stats,
 
             "curriculum_stage": raw.get("curriculum_stage", "N/A"),
             "curriculum_stage_idx": raw.get("curriculum_stage_idx", 0),

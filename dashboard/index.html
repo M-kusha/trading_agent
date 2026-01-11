@@ -215,33 +215,37 @@
     },
   };
 
-  // Stage-aware alert thresholds: adjust based on curriculum phase
-  // Phase 0 (DISCOVERY): Very loose - exploration expected, losses acceptable
-  // Phase 1 (FOUNDATION): Loose - learning concepts, some variance OK
-  // Phase 2 (DEVELOPMENT): Normal - refining skills
-  // Phase 3 (MASTERY): Tight - production-ready standards
+  // Stage-aware alert thresholds: SYNCHRONIZED with curriculum_config.py
+  // 
+  // PHASE → STAGE MAPPING:
+  // Phase 0: Stages 0-1 (EXPLORER, EXPERIMENTER)
+  // Phase 1: Stages 2-4 (TREND_STUDENT, SESSION_STUDENT, TIMING_STUDENT)  
+  // Phase 2: Stages 5-7 (INTEGRATOR, RISK_MANAGER, STRATEGIST)
+  // Phase 3: Stages 8-9 (PROFESSIONAL, LIVE_READY)
   const STAGE_ALERT_OVERRIDES = {
     // Phase 0: DISCOVERY (stages 0-1) - Almost no alerts, pure exploration
+    // Curriculum entropy: 0.50-1.50 (Explorer/Experimenter)
     0: {
       ranges: {
-        entropy: { min: 0.20, max: 1.8, severity: "info" },  // Very wide - high entropy is GOOD
+        entropy: { min: 0.50, max: 1.50, severity: "info" },  // Match curriculum: 0.50-1.50
         approx_kl: { max_warning: 0.08, max_critical: 0.15 },  // Very loose
-        clip_fraction: { min: 0.01, max: 0.40, severity: "info" },  // Wide range OK
+        clip_fraction: { min: 0.01, max: 0.40, severity: "info" },
         explained_variance: { min_warning: -0.5, min_critical: -1.0 },  // Disable effectively
         drawdown: { max_warning: 50.0, max_critical: 80.0 },  // Losses expected
       },
       slopes: {
         win_rate_down: { warning: -1.0, critical: -2.0 },  // Disabled
         drawdown_up: { warning: 1.0, critical: 2.0 },  // Disabled
-        mean_reward_down: { warning: -0.5, critical: -1.0 },  // Very loose
+        mean_reward_down: { warning: -0.5, critical: -1.0 },
         pnl_down: { warning: -500, critical: -1000 },  // Disabled
       },
       disabled: ["range.drawdown", "slope.pnl", "slope.win_rate", "corr.risk_escalation"],
     },
     // Phase 1: FOUNDATION (stages 2-4) - Looser thresholds, learning concepts
+    // Curriculum entropy: 0.30-1.00 (Trend/Session/Timing Students)
     1: {
       ranges: {
-        entropy: { min: 0.20, max: 1.2, severity: "info" },  // Still wide
+        entropy: { min: 0.30, max: 1.00, severity: "info" },  // Match curriculum range
         approx_kl: { max_warning: 0.05, max_critical: 0.08 },
         clip_fraction: { min: 0.03, max: 0.30, severity: "info" },
         explained_variance: { min_warning: 0.05, min_critical: -0.2 },
@@ -256,9 +260,10 @@
       disabled: [],
     },
     // Phase 2: DEVELOPMENT (stages 5-7) - Normal thresholds
+    // Curriculum entropy: 0.12-0.60 (Integrator/Risk Manager/Strategist)
     2: {
       ranges: {
-        entropy: { min: 0.15, max: 0.90, severity: "warning" },
+        entropy: { min: 0.12, max: 0.60, severity: "warning" },  // Match curriculum range
         approx_kl: { max_warning: 0.035, max_critical: 0.06 },
         clip_fraction: { min: 0.05, max: 0.25, severity: "warning" },
         explained_variance: { min_warning: 0.15, min_critical: 0.02 },
@@ -273,9 +278,10 @@
       disabled: [],
     },
     // Phase 3: MASTERY (stages 8-9) - Tight thresholds, production standards
+    // Curriculum entropy: 0.05-0.40 (Professional/Live Ready)
     3: {
       ranges: {
-        entropy: { min: 0.03, max: 0.60, severity: "warning" },  // Low entropy expected
+        entropy: { min: 0.05, max: 0.40, severity: "warning" },  // Match curriculum range
         approx_kl: { max_warning: 0.020, max_critical: 0.035 },
         clip_fraction: { min: 0.05, max: 0.18, severity: "warning" },
         explained_variance: { min_warning: 0.25, min_critical: 0.10 },
@@ -297,6 +303,113 @@
     if (stageIdx <= 4) return 1;  // FOUNDATION
     if (stageIdx <= 7) return 2;  // DEVELOPMENT
     return 3;  // MASTERY
+  }
+
+  // Stage-aware KPI thresholds for Overview tab coloring
+  // SYNCHRONIZED with envs/curriculum/curriculum_config.py requirements per stage
+  // 
+  // STAGE MAPPING:
+  // - Stage 0 (EXPLORER):        Phase 0 - Discovery
+  // - Stage 1 (EXPERIMENTER):    Phase 0 - Discovery  
+  // - Stage 2 (TREND_STUDENT):   Phase 1 - Foundation
+  // - Stage 3 (SESSION_STUDENT): Phase 1 - Foundation
+  // - Stage 4 (TIMING_STUDENT):  Phase 1 - Foundation
+  // - Stage 5 (INTEGRATOR):      Phase 2 - Development
+  // - Stage 6 (RISK_MANAGER):    Phase 2 - Development
+  // - Stage 7 (STRATEGIST):      Phase 2 - Development
+  // - Stage 8 (PROFESSIONAL):    Phase 3 - Mastery
+  // - Stage 9 (LIVE_READY):      Phase 3 - Mastery
+  //
+  // Thresholds use PROMOTION REQUIREMENTS as "good" targets
+  const STAGE_KPI_THRESHOLDS = {
+    // Phase 0: DISCOVERY (Stages 0-1) - Explorer/Experimenter
+    // Explorer: min_win_rate=0.0, min_pf=0.0, entropy 0.60-1.50
+    // Experimenter: min_win_rate=0.25 (25%), min_pf=0.3, entropy 0.50-1.30
+    0: {
+      win_rate: { good: 25, ok: 15 },           // Experimenter req: 25%
+      max_dd: { good: 30, ok: 50 },             // Very loose - exploring
+      profit_factor: { good: 0.3, ok: 0.15 },   // Experimenter req: 0.3
+      entry_quality: { good: 30, ok: 20 },
+      mean_reward: { good: -30, ok: -100 },     // Heavy losses expected
+      r_multiple: { good: -0.2, ok: -0.5 },     // Negative R expected
+      trades_ep: { min: 50, max: 600 },         // Wide exploration range
+      entropy: { min: 0.50, max: 1.50 },        // High entropy required
+    },
+    // Phase 1: FOUNDATION (Stages 2-4) - Trend/Session/Timing Students
+    // Trend: min_win_rate=0.35 (35%), min_pf=0.7, entropy 0.40-1.00
+    // Session: min_win_rate=0.38 (38%), min_pf=0.80, entropy 0.35-0.90
+    // Timing: min_win_rate=0.40 (40%), min_pf=0.85, entropy 0.30-0.80
+    1: {
+      win_rate: { good: 38, ok: 32 },           // Mid-range of 35-40%
+      max_dd: { good: 18, ok: 28 },
+      profit_factor: { good: 0.78, ok: 0.60 },  // Mid-range of 0.7-0.85
+      entry_quality: { good: 38, ok: 30 },
+      mean_reward: { good: -10, ok: -30 },
+      r_multiple: { good: -0.05, ok: -0.15 },
+      trades_ep: { min: 20, max: 300 },
+      entropy: { min: 0.30, max: 1.00 },        // Moderate entropy
+    },
+    // Phase 2: DEVELOPMENT (Stages 5-7) - Integrator/Risk Manager/Strategist
+    // Integrator: min_win_rate=0.45 (45%), min_pf=1.0, entropy 0.22-0.60
+    // Risk Manager: min_win_rate=0.48 (48%), min_pf=1.10, entropy 0.15-0.50
+    // Strategist: min_win_rate=0.50 (50%), min_pf=1.18, entropy 0.12-0.45
+    2: {
+      win_rate: { good: 48, ok: 43 },           // Mid-range of 45-50%
+      max_dd: { good: 10, ok: 15 },
+      profit_factor: { good: 1.10, ok: 0.95 },  // Mid-range of 1.0-1.18
+      entry_quality: { good: 48, ok: 42 },
+      mean_reward: { good: -2, ok: -10 },
+      r_multiple: { good: 0.1, ok: -0.02 },
+      trades_ep: { min: 8, max: 150 },
+      entropy: { min: 0.12, max: 0.60 },        // Lower entropy - strategy forming
+    },
+    // Phase 3: MASTERY (Stages 8-9) - Professional/Live Ready
+    // Professional: min_win_rate=0.52 (52%), min_pf=1.25, entropy 0.08-0.40
+    // Live Ready: min_win_rate=0.54 (54%), min_pf=1.32, entropy <0.35
+    3: {
+      win_rate: { good: 53, ok: 50 },           // Mid-range of 52-54%
+      max_dd: { good: 5, ok: 8.5 },             // Prop firm: <10% hard limit
+      profit_factor: { good: 1.28, ok: 1.15 },  // Mid-range of 1.25-1.32
+      entry_quality: { good: 53, ok: 48 },
+      mean_reward: { good: 0.3, ok: 0 },
+      r_multiple: { good: 0.4, ok: 0.15 },
+      trades_ep: { min: 3, max: 40 },           // Selective trading
+      entropy: { min: 0.05, max: 0.40 },        // Low entropy - converged
+    },
+  };
+
+  // Compute stage-aware status for a KPI metric
+  function getStageAwareKPIStatus(metricId, value, stageIdx) {
+    if (value == null || isNaN(value)) return "neutral";
+    const phase = getPhaseFromStage(stageIdx);
+    const thresholds = STAGE_KPI_THRESHOLDS[phase];
+    
+    switch(metricId) {
+      case "win_rate":
+        return value >= thresholds.win_rate.good ? "good" : value >= thresholds.win_rate.ok ? "ok" : "bad";
+      case "max_dd":
+        return value <= thresholds.max_dd.good ? "good" : value <= thresholds.max_dd.ok ? "ok" : "bad";
+      case "profit_factor":
+        return value >= thresholds.profit_factor.good ? "good" : value >= thresholds.profit_factor.ok ? "ok" : "bad";
+      case "entry_quality":
+        return value >= thresholds.entry_quality.good ? "good" : value >= thresholds.entry_quality.ok ? "ok" : "bad";
+      case "mean_reward":
+        return value >= thresholds.mean_reward.good ? "good" : value >= thresholds.mean_reward.ok ? "ok" : "bad";
+      case "r_multiple":
+        return value >= thresholds.r_multiple.good ? "good" : value >= thresholds.r_multiple.ok ? "ok" : "bad";
+      case "trades_ep":
+        return (value >= thresholds.trades_ep.min && value <= thresholds.trades_ep.max) ? "good" :
+               (value >= thresholds.trades_ep.min * 0.5 && value <= thresholds.trades_ep.max * 1.5) ? "ok" : "bad";
+      case "total_pnl":
+        // P&L thresholds scale with phase
+        const pnlGood = phase === 0 ? -10000 : phase === 1 ? -2000 : phase === 2 ? 0 : 1000;
+        const pnlOk = phase === 0 ? -50000 : phase === 1 ? -10000 : phase === 2 ? -2000 : 0;
+        return value >= pnlGood ? "good" : value >= pnlOk ? "ok" : "bad";
+      case "total_trades":
+        return "neutral";  // Always neutral - just informational
+      default:
+        return "neutral";
+    }
   }
 
   // Helper to get stage-aware thresholds
@@ -1450,6 +1563,10 @@
     const cp = data?.curriculum_progress || {};
     const cs = cp?.composite_score || null;
 
+    // Get stage-aware thresholds
+    const stageIdx = (data?.curriculum_progress?.stage_index ?? data?.curriculum_stage_idx) || 0;
+    const currentPhase = getPhaseFromStage(stageIdx);
+
     const readinessPct = (() => {
       // prefer composite readiness; fallback to gates passed %
       if (cs && cs.total_score != null) return clamp(Number(cs.total_score) * 100, 0, 100);
@@ -1483,6 +1600,26 @@
       ? formatDelta({ current: readinessPct, base: baseReadinessPct, format: "pct_points", higherIsBetter: true })
       : { text:null, status:"neutral" };
 
+    // Stage-aware learning status (entropy, KL, explained variance are phase-dependent)
+    const getStageAwareLearningStatus = (metric, value) => {
+      if (value == null || isNaN(value)) return "neutral";
+      const thresholds = STAGE_ALERT_OVERRIDES[currentPhase]?.ranges || {};
+      switch(metric) {
+        case "entropy":
+          const ent = thresholds.entropy || { min: 0.25, max: 0.85 };
+          return (value >= ent.min && value <= ent.max) ? "good" : 
+                 (value >= ent.min * 0.8 && value <= ent.max * 1.2) ? "ok" : "bad";
+        case "kl":
+          const kl = thresholds.approx_kl || { max_warning: 0.015 };
+          return value <= kl.max_warning ? "good" : value <= (kl.max_critical || 0.025) ? "ok" : "bad";
+        case "ev":
+          const ev = thresholds.explained_variance || { min_warning: 0.5 };
+          return value >= ev.min_warning ? "good" : value >= (ev.min_critical || 0.2) ? "ok" : "bad";
+        default:
+          return "neutral";
+      }
+    };
+
     // Focus mode: show only “red flags” across matrix cells (bad or high-signal)
     const cells = [
       // Learning Stability
@@ -1493,7 +1630,7 @@
             key: "entropy",
             title: "Entropy",
             value: fmt.num(data?.learning?.entropy, 2),
-            status: data?.learning?.entropy_status || "neutral",
+            status: getStageAwareLearningStatus("entropy", data?.learning?.entropy),
             delta: entDelta.text, deltaStatus: entDelta.status,
             spark: h.entropy,
             foot: "Exploration balance",
@@ -1502,7 +1639,7 @@
             key: "kl",
             title: "KL Divergence",
             value: fmt.sci(data?.learning?.approx_kl, 5),
-            status: data?.learning?.approx_kl_status || "neutral",
+            status: getStageAwareLearningStatus("kl", data?.learning?.approx_kl),
             delta: klDelta.text, deltaStatus: klDelta.status,
             spark: h.kl_divergence,
             sparkStroke: "rgba(251,191,36,0.95)",
@@ -1513,7 +1650,7 @@
             key: "ev",
             title: "Explained Var",
             value: fmt.num(data?.learning?.explained_variance, 3),
-            status: data?.learning?.explained_variance_status || "neutral",
+            status: getStageAwareLearningStatus("ev", data?.learning?.explained_variance),
             delta: evDelta.text, deltaStatus: evDelta.status,
             spark: h.explained_variance,
             sparkStroke: "rgba(34,211,238,0.95)",
@@ -1531,7 +1668,7 @@
             key: "win_rate",
             title: "Win Rate",
             value: fmt.pct(data?.trading?.mean_win_rate, 1),
-            status: data?.trading?.mean_win_rate_status || "neutral",
+            status: getStageAwareKPIStatus("win_rate", data?.trading?.mean_win_rate, stageIdx),
             delta: wrDelta.text, deltaStatus: wrDelta.status,
             spark: h.win_rates,
             foot: "Selectivity + execution",
@@ -1540,7 +1677,7 @@
             key: "drawdown",
             title: "Max Drawdown",
             value: fmt.pct(data?.trading?.max_drawdown, 2),
-            status: data?.trading?.max_drawdown_status || "neutral",
+            status: getStageAwareKPIStatus("max_dd", data?.trading?.max_drawdown, stageIdx),
             delta: ddDelta.text, deltaStatus: ddDelta.status,
             spark: h.drawdowns,
             sparkStroke: "rgba(251,113,133,0.95)",
@@ -1551,7 +1688,7 @@
             key: "r_multiple",
             title: "R-Multiple",
             value: fmt.num(data?.quality?.mean_r_multiple, 2),
-            status: data?.quality?.mean_r_multiple_status || "neutral",
+            status: getStageAwareKPIStatus("r_multiple", data?.quality?.mean_r_multiple, stageIdx),
             delta: rDelta.text, deltaStatus: rDelta.status,
             spark: h.r_multiples,
             foot: "Risk-adjusted returns",
@@ -2230,78 +2367,101 @@
 
     const totalAlerts = (alertCounts?.critical || 0) + (alertCounts?.warning || 0);
 
+    // Get current stage index for stage-aware coloring
+    const stageIdx = (data.curriculum_progress?.stage_index ?? data.curriculum_stage_idx) || 0;
+    const currentPhase = getPhaseFromStage(stageIdx);
+    const phaseThresholds = STAGE_KPI_THRESHOLDS[currentPhase];
+
     const KPI = [
       {
         id: "win_rate",
         label: "Win Rate",
         value: fmt.pct(trading.mean_win_rate, 1),
-        status: trading.mean_win_rate_status,
+        rawValue: trading.mean_win_rate,
+        status: getStageAwareKPIStatus("win_rate", trading.mean_win_rate, stageIdx),
         delta: compareOn ? formatDelta({ current: trading.mean_win_rate, base: baseline?.trading?.mean_win_rate, format: "pct_points", higherIsBetter: true }) : null,
         spark: data.history?.win_rates,
+        target: `≥${phaseThresholds.win_rate.good}%`,
       },
       {
         id: "max_dd",
         label: "Max DD",
         value: fmt.pct(trading.max_drawdown, 2),
-        status: trading.max_drawdown_status,
+        rawValue: trading.max_drawdown,
+        status: getStageAwareKPIStatus("max_dd", trading.max_drawdown, stageIdx),
         delta: compareOn ? formatDelta({ current: trading.max_drawdown, base: baseline?.trading?.max_drawdown, format: "pct_points", higherIsBetter: false }) : null,
         spark: data.history?.drawdowns,
+        target: `≤${phaseThresholds.max_dd.good}%`,
       },
       {
         id: "profit_factor",
         label: "Profit Factor",
         value: fmt.num(quality.mean_profit_factor, 2),
-        status: quality.mean_profit_factor_status,
+        rawValue: quality.mean_profit_factor,
+        status: getStageAwareKPIStatus("profit_factor", quality.mean_profit_factor, stageIdx),
         delta: compareOn ? formatDelta({ current: quality.mean_profit_factor, base: baseline?.quality?.mean_profit_factor, format: "num", d: 2, higherIsBetter: true }) : null,
         spark: null,
+        target: `≥${phaseThresholds.profit_factor.good}`,
       },
       {
         id: "entry_quality",
         label: "Entry Quality",
         value: fmt.pct(quality.mean_entry_quality, 1),
-        status: quality.mean_entry_quality_status,
+        rawValue: quality.mean_entry_quality,
+        status: getStageAwareKPIStatus("entry_quality", quality.mean_entry_quality, stageIdx),
         delta: compareOn ? formatDelta({ current: quality.mean_entry_quality, base: baseline?.quality?.mean_entry_quality, format: "pct_points", higherIsBetter: true }) : null,
         spark: null,
+        target: `≥${phaseThresholds.entry_quality.good}%`,
       },
       {
         id: "mean_reward",
         label: "Mean Reward",
         value: fmt.num(learning.mean_reward, 2),
-        status: learning.mean_reward_status,
+        rawValue: learning.mean_reward,
+        status: getStageAwareKPIStatus("mean_reward", learning.mean_reward, stageIdx),
         delta: compareOn ? formatDelta({ current: learning.mean_reward, base: baseline?.learning?.mean_reward, format: "num", d: 2, higherIsBetter: true }) : null,
         spark: data.history?.rewards,
+        target: `≥${phaseThresholds.mean_reward.good}`,
       },
       {
         id: "total_pnl",
         label: "Total P&L",
         value: fmt.currency(learning.total_pnl, 0),
-        status: learning.total_pnl_status,
+        rawValue: learning.total_pnl,
+        status: getStageAwareKPIStatus("total_pnl", learning.total_pnl, stageIdx),
         delta: compareOn ? formatDelta({ current: learning.total_pnl, base: baseline?.learning?.total_pnl, format: "currency", higherIsBetter: true }) : null,
         spark: data.history?.pnls,
+        target: null,
       },
       {
         id: "trades_ep",
         label: "Trades/Ep",
         value: fmt.num(trading.mean_trades, 1),
-        status: trading.mean_trades_status,
+        rawValue: trading.mean_trades,
+        status: getStageAwareKPIStatus("trades_ep", trading.mean_trades, stageIdx),
         delta: compareOn ? formatDelta({ current: trading.mean_trades, base: baseline?.trading?.mean_trades, format: "num", d: 1, higherIsBetter: true }) : null,
         spark: data.history?.trades_per_episode,
+        target: `${phaseThresholds.trades_ep.min}-${phaseThresholds.trades_ep.max}`,
       },
       {
         id: "r_multiple",
         label: "R-Multiple",
         value: fmt.num(quality.mean_r_multiple, 2),
-        status: quality.mean_r_multiple_status,
+        rawValue: quality.mean_r_multiple,
+        status: getStageAwareKPIStatus("r_multiple", quality.mean_r_multiple, stageIdx),
         delta: compareOn ? formatDelta({ current: quality.mean_r_multiple, base: baseline?.quality?.mean_r_multiple, format: "num", d: 2, higherIsBetter: true }) : null,
         spark: data.history?.r_multiples,
+        target: `≥${phaseThresholds.r_multiple.good}`,
       },
       {
         id: "total_trades",
         label: "Total Trades",
         value: fmt.int(trading.total_trades),
+        rawValue: trading.total_trades,
         status: "neutral",
         delta: compareOn ? formatDelta({ current: trading.total_trades, base: baseline?.trading?.total_trades, format: "int", higherIsBetter: true }) : null,
         spark: null,
+        target: null,
       },
     ];
 
@@ -2392,10 +2552,28 @@
                 status={k.status}
                 delta={k.delta?.text || null}
                 deltaStatus={k.delta?.status || "neutral"}
-                hint={focusMode ? "Focus view" : null}
+                hint={k.target ? `Target: ${k.target}` : (focusMode ? "Focus view" : null)}
                 spark={k.spark ? <Sparkline data={k.spark} /> : null}
               />
             ))}
+          </div>
+
+          {/* Stage Context Badge */}
+          <div className="mt-3 pt-3 border-t border-white/5 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] text-slate-500">Thresholds for:</span>
+              <span className={"text-[10px] font-black px-2 py-0.5 rounded " + 
+                (currentPhase === 0 ? "bg-cyan-500/20 text-cyan-400" : 
+                 currentPhase === 1 ? "bg-amber-500/20 text-amber-400" : 
+                 currentPhase === 2 ? "bg-purple-500/20 text-purple-400" : 
+                 "bg-emerald-500/20 text-emerald-400")}>
+                {currentPhase === 0 ? "DISCOVERY" : currentPhase === 1 ? "FOUNDATION" : currentPhase === 2 ? "DEVELOPMENT" : "MASTERY"}
+              </span>
+              <span className="text-[10px] text-slate-500">phase</span>
+            </div>
+            <div className="text-[10px] text-slate-500">
+              Stage <span className="font-bold text-slate-300">{stageIdx + 1}/10</span>
+            </div>
           </div>
         </Glass>
 
@@ -2692,7 +2870,7 @@
           </Glass>
         </div>
 
-        {/* Direction Stats (Buy/Sell Breakdown) */}
+        {/* Direction Stats (Buy/Sell Breakdown) - Full width section */}
         <DirectionStatsPanel data={data} />
       </div>
     );
@@ -3479,13 +3657,13 @@
                         </div>
                         <div className={"rounded-lg p-2 " + colors.bg + " " + colors.border + " border"}>
                           <div className="text-[9px] text-slate-500">Avg R-Multiple</div>
-                          <div className={"mono text-sm font-bold " + (stage.avg_r_multiple >= 0 ? "text-emerald-400" : "text-rose-400")}>
+                          <div className={"mono text-sm font-bold " + (stage.avg_r_multiple >= 0.5 ? "text-emerald-400" : stage.avg_r_multiple >= 0 ? "text-amber-400" : "text-rose-400")}>
                             {fmt.num(stage.avg_r_multiple, 3)}
                           </div>
                         </div>
                         <div className={"rounded-lg p-2 " + colors.bg + " " + colors.border + " border"}>
                           <div className="text-[9px] text-slate-500">Avg Reward</div>
-                          <div className={"mono text-sm font-bold " + (stage.avg_reward >= 0 ? "text-emerald-400" : "text-rose-400")}>
+                          <div className={"mono text-sm font-bold " + (stage.avg_reward >= 0.5 ? "text-emerald-400" : stage.avg_reward >= 0 ? "text-amber-400" : "text-rose-400")}>
                             {fmt.num(stage.avg_reward, 3)}
                           </div>
                         </div>
@@ -3523,6 +3701,96 @@
               );
             })}
           </div>
+        )}
+
+        {/* Direction Analysis by Stage */}
+        {hasData && stages.some(s => s.direction_stats && (s.direction_stats.long_count > 0 || s.direction_stats.short_count > 0)) && (
+          <Glass className="p-4">
+            <div className="flex items-center gap-2 mb-4">
+              <span className="text-sm">↕️</span>
+              <span className="text-xs font-black text-white">Direction Analysis by Stage</span>
+              <span className="text-[10px] text-slate-500 ml-2">Long vs Short Performance Evolution</span>
+            </div>
+            
+            <div className="space-y-3">
+              {stages.filter(s => s.direction_stats && (s.direction_stats.long_count > 0 || s.direction_stats.short_count > 0)).map((stage) => {
+                const ds = stage.direction_stats;
+                const colors = stageColors[stage.stage_name] || stageColors["EXPLORER"];
+                const totalTrades = (ds.long_count || 0) + (ds.short_count || 0);
+                const longPct = totalTrades > 0 ? (ds.long_count / totalTrades) * 100 : 50;
+                const shortPct = totalTrades > 0 ? (ds.short_count / totalTrades) * 100 : 50;
+                
+                return (
+                  <div key={stage.stage_name + "_dir"} className={"rounded-lg p-3 " + colors.bg}>
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <span className={"text-xs font-bold " + colors.text}>{stage.stage_name}</span>
+                        <span className="text-[10px] text-slate-500">{totalTrades} trades</span>
+                      </div>
+                      <div className="flex items-center gap-4 text-[10px]">
+                        <span className={ds.direction_ratio >= 0.9 && ds.direction_ratio <= 1.1 ? "text-emerald-400" : "text-amber-400"}>
+                          Ratio: {fmt.num(ds.direction_ratio || 1, 2)}
+                        </span>
+                      </div>
+                    </div>
+                    
+                    {/* Direction Split Bar */}
+                    <div className="h-3 flex rounded-full overflow-hidden mb-2">
+                      <div 
+                        className="bg-blue-500 flex items-center justify-center"
+                        style={{ width: `${longPct}%` }}
+                      >
+                        {longPct >= 20 && <span className="text-[8px] text-white font-bold">{fmt.pct(longPct, 0)} L</span>}
+                      </div>
+                      <div 
+                        className="bg-rose-500 flex items-center justify-center"
+                        style={{ width: `${shortPct}%` }}
+                      >
+                        {shortPct >= 20 && <span className="text-[8px] text-white font-bold">{fmt.pct(shortPct, 0)} S</span>}
+                      </div>
+                    </div>
+                    
+                    {/* Detailed Stats */}
+                    <div className="grid grid-cols-4 gap-2 text-[10px]">
+                      <div className="text-center">
+                        <div className="text-blue-400 font-bold">{ds.long_count || 0}</div>
+                        <div className="text-slate-500">Long</div>
+                      </div>
+                      <div className="text-center">
+                        <div className={ds.long_win_rate >= 50 ? "text-emerald-400 font-bold" : ds.long_win_rate >= 40 ? "text-amber-400 font-bold" : "text-rose-400 font-bold"}>{fmt.pct(ds.long_win_rate || 0, 1)}</div>
+                        <div className="text-slate-500">L WR</div>
+                      </div>
+                      <div className="text-center">
+                        <div className="text-rose-400 font-bold">{ds.short_count || 0}</div>
+                        <div className="text-slate-500">Short</div>
+                      </div>
+                      <div className="text-center">
+                        <div className={ds.short_win_rate >= 50 ? "text-emerald-400 font-bold" : ds.short_win_rate >= 40 ? "text-amber-400 font-bold" : "text-rose-400 font-bold"}>{fmt.pct(ds.short_win_rate || 0, 1)}</div>
+                        <div className="text-slate-500">S WR</div>
+                      </div>
+                    </div>
+                    
+                    {/* P&L Breakdown */}
+                    <div className="flex justify-between mt-2 pt-2 border-t border-white/5 text-[10px]">
+                      <div className="flex items-center gap-1">
+                        <span className="text-slate-500">Long P&L:</span>
+                        <span className={ds.long_pnl >= 0 ? "text-emerald-400" : "text-rose-400"}>€{fmt.num(ds.long_pnl || 0, 0)}</span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <span className="text-slate-500">Short P&L:</span>
+                        <span className={ds.short_pnl >= 0 ? "text-emerald-400" : "text-rose-400"}>€{fmt.num(ds.short_pnl || 0, 0)}</span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            
+            {/* Direction Balance Legend */}
+            <div className="mt-3 pt-3 border-t border-white/5 text-[10px] text-slate-500">
+              <span className="font-bold text-slate-400">Ratio Guide:</span> 0.9-1.1 = Balanced ✅ | &lt;0.8 or &gt;1.2 = Directional bias ⚠️
+            </div>
+          </Glass>
         )}
 
         {/* Legend */}
@@ -3872,14 +4140,41 @@
   function LearningTab({ data, baseline=null, compareOn=false }) {
     const learning = data.learning || {};
 
+    // Compute status locally as fallback/override to ensure correct coloring
+    const computeStatus = (id, value) => {
+      if (value == null || isNaN(value)) return "neutral";
+      switch(id) {
+        case "policy_loss":
+          return value < 0 ? "good" : value < 0.05 ? "ok" : "bad";
+        case "value_loss":
+          return value < 0.1 ? "good" : value < 0.5 ? "ok" : "bad";
+        case "entropy":
+          // Good: 0.25-0.85, Ok: 0.15-0.95, Bad: outside
+          if (value >= 0.25 && value <= 0.85) return "good";
+          if (value >= 0.15 && value <= 0.95) return "ok";
+          return "bad";
+        case "kl":
+          return value < 0.015 ? "good" : value < 0.025 ? "ok" : "bad";
+        case "clip":
+          // Good: 0.05-0.20, Ok: 0.02-0.25, Bad: outside
+          if (value >= 0.05 && value <= 0.20) return "good";
+          if (value >= 0.02 && value <= 0.25) return "ok";
+          return "bad";
+        case "ev":
+          return value >= 0.5 ? "good" : value >= 0.2 ? "ok" : "bad";
+        default:
+          return "neutral";
+      }
+    };
+
     const rows = [
-      { id:"policy_loss", label: "Policy Loss", value: fmt.sci(learning.policy_loss, 4), status: learning.policy_loss_status, ideal: "< 0 (negative)", higherIsBetter: false, format:"num" },
-      { id:"value_loss", label: "Value Loss", value: fmt.num(learning.value_loss, 4), status: learning.value_loss_status, ideal: "< 0.1", higherIsBetter: false, format:"num" },
-      { id:"entropy", label: "Entropy", value: fmt.num(learning.entropy, 2), status: learning.entropy_status, ideal: "0.25 – 0.85", higherIsBetter: null, format:"num" },  // Range-based, not directional
-      { id:"kl", label: "KL Divergence", value: fmt.num(learning.approx_kl, 4), status: learning.approx_kl_status, ideal: "< 0.015", higherIsBetter: false, format:"num" },
-      { id:"clip", label: "Clip Fraction", value: fmt.num(learning.clip_fraction, 3), status: learning.clip_fraction_status, ideal: "0.05 – 0.20", higherIsBetter: false, format:"num" },
-      { id:"ev", label: "Explained Var", value: fmt.num(learning.explained_variance, 3), status: learning.explained_variance_status, ideal: "> 0.5", higherIsBetter: true, format:"num" },
-    ];
+      { id:"policy_loss", label: "Policy Loss", value: fmt.sci(learning.policy_loss, 4), rawValue: learning.policy_loss, ideal: "< 0 (negative)", higherIsBetter: false, format:"num" },
+      { id:"value_loss", label: "Value Loss", value: fmt.num(learning.value_loss, 4), rawValue: learning.value_loss, ideal: "< 0.1", higherIsBetter: false, format:"num" },
+      { id:"entropy", label: "Entropy", value: fmt.num(learning.entropy, 2), rawValue: learning.entropy, ideal: "0.25 – 0.85", higherIsBetter: null, format:"num" },
+      { id:"kl", label: "KL Divergence", value: fmt.num(learning.approx_kl, 4), rawValue: learning.approx_kl, ideal: "< 0.015", higherIsBetter: false, format:"num" },
+      { id:"clip", label: "Clip Fraction", value: fmt.num(learning.clip_fraction, 3), rawValue: learning.clip_fraction, ideal: "0.05 – 0.20", higherIsBetter: false, format:"num" },
+      { id:"ev", label: "Explained Var", value: fmt.num(learning.explained_variance, 3), rawValue: learning.explained_variance, ideal: "> 0.5", higherIsBetter: true, format:"num" },
+    ].map(r => ({ ...r, status: computeStatus(r.id, r.rawValue) }));
 
     return (
       <div className="space-y-4 animate-fade-in">

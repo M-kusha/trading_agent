@@ -775,6 +775,7 @@ class CurriculumTrainingCallback(BaseCallback):
                 profit_factor=float(ep_stats.get("profit_factor", finfo.get("profit_factor", 0.0))),
                 r_multiple=float(ep_stats.get("avg_r_multiple", finfo.get("avg_r_multiple", 0.0))),
                 reward=ep_reward,
+                direction_stats=dir_stats,  # Pass direction stats for per-stage tracking
             )
             
             # Record episode to curriculum manager for rolling stats and promotion checks
@@ -946,6 +947,7 @@ class CurriculumTrainingCallback(BaseCallback):
         profit_factor: float,
         r_multiple: float,
         reward: float,
+        direction_stats: Dict[str, Any] = None,
     ) -> None:
         """
         Record episode statistics for a specific stage.
@@ -969,6 +971,13 @@ class CurriculumTrainingCallback(BaseCallback):
                 "first_timestep": self.num_timesteps,
                 "last_episode": 0,
                 "last_timestep": 0,
+                # Direction stats per stage
+                "long_count": 0,
+                "short_count": 0,
+                "long_wins": 0,
+                "short_wins": 0,
+                "long_pnl": 0.0,
+                "short_pnl": 0.0,
             }
         
         stats = self._per_stage_stats[stage_name]
@@ -996,6 +1005,19 @@ class CurriculumTrainingCallback(BaseCallback):
             stats["pnl_values"] = stats["pnl_values"][-100:]
         if len(stats["win_rate_values"]) > 100:
             stats["win_rate_values"] = stats["win_rate_values"][-100:]
+        
+        # Accumulate direction stats for this stage
+        if direction_stats:
+            stats["long_count"] += int(direction_stats.get("long_count", 0))
+            stats["short_count"] += int(direction_stats.get("short_count", 0))
+            long_cnt = int(direction_stats.get("long_count", 0))
+            short_cnt = int(direction_stats.get("short_count", 0))
+            long_wr = float(direction_stats.get("long_win_rate", 0))
+            short_wr = float(direction_stats.get("short_win_rate", 0))
+            stats["long_wins"] += int(long_cnt * long_wr)
+            stats["short_wins"] += int(short_cnt * short_wr)
+            stats["long_pnl"] += float(direction_stats.get("long_pnl", 0))
+            stats["short_pnl"] += float(direction_stats.get("short_pnl", 0))
     
     def _get_stage_comparison_data(self) -> Dict[str, Any]:
         """
@@ -1054,6 +1076,24 @@ class CurriculumTrainingCallback(BaseCallback):
                 "avg_r_multiple": avg_r_multiple,
                 "first_episode": stats["first_episode"],
                 "last_episode": stats["last_episode"],
+            }
+            
+            # Add direction stats for this stage
+            long_cnt = stats.get("long_count", 0)
+            short_cnt = stats.get("short_count", 0)
+            total_dir = long_cnt + short_cnt
+            stage_entry["direction_stats"] = {
+                "long_count": long_cnt,
+                "short_count": short_cnt,
+                "long_wins": stats.get("long_wins", 0),
+                "short_wins": stats.get("short_wins", 0),
+                "long_pnl": stats.get("long_pnl", 0.0),
+                "short_pnl": stats.get("short_pnl", 0.0),
+                "long_win_rate": (stats.get("long_wins", 0) / long_cnt * 100) if long_cnt > 0 else 0,
+                "short_win_rate": (stats.get("short_wins", 0) / short_cnt * 100) if short_cnt > 0 else 0,
+                "long_pct": (long_cnt / total_dir * 100) if total_dir > 0 else 50,
+                "short_pct": (short_cnt / total_dir * 100) if total_dir > 0 else 50,
+                "direction_ratio": (long_cnt / short_cnt) if short_cnt > 0 else 1.0,
             }
             
             # Calculate improvements from previous stage

@@ -1637,7 +1637,7 @@ def get_risk_manager_config() -> CurriculumStageConfig:
             # STREAKS: NEW
             streak_modifier_enabled=True,
             win_streak_bonus_per_win=0.02,
-            loss_streak_penalty_per_loss=0.03,
+            loss_streak_penalty_per_loss=0.05,  # FIX: Increased from 0.03 - stronger signal to avoid loss streaks
             
             anti_churn_enabled=True,
             daily_trade_soft_limit=10,   # GPT FIX: Increased from 6
@@ -1656,8 +1656,10 @@ def get_risk_manager_config() -> CurriculumStageConfig:
             per_step_max=0.04,
             
             # ACTIVITY CONSISTENCY: Quality over quantity
+            # Target ~3 trades/day for active but disciplined trading
+            # 3 trades/day × 15.6 days/ep = 47 trades/ep = 31 per 1k steps
             activity_consistency_enabled=True,
-            target_trades_per_1k_steps=5.0,
+            target_trades_per_1k_steps=31.0,  # FIX: Was 5.0 (0.5/day) - now targets ~3/day
             activity_deviation_penalty_scale=0.8,  # STRONG: match PnL signal
             activity_deviation_penalty_cap=12.0,  # Match PnL scale
             min_trades_penalty=0.15,
@@ -1706,7 +1708,7 @@ def get_risk_manager_config() -> CurriculumStageConfig:
             max_pnl_std=6000.0,
             min_trade_count_avg=4.0,
             max_dd_breach_rate=0.10,
-            max_consecutive_loss_rate=0.15,
+            max_consecutive_loss_rate=0.25,  # FIX: Relaxed from 0.15 - too steep from Stage 5 (0.30)
             evaluation_window=100,
         ),
         max_steps_per_episode=2400,
@@ -1741,7 +1743,7 @@ def get_risk_manager_config() -> CurriculumStageConfig:
                 TradingSkill.EXIT_QUALITY: 0.50,
                 TradingSkill.ENTRY_TIMING: 0.48,
                 TradingSkill.DRAWDOWN_CONTROL: 0.60,
-                TradingSkill.PATIENCE: 0.55,
+                TradingSkill.PATIENCE: 0.40,  # FIX: Relaxed from 0.55 - 3 trades/day is acceptable for active gold trading
             },
             min_confidence=0.55,
             require_all_skills=False,
@@ -1903,9 +1905,11 @@ def get_strategist_config() -> CurriculumStageConfig:
             per_step_max=0.05,
             
             # ACTIVITY CONSISTENCY: Quality focus
+            # Target ~2.5 trades/day for disciplined strategist
+            # 2.5 trades/day × 15.6 days/ep = 39 trades/ep = 26 per 1k steps
             activity_consistency_enabled=True,
-            target_trades_per_1k_steps=4.0,
-            activity_deviation_penalty_scale=0.8,  # STRONG: match PnL signal
+            target_trades_per_1k_steps=26.0,  # FIX: Was 4.0 (0.4/day) - now targets ~2.5/day
+            activity_deviation_penalty_scale=1.0,  # STRONGER: strategic discipline
             activity_deviation_penalty_cap=12.0,  # Match PnL scale
             min_trades_penalty=0.1,
             
@@ -1953,7 +1957,7 @@ def get_strategist_config() -> CurriculumStageConfig:
             max_pnl_std=5500.0,
             min_trade_count_avg=4.5,
             max_dd_breach_rate=0.08,
-            max_consecutive_loss_rate=0.12,
+            max_consecutive_loss_rate=0.20,  # FIX: Relaxed from 0.12 - smooth progression from Stage 6 (0.25)
             evaluation_window=120,
         ),
         max_steps_per_episode=2600,
@@ -1988,7 +1992,7 @@ def get_strategist_config() -> CurriculumStageConfig:
                 TradingSkill.EXIT_QUALITY: 0.55,
                 TradingSkill.ENTRY_TIMING: 0.52,
                 TradingSkill.DRAWDOWN_CONTROL: 0.65,
-                TradingSkill.PATIENCE: 0.58,
+                TradingSkill.PATIENCE: 0.45,  # FIX: Relaxed from 0.58 - ~3 trades/day acceptable
                 TradingSkill.RISK_REWARD: 0.50,
             },
             min_confidence=0.58,
@@ -2155,9 +2159,11 @@ def get_professional_config() -> CurriculumStageConfig:
             per_step_max=0.05,
             
             # ACTIVITY CONSISTENCY: Near-live discipline
+            # Target ~2 trades/day for specialist quality
+            # 2 trades/day × 15.6 days/ep = 31 trades/ep = 21 per 1k steps
             activity_consistency_enabled=True,
-            target_trades_per_1k_steps=3.0,
-            activity_deviation_penalty_scale=0.8,  # STRONG: match PnL signal
+            target_trades_per_1k_steps=21.0,  # FIX: Was 3.0 (0.3/day) - now targets ~2/day
+            activity_deviation_penalty_scale=1.2,  # STRONG: specialist discipline
             activity_deviation_penalty_cap=10.0,  # Match PnL scale
             min_trades_penalty=0.1,
             
@@ -2205,7 +2211,7 @@ def get_professional_config() -> CurriculumStageConfig:
             max_pnl_std=5000.0,
             min_trade_count_avg=5.0,
             max_dd_breach_rate=0.06,
-            max_consecutive_loss_rate=0.10,
+            max_consecutive_loss_rate=0.15,  # FIX: Relaxed from 0.10 - smooth progression from Stage 7 (0.20)
             evaluation_window=140,
         ),
         max_steps_per_episode=2800,
@@ -2240,7 +2246,7 @@ def get_professional_config() -> CurriculumStageConfig:
                 TradingSkill.EXIT_QUALITY: 0.60,
                 TradingSkill.ENTRY_TIMING: 0.55,
                 TradingSkill.DRAWDOWN_CONTROL: 0.70,
-                TradingSkill.PATIENCE: 0.62,
+                TradingSkill.PATIENCE: 0.50,  # FIX: Relaxed from 0.62 - ~2.5 trades/day
                 TradingSkill.RISK_REWARD: 0.55,
                 TradingSkill.CONSISTENCY: 0.55,
             },
@@ -2421,9 +2427,11 @@ def get_live_ready_config() -> CurriculumStageConfig:
             per_step_max=0.05,
             
             # ACTIVITY CONSISTENCY: Live-ready discipline
+            # Target ~1.5 trades/day for expert live trading
+            # 1.5 trades/day × 15.6 days/ep = 23 trades/ep = 16 per 1k steps
             activity_consistency_enabled=True,
-            target_trades_per_1k_steps=3.0,
-            activity_deviation_penalty_scale=0.8,  # STRONG: match PnL signal
+            target_trades_per_1k_steps=16.0,  # FIX: Was 3.0 (0.3/day) - now targets ~1.5/day (live-ready)
+            activity_deviation_penalty_scale=1.5,  # VERY STRONG: live discipline
             activity_deviation_penalty_cap=10.0,  # Match PnL scale
             min_trades_penalty=0.1,
             
@@ -2471,7 +2479,7 @@ def get_live_ready_config() -> CurriculumStageConfig:
             max_pnl_std=4500.0,
             min_trade_count_avg=5.5,
             max_dd_breach_rate=0.05,
-            max_consecutive_loss_rate=0.08,
+            max_consecutive_loss_rate=0.12,  # FIX: Relaxed from 0.08 - smooth progression from Stage 8 (0.15)
             evaluation_window=160,
         ),
         max_steps_per_episode=3000,
@@ -2507,7 +2515,7 @@ def get_live_ready_config() -> CurriculumStageConfig:
                 TradingSkill.EXIT_QUALITY: 0.65,
                 TradingSkill.ENTRY_TIMING: 0.60,
                 TradingSkill.DRAWDOWN_CONTROL: 0.75,
-                TradingSkill.PATIENCE: 0.68,
+                TradingSkill.PATIENCE: 0.55,  # FIX: Relaxed from 0.68 - ~2 trades/day for expert
                 TradingSkill.RISK_REWARD: 0.60,
                 TradingSkill.CONSISTENCY: 0.65,
             },
