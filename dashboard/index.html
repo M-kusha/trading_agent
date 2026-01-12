@@ -75,7 +75,7 @@
         linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
       background-size: 44px 44px;
       opacity: 0.28;
-      mask-image: radial-gradient(circle at 30% 20%, black 0%, transparent 60%);
+      -mask-image: radial-gradient(circle at 30% 20%, black 0%, transparent 60%);
     }
 
     body::after{
@@ -105,8 +105,8 @@
         rgba(15,23,42,0.72) 0%,
         rgba(2,6,23,0.55) 55%,
         rgba(15,23,42,0.62) 100%);
-      backdrop-filter: blur(18px);
       -webkit-backdrop-filter: blur(18px);
+      backdrop-filter: blur(18px);
       border: 1px solid var(--border);
       box-shadow: 0 25px 55px -18px rgba(0,0,0,0.65), inset 0 1px 0 rgba(255,255,255,0.06);
     }
@@ -127,8 +127,9 @@
 
     .gradient-text{
       background: linear-gradient(135deg, #a5b4fc 0%, #c4b5fd 40%, #f0abfc 75%, #fda4af 100%);
-      background-clip: text;
+      
       -webkit-background-clip: text;
+      background-clip: text;
       -webkit-text-fill-color: transparent;
     }
 
@@ -379,32 +380,40 @@
   };
 
   // Compute stage-aware status for a KPI metric
-  function getStageAwareKPIStatus(metricId, value, stageIdx) {
+  function getStageAwareKPIStatus(metricId, value, stageIdx, data=null) {
     if (value == null || isNaN(value)) return "neutral";
+    const v = (metricId === "win_rate" || metricId === "max_dd" || metricId === "entry_quality")
+      ? normalizePctValue(value)
+      : Number(value);
     const phase = getPhaseFromStage(stageIdx);
     const thresholds = STAGE_KPI_THRESHOLDS[phase];
     
     switch(metricId) {
       case "win_rate":
-        return value >= thresholds.win_rate.good ? "good" : value >= thresholds.win_rate.ok ? "ok" : "bad";
+        return v >= thresholds.win_rate.good ? "good" : v >= thresholds.win_rate.ok ? "ok" : "bad";
       case "max_dd":
-        return value <= thresholds.max_dd.good ? "good" : value <= thresholds.max_dd.ok ? "ok" : "bad";
+        return v <= thresholds.max_dd.good ? "good" : v <= thresholds.max_dd.ok ? "ok" : "bad";
       case "profit_factor":
-        return value >= thresholds.profit_factor.good ? "good" : value >= thresholds.profit_factor.ok ? "ok" : "bad";
+        return v >= thresholds.profit_factor.good ? "good" : v >= thresholds.profit_factor.ok ? "ok" : "bad";
       case "entry_quality":
-        return value >= thresholds.entry_quality.good ? "good" : value >= thresholds.entry_quality.ok ? "ok" : "bad";
+        return v >= thresholds.entry_quality.good ? "good" : v >= thresholds.entry_quality.ok ? "ok" : "bad";
       case "mean_reward":
-        return value >= thresholds.mean_reward.good ? "good" : value >= thresholds.mean_reward.ok ? "ok" : "bad";
+        return v >= thresholds.mean_reward.good ? "good" : v >= thresholds.mean_reward.ok ? "ok" : "bad";
       case "r_multiple":
-        return value >= thresholds.r_multiple.good ? "good" : value >= thresholds.r_multiple.ok ? "ok" : "bad";
+        {
+          const rm = data ? getCurriculumRMultipleTarget(data) : { value: null, source: null };
+          const good = (rm.value != null) ? rm.value : thresholds.r_multiple.good;
+          const ok = (rm.value != null) ? (good - 0.05) : thresholds.r_multiple.ok;
+          return v >= good ? "good" : v >= ok ? "ok" : "bad";
+        }
       case "trades_ep":
-        return (value >= thresholds.trades_ep.min && value <= thresholds.trades_ep.max) ? "good" :
-               (value >= thresholds.trades_ep.min * 0.5 && value <= thresholds.trades_ep.max * 1.5) ? "ok" : "bad";
+        return (v >= thresholds.trades_ep.min && v <= thresholds.trades_ep.max) ? "good" :
+               (v >= thresholds.trades_ep.min * 0.5 && v <= thresholds.trades_ep.max * 1.5) ? "ok" : "bad";
       case "total_pnl":
         // P&L thresholds scale with phase
         const pnlGood = phase === 0 ? -10000 : phase === 1 ? -2000 : phase === 2 ? 0 : 1000;
         const pnlOk = phase === 0 ? -50000 : phase === 1 ? -10000 : phase === 2 ? -2000 : 0;
-        return value >= pnlGood ? "good" : value >= pnlOk ? "ok" : "bad";
+        return v >= pnlGood ? "good" : v >= pnlOk ? "ok" : "bad";
       case "total_trades":
         return "neutral";  // Always neutral - just informational
       default:
@@ -418,14 +427,71 @@
     const phase = getPhaseFromStage(stageIdx);
     const overrides = STAGE_ALERT_OVERRIDES[phase];
     
+    // Extract entropy targets from curriculum if available
+    let entropyTargets = null;
+    let klTargets = null;
+    
+    // Try curriculum_detail first (stage config)
+    const currDetail = data?.curriculum_detail || {};
+    if (currDetail.entropy_targets) {
+      entropyTargets = currDetail.entropy_targets;
+    }
+    
+    // Try requirements_by_stage as fallback
+    if (!entropyTargets && data?.requirements_by_stage) {
+      const currentStage = data?.curriculum_stage || "";
+      const stageReq = data.requirements_by_stage.stages?.[currentStage];
+      if (stageReq?.requirements?.entropy_targets) {
+        entropyTargets = stageReq.requirements.entropy_targets;
+      }
+    }
+    
+    // Build range overrides from curriculum config
+    const rangeOverrides = { ...overrides.ranges };
+    
+    if (entropyTargets) {
+      rangeOverrides.entropy = {
+        min: entropyTargets.min_entropy ?? 0.25,
+        max: entropyTargets.max_entropy ?? 0.85,
+        severity: "warning",
+        source: "curriculum"
+      };
+    }
+    
+    // KL targets could come from curriculum in future - for now use phase-aware defaults
+    // Different phases have different tolerance for KL divergence
+    if (phase === 0) {
+      // Discovery phase - more tolerance for exploration
+      rangeOverrides.approx_kl = { max_warning: 0.030, max_critical: 0.05, source: "phase_adjusted" };
+    }
+    
     return {
       ...ALERT_CONFIG,
-      ranges: { ...ALERT_CONFIG.ranges, ...overrides.ranges },
+      ranges: { ...ALERT_CONFIG.ranges, ...rangeOverrides },
       slopes: { ...ALERT_CONFIG.slopes, ...overrides.slopes },
       disabled: overrides.disabled || [],
       phase,
       stageIdx,
+      entropyTargets,  // Pass through for tooltip display
     };
+  }
+
+  // Extract current stage competence thresholds from curriculum payload (if available)
+  function getCurriculumCompetence(data) {
+    const currDetail = data?.curriculum_detail || {};
+    if (currDetail?.competence && typeof currDetail.competence === "object") return currDetail.competence;
+
+    const stageName = data?.curriculum_stage || data?.curriculum_progress?.current_stage;
+    const stageReq = stageName && data?.requirements_by_stage?.stages?.[stageName];
+    const competence = stageReq?.requirements?.competence;
+    return (competence && typeof competence === "object") ? competence : null;
+  }
+
+  function getCurriculumRMultipleTarget(data) {
+    const competence = getCurriculumCompetence(data);
+    if (!competence) return { value: null, source: null };
+    const v = competence.min_avg_r_multiple;
+    return (v == null || isNaN(v)) ? { value: null, source: null } : { value: Number(v), source: "curriculum" };
   }
 
   const ALERT_CONFIG = {
@@ -511,9 +577,19 @@
   const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
   const tail = (arr, n) => (Array.isArray(arr) ? arr.slice(Math.max(0, arr.length - n)) : []);
 
+  // Normalize percent-like values: supports both fractions (0.47) and percent units (47)
+  function normalizePctValue(v) {
+    if (v == null || isNaN(v)) return v;
+    const n = Number(v);
+    const abs = Math.abs(n);
+    return abs <= 1.5 ? n * 100 : n;
+  }
+
   function formatDelta({ current, base, format="num", d=2, higherIsBetter=true, suffix="" }) {
     if (current == null || base == null || isNaN(current) || isNaN(base)) return { text: null, status: "neutral" };
-    const delta = Number(current) - Number(base);
+    const cur = (format === "pct_points") ? normalizePctValue(current) : Number(current);
+    const bas = (format === "pct_points") ? normalizePctValue(base) : Number(base);
+    const delta = cur - bas;
     if (Math.abs(delta) < 1e-12) return { text: "Δ 0", status: "neutral" };
 
     const sign = delta >= 0 ? "+" : "";
@@ -931,17 +1007,27 @@
 
     if (ent != null && !isNaN(ent)) {
       const band = cfg.ranges.entropy;
+      const isOutOfBand = (ent < band.min || ent > band.max);
+      const source = band.source === "curriculum" ? "(from curriculum config)" : "";
+      const title = cfg.phase <= 1 
+        ? "Entropy Note (Early Stage)" 
+        : isOutOfBand 
+          ? `Entropy Out of Target Range ${source}` 
+          : "Entropy Within Target";
+      
       add(
         "range.entropy",
-        (ent < band.min || ent > band.max),
+        isOutOfBand,
         {
           severity: band.severity,
-          title: cfg.phase <= 1 ? "Entropy Note (Early Stage)" : "Entropy Out of Band",
+          title: title,
           metric: "Entropy",
           current: ent,
           currentFmt: (v) => fmt.num(v, 2),
-          trend: `target ${fmt.num(band.min, 2)}–${fmt.num(band.max, 2)}`,
-          diagnosis: "Exploration-exploitation balance is off; too deterministic or too random policies hurt stability.",
+          trend: `target ${fmt.num(band.min, 2)}–${fmt.num(band.max, 2)} ${source}`,
+          diagnosis: ent < band.min 
+            ? "Entropy too low - policy may be too deterministic for this stage, limiting exploration."
+            : "Entropy too high - policy may be too random, preventing convergence to effective strategy.",
           action: "Adjust entropy coefficient / target; verify entropy gate penalties align with stage targets.",
         }
       );
@@ -1379,9 +1465,26 @@
   // ─────────────────────────────────────────────────────────────────────────────
   // HEALTH MATRIX (dense, actionable)
   // ─────────────────────────────────────────────────────────────────────────────
-  function HealthCell({ title, value, status="neutral", delta=null, deltaStatus="neutral", sparkData=null, sparkStroke="rgba(165,180,252,0.95)", sparkFill="rgba(99,102,241,0.12)", foot=null }) {
+  function getSparkColors(status) {
+    switch (status) {
+      case "good":
+        return { stroke: "rgba(52,211,153,0.95)", fill: "rgba(52,211,153,0.12)" }; // emerald
+      case "ok":
+        return { stroke: "rgba(251,191,36,0.95)", fill: "rgba(251,191,36,0.12)" }; // amber
+      case "bad":
+        return { stroke: "rgba(251,113,133,0.95)", fill: "rgba(251,113,133,0.12)" }; // rose
+      default:
+        return { stroke: "rgba(165,180,252,0.95)", fill: "rgba(99,102,241,0.12)" }; // indigo
+    }
+  }
+
+  function HealthCell({ title, value, status="neutral", delta=null, deltaStatus="neutral", sparkData=null, sparkStroke=null, sparkFill=null, foot=null, tooltip=null }) {
+    const spark = getSparkColors(status);
     return (
-      <div className={"rounded-2xl border border-white/5 bg-black/18 p-3 min-w-0 " + (status==="bad" ? "ring-1 ring-rose-500/25" : status==="ok" ? "ring-1 ring-amber-500/20" : status==="good" ? "ring-1 ring-emerald-500/15" : "")}>
+      <div 
+        className={"rounded-2xl border border-white/5 bg-black/18 p-3 min-w-0 " + (status==="bad" ? "ring-1 ring-rose-500/25" : status==="ok" ? "ring-1 ring-amber-500/20" : status==="good" ? "ring-1 ring-emerald-500/15" : "")}
+        title={tooltip || undefined}
+      >
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="text-[10px] uppercase tracking-wider text-slate-500 font-black">{title}</div>
@@ -1391,7 +1494,7 @@
             )}
           </div>
           <div className="shrink-0">
-            {sparkData ? <Sparkline data={sparkData} stroke={sparkStroke} fill={sparkFill} /> : null}
+            {sparkData ? <Sparkline data={sparkData} stroke={sparkStroke || spark.stroke} fill={sparkFill || spark.fill} /> : null}
           </div>
         </div>
         {foot && <div className="text-[11px] text-slate-500 mt-2">{foot}</div>}
@@ -1600,25 +1703,76 @@
       ? formatDelta({ current: readinessPct, base: baseReadinessPct, format: "pct_points", higherIsBetter: true })
       : { text:null, status:"neutral" };
 
+    // Curriculum gates summaries
+    const prereqTotal = Number(cp?.prerequisites?.total || 0);
+    const prereqPassed = Number(cp?.prerequisites?.passed || 0);
+
+    const prereqStatus = prereqTotal === 0
+      ? "neutral"
+      : (prereqPassed >= prereqTotal ? "good" : prereqPassed === 0 ? "bad" : "ok");
+
+    const promotionChecks = cp?.promotion_checks || {};
+    const dataGateKeys = ["min_episodes", "min_timesteps", "data_sufficiency"];
+    const dataGatesPresent = dataGateKeys.filter(k => promotionChecks && Object.prototype.hasOwnProperty.call(promotionChecks, k));
+    const dataGatesTotal = dataGatesPresent.length;
+    const dataGatesPassed = dataGatesPresent.filter(k => !!promotionChecks?.[k]?.passed).length;
+    const dataGatesTooltip = dataGatesTotal === 0 ? null : dataGatesPresent.map(k => {
+      const c = promotionChecks?.[k] || {};
+      const req = (c.required != null) ? c.required : "?";
+      const act = (c.actual != null) ? c.actual : "?";
+      return `${k}: ${act}/${req} ${c.passed ? "✓" : "✗"}`;
+    }).join("\n");
+
+    const prereqTooltipParts = [];
+    if (prereqTotal > 0) prereqTooltipParts.push(`Stage prerequisites: ${prereqPassed}/${prereqTotal}`);
+    if (dataGatesTooltip) prereqTooltipParts.push(`Min data gates:\n${dataGatesTooltip}`);
+    const prereqTooltip = prereqTooltipParts.length ? prereqTooltipParts.join("\n\n") : null;
+
     // Stage-aware learning status (entropy, KL, explained variance are phase-dependent)
+    // Now uses curriculum config for dynamic thresholds
     const getStageAwareLearningStatus = (metric, value) => {
       if (value == null || isNaN(value)) return "neutral";
-      const thresholds = STAGE_ALERT_OVERRIDES[currentPhase]?.ranges || {};
+      
+      // Get curriculum-aware config
+      const stageConfig = getStageAwareConfig(data);
+      
       switch(metric) {
         case "entropy":
+          if (stageConfig.ranges.entropy) {
+            const { min, max } = stageConfig.ranges.entropy;
+            return (value >= min && value <= max) ? "good" : 
+                   (value >= min * 0.8 && value <= max * 1.2) ? "ok" : "bad";
+          }
+          // Fallback to phase-based defaults
+          const thresholds = STAGE_ALERT_OVERRIDES[currentPhase]?.ranges || {};
           const ent = thresholds.entropy || { min: 0.25, max: 0.85 };
           return (value >= ent.min && value <= ent.max) ? "good" : 
                  (value >= ent.min * 0.8 && value <= ent.max * 1.2) ? "ok" : "bad";
         case "kl":
-          const kl = thresholds.approx_kl || { max_warning: 0.015 };
-          return value <= kl.max_warning ? "good" : value <= (kl.max_critical || 0.025) ? "ok" : "bad";
+          if (stageConfig.ranges.approx_kl) {
+            const { max_warning, max_critical } = stageConfig.ranges.approx_kl;
+            return value <= max_warning ? "good" : value <= max_critical ? "ok" : "bad";
+          }
+          // Fallback to phase-based defaults
+          const klThresh = STAGE_ALERT_OVERRIDES[currentPhase]?.ranges?.approx_kl || { max_warning: 0.015, max_critical: 0.025 };
+          return value <= klThresh.max_warning ? "good" : value <= klThresh.max_critical ? "ok" : "bad";
         case "ev":
-          const ev = thresholds.explained_variance || { min_warning: 0.5 };
+          const thresholdsEv = STAGE_ALERT_OVERRIDES[currentPhase]?.ranges || {};
+          const ev = thresholdsEv.explained_variance || { min_warning: 0.5 };
           return value >= ev.min_warning ? "good" : value >= (ev.min_critical || 0.2) ? "ok" : "bad";
         default:
           return "neutral";
       }
     };
+    // Get curriculum-aware config for tooltips
+    const stageConfigForCells = getStageAwareConfig(data);
+    const entropyTooltip = stageConfigForCells.ranges.entropy 
+      ? `Target: ${fmt.num(stageConfigForCells.ranges.entropy.min, 2)}-${fmt.num(stageConfigForCells.ranges.entropy.max, 2)}${stageConfigForCells.ranges.entropy.source === 'curriculum' ? ' (curriculum)' : ''}`
+      : null;
+    const klTooltip = stageConfigForCells.ranges.approx_kl
+      ? `Warning: ${(stageConfigForCells.ranges.approx_kl.max_warning * 1000).toFixed(1)}m, Critical: ${(stageConfigForCells.ranges.approx_kl.max_critical * 1000).toFixed(1)}m${stageConfigForCells.ranges.approx_kl.source === 'phase_adjusted' ? ' (phase adjusted)' : ''}`
+      : null;
+
 
     // Focus mode: show only “red flags” across matrix cells (bad or high-signal)
     const cells = [
@@ -1633,7 +1787,10 @@
             status: getStageAwareLearningStatus("entropy", data?.learning?.entropy),
             delta: entDelta.text, deltaStatus: entDelta.status,
             spark: h.entropy,
+            sparkStroke: getSparkColors(getStageAwareLearningStatus("entropy", data?.learning?.entropy)).stroke,
+            sparkFill: getSparkColors(getStageAwareLearningStatus("entropy", data?.learning?.entropy)).fill,
             foot: "Exploration balance",
+            tooltip: entropyTooltip,
           },
           {
             key: "kl",
@@ -1642,9 +1799,10 @@
             status: getStageAwareLearningStatus("kl", data?.learning?.approx_kl),
             delta: klDelta.text, deltaStatus: klDelta.status,
             spark: h.kl_divergence,
-            sparkStroke: "rgba(251,191,36,0.95)",
-            sparkFill: "rgba(251,191,36,0.12)",
+            sparkStroke: getSparkColors(getStageAwareLearningStatus("kl", data?.learning?.approx_kl)).stroke,
+            sparkFill: getSparkColors(getStageAwareLearningStatus("kl", data?.learning?.approx_kl)).fill,
             foot: "Update aggressiveness",
+            tooltip: klTooltip,
           },
           {
             key: "ev",
@@ -1653,8 +1811,8 @@
             status: getStageAwareLearningStatus("ev", data?.learning?.explained_variance),
             delta: evDelta.text, deltaStatus: evDelta.status,
             spark: h.explained_variance,
-            sparkStroke: "rgba(34,211,238,0.95)",
-            sparkFill: "rgba(34,211,238,0.12)",
+            sparkStroke: getSparkColors(getStageAwareLearningStatus("ev", data?.learning?.explained_variance)).stroke,
+            sparkFill: getSparkColors(getStageAwareLearningStatus("ev", data?.learning?.explained_variance)).fill,
             foot: "Critic reliability",
           },
         ]
@@ -1668,7 +1826,7 @@
             key: "win_rate",
             title: "Win Rate",
             value: fmt.pct(data?.trading?.mean_win_rate, 1),
-            status: getStageAwareKPIStatus("win_rate", data?.trading?.mean_win_rate, stageIdx),
+            status: getStageAwareKPIStatus("win_rate", data?.trading?.mean_win_rate, stageIdx, data),
             delta: wrDelta.text, deltaStatus: wrDelta.status,
             spark: h.win_rates,
             foot: "Selectivity + execution",
@@ -1677,18 +1835,16 @@
             key: "drawdown",
             title: "Max Drawdown",
             value: fmt.pct(data?.trading?.max_drawdown, 2),
-            status: getStageAwareKPIStatus("max_dd", data?.trading?.max_drawdown, stageIdx),
+            status: getStageAwareKPIStatus("max_dd", data?.trading?.max_drawdown, stageIdx, data),
             delta: ddDelta.text, deltaStatus: ddDelta.status,
             spark: h.drawdowns,
-            sparkStroke: "rgba(251,113,133,0.95)",
-            sparkFill: "rgba(251,113,133,0.12)",
             foot: "Risk envelope",
           },
           {
             key: "r_multiple",
             title: "R-Multiple",
             value: fmt.num(data?.quality?.mean_r_multiple, 2),
-            status: getStageAwareKPIStatus("r_multiple", data?.quality?.mean_r_multiple, stageIdx),
+            status: getStageAwareKPIStatus("r_multiple", data?.quality?.mean_r_multiple, stageIdx, data),
             delta: rDelta.text, deltaStatus: rDelta.status,
             spark: h.r_multiples,
             foot: "Risk-adjusted returns",
@@ -1721,11 +1877,12 @@
           {
             key: "prereq",
             title: "Prerequisites",
-            value: (cp?.prerequisites && cp.prerequisites.total > 0) ? `${fmt.int(cp.prerequisites.passed)}/${fmt.int(cp.prerequisites.total)}` : "—",
-            status: (cp?.prerequisites?.all_passed ? "good" : (cp?.prerequisites?.total > 0 ? "ok" : "neutral")),
+            value: prereqTotal > 0 ? `${fmt.int(prereqPassed)}/${fmt.int(prereqTotal)}` : "—",
+            status: prereqStatus,
             delta: null, deltaStatus: "neutral",
             spark: null,
-            foot: "Min data gates",
+            foot: "Stage prerequisites",
+            tooltip: prereqTooltip,
           },
         ]
       },
@@ -1782,6 +1939,7 @@
                     sparkStroke={cell.sparkStroke}
                     sparkFill={cell.sparkFill}
                     foot={cell.foot}
+                    tooltip={cell.tooltip}
                   />
                 ))}
               </div>
@@ -2372,13 +2530,17 @@
     const currentPhase = getPhaseFromStage(stageIdx);
     const phaseThresholds = STAGE_KPI_THRESHOLDS[currentPhase];
 
+    const rmTarget = getCurriculumRMultipleTarget(data);
+    const rmGood = (rmTarget.value != null) ? rmTarget.value : phaseThresholds.r_multiple.good;
+    const rmTargetLabel = `≥${fmt.num(rmGood, 2)}${rmTarget.source ? " (curriculum)" : ""}`;
+
     const KPI = [
       {
         id: "win_rate",
         label: "Win Rate",
         value: fmt.pct(trading.mean_win_rate, 1),
         rawValue: trading.mean_win_rate,
-        status: getStageAwareKPIStatus("win_rate", trading.mean_win_rate, stageIdx),
+        status: getStageAwareKPIStatus("win_rate", trading.mean_win_rate, stageIdx, data),
         delta: compareOn ? formatDelta({ current: trading.mean_win_rate, base: baseline?.trading?.mean_win_rate, format: "pct_points", higherIsBetter: true }) : null,
         spark: data.history?.win_rates,
         target: `≥${phaseThresholds.win_rate.good}%`,
@@ -2388,7 +2550,7 @@
         label: "Max DD",
         value: fmt.pct(trading.max_drawdown, 2),
         rawValue: trading.max_drawdown,
-        status: getStageAwareKPIStatus("max_dd", trading.max_drawdown, stageIdx),
+        status: getStageAwareKPIStatus("max_dd", trading.max_drawdown, stageIdx, data),
         delta: compareOn ? formatDelta({ current: trading.max_drawdown, base: baseline?.trading?.max_drawdown, format: "pct_points", higherIsBetter: false }) : null,
         spark: data.history?.drawdowns,
         target: `≤${phaseThresholds.max_dd.good}%`,
@@ -2398,7 +2560,7 @@
         label: "Profit Factor",
         value: fmt.num(quality.mean_profit_factor, 2),
         rawValue: quality.mean_profit_factor,
-        status: getStageAwareKPIStatus("profit_factor", quality.mean_profit_factor, stageIdx),
+        status: getStageAwareKPIStatus("profit_factor", quality.mean_profit_factor, stageIdx, data),
         delta: compareOn ? formatDelta({ current: quality.mean_profit_factor, base: baseline?.quality?.mean_profit_factor, format: "num", d: 2, higherIsBetter: true }) : null,
         spark: null,
         target: `≥${phaseThresholds.profit_factor.good}`,
@@ -2408,7 +2570,7 @@
         label: "Entry Quality",
         value: fmt.pct(quality.mean_entry_quality, 1),
         rawValue: quality.mean_entry_quality,
-        status: getStageAwareKPIStatus("entry_quality", quality.mean_entry_quality, stageIdx),
+        status: getStageAwareKPIStatus("entry_quality", quality.mean_entry_quality, stageIdx, data),
         delta: compareOn ? formatDelta({ current: quality.mean_entry_quality, base: baseline?.quality?.mean_entry_quality, format: "pct_points", higherIsBetter: true }) : null,
         spark: null,
         target: `≥${phaseThresholds.entry_quality.good}%`,
@@ -2418,7 +2580,7 @@
         label: "Mean Reward",
         value: fmt.num(learning.mean_reward, 2),
         rawValue: learning.mean_reward,
-        status: getStageAwareKPIStatus("mean_reward", learning.mean_reward, stageIdx),
+        status: getStageAwareKPIStatus("mean_reward", learning.mean_reward, stageIdx, data),
         delta: compareOn ? formatDelta({ current: learning.mean_reward, base: baseline?.learning?.mean_reward, format: "num", d: 2, higherIsBetter: true }) : null,
         spark: data.history?.rewards,
         target: `≥${phaseThresholds.mean_reward.good}`,
@@ -2428,7 +2590,7 @@
         label: "Total P&L",
         value: fmt.currency(learning.total_pnl, 0),
         rawValue: learning.total_pnl,
-        status: getStageAwareKPIStatus("total_pnl", learning.total_pnl, stageIdx),
+        status: getStageAwareKPIStatus("total_pnl", learning.total_pnl, stageIdx, data),
         delta: compareOn ? formatDelta({ current: learning.total_pnl, base: baseline?.learning?.total_pnl, format: "currency", higherIsBetter: true }) : null,
         spark: data.history?.pnls,
         target: null,
@@ -2438,7 +2600,7 @@
         label: "Trades/Ep",
         value: fmt.num(trading.mean_trades, 1),
         rawValue: trading.mean_trades,
-        status: getStageAwareKPIStatus("trades_ep", trading.mean_trades, stageIdx),
+        status: getStageAwareKPIStatus("trades_ep", trading.mean_trades, stageIdx, data),
         delta: compareOn ? formatDelta({ current: trading.mean_trades, base: baseline?.trading?.mean_trades, format: "num", d: 1, higherIsBetter: true }) : null,
         spark: data.history?.trades_per_episode,
         target: `${phaseThresholds.trades_ep.min}-${phaseThresholds.trades_ep.max}`,
@@ -2448,10 +2610,10 @@
         label: "R-Multiple",
         value: fmt.num(quality.mean_r_multiple, 2),
         rawValue: quality.mean_r_multiple,
-        status: getStageAwareKPIStatus("r_multiple", quality.mean_r_multiple, stageIdx),
+        status: getStageAwareKPIStatus("r_multiple", quality.mean_r_multiple, stageIdx, data),
         delta: compareOn ? formatDelta({ current: quality.mean_r_multiple, base: baseline?.quality?.mean_r_multiple, format: "num", d: 2, higherIsBetter: true }) : null,
         spark: data.history?.r_multiples,
-        target: `≥${phaseThresholds.r_multiple.good}`,
+        target: rmTargetLabel,
       },
       {
         id: "total_trades",
@@ -2598,13 +2760,51 @@
                     <div className="text-[10px] text-slate-500">PPO health + Curriculum stage</div>
                   </div>
                 </div>
-                <div className={"px-2 py-1 rounded-lg text-[10px] font-black " + 
-                  (learning.entropy_status === "bad" || learning.approx_kl_status === "bad" ? "bg-rose-500/20 text-rose-400" :
-                   learning.entropy_status === "ok" || learning.approx_kl_status === "ok" ? "bg-amber-500/20 text-amber-400" :
-                   "bg-emerald-500/20 text-emerald-400")}>
-                  {learning.entropy_status === "bad" || learning.approx_kl_status === "bad" ? "⚠ UNSTABLE" :
-                   learning.entropy_status === "ok" || learning.approx_kl_status === "ok" ? "◐ CAUTION" : "● STABLE"}
-                </div>
+                {(() => {
+                  // Get curriculum-aware status
+                  const stageConfig = getStageAwareConfig(data);
+                  const entropyVal = learning.entropy || 0;
+                  const klVal = learning.approx_kl || 0;
+                  
+                  let entropyStatus = learning.entropy_status;
+                  let klStatus = learning.approx_kl_status;
+                  
+                  // Override with curriculum-aware status
+                  if (stageConfig.ranges.entropy) {
+                    const { min, max } = stageConfig.ranges.entropy;
+                    if (entropyVal >= min && entropyVal <= max) {
+                      entropyStatus = "good";
+                    } else if (entropyVal >= min * 0.8 && entropyVal <= max * 1.2) {
+                      entropyStatus = "ok";
+                    } else {
+                      entropyStatus = "bad";
+                    }
+                  }
+                  
+                  if (stageConfig.ranges.approx_kl) {
+                    const { max_warning, max_critical } = stageConfig.ranges.approx_kl;
+                    if (klVal <= max_warning) {
+                      klStatus = "good";
+                    } else if (klVal <= max_critical) {
+                      klStatus = "ok";
+                    } else {
+                      klStatus = "bad";
+                    }
+                  }
+                  
+                  const worstStatus = entropyStatus === "bad" || klStatus === "bad" ? "bad" :
+                                     entropyStatus === "ok" || klStatus === "ok" ? "ok" : "good";
+                  
+                  return (
+                    <div className={"px-2 py-1 rounded-lg text-[10px] font-black " + 
+                      (worstStatus === "bad" ? "bg-rose-500/20 text-rose-400" :
+                       worstStatus === "ok" ? "bg-amber-500/20 text-amber-400" :
+                       "bg-emerald-500/20 text-emerald-400")}>
+                      {worstStatus === "bad" ? "⚠ UNSTABLE" :
+                       worstStatus === "ok" ? "◐ CAUTION" : "● STABLE"}
+                    </div>
+                  );
+                })()}
               </div>
             </div>
 
@@ -2613,20 +2813,49 @@
               {/* Radial gauges row */}
               <div className="grid grid-cols-4 gap-3 mb-4">
                 {[
-                  { key: "entropy", label: "Entropy", value: learning.entropy, format: (v) => fmt.num(v, 2), status: learning.entropy_status, min: 0, max: 2 },  // PPO entropy positive, 0-2 range
-                  { key: "kl", label: "KL Div", value: learning.approx_kl, format: (v) => (v * 1000).toFixed(1) + "m", status: learning.approx_kl_status, min: 0, max: 0.05 },
+                  { key: "entropy", label: "Entropy", value: learning.entropy, format: (v) => fmt.num(v, 2), status: learning.entropy_status, min: 0, max: 2, useConfig: true },  // PPO entropy positive, 0-2 range
+                  { key: "kl", label: "KL Div", value: learning.approx_kl, format: (v) => (v * 1000).toFixed(1) + "m", status: learning.approx_kl_status, min: 0, max: 0.05, useConfig: true },
                   { key: "clip", label: "Clip %", value: learning.clip_fraction, format: (v) => fmt.num(v * 100, 0) + "%", status: learning.clip_fraction_status, min: 0, max: 0.4 },
                   { key: "ev", label: "Exp Var", value: learning.explained_variance, format: (v) => fmt.num(v * 100, 0) + "%", status: learning.explained_variance_status, min: 0, max: 1 },
                 ].map(m => {
                   const val = Number(m.value) || 0;
+                  
+                  // Get stage-aware config for dynamic thresholds
+                  const stageConfig = getStageAwareConfig(data);
+                  let actualStatus = m.status;
+                  let tooltipText = "";
+                  
+                  // Override status with curriculum-aware thresholds if available
+                  if (m.useConfig && m.key === "entropy" && stageConfig.ranges.entropy) {
+                    const { min, max, source } = stageConfig.ranges.entropy;
+                    if (val >= min && val <= max) {
+                      actualStatus = "good";
+                    } else if (val >= min * 0.8 && val <= max * 1.2) {
+                      actualStatus = "ok";
+                    } else {
+                      actualStatus = "bad";
+                    }
+                    tooltipText = `Target: ${fmt.num(min, 2)}-${fmt.num(max, 2)}${source === 'curriculum' ? ' (curriculum)' : ''}`;
+                  } else if (m.useConfig && m.key === "kl" && stageConfig.ranges.approx_kl) {
+                    const { max_warning, max_critical, source } = stageConfig.ranges.approx_kl;
+                    if (val <= max_warning) {
+                      actualStatus = "good";
+                    } else if (val <= max_critical) {
+                      actualStatus = "ok";
+                    } else {
+                      actualStatus = "bad";
+                    }
+                    tooltipText = `Warning: ${(max_warning * 1000).toFixed(1)}m, Critical: ${(max_critical * 1000).toFixed(1)}m${source === 'phase_adjusted' ? ' (phase adjusted)' : ''}`;
+                  }
+                  
                   const pct = Math.max(0, Math.min(100, ((val - m.min) / (m.max - m.min)) * 100));
-                  const strokeColor = m.status === "good" ? "#34d399" : m.status === "ok" ? "#fbbf24" : m.status === "bad" ? "#fb7185" : "#64748b";
+                  const strokeColor = actualStatus === "good" ? "#34d399" : actualStatus === "ok" ? "#fbbf24" : actualStatus === "bad" ? "#fb7185" : "#64748b";
                   const r = 24;
                   const circumference = 2 * Math.PI * r;
                   const dashOffset = circumference - (pct / 100) * circumference;
                   
                   return (
-                    <div key={m.key} className="flex flex-col items-center">
+                    <div key={m.key} className="flex flex-col items-center" title={tooltipText}>
                       <div className="relative w-14 h-14">
                         <svg className="w-full h-full -rotate-90" viewBox="0 0 56 56">
                           <circle cx="28" cy="28" r={r} fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth="4" />
@@ -2642,7 +2871,7 @@
                           />
                         </svg>
                         <div className="absolute inset-0 flex items-center justify-center">
-                          <span className={"mono text-[10px] font-black " + clsStatusText(m.status)}>{m.format(val)}</span>
+                          <span className={"mono text-[10px] font-black " + clsStatusText(actualStatus)}>{m.format(val)}</span>
                         </div>
                       </div>
                       <span className="text-[9px] text-slate-500 font-bold mt-1">{m.label}</span>
@@ -2653,21 +2882,54 @@
 
               {/* Sparklines */}
               <div className="grid grid-cols-2 gap-2 mb-4">
-                {[
-                  { label: "Entropy Trend", data: data.history?.entropy, color: learning.entropy_status },
-                  { label: "KL Divergence", data: data.history?.kl_divergence, color: learning.approx_kl_status },
-                ].map((s, i) => (
-                  <div key={i} className="rounded-lg bg-black/30 border border-white/5 p-2">
-                    <div className="text-[9px] text-slate-500 font-bold mb-1">{s.label}</div>
-                    <Sparkline 
-                      data={s.data} 
-                      width={140} 
-                      height={28}
-                      stroke={s.color === "good" ? "#34d399" : s.color === "ok" ? "#fbbf24" : s.color === "bad" ? "#fb7185" : "#a5b4fc"}
-                      fill={s.color === "good" ? "rgba(52,211,153,0.15)" : s.color === "ok" ? "rgba(251,191,36,0.15)" : s.color === "bad" ? "rgba(251,113,133,0.15)" : "rgba(165,180,252,0.15)"}
-                    />
-                  </div>
-                ))}
+                {(() => {
+                  // Get curriculum-aware status for sparklines
+                  const stageConfig = getStageAwareConfig(data);
+                  const entropyVal = learning.entropy || 0;
+                  const klVal = learning.approx_kl || 0;
+                  
+                  let entropyStatus = learning.entropy_status;
+                  let klStatus = learning.approx_kl_status;
+                  
+                  // Override with curriculum-aware status
+                  if (stageConfig.ranges.entropy) {
+                    const { min, max } = stageConfig.ranges.entropy;
+                    if (entropyVal >= min && entropyVal <= max) {
+                      entropyStatus = "good";
+                    } else if (entropyVal >= min * 0.8 && entropyVal <= max * 1.2) {
+                      entropyStatus = "ok";
+                    } else {
+                      entropyStatus = "bad";
+                    }
+                  }
+                  
+                  if (stageConfig.ranges.approx_kl) {
+                    const { max_warning, max_critical } = stageConfig.ranges.approx_kl;
+                    if (klVal <= max_warning) {
+                      klStatus = "good";
+                    } else if (klVal <= max_critical) {
+                      klStatus = "ok";
+                    } else {
+                      klStatus = "bad";
+                    }
+                  }
+                  
+                  return [
+                    { label: "Entropy Trend", data: data.history?.entropy, color: entropyStatus },
+                    { label: "KL Divergence", data: data.history?.kl_divergence, color: klStatus },
+                  ].map((s, i) => (
+                    <div key={i} className="rounded-lg bg-black/30 border border-white/5 p-2">
+                      <div className="text-[9px] text-slate-500 font-bold mb-1">{s.label}</div>
+                      <Sparkline 
+                        data={s.data} 
+                        width={140} 
+                        height={28}
+                        stroke={s.color === "good" ? "#34d399" : s.color === "ok" ? "#fbbf24" : s.color === "bad" ? "#fb7185" : "#a5b4fc"}
+                        fill={s.color === "good" ? "rgba(52,211,153,0.15)" : s.color === "ok" ? "rgba(251,191,36,0.15)" : s.color === "bad" ? "rgba(251,113,133,0.15)" : "rgba(165,180,252,0.15)"}
+                      />
+                    </div>
+                  ));
+                })()}
               </div>
 
               {/* Curriculum Progress Section */}
@@ -4140,6 +4402,9 @@
   function LearningTab({ data, baseline=null, compareOn=false }) {
     const learning = data.learning || {};
 
+    const stageConfig = getStageAwareConfig(data);
+    const ranges = stageConfig?.ranges || {};
+
     // Compute status locally as fallback/override to ensure correct coloring
     const computeStatus = (id, value) => {
       if (value == null || isNaN(value)) return "neutral";
@@ -4149,31 +4414,73 @@
         case "value_loss":
           return value < 0.1 ? "good" : value < 0.5 ? "ok" : "bad";
         case "entropy":
-          // Good: 0.25-0.85, Ok: 0.15-0.95, Bad: outside
-          if (value >= 0.25 && value <= 0.85) return "good";
-          if (value >= 0.15 && value <= 0.95) return "ok";
-          return "bad";
+          {
+            const ent = ranges.entropy || { min: 0.25, max: 0.85 };
+            const min = Number(ent.min ?? 0.25);
+            const max = Number(ent.max ?? 0.85);
+            if (value >= min && value <= max) return "good";
+            if (value >= min * 0.8 && value <= max * 1.2) return "ok";
+            return "bad";
+          }
         case "kl":
-          return value < 0.015 ? "good" : value < 0.025 ? "ok" : "bad";
+          {
+            const kl = ranges.approx_kl || { max_warning: 0.015, max_critical: 0.025 };
+            const w = Number(kl.max_warning ?? 0.015);
+            const c = Number(kl.max_critical ?? 0.025);
+            return value <= w ? "good" : value <= c ? "ok" : "bad";
+          }
         case "clip":
-          // Good: 0.05-0.20, Ok: 0.02-0.25, Bad: outside
-          if (value >= 0.05 && value <= 0.20) return "good";
-          if (value >= 0.02 && value <= 0.25) return "ok";
-          return "bad";
+          {
+            const clip = ranges.clip_fraction || { min: 0.05, max: 0.20 };
+            const min = Number(clip.min ?? 0.05);
+            const max = Number(clip.max ?? 0.20);
+            const okMin = min * 0.4;
+            const okMax = max * 1.25;
+            if (value >= min && value <= max) return "good";
+            if (value >= okMin && value <= okMax) return "ok";
+            return "bad";
+          }
         case "ev":
-          return value >= 0.5 ? "good" : value >= 0.2 ? "ok" : "bad";
+          {
+            const ev = ranges.explained_variance || { min_warning: 0.5, min_critical: 0.2 };
+            const w = Number(ev.min_warning ?? 0.5);
+            const c = Number(ev.min_critical ?? 0.2);
+            return value >= w ? "good" : value >= c ? "ok" : "bad";
+          }
         default:
           return "neutral";
       }
     };
 
+    const entropyIdeal = (() => {
+      const ent = ranges.entropy || { min: 0.25, max: 0.85 };
+      const suffix = ent?.source === "curriculum" ? " (curriculum)" : "";
+      return `${fmt.num(ent.min ?? 0.25, 2)} – ${fmt.num(ent.max ?? 0.85, 2)}${suffix}`;
+    })();
+
+    const klIdeal = (() => {
+      const kl = ranges.approx_kl || { max_warning: 0.015, max_critical: 0.025 };
+      const suffix = kl?.source === "phase_adjusted" ? " (phase adjusted)" : "";
+      return `< ${fmt.num(kl.max_warning ?? 0.015, 3)}${suffix}`;
+    })();
+
+    const clipIdeal = (() => {
+      const clip = ranges.clip_fraction || { min: 0.05, max: 0.20 };
+      return `${fmt.num(clip.min ?? 0.05, 2)} – ${fmt.num(clip.max ?? 0.20, 2)}`;
+    })();
+
+    const evIdeal = (() => {
+      const ev = ranges.explained_variance || { min_warning: 0.5 };
+      return `> ${fmt.num(ev.min_warning ?? 0.5, 2)}`;
+    })();
+
     const rows = [
       { id:"policy_loss", label: "Policy Loss", value: fmt.sci(learning.policy_loss, 4), rawValue: learning.policy_loss, ideal: "< 0 (negative)", higherIsBetter: false, format:"num" },
       { id:"value_loss", label: "Value Loss", value: fmt.num(learning.value_loss, 4), rawValue: learning.value_loss, ideal: "< 0.1", higherIsBetter: false, format:"num" },
-      { id:"entropy", label: "Entropy", value: fmt.num(learning.entropy, 2), rawValue: learning.entropy, ideal: "0.25 – 0.85", higherIsBetter: null, format:"num" },
-      { id:"kl", label: "KL Divergence", value: fmt.num(learning.approx_kl, 4), rawValue: learning.approx_kl, ideal: "< 0.015", higherIsBetter: false, format:"num" },
-      { id:"clip", label: "Clip Fraction", value: fmt.num(learning.clip_fraction, 3), rawValue: learning.clip_fraction, ideal: "0.05 – 0.20", higherIsBetter: false, format:"num" },
-      { id:"ev", label: "Explained Var", value: fmt.num(learning.explained_variance, 3), rawValue: learning.explained_variance, ideal: "> 0.5", higherIsBetter: true, format:"num" },
+      { id:"entropy", label: "Entropy", value: fmt.num(learning.entropy, 2), rawValue: learning.entropy, ideal: entropyIdeal, higherIsBetter: null, format:"num" },
+      { id:"kl", label: "KL Divergence", value: fmt.num(learning.approx_kl, 4), rawValue: learning.approx_kl, ideal: klIdeal, higherIsBetter: false, format:"num" },
+      { id:"clip", label: "Clip Fraction", value: fmt.num(learning.clip_fraction, 3), rawValue: learning.clip_fraction, ideal: clipIdeal, higherIsBetter: false, format:"num" },
+      { id:"ev", label: "Explained Var", value: fmt.num(learning.explained_variance, 3), rawValue: learning.explained_variance, ideal: evIdeal, higherIsBetter: true, format:"num" },
     ].map(r => ({ ...r, status: computeStatus(r.id, r.rawValue) }));
 
     return (
