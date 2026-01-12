@@ -29,7 +29,7 @@ except ImportError:
     sb3_get_action_masks = None  # type: ignore
     SB3_MASK_UTILS_AVAILABLE = False
 
-from ..controllers import SmartEntropyController, TrainingHealthWatchdog
+from ..controllers import SmartEntropyController, SmartLRController, SmartClipController, TrainingHealthWatchdog
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +152,11 @@ class CurriculumTrainingCallback(BaseCallback):
         self._ppo_diagnostics: Dict[str, float] = {}
         self._n_updates: int = 0
         
+        # Prevent duplicate telemetry ingestion when _update_ppo_diagnostics() is called
+        # multiple times per rollout (rollout_start/end/step).
+        self._last_ingested_update: int = -1
+        self._last_ingested_sig: Optional[tuple] = None
+        
         self._cur_rewards: List[float] = []
         self._cur_lens: List[int] = []
         
@@ -169,8 +174,10 @@ class CurriculumTrainingCallback(BaseCallback):
         self._value_loss_history: deque = deque(maxlen=20)  # Value loss for LR
         self._reward_history: deque = deque(maxlen=50)  # Recent rewards for performance
         
-        # SMART ENTROPY CONTROLLER (PID-based, prevents oscillation)
+        # SMART PID-BASED CONTROLLERS (prevent oscillation, stage-aware)
         self._smart_entropy_controller = SmartEntropyController(initial_ent_coef=base_ent_coef)
+        self._smart_lr_controller: Optional[SmartLRController] = None  # Initialized on training start
+        self._smart_clip_controller = SmartClipController(base_clip_range=base_clip_range)
         
         # Register transition callback
         if self.curriculum_manager is not None:
@@ -190,6 +197,14 @@ class CurriculumTrainingCallback(BaseCallback):
     ) -> None:
         """Called when curriculum stage changes."""
         logger.info(f"🔄 Stage transition: {transition_type} ({old_stage.name} → {new_stage.name})")
+        
+        # Sync ALL PID controllers with new stage
+        new_stage_value = int(new_stage.value)
+        self._smart_entropy_controller.on_stage_change(new_stage_value)
+        if self._smart_lr_controller is not None:
+            self._smart_lr_controller.on_stage_change(new_stage_value)
+        self._smart_clip_controller.on_stage_change(new_stage_value)
+        logger.info(f"  🎛️ PID controllers synced to stage {new_stage_value}")
         
         # Checkpoint on transition
         if self.enable_checkpoints and self.model is not None:
@@ -223,6 +238,15 @@ class CurriculumTrainingCallback(BaseCallback):
         if self.model is not None:
             self._base_lr = float(self.model.learning_rate) if not callable(self.model.learning_rate) else None
             self._current_lr = self._base_lr  # Initialize tracker to base LR
+            
+            # Initialize PID-based LR controller with base LR
+            if self._base_lr is not None:
+                self._smart_lr_controller = SmartLRController(base_lr=self._base_lr)
+                # Sync with current curriculum stage
+                if self.curriculum_manager is not None:
+                    stage = int(self.curriculum_manager.current_stage.value)
+                    self._smart_lr_controller.on_stage_change(stage)
+                    self._smart_clip_controller.on_stage_change(stage)
         
         # Save initial metrics file so dashboard sees data immediately
         self._save_live_metrics()
@@ -401,35 +425,39 @@ class CurriculumTrainingCallback(BaseCallback):
                 )
 
     def _apply_adaptive_clip_range(self) -> None:
-        """ADAPTIVE clip range controller based on KL divergence.
+        """PID-based adaptive clip range controller with stage awareness.
         
-        PPO's clip range controls how much the policy can change in one update.
-        - Too small: Training is too slow, wastes samples
-        - Too large: Policy changes too much, training becomes unstable
+        Uses SmartClipController for smooth, stable clip range adaptation.
         
-        The key signal is KL divergence:
-        - High KL (>0.02): Policy changing too fast → reduce clip range
-        - Low KL (<0.005): Policy barely changing → increase clip range
-        - Sweet spot (~0.01): Policy changing at healthy rate
+        STAGE-AWARE BOUNDS (KEY FOR STRATEGY FORMATION):
+        - Early stages (0-4): Wide clip range (0.15-0.40) for exploration
+        - Mid stages (5-6): Moderate (0.10-0.22) - skills consolidating
+        - Late stages (7-9): TIGHT (0.04-0.18) - PROTECT learned strategies!
         
-        Also monitors clip_fraction:
-        - High clip_fraction (>0.3): Too many updates being clipped → increase range
-        - Low clip_fraction (<0.05): Clip rarely triggers → might reduce range
+        PID controller tracks "update health" based on KL divergence and clip fraction,
+        smoothly adjusting clip_range to maintain optimal policy update rate.
         """
         if not self.enable_adaptive_clip_range or self.model is None:
             return
         
-        # Check every 10k steps
-        if self.num_timesteps - self._last_clip_update_step < 10_000:
+        # Defensive stage sync (in case transition callback missed)
+        if self.curriculum_manager is not None:
+            try:
+                self._smart_clip_controller.on_stage_change(int(self.curriculum_manager.current_stage.value))
+            except Exception:
+                pass
+        
+        # Calculate steps since last check
+        steps_elapsed = self.num_timesteps - self._last_clip_update_step
+        if steps_elapsed < 15_000:  # Minimum check interval
             return
         
         self._last_clip_update_step = self.num_timesteps
         
-        # AUDIT FIX: Get current clip_range value correctly
-        # SB3 schedules expect progress_remaining (1.0 at start -> 0.0 at end)
-        # Using 1.0 always returns the INITIAL value, not current
-        progress = float(getattr(self.model, "_current_progress_remaining", 1.0))
+        # NOTE: History is now fed directly in _update_ppo_diagnostics() to avoid duplicates
         
+        # Get current clip_range value
+        progress = float(getattr(self.model, "_current_progress_remaining", 1.0))
         clip_range_attr = getattr(self.model, 'clip_range', self.base_clip_range)
         current_clip: float = self.base_clip_range
         if callable(clip_range_attr):
@@ -437,72 +465,38 @@ class CurriculumTrainingCallback(BaseCallback):
                 raw_result = clip_range_attr(progress)
                 if isinstance(raw_result, (int, float)):
                     current_clip = float(raw_result)
-            except Exception as e:
-                logger.debug(f"Could not evaluate clip_range schedule: {e}")
+            except Exception:
+                pass
         elif isinstance(clip_range_attr, (int, float)):
             current_clip = float(clip_range_attr)
         
-        current_kl = self._kl_history[-1] if self._kl_history else 0.01
-        current_clip_frac = self._clip_fraction_history[-1] if self._clip_fraction_history else 0.1
+        # Get PID recommendation
+        new_clip, reason, should_apply = self._smart_clip_controller.get_clip_range(
+            current_clip=current_clip,
+            timesteps_elapsed=steps_elapsed,
+        )
         
-        # === ADAPTIVE LOGIC ===
-        target_clip = current_clip
-        adjustment_reason = "stable"
+        # Get current stage for logging
+        stage = self._smart_clip_controller.current_stage
+        bounds = self._smart_clip_controller.STAGE_CLIP_BOUNDS.get(stage, (0.10, 0.30))
         
-        # 1. EMERGENCY: Clip fraction dangerously low (policy stuck)
-        if current_clip_frac < 0.05:  # Raised threshold from 0.03
-            # Almost no updates being clipped = policy frozen, need bigger steps
-            # More aggressive: 50% increase, higher ceiling
-            target_clip = min(0.40, current_clip * 1.50)  # 50% increase (was 25%)
-            adjustment_reason = f"EMERGENCY: clip_frac {current_clip_frac:.3f} critically low - major boost"
-        
-        # 2. KL-based adjustment (primary signal)
-        elif len(self._kl_history) >= 3:
-            avg_kl = sum(list(self._kl_history)[-5:]) / min(5, len(self._kl_history))
-            
-            if avg_kl > 0.025:
-                # Policy changing too fast - tighten clip range
-                target_clip = current_clip * 0.9
-                adjustment_reason = f"KL too high ({avg_kl:.4f}) - tightening"
-            elif avg_kl < 0.005 and current_clip_frac < 0.1:
-                # Policy barely changing - loosen clip range
-                target_clip = current_clip * 1.15  # More aggressive than before
-                adjustment_reason = f"KL too low ({avg_kl:.4f}) - loosening"
-            elif current_clip_frac < 0.05:
-                # Low clip fraction even with OK KL - still too conservative
-                target_clip = current_clip * 1.1
-                adjustment_reason = f"Low clip_frac ({current_clip_frac:.3f}) - slight boost"
-        
-        # 3. Clip fraction override (secondary signal)
-        if current_clip_frac > 0.35:
-            # Too many updates being clipped - increase range
-            target_clip = max(target_clip, current_clip * 1.15)
-            adjustment_reason = f"High clip_frac ({current_clip_frac:.2f}) - widening"
-        
-        # 4. Clamp to reasonable bounds
-        target_clip = max(0.1, min(0.4, target_clip))  # PPO typically uses 0.1-0.3
-        
-        # Log status periodically even when not applying (every 50k steps)
+        # Log status periodically (every 50k steps)
         if self.verbose >= 1 and self.num_timesteps % 50_000 < self._n_envs:
             logger.info(
-                f"🔍 Clip Range Status: {adjustment_reason} | "
-                f"clip_range: {current_clip:.3f} -> {target_clip:.3f} | "
-                f"KL: {current_kl:.4f}, clip_frac: {current_clip_frac:.3f}"
+                f"🔍 Clip PID [Stage {stage}]: {reason} | "
+                f"clip: {current_clip:.3f} -> {new_clip:.3f} (bounds: {bounds[0]:.2f}-{bounds[1]:.2f})"
             )
         
-        # === APPLY CHANGE ===
-        if hasattr(self.model, 'clip_range') and abs(current_clip - target_clip) > 0.01:
-            # SB3 expects clip_range as a callable schedule, not raw float
-            # Create a constant function that returns the target value
-            def constant_clip_schedule(progress: float, val: float = target_clip) -> float:
+        # Apply if recommended
+        if should_apply and hasattr(self.model, 'clip_range'):
+            def constant_clip_schedule(progress: float, val: float = new_clip) -> float:
                 return val
             
             setattr(self.model, 'clip_range', constant_clip_schedule)
             if self.verbose >= 1:
                 logger.info(
-                    f"🎚️ Adaptive clip_range: {adjustment_reason} | "
-                    f"{current_clip:.3f} -> {target_clip:.3f} | "
-                    f"KL: {current_kl:.4f}, clip_frac: {current_clip_frac:.2f}"
+                    f"🎚️ Clip PID Applied [Stage {stage}]: {reason} | "
+                    f"{current_clip:.3f} -> {new_clip:.3f}"
                 )
 
     def _apply_adaptive_vf_coef(self) -> None:
@@ -575,119 +569,98 @@ class CurriculumTrainingCallback(BaseCallback):
                 )
 
     def _apply_adaptive_learning_rate(self) -> None:
-        """ADAPTIVE learning rate controller based on training dynamics.
+        """PID-based adaptive learning rate controller with stage awareness.
         
-        Monitors multiple signals to adjust LR:
-        1. Loss plateau: If losses stop improving, reduce LR
-        2. Loss instability: If losses spike, reduce LR
-        3. Performance stagnation: If rewards plateau, try LR adjustment
-        4. Stage-based scaling: Later stages may need finer updates
+        Uses SmartLRController for smooth, stable LR adaptation.
         
-        Uses a multiplicative adjustment with momentum to avoid oscillation.
+        STAGE-AWARE LR BOUNDS (KEY FOR STRATEGY FORMATION):
+        - Early stages (0-4): Wide LR range (0.5x-2.0x base) for fast learning
+        - Mid stages (5-6): Moderate (0.25x-1.0x) - skills consolidating  
+        - Late stages (7-9): NARROW (0.1x-0.6x) - PROTECT learned strategies!
         
-        CRITICAL FIX: Previous version was too aggressive - reduced LR 24x in 1 hour!
-        Now: longer interval, stricter conditions, hard floor at 30% of base LR.
+        PID controller tracks "learning health" based on loss trends, variance, and
+        reward improvement, smoothly adjusting LR to maintain optimal learning rate.
         """
         if not self.enable_adaptive_lr or self.model is None or self._base_lr is None:
             return
         
-        # Check every 50k steps (was 20k - too frequent!)
-        if self.num_timesteps - self._last_lr_update_step < 50_000:
+        if self._smart_lr_controller is None:
+            return
+        
+        # Do not override warmup schedule: warmup and adaptive LR must not fight.
+        # Gate adaptive LR while warmup is active.
+        if self.curriculum_manager is not None:
+            try:
+                if float(self.curriculum_manager.get_lr_multiplier()) < 1.0:
+                    return
+            except Exception:
+                pass
+        
+        # Defensive stage sync (in case transition callback missed)
+        if self.curriculum_manager is not None:
+            try:
+                self._smart_lr_controller.on_stage_change(int(self.curriculum_manager.current_stage.value))
+            except Exception:
+                pass
+        
+        # Calculate steps since last check  
+        steps_elapsed = self.num_timesteps - self._last_lr_update_step
+        if steps_elapsed < 40_000:  # Minimum check interval
             return
         
         self._last_lr_update_step = self.num_timesteps
         
-        # AUDIT FIX: Get current LR from optimizer (most reliable source)
+        # NOTE: History is now fed directly in _update_ppo_diagnostics() to avoid duplicates
+        
+        # Get current LR from optimizer
         current_lr = self._current_lr or self._base_lr
         try:
             if hasattr(self.model, "policy") and hasattr(self.model.policy, "optimizer"):
                 current_lr = float(self.model.policy.optimizer.param_groups[0]["lr"])
         except Exception:
-            pass  # Fall back to tracked/base value
+            pass
         
-        # Need enough history for meaningful decisions
-        if len(self._policy_loss_history) < 5 or len(self._reward_history) < 10:
-            return
+        # Get PID recommendation
+        new_lr, reason, should_apply = self._smart_lr_controller.get_lr(
+            current_lr=current_lr,
+            timesteps_elapsed=steps_elapsed,
+        )
         
-        # === GATHER SIGNALS ===
-        recent_p_loss = list(self._policy_loss_history)[-10:]
-        recent_v_loss = list(self._value_loss_history)[-10:]
-        recent_rewards = list(self._reward_history)[-20:]
+        # Get current stage for logging
+        stage = self._smart_lr_controller.current_stage
+        bounds = self._smart_lr_controller.STAGE_LR_MULTIPLIERS.get(stage, (0.3, 1.0))
+        lr_bounds = (self._base_lr * bounds[0], self._base_lr * bounds[1])
         
-        # Loss trends (negative slope = improving)
-        p_loss_slope = (recent_p_loss[-1] - recent_p_loss[0]) / max(len(recent_p_loss), 1)
-        v_loss_slope = (recent_v_loss[-1] - recent_v_loss[0]) / max(len(recent_v_loss), 1)
-        
-        # Loss variance (high = unstable)
-        p_loss_var = float(np.var(recent_p_loss)) if len(recent_p_loss) > 1 else 0
-        v_loss_var = float(np.var(recent_v_loss)) if len(recent_v_loss) > 1 else 0
-        
-        # Reward trend
-        reward_early = sum(recent_rewards[:10]) / 10
-        reward_late = sum(recent_rewards[-10:]) / 10
-        reward_improving = reward_late > reward_early + 0.5
-        
-        # === ADAPTIVE LOGIC ===
-        lr_multiplier = 1.0
-        adjustment_reason = "stable"
-        
-        # MINIMUM LR FLOOR: Never go below 30% of base LR - this was killing training!
-        lr_floor = self._base_lr * 0.3  # e.g., 3e-4 * 0.3 = 9e-5
-        
-        # 1. INSTABILITY: High loss variance → reduce LR (but gently)
-        if p_loss_var > 0.1 or v_loss_var > 1.0:
-            lr_multiplier = 0.9  # Reduced from 0.8 - less aggressive
-            adjustment_reason = f"Unstable losses (p_var={p_loss_var:.3f}, v_var={v_loss_var:.3f})"
-        
-        # 2. PLATEAU: Only reduce if REALLY stuck (much stricter condition)
-        # Previously this triggered every 20k steps and killed the LR
-        elif p_loss_slope > 0.01 and v_loss_slope > 0.01 and not reward_improving:
-            # Only reduce if losses are actually INCREASING (not just flat)
-            lr_multiplier = 0.95  # Reduced from 0.9 - gentler reduction
-            adjustment_reason = "Losses increasing - slight LR reduction"
-        
-        # 3. HEALTHY IMPROVEMENT: Good progress → slight increase (explore more)
-        elif p_loss_slope < -0.01 and reward_improving:
-            lr_multiplier = 1.1  # Increased from 1.05 - more aggressive recovery
-            adjustment_reason = "Healthy progress - LR increase"
-        
-        # === APPLY CHANGE ===
-        target_lr = current_lr * lr_multiplier
-        
-        # Clamp to reasonable bounds - CRITICAL: floor at 30% of base, not 1e-6!
-        target_lr = max(lr_floor, min(self._base_lr * 2, target_lr))
-        
-        # Log status periodically even when not applying (every 100k steps)
+        # Log status periodically (every 100k steps)
         if self.verbose >= 1 and self.num_timesteps % 100_000 < self._n_envs:
             logger.info(
-                f"🔍 LR Status: {adjustment_reason} | "
-                f"lr: {current_lr:.2e} -> {target_lr:.2e} | "
-                f"p_slope: {p_loss_slope:.4f}, v_slope: {v_loss_slope:.4f}, reward_improving: {reward_improving}"
+                f"🔍 LR PID [Stage {stage}]: {reason} | "
+                f"lr: {current_lr:.2e} -> {new_lr:.2e} (bounds: {lr_bounds[0]:.2e}-{lr_bounds[1]:.2e})"
             )
         
-        if abs(current_lr - target_lr) / current_lr > 0.05:  # >5% change
+        # Apply if recommended
+        if should_apply:
             # Apply to model schedule
             if hasattr(self.model, 'lr_schedule'):
-                self.model.lr_schedule = lambda _, lr=target_lr: lr
+                self.model.lr_schedule = lambda _, lr=new_lr: lr
             if hasattr(self.model, 'learning_rate'):
-                self.model.learning_rate = target_lr
+                self.model.learning_rate = new_lr
             
-            # AUDIT FIX: Also push directly to optimizer for immediate effect
+            # Push directly to optimizer for immediate effect
             try:
                 if hasattr(self.model, "policy") and hasattr(self.model.policy, "optimizer"):
                     for g in self.model.policy.optimizer.param_groups:
-                        g["lr"] = float(target_lr)
+                        g["lr"] = float(new_lr)
             except Exception:
                 pass
             
-            # CRITICAL: Persist adjusted value for future calls
-            self._current_lr = target_lr
+            # Persist adjusted value
+            self._current_lr = new_lr
             
             if self.verbose >= 1:
                 logger.info(
-                    f"Adaptive LR: {adjustment_reason} | "
-                    f"{current_lr:.2e} -> {target_lr:.2e} | "
-                    f"p_loss_slope: {p_loss_slope:.4f}, reward_improving: {reward_improving}"
+                    f"📊 LR PID Applied [Stage {stage}]: {reason} | "
+                    f"{current_lr:.2e} -> {new_lr:.2e}"
                 )
 
     def _on_step(self) -> bool:
@@ -738,12 +711,22 @@ class CurriculumTrainingCallback(BaseCallback):
             pnl = float(finfo.get("total_pnl", info.get("total_pnl", 0.0)))
             trades = int(finfo.get("trade_count", info.get("trade_count", 0)))
             self._ep_pnls.append(pnl)
-            self._ep_win_rates.append(float(finfo.get("win_rate", info.get("win_rate", 0.0))))
+            # Normalize win_rate to 0..1 (some envs report percent)
+            wr = float(finfo.get("win_rate", info.get("win_rate", 0.0)))
+            if wr > 1.0:
+                wr = wr / 100.0
+            wr = float(np.clip(wr, 0.0, 1.0))
+            self._ep_win_rates.append(wr)
             self._ep_drawdowns.append(float(finfo.get("drawdown", info.get("drawdown", 0.0))))
             self._ep_trades.append(trades)
             
             # Track reward for adaptive LR controller
             self._reward_history.append(ep_reward)
+            if self._smart_lr_controller is not None:
+                try:
+                    self._smart_lr_controller.update_history(reward=ep_reward)
+                except Exception:
+                    pass
             
             # AUDIT FIX (CRIT-1): Accumulate for O(1) totals
             self._cumulative_pnl += pnl
@@ -781,6 +764,13 @@ class CurriculumTrainingCallback(BaseCallback):
                 short_cnt = int(dir_stats.get("short_count", 0))
                 long_wr = float(dir_stats.get("long_win_rate", 0))
                 short_wr = float(dir_stats.get("short_win_rate", 0))
+                # Normalize if reported as percent
+                if long_wr > 1.0:
+                    long_wr /= 100.0
+                if short_wr > 1.0:
+                    short_wr /= 100.0
+                long_wr = float(np.clip(long_wr, 0.0, 1.0))
+                short_wr = float(np.clip(short_wr, 0.0, 1.0))
                 self._direction_stats["long_wins"] += int(long_cnt * long_wr)
                 self._direction_stats["short_wins"] += int(short_cnt * short_wr)
                 self._direction_stats["long_pnl"] += float(dir_stats.get("long_pnl", 0))
@@ -794,7 +784,7 @@ class CurriculumTrainingCallback(BaseCallback):
             self._record_stage_episode_stats(
                 stage_name=stage_name,
                 pnl=pnl,
-                win_rate=float(finfo.get("win_rate", info.get("win_rate", 0.0))),
+                win_rate=wr,
                 drawdown=float(finfo.get("drawdown", info.get("drawdown", 0.0))),
                 trades=trades,
                 profit_factor=float(ep_stats.get("profit_factor", finfo.get("profit_factor", 0.0))),
@@ -922,33 +912,85 @@ class CurriculumTrainingCallback(BaseCallback):
                     self._ppo_diagnostics['learning_rate'] = float(values.get('train/learning_rate', 0))
                     self._ppo_diagnostics['clip_range'] = float(values.get('train/clip_range', 0.2))
                     
-                    # Track n_updates
-                    n_updates = values.get('train/n_updates', 0)
+                    # Track n_updates with robust parsing
+                    n_updates_val = values.get('train/n_updates', 0)
+                    try:
+                        n_updates = int(n_updates_val) if n_updates_val is not None else 0
+                    except Exception:
+                        n_updates = 0
                     if n_updates > 0:
-                        self._n_updates = int(n_updates)
+                        self._n_updates = n_updates
                     
-                    # Update curriculum manager with current entropy for entropy-based reward shaping
-                    if self.curriculum_manager is not None and self._ppo_diagnostics['entropy'] != 0:
-                        entropy_val = abs(self._ppo_diagnostics['entropy'])
-                        self.curriculum_manager.update_entropy(entropy_val)
-                        # Track for adaptive entropy controller
-                        self._entropy_history.append(entropy_val)
+                    # Only ingest telemetry once per *new* train update to prevent duplicates
+                    # (this method may be called multiple times per rollout: start/end/step)
+                    # Primary: gate by n_updates if available
+                    update_id = n_updates
+                    if update_id <= 0:
+                        # Fallback: some setups don't expose train/n_updates reliably
+                        try:
+                            update_id = int(getattr(self.model, "_n_updates", 0) or 0)
+                        except Exception:
+                            update_id = 0
                     
-                    # Track KL and clip_fraction for adaptive clip range controller
-                    kl_val = self._ppo_diagnostics.get('kl_divergence', 0)
-                    clip_frac = self._ppo_diagnostics.get('clip_fraction', 0)
-                    if kl_val > 0:
-                        self._kl_history.append(kl_val)
-                    if clip_frac > 0:
-                        self._clip_fraction_history.append(clip_frac)
+                    is_new_update = True
+                    if update_id > 0:
+                        is_new_update = (update_id != self._last_ingested_update)
+                        if is_new_update:
+                            self._last_ingested_update = update_id
+                    else:
+                        # Last-resort: signature gate (prevents re-ingesting identical values)
+                        sig = (
+                            round(float(self._ppo_diagnostics.get("policy_loss", 0) or 0), 10),
+                            round(float(self._ppo_diagnostics.get("value_loss", 0) or 0), 10),
+                            round(float(self._ppo_diagnostics.get("kl_divergence", 0) or 0), 10),
+                            round(abs(float(self._ppo_diagnostics.get("entropy", 0) or 0)), 10),
+                        )
+                        is_new_update = (sig != self._last_ingested_sig)
+                        if is_new_update:
+                            self._last_ingested_sig = sig
                     
-                    # Track losses for adaptive LR controller
-                    p_loss = abs(self._ppo_diagnostics.get('policy_loss', 0))
-                    v_loss = abs(self._ppo_diagnostics.get('value_loss', 0))
-                    if p_loss > 0:
-                        self._policy_loss_history.append(p_loss)
-                    if v_loss > 0:
-                        self._value_loss_history.append(v_loss)
+                    if is_new_update:
+                        # Update curriculum manager with current entropy for entropy-based reward shaping
+                        if self.curriculum_manager is not None and self._ppo_diagnostics['entropy'] != 0:
+                            entropy_val = abs(self._ppo_diagnostics['entropy'])
+                            self.curriculum_manager.update_entropy(entropy_val)
+                            self._entropy_history.append(entropy_val)
+                        
+                        # Track KL and clip_fraction for adaptive clip range controller
+                        kl_val = float(self._ppo_diagnostics.get('kl_divergence', 0) or 0)
+                        clip_frac = float(self._ppo_diagnostics.get('clip_fraction', 0) or 0)
+                        if kl_val > 0:
+                            self._kl_history.append(kl_val)
+                            try:
+                                self._smart_clip_controller.update_history(kl_divergence=kl_val)
+                            except Exception:
+                                pass
+                        if clip_frac >= 0:
+                            # clip_fraction can legitimately be 0.0; still ingest if finite
+                            if np.isfinite(clip_frac):
+                                self._clip_fraction_history.append(clip_frac)
+                                try:
+                                    self._smart_clip_controller.update_history(clip_fraction=clip_frac)
+                                except Exception:
+                                    pass
+                        
+                        # Track losses for adaptive LR controller
+                        p_loss = abs(float(self._ppo_diagnostics.get('policy_loss', 0) or 0))
+                        v_loss = abs(float(self._ppo_diagnostics.get('value_loss', 0) or 0))
+                        if p_loss > 0 and np.isfinite(p_loss):
+                            self._policy_loss_history.append(p_loss)
+                            if self._smart_lr_controller is not None:
+                                try:
+                                    self._smart_lr_controller.update_history(policy_loss=p_loss)
+                                except Exception:
+                                    pass
+                        if v_loss > 0 and np.isfinite(v_loss):
+                            self._value_loss_history.append(v_loss)
+                            if self._smart_lr_controller is not None:
+                                try:
+                                    self._smart_lr_controller.update_history(value_loss=v_loss)
+                                except Exception:
+                                    pass
             
             # Alternative: get from model attributes
             if self._n_updates == 0 and hasattr(self.model, '_n_updates'):
@@ -1043,6 +1085,13 @@ class CurriculumTrainingCallback(BaseCallback):
             short_cnt = int(direction_stats.get("short_count", 0))
             long_wr = float(direction_stats.get("long_win_rate", 0))
             short_wr = float(direction_stats.get("short_win_rate", 0))
+            # Normalize if reported as percent (keep consistent with global direction stats)
+            if long_wr > 1.0:
+                long_wr /= 100.0
+            if short_wr > 1.0:
+                short_wr /= 100.0
+            long_wr = float(np.clip(long_wr, 0.0, 1.0))
+            short_wr = float(np.clip(short_wr, 0.0, 1.0))
             stats["long_wins"] += int(long_cnt * long_wr)
             stats["short_wins"] += int(short_cnt * short_wr)
             stats["long_pnl"] += float(direction_stats.get("long_pnl", 0))

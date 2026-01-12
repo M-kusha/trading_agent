@@ -72,6 +72,38 @@ class SmartEntropyController:
         9: (0.003, 0.015),  # Live Ready: minimal exploration
     }
 
+    # Learning rate multiplier bounds by stage (relative to base_lr)
+    # Later stages need LOWER LR for fine-tuning strategies, not wild exploration
+    # Format: (min_mult, max_mult) where actual_lr = base_lr * multiplier
+    STAGE_LR_MULTIPLIERS: Dict[int, Tuple[float, float]] = {
+        0: (0.5, 2.0),      # Discovery: wide LR range for fast exploration
+        1: (0.5, 1.8),      # Foundation: still exploring
+        2: (0.4, 1.5),      # Trend Student: starting to learn patterns
+        3: (0.4, 1.3),      # Session Student: more stable
+        4: (0.35, 1.2),     # Timing Student: refining entries
+        5: (0.3, 1.0),      # Integrator: consolidating skills (no LR increase)
+        6: (0.25, 0.8),     # Risk Manager: LOWER LR - preserving learned behavior
+        7: (0.2, 0.6),      # Strategist: FINE-TUNING - strategies forming
+        8: (0.15, 0.5),     # Professional: very stable, small adjustments only
+        9: (0.1, 0.4),      # Live Ready: MINIMAL changes - strategy locked in
+    }
+
+    # Clip range bounds by stage
+    # Later stages need TIGHTER clip to prevent policy from changing too much
+    # This protects learned strategies from being overwritten
+    STAGE_CLIP_RANGE_BOUNDS: Dict[int, Tuple[float, float]] = {
+        0: (0.15, 0.40),    # Discovery: wide clip for fast learning
+        1: (0.15, 0.35),    # Foundation: still flexible
+        2: (0.12, 0.30),    # Trend Student: moderating changes
+        3: (0.12, 0.28),    # Session Student: more conservative
+        4: (0.10, 0.25),    # Timing Student: protecting timing skills
+        5: (0.10, 0.22),    # Integrator: preserving integrated skills
+        6: (0.08, 0.20),    # Risk Manager: TIGHT - risk behavior is critical
+        7: (0.06, 0.18),    # Strategist: STRATEGY PROTECTION - don't unlearn!
+        8: (0.05, 0.15),    # Professional: very tight - consistency matters
+        9: (0.04, 0.12),    # Live Ready: MINIMAL policy change - ready for live
+    }
+
     # Default action space size
     DEFAULT_N_ACTIONS = 10
 
