@@ -1637,7 +1637,7 @@ def get_risk_manager_config() -> CurriculumStageConfig:
             # STREAKS: NEW
             streak_modifier_enabled=True,
             win_streak_bonus_per_win=0.02,
-            loss_streak_penalty_per_loss=0.05,  # FIX: Increased from 0.03 - stronger signal to avoid loss streaks
+            loss_streak_penalty_per_loss=0.10,  # BOOSTED: Was 0.05 - harsher penalty for loss streaks
             
             anti_churn_enabled=True,
             daily_trade_soft_limit=10,   # GPT FIX: Increased from 6
@@ -1886,7 +1886,7 @@ def get_strategist_config() -> CurriculumStageConfig:
             
             streak_modifier_enabled=True,
             win_streak_bonus_per_win=0.025,
-            loss_streak_penalty_per_loss=0.035,
+            loss_streak_penalty_per_loss=0.12,  # BOOSTED: Was 0.035 - force agent to respect loss streaks
             
             anti_churn_enabled=True,
             daily_trade_soft_limit=8,    # GPT FIX: Increased from 5
@@ -2140,7 +2140,7 @@ def get_professional_config() -> CurriculumStageConfig:
             
             streak_modifier_enabled=True,
             win_streak_bonus_per_win=0.03,
-            loss_streak_penalty_per_loss=0.04,
+            loss_streak_penalty_per_loss=0.15,  # BOOSTED: Was 0.04 - harsh penalty for loss streaks
             
             anti_churn_enabled=True,
             daily_trade_soft_limit=7,    # GPT FIX: Increased from 4

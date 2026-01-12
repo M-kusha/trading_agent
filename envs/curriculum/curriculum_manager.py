@@ -2304,9 +2304,11 @@ class CurriculumManager:
             if elapsed_hours >= max_hours:
                 return True, f"MAX_HOURS: Training ran for {elapsed_hours:.1f} hours"
         
-        # 3. Plateau detection
-        if plateau_stop and self._learning_velocity.is_plateaued(plateau_threshold_episodes):
-            return True, f"PLATEAU: No improvement for {self._learning_velocity.plateau_episodes} episodes"
+        # 3. Plateau detection - DISABLED: Let agent train to timestep cap
+        # This was stopping training prematurely even when metrics were improving slowly
+        # if plateau_stop and self._learning_velocity.is_plateaued(plateau_threshold_episodes):
+        #     return True, f"PLATEAU: No improvement for {self._learning_velocity.plateau_episodes} episodes"
+        pass  # Plateau stopping disabled - train to timestep cap instead
         
         # 4. Repeated failure at same stage
         for stage, count in self._demotion_analyzer.stage_failure_counts.items():

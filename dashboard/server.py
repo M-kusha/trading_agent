@@ -277,8 +277,26 @@ class MetricsReader:
                 if mtime == self._last_modified and self._last_data:
                     return self._last_data
 
-                with open(self.metrics_file, "r", encoding="utf-8") as f:
-                    raw = json.load(f)
+                # Windows file locking fix: retry with backoff on PermissionError
+                raw = None
+                for attempt in range(3):
+                    try:
+                        with open(self.metrics_file, "r", encoding="utf-8") as f:
+                            raw = json.load(f)
+                        break  # Success
+                    except PermissionError:
+                        if attempt < 2:
+                            import time
+                            time.sleep(0.05 * (attempt + 1))  # 50ms, 100ms backoff
+                        else:
+                            # Return cached data on persistent lock
+                            return self._last_data if self._last_data else self._empty("File locked...")
+                    except json.JSONDecodeError:
+                        # Partial write - return cached
+                        return self._last_data if self._last_data else self._empty("Reading metrics...")
+                
+                if raw is None:
+                    return self._last_data if self._last_data else self._empty("Reading metrics...")
 
                 self._last_modified = mtime
                 processed = self._process(raw)
@@ -815,6 +833,23 @@ class MetricsReader:
                 "last_episode": self._safe_int(stage.get("last_episode", 0)),
             }
 
+            # Process direction stats (buy/sell breakdown per stage)
+            raw_dir_stats = stage.get("direction_stats")
+            if raw_dir_stats and isinstance(raw_dir_stats, dict):
+                processed_stage["direction_stats"] = {
+                    "long_count": self._safe_int(raw_dir_stats.get("long_count", 0)),
+                    "short_count": self._safe_int(raw_dir_stats.get("short_count", 0)),
+                    "long_wins": self._safe_int(raw_dir_stats.get("long_wins", 0)),
+                    "short_wins": self._safe_int(raw_dir_stats.get("short_wins", 0)),
+                    "long_pnl": self._safe_float(raw_dir_stats.get("long_pnl", 0)),
+                    "short_pnl": self._safe_float(raw_dir_stats.get("short_pnl", 0)),
+                    "long_win_rate": self._safe_float(raw_dir_stats.get("long_win_rate", 0)),
+                    "short_win_rate": self._safe_float(raw_dir_stats.get("short_win_rate", 0)),
+                    "long_pct": self._safe_float(raw_dir_stats.get("long_pct", 50)),
+                    "short_pct": self._safe_float(raw_dir_stats.get("short_pct", 50)),
+                    "direction_ratio": self._safe_float(raw_dir_stats.get("direction_ratio", 1.0)),
+                }
+
             # Process improvement data
             improvement = stage.get("improvement")
             if improvement is not None and isinstance(improvement, dict):
@@ -823,11 +858,11 @@ class MetricsReader:
                     "pnl_delta": self._safe_float(improvement.get("pnl_delta", 0)),
                     "profit_factor_delta": self._safe_float(improvement.get("profit_factor_delta", 0)),
                     "reward_delta": self._safe_float(improvement.get("reward_delta", 0)),
+                    # Status indicators
+                    "win_rate_status": "good" if improvement.get("win_rate_delta", 0) > 0 else "bad",
+                    "pnl_status": "good" if improvement.get("pnl_delta", 0) > 0 else "bad",
+                    "profit_factor_status": "good" if improvement.get("profit_factor_delta", 0) > 0 else "bad",
                 }
-                # Add status indicators
-                processed_stage["improvement"]["win_rate_status"] = "good" if improvement.get("win_rate_delta", 0) > 0 else "bad"
-                processed_stage["improvement"]["pnl_status"] = "good" if improvement.get("pnl_delta", 0) > 0 else "bad"
-                processed_stage["improvement"]["profit_factor_status"] = "good" if improvement.get("profit_factor_delta", 0) > 0 else "bad"
             else:
                 processed_stage["improvement"] = None
 

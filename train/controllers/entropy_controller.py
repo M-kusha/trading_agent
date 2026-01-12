@@ -58,13 +58,14 @@ class SmartEntropyController:
     # ent_coef output bounds by stage
     # Lower ent_coef = less entropy bonus = more deterministic policy
     # Higher stages need lower ent_coef to achieve lower entropy targets
+    # AUDIT FIX: Increased upper bounds for early stages - was hitting ceiling
     STAGE_ENT_COEF_BOUNDS: Dict[int, Tuple[float, float]] = {
-        0: (0.05, 0.15),    # Discovery: high exploration
-        1: (0.04, 0.12),    # Foundation: moderate exploration
-        2: (0.03, 0.10),    # Trend Student: learning patterns
-        3: (0.025, 0.08),   # Session Student: time awareness
-        4: (0.02, 0.06),    # Timing Student: entry timing
-        5: (0.015, 0.05),   # Integrator: combining skills
+        0: (0.08, 0.25),    # Discovery: high exploration (was 0.05-0.15, too low)
+        1: (0.06, 0.20),    # Foundation: moderate exploration (was 0.04-0.12)
+        2: (0.04, 0.15),    # Trend Student: learning patterns (was 0.03-0.10)
+        3: (0.03, 0.12),    # Session Student: time awareness (was 0.025-0.08)
+        4: (0.025, 0.10),   # Timing Student: entry timing (was 0.02-0.06)
+        5: (0.02, 0.08),    # Integrator: combining skills (was 0.015-0.05)
         6: (0.01, 0.04),    # Risk Manager: capital preservation
         7: (0.008, 0.03),   # Optimizer: fine-tuning
         8: (0.005, 0.02),   # Consistency: stable execution

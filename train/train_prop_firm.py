@@ -1852,7 +1852,7 @@ def main() -> None:
         help="Load best hyperparams from Optuna JSON file (e.g., logs/optuna/best_params.json)",
     )
 
-    parser.add_argument("--timesteps", type=int, default=10_000_000, help="Total training timesteps")
+    parser.add_argument("--timesteps", type=int, default=100_000_000, help="Total training timesteps (safety cap - goal-based stops earlier)")
     default_n_envs = 2 if platform.system() == "Windows" else 4
     parser.add_argument("--n-envs", type=int, default=default_n_envs, help="Number of envs")
     parser.add_argument("--test", action="store_true", help="Quick test mode")

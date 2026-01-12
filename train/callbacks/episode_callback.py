@@ -443,7 +443,7 @@ class VecEpisodeTradingCallback(BaseCallback):
                     "mean_trades_status": "good" if mean_trades >= 5 else "ok" if mean_trades >= 1 else "bad",
                     "mean_win_rate": mean_win_rate * 100,  # As percentage
                     "mean_win_rate_status": status_for_win_rate(mean_win_rate),
-                    "max_drawdown": max_drawdown * 100,  # As percentage
+                    "max_drawdown": max_drawdown,  # Keep as decimal (0.05 = 5%), fmt.pct handles conversion
                     "max_drawdown_status": status_for_drawdown(max_drawdown),
                 },
                 

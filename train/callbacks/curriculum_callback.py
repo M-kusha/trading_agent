@@ -227,14 +227,26 @@ class CurriculumTrainingCallback(BaseCallback):
         # Save initial metrics file so dashboard sees data immediately
         self._save_live_metrics()
     
+    def _on_rollout_start(self) -> None:
+        """Called at the beginning of each rollout.
+        
+        IMPORTANT: This is called AFTER the PPO training step from the previous rollout.
+        This is the best time to capture fresh PPO diagnostics (entropy, clip_frac, etc.)
+        since the training step just completed.
+        """
+        self._update_ppo_diagnostics()
+    
     def _on_rollout_end(self) -> None:
         """Called after each rollout batch completes.
         
-        This is the best time to update PPO diagnostics since SB3 has just
-        finished a training step and updated its logger with fresh metrics.
+        NOTE: This is called BEFORE the PPO training step, so diagnostics
+        from the PREVIOUS training step are available. The new diagnostics
+        will be computed in the next training step after this callback returns.
+        
+        We still update and save here to capture whatever values are available.
         """
         self._update_ppo_diagnostics()
-        self._maybe_save_live_metrics(force=False)
+        self._maybe_save_live_metrics(force=True)  # Force save: rollout just completed
     
     def _maybe_save_live_metrics(self, force: bool = False) -> None:
         """Throttled metrics save - max 1Hz to avoid I/O overhead.
@@ -501,43 +513,56 @@ class CurriculumTrainingCallback(BaseCallback):
         
         Value loss > 1.0 indicates the value function is not predicting returns well,
         which leads to poor advantage estimates and noisy policy gradients.
+        
+        AUDIT FIX: Also monitor explained_variance - negative EV is a critical signal.
         """
         if self.model is None:
             return
         
-        # Check every 25k steps
-        if self.num_timesteps - getattr(self, '_last_vf_update_step', 0) < 25_000:
+        # Check every 15k steps (was 25k - need faster response early in training)
+        if self.num_timesteps - getattr(self, '_last_vf_update_step', 0) < 15_000:
             return
         
         self._last_vf_update_step = self.num_timesteps
         
-        if len(self._value_loss_history) < 5:
+        if len(self._value_loss_history) < 3:
             return
         
         avg_v_loss = sum(list(self._value_loss_history)[-10:]) / min(10, len(self._value_loss_history))
         current_vf_coef = float(getattr(self.model, 'vf_coef', 0.5))
         
+        # Also check explained variance - critical signal
+        ev = self._ppo_diagnostics.get('explained_variance', 0.5)
+        
         target_vf_coef = current_vf_coef
         adjustment_reason = "stable"
         
+        # CRITICAL: Negative explained variance = value function not learning
+        if ev < 0:
+            target_vf_coef = min(2.0, current_vf_coef * 1.5)  # 50% increase, higher cap
+            adjustment_reason = f"CRITICAL_NEGATIVE_EV: {ev:.3f} - major vf_coef boost"
         # High value loss - increase vf_coef to prioritize value learning
-        if avg_v_loss > 2.0:
+        elif avg_v_loss > 2.0:
             target_vf_coef = min(1.5, current_vf_coef * 1.25)  # 25% increase, cap at 1.5
             adjustment_reason = f"HIGH_VALUE_LOSS: {avg_v_loss:.2f} - boosting vf_coef"
         elif avg_v_loss > 1.0:
-            target_vf_coef = min(1.0, current_vf_coef * 1.1)  # 10% increase, cap at 1.0
+            target_vf_coef = min(1.2, current_vf_coef * 1.1)  # 10% increase
             adjustment_reason = f"ELEVATED_VALUE_LOSS: {avg_v_loss:.2f} - slight boost"
-        elif avg_v_loss < 0.1 and current_vf_coef > 0.5:
-            # Value loss healthy, can reduce vf_coef slightly
+        elif ev < 0.15 and avg_v_loss > 0.3:
+            # Low EV (<15%) with moderate loss - value function struggling
+            target_vf_coef = min(1.2, current_vf_coef * 1.15)  # 15% boost
+            adjustment_reason = f"LOW_EV: {ev:.3f} with v_loss {avg_v_loss:.2f} - boost"
+        elif avg_v_loss < 0.1 and ev > 0.3 and current_vf_coef > 0.5:
+            # Value loss healthy AND good EV, can reduce vf_coef slightly
             target_vf_coef = max(0.5, current_vf_coef * 0.95)
-            adjustment_reason = f"HEALTHY_VALUE_LOSS: {avg_v_loss:.2f} - reducing vf_coef"
+            adjustment_reason = f"HEALTHY: v_loss={avg_v_loss:.2f}, EV={ev:.3f} - reducing vf_coef"
         
         # Log status periodically
         if self.verbose >= 1 and self.num_timesteps % 50_000 < self._n_envs:
             logger.info(
                 f"🔍 VF Coef Status: {adjustment_reason} | "
                 f"vf_coef: {current_vf_coef:.3f} -> {target_vf_coef:.3f} | "
-                f"avg_v_loss: {avg_v_loss:.3f}"
+                f"avg_v_loss: {avg_v_loss:.3f}, EV: {ev:.3f}"
             )
         
         # Apply if significant change
@@ -546,7 +571,7 @@ class CurriculumTrainingCallback(BaseCallback):
             if self.verbose >= 1:
                 logger.info(
                     f"🎛️ Adaptive vf_coef: {adjustment_reason} | "
-                    f"{current_vf_coef:.3f} -> {target_vf_coef:.3f}"
+                    f"{current_vf_coef:.3f} -> {target_vf_coef:.3f} | EV: {ev:.3f}"
                 )
 
     def _apply_adaptive_learning_rate(self) -> None:
@@ -882,6 +907,10 @@ class CurriculumTrainingCallback(BaseCallback):
                 if hasattr(logger_obj, 'name_to_value'):
                     values = logger_obj.name_to_value
                     
+                    # Debug: Log available keys periodically (every 50k steps)
+                    if self.num_timesteps % 50_000 < self._n_envs and values:
+                        logger.debug(f"📊 SB3 logger keys: {list(values.keys())[:20]}")
+                    
                     # Extract common PPO metrics
                     # F-5 FIX: Use 'train/entropy' (true entropy) not 'train/entropy_loss' (scaled by -ent_coef)
                     self._ppo_diagnostics['policy_loss'] = float(values.get('train/policy_gradient_loss', values.get('train/policy_loss', 0)))
@@ -947,7 +976,7 @@ class CurriculumTrainingCallback(BaseCallback):
         profit_factor: float,
         r_multiple: float,
         reward: float,
-        direction_stats: Dict[str, Any] = None,
+        direction_stats: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
         Record episode statistics for a specific stage.

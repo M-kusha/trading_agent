@@ -840,8 +840,9 @@ DEFAULT_METRIC_BOUNDS = [
     MetricBounds("mean_trade_count", 0.0, 10000.0),
     MetricBounds("std_win_rate", 0.0, 1.0),
     MetricBounds("mean_pnl", -1e9, 1e9, allow_nan=False, allow_inf=False),
-    MetricBounds("avg_mae", 0.0, 1.0),
-    MetricBounds("avg_mfe", 0.0, 1.0),
+    # MAE/MFE are in pips/currency units for XAUUSD (typically 10-500 range)
+    MetricBounds("avg_mae", 0.0, 2000.0),
+    MetricBounds("avg_mfe", 0.0, 2000.0),
     MetricBounds("episode_length", 0.0, 100000.0),
     # Other
     MetricBounds("policy_entropy", -1.0, 10.0),  # -1 = not available
