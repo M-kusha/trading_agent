@@ -153,3 +153,25 @@ class PIDController:
         self._last_error = 0.0
         self._d_filtered = 0.0
         self._last_output = (self.output_min + self.output_max) / 2.0
+
+    def to_dict(self) -> dict:
+        """Serialize controller state for checkpointing."""
+        return {
+            "setpoint": self.setpoint,
+            "output_min": self.output_min,
+            "output_max": self.output_max,
+            "_integral": self._integral,
+            "_last_error": self._last_error,
+            "_last_output": self._last_output,
+            "_d_filtered": self._d_filtered,
+        }
+
+    def load_from_dict(self, state: dict) -> None:
+        """Restore controller state from checkpoint."""
+        self.setpoint = float(state.get("setpoint", self.setpoint))
+        self.output_min = float(state.get("output_min", self.output_min))
+        self.output_max = float(state.get("output_max", self.output_max))
+        self._integral = float(state.get("_integral", 0.0))
+        self._last_error = float(state.get("_last_error", 0.0))
+        self._last_output = float(state.get("_last_output", (self.output_min + self.output_max) / 2.0))
+        self._d_filtered = float(state.get("_d_filtered", 0.0))

@@ -47,20 +47,17 @@ from envs.curriculum.curriculum_config import (
     CurriculumStage,
     CurriculumStageConfig,
     CompetenceThresholds,
-    TradingSkill,
-    SkillRequirements,
-    CompositeScoringConfig,
-    AdaptiveThresholdConfig,
-    RecoveryProtocolConfig,
     MIN_EVALUATION_EPISODES,
     get_stage_config,
     get_next_stage,
     get_previous_stage,
     get_stage_progression,
-    # NOTE: DataDifficulty, TransitionSettings, EntropyTargets, 
-    # MixedStageSamplingConfig, ReviewSessionConfig are accessed via 
-    # CurriculumStageConfig attributes (e.g., stage_config.mixed_stage_sampling)
-    # rather than as direct type annotations, so they're not imported here.
+    # NOTE: TradingSkill, SkillRequirements, CompositeScoringConfig,
+    # AdaptiveThresholdConfig, RecoveryProtocolConfig, DataDifficulty,
+    # TransitionSettings, EntropyTargets, MixedStageSamplingConfig,
+    # ReviewSessionConfig are accessed via CurriculumStageConfig attributes
+    # (e.g., stage_config.composite_scoring) rather than as direct type
+    # annotations, so they're not imported here.
 )
 
 # DUP-2 FIX: Use shared utilities for common functions
@@ -85,8 +82,8 @@ from envs.curriculum.metrics import (
 )
 from envs.curriculum.skills import (
     SkillAssessment,
-    DemotionRecord,
     DemotionAnalyzer,
+    # DemotionRecord accessed via DemotionAnalyzer, not used directly
 )
 from envs.curriculum.protocols import (
     RecoveryProtocolState,
@@ -96,15 +93,13 @@ from envs.curriculum.protocols import (
 # Phase 1-4 hardening modules
 from envs.curriculum.curriculum_invariants import (
     CurriculumInvariantChecker,
-    reconcile_trade_accounting,
     AntiGamingChecker,
-    InvariantViolation,
+    # reconcile_trade_accounting, InvariantViolation not used directly
 )
 from envs.curriculum.validation_gates import (
     ValidationGateChecker,
-    ValidationGateConfig,
     StressTestRunner,
-    StressTestConfig,
+    # ValidationGateConfig, StressTestConfig accessed via stage_config
 )
 from envs.curriculum.regime_skill_assessment import (
     RegimeSkillAssessment,
@@ -244,6 +239,8 @@ class CurriculumManager:
         on_transition_callback: Optional[Callable] = None,
         rng_seed: Optional[int] = None,
         validation_evaluator: Optional[Callable[[CurriculumStageConfig], Dict[str, Any]]] = None,
+        stress_test_evaluator: Optional[Callable[[List[Dict[str, Any]], Dict[str, Any]], List[Dict[str, Any]]]] = None,
+        validation_gate_evaluator: Optional[Callable[[List[Dict[str, Any]], Dict[str, Any]], Dict[str, List[Dict[str, Any]]]]] = None,
         bars_per_trading_day: int = 96,  # M15 default; override for other timeframes
     ) -> None:
         # Use foundation stage if not specified (avoids hard-coding EXPLORER)
@@ -257,26 +254,31 @@ class CurriculumManager:
         self.tz = tz
         self.on_transition_callback = on_transition_callback
         self.validation_evaluator = validation_evaluator
+        self.stress_test_evaluator = stress_test_evaluator
+        self.validation_gate_evaluator = validation_gate_evaluator
         self.bars_per_trading_day = bars_per_trading_day
         
         # Random number generator for mixed-stage sampling
         self._rng = np.random.default_rng(rng_seed)
         
-        # Metrics history per stage
+        # Get the canonical progression list (use this instead of enum iteration)
+        self._progression = get_stage_progression()
+        
+        # Metrics history per stage (keyed by progression, not enum iteration)
         self._history: Dict[CurriculumStage, Deque[EpisodeMetrics]] = {
-            stage: deque(maxlen=max_history_size) for stage in CurriculumStage
+            stage: deque(maxlen=max_history_size) for stage in self._progression
         }
         
         # Totals per stage (lifetime)
-        self._stage_timesteps_total: Dict[CurriculumStage, int] = {stage: 0 for stage in CurriculumStage}
-        self._stage_episodes_total: Dict[CurriculumStage, int] = {stage: 0 for stage in CurriculumStage}
+        self._stage_timesteps_total: Dict[CurriculumStage, int] = {stage: 0 for stage in self._progression}
+        self._stage_episodes_total: Dict[CurriculumStage, int] = {stage: 0 for stage in self._progression}
         
         # Current stage-epoch counters
         self.stage_timesteps: int = 0
         self.stage_episodes: int = 0
         
-        # Stage epoch counters
-        self._stage_epoch_counter: Dict[CurriculumStage, int] = {stage: 0 for stage in CurriculumStage}
+        # Stage epoch counters (keyed by progression)
+        self._stage_epoch_counter: Dict[CurriculumStage, int] = {stage: 0 for stage in self._progression}
         self._current_stage_epoch: int = 0
         
         # Promotion/demotion history
@@ -319,7 +321,14 @@ class CurriculumManager:
         # Bounded to prevent memory issues during long training runs
         self._regime_trades: Deque[TradeWithRegime] = deque(maxlen=2000)
         self._regime_assessment_dirty: bool = True
-
+        
+        # Validation gate history: tracks all validation gate evaluations
+        # Each entry: {stage, stage_epoch, timestamp, passed, details}
+        self._validation_gate_history: List[Dict[str, Any]] = []
+        
+        # Stress test history: tracks all stress test evaluations
+        # Each entry: {stage, stage_epoch, timestamp, passed, robustness_score, details}
+        self._stress_test_history: List[Dict[str, Any]] = []
         
         # Episode-end call tracking (Phase 1.2: ensure single call per episode)
         self._last_episode_end_idx: int = -1
@@ -344,6 +353,54 @@ class CurriculumManager:
         self._enter_stage(self.current_stage, reason="init")
         
         logger.info(f"CurriculumManager v{STATE_VERSION} initialized at stage: {initial_stage.name}")
+    
+    # -------------------------------------------------------------------------
+    # Late-binding setters for callbacks that require env access
+    # -------------------------------------------------------------------------
+    
+    def set_stress_test_evaluator(
+        self, 
+        evaluator: Callable[[List[Dict[str, Any]], Dict[str, Any]], List[Dict[str, Any]]]
+    ) -> None:
+        """
+        Set the stress test evaluator callback (late-binding).
+        
+        This is useful when the evaluator needs env access and the env is
+        created after the CurriculumManager.
+        
+        Args:
+            evaluator: Callback that takes (scenarios, baseline_stats) and returns
+                      list of episode result dicts for each scenario.
+        """
+        self.stress_test_evaluator = evaluator
+    
+    def set_validation_evaluator(
+        self,
+        evaluator: Callable[[CurriculumStageConfig], Dict[str, Any]]
+    ) -> None:
+        """
+        Set the validation evaluator callback (late-binding).
+        
+        Args:
+            evaluator: Callback that takes stage_config and returns validation results.
+        """
+        self.validation_evaluator = evaluator
+    
+    def set_validation_gate_evaluator(
+        self,
+        evaluator: Callable[[List[Dict[str, Any]], Dict[str, Any]], Dict[str, List[Dict[str, Any]]]]
+    ) -> None:
+        """
+        Set the validation gate evaluator callback (late-binding).
+        
+        This runs actual validation episodes for each scenario and returns
+        results that ValidationGateChecker can evaluate.
+        
+        Args:
+            evaluator: Callback that takes (scenarios, training_stats) and returns
+                      dict mapping scenario_name to list of episode results.
+        """
+        self.validation_gate_evaluator = evaluator
     
     # -------------------------------------------------------------------------
     # Stage Entry/Exit
@@ -513,8 +570,17 @@ class CurriculumManager:
         
         return self._lr_warmup_factor + (1.0 - self._lr_warmup_factor) * warmup_progress
     
-    def step_transition_state(self, timesteps: int = 1) -> None:
-        """Update transition state counters (call each training step)."""
+    def on_train_step(self, timesteps: int = 1) -> None:
+        """
+        Update per-step transition state counters.
+        
+        MUST be called every training step for:
+        - LR warmup to function correctly
+        - Any future per-step transition mechanics
+        
+        Args:
+            timesteps: Number of timesteps in this step (usually 1 or n_envs)
+        """
         if self._lr_warmup_active and self._lr_warmup_steps_remaining > 0:
             self._lr_warmup_steps_remaining -= timesteps
             if self._lr_warmup_steps_remaining <= 0:
@@ -522,6 +588,51 @@ class CurriculumManager:
                 self._lr_warmup_factor = 1.0
                 if self.verbose:
                     logger.info(f"LR warmup complete for stage {self.current_stage.name}")
+    
+    # Alias for backward compatibility
+    def step_transition_state(self, timesteps: int = 1) -> None:
+        """DEPRECATED: Use on_train_step() instead."""
+        self.on_train_step(timesteps)
+    
+    def get_effective_stage_config(self) -> CurriculumStageConfig:
+        """
+        Get the effective stage config with reward blending applied.
+        
+        When transitioning between stages, this returns a config with blended
+        reward parameters to smooth the transition. Training loop and env builder
+        SHOULD call this instead of stage_config when reward blending is active.
+        
+        Returns:
+            CurriculumStageConfig with blended rewards if blending is active,
+            otherwise the current stage_config unchanged.
+        """
+        cfg = get_stage_config(self.current_stage)
+        
+        if self._reward_blend_remaining <= 0 or self._previous_stage_config is None:
+            return cfg
+        
+        # Blend rewards from previous stage to current stage
+        alpha = self.reward_blend_factor  # 0.0 = old, 1.0 = new
+        
+        # Create a deep copy to avoid mutating cached config
+        blended_cfg = copy.deepcopy(cfg)
+        prev_rewards = self._previous_stage_config.rewards
+        curr_rewards = cfg.rewards
+        
+        # Blend numeric reward fields
+        # Only blend fields that exist on both and are numeric
+        for field_obj in fields(curr_rewards):
+            field_name = field_obj.name
+            if not hasattr(prev_rewards, field_name):
+                continue
+            prev_val = getattr(prev_rewards, field_name, None)
+            curr_val = getattr(curr_rewards, field_name, None)
+            if isinstance(prev_val, (int, float)) and isinstance(curr_val, (int, float)):
+                # Linear blend: prev * (1-alpha) + curr * alpha
+                blended_val = prev_val * (1 - alpha) + curr_val * alpha
+                setattr(blended_cfg.rewards, field_name, blended_val)
+        
+        return blended_cfg
     
     def _seen_episode_id(self, eid: int) -> bool:
         """Check if an episode ID has already been processed."""
@@ -745,6 +856,9 @@ class CurriculumManager:
         
         NOTE: This method uses a per-episode latch to prevent double-ticking
         of review counters if called multiple times within the same episode.
+        
+        IMPORTANT: return_to_home_latch handling is done ONLY in get_effective_stage()
+        to avoid double-latch complexity. This method should not check or clear latch.
         """
         config = self.stage_config.review_session
         
@@ -767,11 +881,8 @@ class CurriculumManager:
         if not already_ticked:
             self._review_tick_episode = next_ep
         
-        # Check return-to-home latch (one episode after review ends)
-        if getattr(self._review_state, 'return_to_home_latch', False):
-            self._review_state.return_to_home_latch = False
-            # Return current_stage to ensure predictable post-review behavior
-            return self.current_stage
+        # NOTE: return_to_home_latch is ONLY handled in get_effective_stage() 
+        # to avoid double-latch complexity. Do not check/clear it here.
         
         # Handle active review
         if self._review_state.in_review:
@@ -1862,7 +1973,185 @@ class CurriculumManager:
         if not meets_criteria:
             return False, None
         
+        # =================================================================
+        # Invariant enforcement: block promotion if critical violations
+        # =================================================================
+        invariant_summary = self._invariant_checker.get_summary()
+        critical_violations = invariant_summary.get("critical_count", 0)
+        if critical_violations > 0:
+            if self.verbose:
+                logger.warning(
+                    f"Blocking promotion due to {critical_violations} critical invariant violations. "
+                    f"Details: {invariant_summary}"
+                )
+            results["invariant_block"] = {
+                "blocked": True,
+                "critical_count": critical_violations,
+                "summary": invariant_summary,
+            }
+            return False, None
+        
+        # =================================================================
+        # Validation gate integration (uses ValidationGateChecker)
+        # Uses validation_gate_evaluator callback to run validation episodes.
+        # =================================================================
+        # FIX: Was looking for "validation_gates" but field is named "validation"
+        gate_config = getattr(config, "validation", None)
+        if gate_config is not None and getattr(gate_config, "enabled", False):
+            if self.validation_gate_evaluator is not None:
+                try:
+                    # Get scenarios from the validation gate checker
+                    scenarios = [s.to_dict() if hasattr(s, 'to_dict') else {'name': s.name} 
+                                for s in self._validation_gate.scenarios]
+                    
+                    # Get training stats for comparison
+                    stats = self.get_rolling_stats()
+                    training_stats = {
+                        "mean_win_rate": stats.mean_win_rate,
+                        "mean_profit_factor": stats.mean_profit_factor,
+                        "mean_r_multiple": stats.mean_r_multiple,
+                        "mean_pnl": stats.mean_pnl,
+                        "total_trades": stats.total_trades,
+                    }
+                    
+                    # Call evaluator to run validation episodes
+                    # Returns: {scenario_name: [episode_results]}
+                    validation_results = self.validation_gate_evaluator(scenarios, training_stats)
+                    
+                    # Evaluate using the validation gate checker
+                    stage_idx = _stage_to_index(self.current_stage)
+                    gate_result = self._validation_gate.evaluate_all(
+                        validation_results=validation_results,
+                        training_stats=training_stats,
+                        stage_name=self.current_stage.name,
+                        stage_epoch=self._current_stage_epoch,
+                        stage_index=stage_idx,
+                    )
+                    
+                    results["validation_gate"] = {
+                        "passed": gate_result.gate_passed,
+                        "pass_rate": gate_result.pass_rate,
+                        "scenarios_passed": gate_result.scenarios_passed,
+                        "scenarios_total": gate_result.scenarios_total,
+                        "performance_ratio": gate_result.performance_ratio,
+                        "blocking_reasons": gate_result.blocking_reasons,
+                        "recommendations": self._validation_gate.get_recommendations(),
+                    }
+                    
+                    # Record validation gate result in history for dashboard
+                    self._validation_gate_history.append({
+                        "stage": self.current_stage.name,
+                        "stage_epoch": self._current_stage_epoch,
+                        "stage_episodes": self.stage_episodes,
+                        "timestamp": _now_iso(self.tz),
+                        "passed": gate_result.gate_passed,
+                        "pass_rate": gate_result.pass_rate,
+                        "scenarios_passed": gate_result.scenarios_passed,
+                        "scenarios_total": gate_result.scenarios_total,
+                        "performance_ratio": gate_result.performance_ratio,
+                        "blocking_reasons": gate_result.blocking_reasons,
+                    })
+                    # Keep history bounded (max 100 entries)
+                    if len(self._validation_gate_history) > 100:
+                        self._validation_gate_history = self._validation_gate_history[-100:]
+                    
+                    if not gate_result.gate_passed:
+                        if self.verbose:
+                            logger.info(
+                                f"Validation gate failed: {gate_result.scenarios_passed}/{gate_result.scenarios_total} "
+                                f"scenarios passed. Blocking promotion. Reasons: {gate_result.blocking_reasons}"
+                            )
+                        return False, None
+                        
+                except Exception as e:
+                    logger.warning(f"Validation gate evaluator error: {e}; skipping gate.")
+                    results["validation_gate"] = {"error": str(e)}
+            else:
+                # No evaluator provided - mark as pending
+                results["validation_gate_pending"] = True
+                if self.verbose:
+                    logger.debug("Validation gate enabled but no evaluator provided - skipping")
+        
+        # =================================================================
+        # Stress test integration (optional, for prop-firm stages)
+        # Uses stress_test_evaluator callback to run adversarial episodes.
+        # =================================================================
+        stress_config = getattr(config, "stress_test", None)
+        if stress_config is not None and getattr(stress_config, "enabled", False):
+            if self.stress_test_evaluator is not None:
+                try:
+                    # Get scenarios from the stress test runner
+                    scenarios = self._stress_tester.get_stress_scenarios()
+                    
+                    # Get baseline stats for comparison
+                    stats = self.get_rolling_stats()
+                    baseline_stats = {
+                        "mean_win_rate": stats.mean_win_rate,
+                        "mean_profit_factor": stats.mean_profit_factor,
+                        "mean_r_multiple": stats.mean_r_multiple,
+                        "mean_pnl": stats.mean_pnl,
+                    }
+                    
+                    # Call evaluator to run actual stress episodes
+                    stress_episode_results = self.stress_test_evaluator(scenarios, baseline_stats)
+                    
+                    # Evaluate results for each scenario
+                    stress_results = []
+                    for i, scenario in enumerate(scenarios):
+                        if i < len(stress_episode_results):
+                            eps = stress_episode_results[i]
+                            result = self._stress_tester.evaluate_stress_result(
+                                scenario, eps if isinstance(eps, list) else [eps], baseline_stats
+                            )
+                            stress_results.append(result)
+                    
+                    # Check if stress tests passed
+                    robustness_score = self._stress_tester.get_robustness_score(stress_results)
+                    min_robustness = float(getattr(stress_config, "min_robustness_score", 0.6))
+                    
+                    results["stress_test"] = {
+                        "passed": robustness_score >= min_robustness,
+                        "robustness_score": robustness_score,
+                        "min_required": min_robustness,
+                        "summary": self._stress_tester.get_summary(stress_results),
+                    }
+                    
+                    # Record stress test result in history for dashboard
+                    self._stress_test_history.append({
+                        "stage": self.current_stage.name,
+                        "stage_epoch": self._current_stage_epoch,
+                        "stage_episodes": self.stage_episodes,
+                        "timestamp": _now_iso(self.tz),
+                        "passed": robustness_score >= min_robustness,
+                        "robustness_score": robustness_score,
+                        "min_required": min_robustness,
+                        "scenarios_count": len(stress_results),
+                        "summary": self._stress_tester.get_summary(stress_results),
+                    })
+                    # Keep history bounded (max 100 entries)
+                    if len(self._stress_test_history) > 100:
+                        self._stress_test_history = self._stress_test_history[-100:]
+                    
+                    if not results["stress_test"]["passed"]:
+                        if self.verbose:
+                            logger.info(
+                                f"Stress test failed: robustness {robustness_score:.2%} < {min_robustness:.2%}. "
+                                f"Blocking promotion."
+                            )
+                        return False, None
+                        
+                except Exception as e:
+                    logger.warning(f"Stress test evaluator error: {e}; skipping stress gate.")
+                    results["stress_test"] = {"error": str(e)}
+            else:
+                # No evaluator provided - mark as pending
+                results["stress_test_pending"] = True
+                if self.verbose:
+                    logger.debug("Stress test enabled but no evaluator provided - skipping")
+        
+        # =================================================================
         # Holdout validation gate (if enabled and evaluator provided)
+        # =================================================================
         val_cfg = self.stage_config.validation
         if val_cfg.enabled:
             if self.validation_evaluator is None:
@@ -2208,6 +2497,14 @@ class CurriculumManager:
             # History
             "transitions_count": len(self._transitions),
             "recent_transitions": self._transitions[-5:],
+            
+            # Validation gate history (for dashboard)
+            "validation_gate_history": self._validation_gate_history[-10:],  # Last 10 evaluations
+            "last_validation_gate": self._validation_gate_history[-1] if self._validation_gate_history else None,
+            
+            # Stress test history (for dashboard)
+            "stress_test_history": self._stress_test_history[-10:],  # Last 10 evaluations
+            "last_stress_test": self._stress_test_history[-1] if self._stress_test_history else None,
         }
     
     def _generate_recommendations(self, blockers: List[Dict]) -> List[str]:
@@ -2254,8 +2551,8 @@ class CurriculumManager:
         max_episodes: Optional[int] = None,
         max_hours: Optional[float] = None,
         start_time: Optional[float] = None,
-        plateau_stop: bool = True,
-        plateau_threshold_episodes: int = 500,
+        plateau_stop: bool = False,  # DISABLED: was causing premature stops
+        plateau_threshold_episodes: int = 500,  # Only used if plateau_stop=True
         max_demotions_from_same_stage: int = 5,
         mastery_confirmation_episodes: int = 100,
     ) -> Tuple[bool, str]:
@@ -2266,15 +2563,19 @@ class CurriculumManager:
         Training stops when:
         1. Agent reaches MASTERY stage AND maintains it for confirmation episodes
         2. Safety caps are hit (max_timesteps, max_episodes, max_hours)
-        3. Learning has plateaued for too long (optional)
-        4. Agent has been demoted from the same stage too many times
+        3. Agent has been demoted from the same stage too many times
+        
+        NOTE: Plateau-based stopping is DISABLED by default (plateau_stop=False).
+        It was causing premature stops even when metrics were improving slowly.
+        If you want to enable it, set plateau_stop=True, but be aware that
+        slow learners may be stopped too early.
         
         Args:
             max_timesteps: Safety cap on total timesteps (None = no cap)
             max_episodes: Safety cap on total episodes (None = no cap)
             max_hours: Safety cap on training hours (None = no cap)
             start_time: Training start time from time.time() for hours cap
-            plateau_stop: Whether to stop on extended plateau
+            plateau_stop: Whether to stop on extended plateau (default: False)
             plateau_threshold_episodes: Episodes of no improvement before plateau stop
             max_demotions_from_same_stage: Stop if repeatedly failing same stage
             mastery_confirmation_episodes: Episodes to confirm MASTERY is stable
@@ -2304,11 +2605,10 @@ class CurriculumManager:
             if elapsed_hours >= max_hours:
                 return True, f"MAX_HOURS: Training ran for {elapsed_hours:.1f} hours"
         
-        # 3. Plateau detection - DISABLED: Let agent train to timestep cap
-        # This was stopping training prematurely even when metrics were improving slowly
-        # if plateau_stop and self._learning_velocity.is_plateaued(plateau_threshold_episodes):
-        #     return True, f"PLATEAU: No improvement for {self._learning_velocity.plateau_episodes} episodes"
-        pass  # Plateau stopping disabled - train to timestep cap instead
+        # 3. Plateau detection (disabled by default)
+        # Only active if plateau_stop=True is explicitly passed
+        if plateau_stop and self._learning_velocity.is_plateaued(plateau_threshold_episodes):
+            return True, f"PLATEAU: No improvement for {self._learning_velocity.plateau_episodes} episodes"
         
         # 4. Repeated failure at same stage
         for stage, count in self._demotion_analyzer.stage_failure_counts.items():
@@ -2395,6 +2695,10 @@ class CurriculumManager:
             "review_tick_episode": self._review_tick_episode,
             # RNG state for reproducible mixed-stage sampling
             "rng_state": self._rng.bit_generator.state,
+            # Validation gate history
+            "validation_gate_history": self._validation_gate_history[-100:],
+            # Stress test history
+            "stress_test_history": self._stress_test_history[-100:],
             "saved_at": _now_iso(self.tz),
         }
         
@@ -2452,8 +2756,9 @@ class CurriculumManager:
         manager.stage_timesteps = _safe_int(state.get("stage_timesteps_current", 0), 0)
         manager.stage_episodes = _safe_int(state.get("stage_episodes_current", 0), 0)
         
-        # Restore history
-        manager._history = {stage: deque(maxlen=manager.max_history_size) for stage in CurriculumStage}
+        # Restore history (use progression list, not enum iteration)
+        progression = get_stage_progression()
+        manager._history = {stage: deque(maxlen=manager.max_history_size) for stage in progression}
         for stage_name, episodes_data in (state.get("history", {}) or {}).items():
             try:
                 stage = CurriculumStage[stage_name]
@@ -2537,6 +2842,12 @@ class CurriculumManager:
                 manager._rng.bit_generator.state = rng_state
             except Exception as e:
                 logger.warning(f"Could not restore RNG state: {e}")
+        
+        # Restore validation gate history
+        manager._validation_gate_history = state.get("validation_gate_history", []) or []
+        
+        # Restore stress test history
+        manager._stress_test_history = state.get("stress_test_history", []) or []
         
         manager._rolling_stats_dirty = True
         

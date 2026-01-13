@@ -7,7 +7,7 @@ paths:
   logs: logs/live_trading
 
 environment:
-  instruments: ["EURUSD", "XAUUSD"]
+  instruments: ["XAUUSD"]
   timeframes: ["M15", "H1", "H4", "D1"]
   num_envs: 1
   data_source: "live"

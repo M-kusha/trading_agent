@@ -151,7 +151,12 @@ from envs.core.shared_utils import (
 
 logger = get_envs_logger("prop_firm_env")
 
-from envs.core.execution_model import ExecutionConfig, ExecutionModel
+from envs.core.execution_model import (
+    ExecutionConfig,
+    ExecutionModel,
+    CommissionMode,
+    CommissionSpec,
+)
 
 from envs.core.env_types import (
     CloseReason,
@@ -402,6 +407,24 @@ class PropFirmTradingEnv(
                 self._apply_overrides_to_object(self.config.reward, reward_overrides)
             if isinstance(execution_overrides, dict):
                 self._apply_overrides_to_object(self.config.execution, execution_overrides)
+
+                # Compatibility bridge: curriculum stages express commission as commission_per_lot,
+                # but ExecutionConfig uses commission_spec (mode + rate).
+                if "commission_per_lot" in execution_overrides:
+                    try:
+                        commission_per_lot = float(execution_overrides.get("commission_per_lot") or 0.0)
+                        if commission_per_lot > 0.0:
+                            self.config.execution.commission_spec = CommissionSpec(
+                                mode=CommissionMode.PER_LOT_PER_SIDE,
+                                commission_rate=commission_per_lot,
+                            )
+                        else:
+                            self.config.execution.commission_spec = CommissionSpec(
+                                mode=CommissionMode.NONE,
+                                commission_rate=0.0,
+                            )
+                    except Exception:
+                        pass
         except Exception as e:
             logger.warning(f"_sync_curriculum_stage_overrides() failed: {type(e).__name__}: {e}")
             return
@@ -433,6 +456,81 @@ class PropFirmTradingEnv(
         struct_lb = int(getattr(self, "_STRUCTURE_LOOKBACK", 0) or 0)
         margin = 10
         return int(max(obs_lb, expert_lb, struct_lb, 50) + margin)
+
+    # ---------------------------
+    # Loss-layer governor (Jan 2026)
+    # ---------------------------
+    # Behavioral gates that tighten after consecutive losses.
+    # More effective than exponential reward penalties (which saturate clip and lose gradient).
+
+    def _loss_layer(self) -> int:
+        """Governor layer: 0..5 based on consecutive losses."""
+        return int(np.clip(int(getattr(self, "consecutive_losses", 0)), 0, 5))
+
+    def _loss_layer_stop(self) -> int:
+        """Layer at which new entries are fully blocked (hard stop-trading mode)."""
+        return int(getattr(self.config, "loss_layer_stop", 5))
+
+    def _loss_layer_cooldown_minutes(self, base_minutes: float) -> float:
+        """
+        Dynamic post-loss cooldown. Escalates with consecutive losses.
+        
+        Override via config.loss_layer_cooldown_minutes (list of 6 values for layers 0-5)
+        or config.loss_layer_cooldown_multipliers.
+        
+        Default: layer 0-1 = base, layer 2 = 1.5x, layer 3 = 2.5x, layer 4 = 4x, layer 5 = 8x
+        """
+        layer = self._loss_layer()
+        
+        # Option A: explicit minutes per layer (preferred for curriculum control)
+        mins_table = getattr(self.config, "loss_layer_cooldown_minutes", None)
+        if isinstance(mins_table, (list, tuple)) and len(mins_table) >= 6:
+            return float(mins_table[layer])
+        
+        # Option B: multiplier per layer (fallback)
+        mults = getattr(self.config, "loss_layer_cooldown_multipliers", None)
+        if isinstance(mults, (list, tuple)) and len(mults) >= 6:
+            return float(base_minutes) * float(mults[layer])
+        
+        # Default escalation (reasonable, not insane)
+        default_mult = [1.0, 1.0, 1.5, 2.5, 4.0, 8.0]
+        return float(base_minutes) * default_mult[layer]
+
+    def _loss_layer_entry_quality_threshold(self, base_threshold: float) -> float:
+        """
+        Dynamic entry-quality requirement; stricter after consecutive losses.
+        
+        Override via config.loss_layer_entry_q_add (list of 6 values for layers 0-5).
+        
+        Default: layer 0-1 = base, layer 2 = +0.05, layer 3 = +0.10, layer 4 = +0.18, layer 5 = +0.30
+        """
+        layer = self._loss_layer()
+        
+        adds = getattr(self.config, "loss_layer_entry_q_add", None)
+        if isinstance(adds, (list, tuple)) and len(adds) >= 6:
+            add_val = float(adds[layer])
+        else:
+            # Default: mild → strict, capped at 0.90
+            add_val = [0.00, 0.00, 0.05, 0.10, 0.18, 0.30][layer]
+        
+        return float(np.clip(float(base_threshold) + add_val, 0.0, 0.90))
+
+    def _loss_layer_risk_multiplier(self) -> float:
+        """
+        Reduce risk per trade after consecutive losses.
+        
+        Override via config.loss_layer_risk_mult (list of 6 values for layers 0-5).
+        
+        Default: layer 0 = 100%, layer 1 = 90%, layer 2 = 75%, layer 3 = 60%, layer 4 = 45%, layer 5 = 30%
+        """
+        layer = self._loss_layer()
+        
+        mults = getattr(self.config, "loss_layer_risk_mult", None)
+        if isinstance(mults, (list, tuple)) and len(mults) >= 6:
+            return float(mults[layer])
+        
+        # Default: progressively reduce risk; layer 5 doesn't matter (entries blocked)
+        return float([1.00, 0.90, 0.75, 0.60, 0.45, 0.30][layer])
 
     # ---------------------------
     # Action decoding / masking
@@ -511,6 +609,11 @@ class PropFirmTradingEnv(
 
         has_position_or_pending = (self.position is not None) or (self.pending_entry is not None)
         can_enter = (not has_position_or_pending) and bool(can_enter_fill)
+
+        # Loss-layer governor: hard stop-trading mode after severe loss streak
+        # Mask entries so agent doesn't waste exploration on blocked actions
+        if self._loss_layer() >= self._loss_layer_stop():
+            can_enter = False
 
         if not can_enter:
             mask[self._ACTION_LONG_START : self._ACTION_LONG_START + self._K] = False
@@ -672,12 +775,25 @@ class PropFirmTradingEnv(
         return out
 
     def _get_pip_value(self, instrument: str) -> Tuple[float, float]:
+        """
+        Get pip value and pip divisor for an instrument.
+        
+        Returns:
+            Tuple of (pip_value_per_lot, pip_divisor):
+            - pip_value_per_lot: USD/EUR value per pip movement per standard lot
+            - pip_divisor: Divisor to convert price to pips (e.g., 10000 for FX = 0.0001/pip)
+        
+        Instrument-specific values:
+        - XAUUSD/GOLD: 100 USD per pip per lot, 1.0 divisor (price in USD, 1 pip = $0.01)
+        - XAGUSD/SILVER: 50 USD per pip per lot, 1.0 divisor  
+        - FX pairs: 10 USD per pip per lot, 10000 divisor (1 pip = 0.0001 for 4-decimal pairs)
+        """
         inst = instrument.upper().replace("_", "").replace("/", "")
         if "XAU" in inst or "GOLD" in inst:
-            return 100.0, 1.0
+            return 100.0, 1.0  # XAUUSD: $100 per pip, 1 pip = $0.01 move
         if "XAG" in inst or "SILVER" in inst:
-            return 50.0, 1.0
-        return 10.0, 10000.0
+            return 50.0, 1.0   # XAGUSD: $50 per pip, 1 pip = $0.001 move
+        return 10.0, 10000.0   # Standard FX: $10 per pip, 1 pip = 0.0001 move
 
     def _atr_vol_proxy(self, instrument: str) -> float:
         o = self._get_ohlcv(instrument, lookback=40, timeframe=None)
@@ -727,6 +843,24 @@ class PropFirmTradingEnv(
         
         return raw_points * point_value
 
+    def _get_effective_data_spread(self, instrument: str) -> Optional[float]:
+        """Returns the spread to feed into the execution model (price units).
+
+        Respects execution config flags:
+        - config.execution.use_data_spread
+        - config.execution.data_spread_scale
+        """
+        exec_cfg = getattr(self.config, "execution", None)
+        use_data = getattr(exec_cfg, "use_data_spread", True) if exec_cfg else True
+        if not bool(use_data):
+            return None
+
+        spread_scale = getattr(exec_cfg, "data_spread_scale", 1.0) if exec_cfg else 1.0
+        raw_spread = self._get_current_data_spread(instrument)
+        if raw_spread is None or raw_spread <= 0:
+            return None
+        return float(raw_spread) * float(spread_scale)
+
     def _get_step_bid_ask(self, instrument: str, mid: float, vol_proxy: float) -> Tuple[float, float]:
         """
         Quote caching: call quote() at most once per step, but validate mid/vol inputs.
@@ -752,17 +886,7 @@ class PropFirmTradingEnv(
             if abs(float(mid) - float(self._quote_cache_mid)) <= mid_tol and abs(float(vol_proxy) - float(self._quote_cache_vol)) <= vol_tol:
                 return float(self._quote_cache_bid), float(self._quote_cache_ask)
 
-        # Get actual spread from data if curriculum/config allows
-        data_spread: Optional[float] = None
-        exec_cfg = getattr(self.config, "execution", None)
-        use_data = getattr(exec_cfg, "use_data_spread", True) if exec_cfg else True
-        spread_scale = getattr(exec_cfg, "data_spread_scale", 1.0) if exec_cfg else 1.0
-        
-        if use_data:
-            raw_spread = self._get_current_data_spread(inst)
-            if raw_spread is not None and raw_spread > 0:
-                data_spread = float(raw_spread) * float(spread_scale)
-        
+        data_spread = self._get_effective_data_spread(inst)
         bid, ask, _ = self._exec.quote(mid, vol_proxy, data_spread=data_spread)
         self._quote_cache_step = step
         self._quote_cache_inst = inst
@@ -791,6 +915,8 @@ class PropFirmTradingEnv(
 
     def _calculate_lot_size(self, size_mult: float) -> Tuple[float, float]:
         base_risk = self.balance * self.config.risk_per_trade_pct
+        # Loss-layer governor: reduce risk after consecutive losses
+        base_risk *= self._loss_layer_risk_multiplier()
         risk_eur = base_risk * float(np.clip(size_mult, 0.25, 1.25))
         risk_eur = min(risk_eur, self.balance * self.config.max_risk_per_trade_pct)
 
@@ -842,8 +968,7 @@ class PropFirmTradingEnv(
         bars_held = self.episode_bars - pos.entry_bar
         entry_quality = float(pos.entry_quality)
         
-        # C2 FIX: Pass data_spread for consistent execution with mark-to-market
-        data_spread = self._get_current_data_spread(pos.instrument)
+        data_spread = self._get_effective_data_spread(pos.instrument)
         exit_fill, exit_fee, _ = self._exec.fill_exit(mid, pos.direction, pos.lot_size, vol_proxy, data_spread=data_spread)
         realized_pnl = float(self._realize_pnl_on_exit(pos, exit_fill, exit_fee))
         net_trade_pnl = float(realized_pnl - entry_fee)
@@ -947,6 +1072,11 @@ class PropFirmTradingEnv(
         daily_trades: int,
         session_trades: int,
     ) -> Tuple[bool, str]:
+        # Loss-layer governor: hard stop-trading mode after severe loss streak
+        # Check this FIRST (prevents revenge trading spiral)
+        if self._loss_layer() >= self._loss_layer_stop():
+            return False, "loss_layer_stop"
+        
         if dt is not None:
             if getattr(self.config, "enforce_weekend_block", True):
                 if (not self.config.allow_weekend_holding) and self._is_weekend(dt):
@@ -981,13 +1111,17 @@ class PropFirmTradingEnv(
 
             if self._last_loss_dt is not None:
                 mins = (dt - self._last_loss_dt).total_seconds() / 60.0
-                if mins < self.config.min_minutes_after_loss:
+                # Use governor-escalated cooldown
+                dynamic_after_loss = self._loss_layer_cooldown_minutes(self.config.min_minutes_after_loss)
+                if mins < dynamic_after_loss:
                     return False, "post_loss_cooldown"
         else:
             si = int(step_idx) if step_idx is not None else int(self.current_step)
             tfm = max(1, self._tf_minutes())
             min_entry_bars = int(np.ceil(self.config.min_minutes_between_entries / tfm))
-            post_loss_bars = int(np.ceil(self.config.min_minutes_after_loss / tfm))
+            # Use governor-escalated cooldown
+            dynamic_after_loss = self._loss_layer_cooldown_minutes(self.config.min_minutes_after_loss)
+            post_loss_bars = int(np.ceil(dynamic_after_loss / tfm))
 
             if self._last_entry_step is not None:
                 if (si - int(self._last_entry_step)) < max(1, min_entry_bars):
@@ -1304,8 +1438,7 @@ class PropFirmTradingEnv(
                     initial_risk = float(self.pending_entry["initial_risk"])
                     entry_quality = float(self.pending_entry.get("entry_quality", 0.5))
                     
-                    # C2 FIX: Pass data_spread for consistent execution with mark-to-market
-                    data_spread = self._get_current_data_spread(inst)
+                    data_spread = self._get_effective_data_spread(inst)
                     entry_fill, entry_fee, _ = self._exec.fill_entry(mid, direction, lot, vol_proxy, data_spread=data_spread)
 
                     entry_fee = float(entry_fee)
@@ -1357,7 +1490,12 @@ class PropFirmTradingEnv(
             block_reason = "insufficient_bars_for_fill"
 
         if attempted_entry:
-            if self.config.entry_quality_gate_enabled and entry_quality < self.config.entry_quality_threshold:
+            # Loss-layer governor: dynamic entry quality threshold
+            # Stricter after consecutive losses using configurable schedule
+            base_threshold = float(self.config.entry_quality_threshold)
+            progressive_threshold = self._loss_layer_entry_quality_threshold(base_threshold)
+            
+            if self.config.entry_quality_gate_enabled and float(entry_quality) < progressive_threshold:
                 entry_allowed = False
                 block_reason = "entry_quality_gate"
 
@@ -1385,6 +1523,7 @@ class PropFirmTradingEnv(
                 "final_exit_window",
                 "min_entry_spacing",
                 "insufficient_bars_for_fill",
+                "loss_layer_stop",  # Governor hard-stop (treated differently in shaping - zero penalty)
             }
             is_hard = block_reason in hard_blocks
             penalty = self._compute_blocked_action_penalty(block_reason, entry_quality, is_hard)
@@ -1502,12 +1641,15 @@ class PropFirmTradingEnv(
 
         # Per-step shaping (if enabled)
         bars_in_pos = (self.episode_bars - self.position.entry_bar) if self.position else 0
+        # entry_accepted: True ONLY when a pending_entry was created this step
+        # This prevents exploration bonus farming by spamming blocked entries
+        entry_accepted = (attempted_entry and entry_allowed and self.pending_entry is not None)
         shaping = self._compute_per_step_shaping(
             has_position=self.position is not None,
             bars_in_position=bars_in_pos,
             entry_quality_long=q_long,
             entry_quality_short=q_short,
-            took_action=intent in ("long", "short", "close"),
+            entry_accepted=entry_accepted,
         )
         reward += shaping
 
@@ -1708,7 +1850,21 @@ class PropFirmTradingEnv(
         )
 
     def close(self) -> None:
-        pass
+        """Clean up resources when the environment is closed."""
+        # Clear cached data to free memory
+        self._ohlcv_cache.clear()
+        self._ohlcv_cache_key = None
+        self._quote_cache_step = None
+        self._episode_trade_results.clear()
+        
+        # Clear position state
+        self.position = None
+        self.pending_entry = None
+        self.pending_exit = None
+        
+        # Clear execution model
+        self._exec = None
+        self._episode_execution_cfg = None
 
     # ---------------------------
     # Episode Analytics

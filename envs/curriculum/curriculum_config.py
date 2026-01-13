@@ -648,9 +648,10 @@ def get_trend_student_config() -> CurriculumStageConfig:
             dd_severity_exponent=1.1,
             dd_severity_cap=0.5,
             
-            streak_modifier_enabled=False,
-            win_streak_bonus_per_win=0.0,
-            loss_streak_penalty_per_loss=0.0,
+            # STREAKS: Enable early to teach loss avoidance (Jan 2026 FIX)
+            streak_modifier_enabled=True,
+            win_streak_bonus_per_win=0.01,      # Mild win streak bonus
+            loss_streak_penalty_per_loss=0.03,  # Mild loss streak penalty
             
             # ANTI-CHURN: Light - learning stage needs room to explore
             anti_churn_enabled=True,
@@ -669,8 +670,8 @@ def get_trend_student_config() -> CurriculumStageConfig:
             activity_deviation_penalty_cap=15.0,
             min_trades_penalty=0.3,
             
-            # EXPLORATION: Reduced to keep PnL dominant
-            exploration_bonus=0.025,          # FIX: Was 0.06, now subordinate to PnL
+            # EXPLORATION: Reduced to keep PnL dominant - must be <= EXPERIMENTER (0.015)
+            exploration_bonus=0.015,          # FIX: Was 0.025, now monotone with EXPERIMENTER
             directional_accuracy_weight=1.2,  # INCREASED - reward trend alignment
             min_reward=-5.0,  # FIX: Was -2.5
             max_reward=5.0,   # FIX: Was 2.5
@@ -882,9 +883,10 @@ def get_session_student_config() -> CurriculumStageConfig:
             dd_severity_exponent=1.2,
             dd_severity_cap=0.6,
             
-            streak_modifier_enabled=False,
-            win_streak_bonus_per_win=0.0,
-            loss_streak_penalty_per_loss=0.0,
+            # STREAKS: Progressive scaling (Jan 2026 FIX)
+            streak_modifier_enabled=True,
+            win_streak_bonus_per_win=0.012,     # Slight increase from Stage 2
+            loss_streak_penalty_per_loss=0.05,  # Moderate penalty for loss streaks
             
             anti_churn_enabled=True,
             daily_trade_soft_limit=10,   # D2 TUNING: Earlier soft limit
@@ -902,7 +904,9 @@ def get_session_student_config() -> CurriculumStageConfig:
             activity_deviation_penalty_cap=18.0,
             min_trades_penalty=0.25,
             
-            exploration_bonus=0.05,
+            # FIX: Was 0.05 which caused exploration spike vs earlier stages
+            # Must be <= TREND_STUDENT (0.015) for monotonicity
+            exploration_bonus=0.015,
             directional_accuracy_weight=1.15,
             min_reward=-6.0,  # FIX: Was -2.8
             max_reward=6.0,   # FIX: Was 2.8
@@ -1137,9 +1141,10 @@ def get_timing_student_config() -> CurriculumStageConfig:
             dd_severity_exponent=1.3,
             dd_severity_cap=0.8,
             
-            streak_modifier_enabled=False,
-            win_streak_bonus_per_win=0.0,
-            loss_streak_penalty_per_loss=0.0,
+            # STREAKS: Stronger penalty (Jan 2026 FIX)
+            streak_modifier_enabled=True,
+            win_streak_bonus_per_win=0.015,     # Progressive increase
+            loss_streak_penalty_per_loss=0.08,  # Stronger penalty for loss streaks
             
             anti_churn_enabled=True,
             # D2 AUDIT FIX: Tighter churn controls to reduce overtrading
@@ -1165,7 +1170,7 @@ def get_timing_student_config() -> CurriculumStageConfig:
             activity_deviation_penalty_cap=20.0,
             min_trades_penalty=0.2,
             
-            exploration_bonus=0.02,
+            exploration_bonus=0.015,  # FIX: Was 0.02, must be <= Stage 3 for monotonicity
             directional_accuracy_weight=1.1,
             min_reward=-8.0,  # FIX: Was -3.0
             max_reward=8.0,   # FIX: Was 3.0
@@ -1215,7 +1220,7 @@ def get_timing_student_config() -> CurriculumStageConfig:
             max_pnl_std=8000.0,
             min_trade_count_avg=4.0,
             max_dd_breach_rate=0.18,
-            max_consecutive_loss_rate=0.30,  # GPT FIX: Relaxed from 0.20 - was too strict
+            max_consecutive_loss_rate=0.20,  # FIX: Was 0.30 which broke monotonicity from Stage 3 (0.22)
             evaluation_window=80,
         ),
         max_steps_per_episode=2000,
@@ -1388,9 +1393,10 @@ def get_integrator_config() -> CurriculumStageConfig:
             dd_severity_exponent=1.35,
             dd_severity_cap=0.9,
             
-            streak_modifier_enabled=False,
-            win_streak_bonus_per_win=0.0,
-            loss_streak_penalty_per_loss=0.0,
+            # STREAKS: Near-final penalty level (Jan 2026 FIX)
+            streak_modifier_enabled=True,
+            win_streak_bonus_per_win=0.018,     # Progressive increase
+            loss_streak_penalty_per_loss=0.10,  # Strong penalty - approaching Stage 6 level
             
             anti_churn_enabled=True,
             daily_trade_soft_limit=10,   # MONOTONICITY FIX: Must not increase from Stage 3-4 (was 12)
@@ -1537,6 +1543,19 @@ def get_integrator_config() -> CurriculumStageConfig:
             review_duration=50,
             review_depth=3,
         ),
+        # Validation before promotion (Stage 5+)
+        validation=ValidationConfig(
+            enabled=True,
+            validation_episodes=50,
+            min_performance_ratio=0.75,  # Lighter requirement for early validation
+            max_performance_drop=0.25,
+            required_regimes=[
+                MarketRegime.TRENDING_UP,
+                MarketRegime.TRENDING_DOWN,
+                MarketRegime.RANGING,
+            ],
+            min_episodes_per_regime=10,
+        ),
     )
 
 
@@ -1656,10 +1675,9 @@ def get_risk_manager_config() -> CurriculumStageConfig:
             per_step_max=0.04,
             
             # ACTIVITY CONSISTENCY: Quality over quantity
-            # Target ~3 trades/day for active but disciplined trading
-            # 3 trades/day × 15.6 days/ep = 47 trades/ep = 31 per 1k steps
+            # Target moderate activity matching Stage 5 (was 31.0 which contradicts anti-churn tightening)
             activity_consistency_enabled=True,
-            target_trades_per_1k_steps=31.0,  # FIX: Was 5.0 (0.5/day) - now targets ~3/day
+            target_trades_per_1k_steps=6.0,  # FIX: Was 31.0 which exploded vs Stage 5 (6.0)
             activity_deviation_penalty_scale=0.8,  # STRONG: match PnL signal
             activity_deviation_penalty_cap=12.0,  # Match PnL scale
             min_trades_penalty=0.15,
@@ -1708,7 +1726,7 @@ def get_risk_manager_config() -> CurriculumStageConfig:
             max_pnl_std=6000.0,
             min_trade_count_avg=4.0,
             max_dd_breach_rate=0.10,
-            max_consecutive_loss_rate=0.25,  # FIX: Relaxed from 0.15 - too steep from Stage 5 (0.30)
+            max_consecutive_loss_rate=0.16,  # FIX: Was 0.25 which broke monotonicity from Stage 5 (0.18)
             evaluation_window=100,
         ),
         max_steps_per_episode=2400,
@@ -1787,6 +1805,20 @@ def get_risk_manager_config() -> CurriculumStageConfig:
             review_frequency=300,
             review_duration=60,
             review_depth=4,
+        ),
+        # Validation before promotion (Stage 6)
+        validation=ValidationConfig(
+            enabled=True,
+            validation_episodes=70,
+            min_performance_ratio=0.78,
+            max_performance_drop=0.22,
+            required_regimes=[
+                MarketRegime.TRENDING_UP,
+                MarketRegime.TRENDING_DOWN,
+                MarketRegime.RANGING,
+                MarketRegime.HIGH_VOLATILITY,
+            ],
+            min_episodes_per_regime=12,
         ),
     )
 
@@ -1886,7 +1918,7 @@ def get_strategist_config() -> CurriculumStageConfig:
             
             streak_modifier_enabled=True,
             win_streak_bonus_per_win=0.025,
-            loss_streak_penalty_per_loss=0.12,  # BOOSTED: Was 0.035 - force agent to respect loss streaks
+            loss_streak_penalty_per_loss=0.20,  # FIX: Was 0.50 (5x jump from Stage 6). Now smooth: 0.10→0.20→0.30→0.40
             
             anti_churn_enabled=True,
             daily_trade_soft_limit=8,    # GPT FIX: Increased from 5
@@ -1905,10 +1937,9 @@ def get_strategist_config() -> CurriculumStageConfig:
             per_step_max=0.05,
             
             # ACTIVITY CONSISTENCY: Quality focus
-            # Target ~2.5 trades/day for disciplined strategist
-            # 2.5 trades/day × 15.6 days/ep = 39 trades/ep = 26 per 1k steps
+            # Target moderate activity that doesn't spike vs RISK_MANAGER (6.0)
             activity_consistency_enabled=True,
-            target_trades_per_1k_steps=26.0,  # FIX: Was 4.0 (0.4/day) - now targets ~2.5/day
+            target_trades_per_1k_steps=5.5,  # FIX: Was 26.0 which spiked vs Stage 6
             activity_deviation_penalty_scale=1.0,  # STRONGER: strategic discipline
             activity_deviation_penalty_cap=12.0,  # Match PnL scale
             min_trades_penalty=0.1,
@@ -1928,7 +1959,7 @@ def get_strategist_config() -> CurriculumStageConfig:
             enforce_weekend_block=True,
             enforce_hard_close=True,
             min_minutes_between_entries=60,    # MONOTONICITY FIX: Must not loosen from Stage 4-6 (was 45)
-            min_minutes_after_loss=90,         # MONOTONICITY FIX: Must not loosen from Stage 4-6 (was 60)
+            min_minutes_after_loss=150,        # 10 bars cooldown - balanced patience
             daily_drawdown_limit=0.055,
             max_drawdown_limit=0.095,
             daily_dd_safety_buffer=0.007,
@@ -1957,7 +1988,7 @@ def get_strategist_config() -> CurriculumStageConfig:
             max_pnl_std=5500.0,
             min_trade_count_avg=4.5,
             max_dd_breach_rate=0.08,
-            max_consecutive_loss_rate=0.20,  # FIX: Relaxed from 0.12 - smooth progression from Stage 6 (0.25)
+            max_consecutive_loss_rate=0.14,  # FIX: Was 0.20, now monotonically decreasing from Stage 6 (0.16)
             evaluation_window=120,
         ),
         max_steps_per_episode=2600,
@@ -2038,6 +2069,20 @@ def get_strategist_config() -> CurriculumStageConfig:
             review_frequency=350,
             review_duration=70,
             review_depth=5,
+        ),
+        # Validation before promotion (Stage 7)
+        validation=ValidationConfig(
+            enabled=True,
+            validation_episodes=85,
+            min_performance_ratio=0.82,
+            max_performance_drop=0.18,
+            required_regimes=[
+                MarketRegime.TRENDING_UP,
+                MarketRegime.TRENDING_DOWN,
+                MarketRegime.RANGING,
+                MarketRegime.HIGH_VOLATILITY,
+            ],
+            min_episodes_per_regime=15,
         ),
     )
 
@@ -2140,7 +2185,7 @@ def get_professional_config() -> CurriculumStageConfig:
             
             streak_modifier_enabled=True,
             win_streak_bonus_per_win=0.03,
-            loss_streak_penalty_per_loss=0.15,  # BOOSTED: Was 0.04 - harsh penalty for loss streaks
+            loss_streak_penalty_per_loss=0.30,  # FIX: Was 0.55. Smooth progression: 0.10→0.20→0.30→0.40
             
             anti_churn_enabled=True,
             daily_trade_soft_limit=7,    # GPT FIX: Increased from 4
@@ -2159,10 +2204,9 @@ def get_professional_config() -> CurriculumStageConfig:
             per_step_max=0.05,
             
             # ACTIVITY CONSISTENCY: Near-live discipline
-            # Target ~2 trades/day for specialist quality
-            # 2 trades/day × 15.6 days/ep = 31 trades/ep = 21 per 1k steps
+            # Target moderate activity that doesn't spike vs STRATEGIST (5.5)
             activity_consistency_enabled=True,
-            target_trades_per_1k_steps=21.0,  # FIX: Was 3.0 (0.3/day) - now targets ~2/day
+            target_trades_per_1k_steps=5.0,  # FIX: Was 21.0 which spiked vs Stage 7
             activity_deviation_penalty_scale=1.2,  # STRONG: specialist discipline
             activity_deviation_penalty_cap=10.0,  # Match PnL scale
             min_trades_penalty=0.1,
@@ -2182,7 +2226,7 @@ def get_professional_config() -> CurriculumStageConfig:
             enforce_weekend_block=True,
             enforce_hard_close=True,
             min_minutes_between_entries=60,    # FIX: 4 bars minimum (was 12 min = 0 bars for M15)
-            min_minutes_after_loss=90,         # FIX: 6 bars after loss (was 18 min = 1 bar)
+            min_minutes_after_loss=180,        # 12 bars cooldown - forces reflection but allows trading
             daily_drawdown_limit=0.05,
             max_drawdown_limit=0.09,
             daily_dd_safety_buffer=0.008,
@@ -2211,7 +2255,7 @@ def get_professional_config() -> CurriculumStageConfig:
             max_pnl_std=5000.0,
             min_trade_count_avg=5.0,
             max_dd_breach_rate=0.06,
-            max_consecutive_loss_rate=0.15,  # FIX: Relaxed from 0.10 - smooth progression from Stage 7 (0.20)
+            max_consecutive_loss_rate=0.12,  # FIX: Was 0.15, now monotonically decreasing from Stage 7 (0.14)
             evaluation_window=140,
         ),
         max_steps_per_episode=2800,
@@ -2408,7 +2452,7 @@ def get_live_ready_config() -> CurriculumStageConfig:
             
             streak_modifier_enabled=True,
             win_streak_bonus_per_win=0.035,
-            loss_streak_penalty_per_loss=0.045,
+            loss_streak_penalty_per_loss=0.40,  # FIX: Was 0.60. Smooth progression: 0.10→0.20→0.30→0.40
             
             anti_churn_enabled=True,
             daily_trade_soft_limit=6,    # GPT FIX: Increased from 3
@@ -2427,10 +2471,9 @@ def get_live_ready_config() -> CurriculumStageConfig:
             per_step_max=0.05,
             
             # ACTIVITY CONSISTENCY: Live-ready discipline
-            # Target ~1.5 trades/day for expert live trading
-            # 1.5 trades/day × 15.6 days/ep = 23 trades/ep = 16 per 1k steps
+            # Target moderate activity that doesn't spike vs PROFESSIONAL (5.0)
             activity_consistency_enabled=True,
-            target_trades_per_1k_steps=16.0,  # FIX: Was 3.0 (0.3/day) - now targets ~1.5/day (live-ready)
+            target_trades_per_1k_steps=5.0,  # FIX: Was 16.0 which spiked vs Stage 8
             activity_deviation_penalty_scale=1.5,  # VERY STRONG: live discipline
             activity_deviation_penalty_cap=10.0,  # Match PnL scale
             min_trades_penalty=0.1,
@@ -2450,7 +2493,7 @@ def get_live_ready_config() -> CurriculumStageConfig:
             enforce_weekend_block=True,
             enforce_hard_close=True,
             min_minutes_between_entries=60,    # FIX: 4 bars minimum (was 15 min = 1 bar for M15)
-            min_minutes_after_loss=90,         # FIX: 6 bars after loss (was 20 min = 1 bar)
+            min_minutes_after_loss=240,        # 16 bars cooldown - serious but not crippling
             daily_drawdown_limit=0.048,
             max_drawdown_limit=0.085,
             daily_dd_safety_buffer=0.008,
@@ -2479,7 +2522,7 @@ def get_live_ready_config() -> CurriculumStageConfig:
             max_pnl_std=4500.0,
             min_trade_count_avg=5.5,
             max_dd_breach_rate=0.05,
-            max_consecutive_loss_rate=0.12,  # FIX: Relaxed from 0.08 - smooth progression from Stage 8 (0.15)
+            max_consecutive_loss_rate=0.10,  # FIX: Was 0.12, now monotonically decreasing from Stage 8 (0.12)
             evaluation_window=160,
         ),
         max_steps_per_episode=3000,
@@ -2705,6 +2748,34 @@ def validate_stage_config(cfg: CurriculumStageConfig) -> List[str]:
     if not (0.0 < tc.trailing_retrace_pct < 1.0):
         issues.append(f"{cfg.stage.name}: trailing_retrace_pct out of (0,1): {tc.trailing_retrace_pct}")
 
+    # Stop loss ordering: soft <= hard (soft triggers warning, hard triggers stop)
+    if tc.soft_stop_loss_eur > tc.hard_stop_loss_eur + 1e-9:
+        issues.append(
+            f"{cfg.stage.name}: soft_stop_loss_eur ({tc.soft_stop_loss_eur}) > "
+            f"hard_stop_loss_eur ({tc.hard_stop_loss_eur}) - soft should be <= hard"
+        )
+
+    # Entry quality threshold should be in [0, 1]
+    if not (0.0 <= tc.entry_quality_threshold <= 1.0):
+        issues.append(f"{cfg.stage.name}: entry_quality_threshold out of [0,1]: {tc.entry_quality_threshold}")
+
+    # Time decay hours should be positive
+    if tc.time_decay_hours <= 0.0:
+        issues.append(f"{cfg.stage.name}: time_decay_hours must be > 0: {tc.time_decay_hours}")
+
+    # Timing constraints should be non-negative
+    if tc.min_minutes_between_entries < 0:
+        issues.append(f"{cfg.stage.name}: min_minutes_between_entries must be >= 0")
+    if tc.min_minutes_after_loss < 0:
+        issues.append(f"{cfg.stage.name}: min_minutes_after_loss must be >= 0")
+
+    # Trade limits: soft limit should not exceed hard cap
+    if tc.max_trades_per_session > tc.max_trades_per_day:
+        issues.append(
+            f"{cfg.stage.name}: max_trades_per_session ({tc.max_trades_per_session}) > "
+            f"max_trades_per_day ({tc.max_trades_per_day})"
+        )
+
     # -------------------------------------------------------------------------
     # Execution sanity checks (ranges, ordering, and non-negative friction)
     # -------------------------------------------------------------------------
@@ -2721,14 +2792,27 @@ def validate_stage_config(cfg: CurriculumStageConfig) -> List[str]:
     if ex.slippage_points_sigma < 0.0 or ex.max_slippage_points < 0.0:
         issues.append(f"{cfg.stage.name}: slippage params must be >= 0")
 
-    if not _range_ok(ex.spread_mult_range) or ex.spread_mult_range[0] <= 0.0:
-        issues.append(f"{cfg.stage.name}: invalid spread_mult_range: {ex.spread_mult_range}")
-    if not _range_ok(ex.slippage_mult_range) or ex.slippage_mult_range[0] <= 0.0:
-        issues.append(f"{cfg.stage.name}: invalid slippage_mult_range: {ex.slippage_mult_range}")
-    if not _range_ok(ex.volatility_scale_range) or ex.volatility_scale_range[0] <= 0.0:
-        issues.append(f"{cfg.stage.name}: invalid volatility_scale_range: {ex.volatility_scale_range}")
-    if not (isinstance(ex.latency_randomization_range, tuple) and len(ex.latency_randomization_range) == 2 and ex.latency_randomization_range[0] <= ex.latency_randomization_range[1]):
-        issues.append(f"{cfg.stage.name}: invalid latency_randomization_range: {ex.latency_randomization_range}")
+    if not hasattr(ex, "spread_mult_range") or not _range_ok(ex.spread_mult_range) or ex.spread_mult_range[0] <= 0.0:
+        issues.append(f"{cfg.stage.name}: invalid spread_mult_range: {getattr(ex, 'spread_mult_range', None)}")
+    if not hasattr(ex, "slippage_mult_range") or not _range_ok(ex.slippage_mult_range) or ex.slippage_mult_range[0] <= 0.0:
+        issues.append(f"{cfg.stage.name}: invalid slippage_mult_range: {getattr(ex, 'slippage_mult_range', None)}")
+
+    # Only require randomization ranges when randomization is enabled.
+    if getattr(ex, "enable_randomization", False):
+        if not hasattr(ex, "volatility_scale_range") or not _range_ok(ex.volatility_scale_range) or ex.volatility_scale_range[0] <= 0.0:
+            issues.append(f"{cfg.stage.name}: invalid volatility_scale_range: {getattr(ex, 'volatility_scale_range', None)}")
+        lr = getattr(ex, "latency_randomization_range", None)
+        if not (isinstance(lr, tuple) and len(lr) == 2 and lr[0] <= lr[1]):
+            issues.append(f"{cfg.stage.name}: invalid latency_randomization_range: {lr}")
+
+        # If you model spread shocks, validate bounds.
+        if getattr(ex, "spread_shock_enabled", False):
+            p = getattr(ex, "spread_shock_probability", None)
+            m = getattr(ex, "spread_shock_multiplier", None)
+            if not (isinstance(p, (int, float)) and 0.0 <= p <= 1.0):
+                issues.append(f"{cfg.stage.name}: spread_shock_probability must be in [0,1], got {p}")
+            if not (isinstance(m, (int, float)) and m is not None and m >= 1.0):
+                issues.append(f"{cfg.stage.name}: spread_shock_multiplier must be >= 1.0, got {m}")
 
     # -------------------------------------------------------------------------
     # Reward sanity checks (clipping + per-step bounds)
@@ -2739,12 +2823,36 @@ def validate_stage_config(cfg: CurriculumStageConfig) -> List[str]:
     if rw.per_step_shaping_enabled and getattr(rw, "per_step_min", -0.01) > getattr(rw, "per_step_max", 0.01):
         issues.append(f"{cfg.stage.name}: per-step shaping bounds invalid (per_step_min > per_step_max)")
 
+    # -------------------------------------------------------------------------
+    # Reward "core knobs" presence (prevents silent regime changes in Stage 4+)
+    # -------------------------------------------------------------------------
+    # From TIMING_STUDENT onward, you rely on explicit PnL dominance / anti-hack controls.
+    if cfg.stage.value >= CurriculumStage.TIMING_STUDENT.value:
+        required_reward_fields = (
+            "pnl_scale_factor",
+            "max_shaping_to_pnl_ratio",
+            "execution_cost_visibility_enabled",
+            "execution_cost_reward_scale",
+        )
+        missing = [k for k in required_reward_fields if not hasattr(rw, k)]
+        if missing:
+            issues.append(
+                f"{cfg.stage.name}: rewards missing core fields {missing}. "
+                "This can silently revert to defaults and break PnL dominance / cost visibility assumptions."
+            )
+
     # Validate composite scoring weights - keys must match compute_composite_score() components
     cs = cfg.composite_scoring
     if cs.enabled:
+        if not getattr(cs, "weights", None):
+            issues.append(
+                f"{cfg.stage.name}: composite_scoring.enabled=True but weights is empty/missing. "
+                "Either provide default weights summing to 1.0 in CompositeScoringConfig, or set cs.weights explicitly."
+            )
         weight_sum = sum(cs.weights.values())
-        if abs(weight_sum - 1.0) > 0.1:
-            issues.append(f"{cfg.stage.name}: composite scoring weights sum to {weight_sum:.2f}, expected ~1.0")
+        # FIX: Tighten tolerance from 0.1 to 0.03 - loose tolerance enables reward hacking
+        if abs(weight_sum - 1.0) > 0.03:
+            issues.append(f"{cfg.stage.name}: composite scoring weights sum to {weight_sum:.3f}, expected 1.0 ± 0.03")
         
         # Canonicalize composite keys so legacy configs ("max_drawdown") validate correctly
         from envs.curriculum.config.registry import canonicalize_composite_key
@@ -2762,14 +2870,16 @@ def validate_stage_config(cfg: CurriculumStageConfig) -> List[str]:
             issues.append(f"{cfg.stage.name}: composite_scoring.hard_floors has unknown keys: {sorted(bad_floor_keys)}. Allowed: {sorted(COMPOSITE_HARD_FLOOR_KEYS)}")
     
     # Validate adaptive thresholds - keys must be valid threshold fields
+    # Only validate when enabled to avoid false positives from defaults
     at = cfg.adaptive_thresholds
-    for metric in at.relaxable_metrics:
-        if not is_valid_threshold_field(metric):
-            issues.append(f"{cfg.stage.name}: adaptive_thresholds.relaxable_metrics '{metric}' is not a valid threshold field")
-    
-    for metric in at.never_relax:
-        if not is_valid_threshold_field(metric):
-            issues.append(f"{cfg.stage.name}: adaptive_thresholds.never_relax '{metric}' is not a valid threshold field")
+    if at.enabled:
+        for metric in at.relaxable_metrics:
+            if not is_valid_threshold_field(metric):
+                issues.append(f"{cfg.stage.name}: adaptive_thresholds.relaxable_metrics '{metric}' is not a valid threshold field")
+        
+        for metric in at.never_relax:
+            if not is_valid_threshold_field(metric):
+                issues.append(f"{cfg.stage.name}: adaptive_thresholds.never_relax '{metric}' is not a valid threshold field")
     
     # Validate skill requirements
     sr = cfg.skill_requirements
@@ -2778,8 +2888,9 @@ def validate_stage_config(cfg: CurriculumStageConfig) -> List[str]:
             issues.append(f"{cfg.stage.name}: skill {skill.value} threshold {threshold} out of [0,1]")
     
     # Check for dead code: expert_signal_dropout with include_expert_signals=False
-    if not cfg.include_expert_signals and cfg.expert_signal_dropout > 0.0:
-        issues.append(f"{cfg.stage.name}: expert_signal_dropout={cfg.expert_signal_dropout} has no effect when include_expert_signals=False (suggest setting to 0.0)")
+    dropout = getattr(cfg, "expert_signal_dropout", 0.0)
+    if not cfg.include_expert_signals and dropout > 0.0:
+        issues.append(f"{cfg.stage.name}: expert_signal_dropout={dropout} has no effect when include_expert_signals=False (suggest setting to 0.0)")
     
     return issues
 
@@ -2853,6 +2964,56 @@ def validate_curriculum_monotonicity() -> List[str]:
             issues.append(
                 f"{curr_name}: min_minutes_between_entries ({curr.constraints.min_minutes_between_entries}) < "
                 f"{prev_name} ({prev.constraints.min_minutes_between_entries})"
+            )
+
+        # Post-loss cooldown should be non-decreasing (more discipline at higher stages)
+        if curr.constraints.min_minutes_after_loss < prev.constraints.min_minutes_after_loss:
+            issues.append(
+                f"{curr_name}: min_minutes_after_loss ({curr.constraints.min_minutes_after_loss}) < "
+                f"{prev_name} ({prev.constraints.min_minutes_after_loss})"
+            )
+
+        # Entry quality threshold should be non-decreasing (stricter quality gates)
+        if curr.constraints.entry_quality_threshold < prev.constraints.entry_quality_threshold - 0.01:  # 1% tolerance
+            issues.append(
+                f"{curr_name}: entry_quality_threshold ({curr.constraints.entry_quality_threshold}) < "
+                f"{prev_name} ({prev.constraints.entry_quality_threshold})"
+            )
+
+        # -------------------------------------------------------------
+        # NEW: Reward monotonicity (prevent spikes that confuse learning)
+        # -------------------------------------------------------------
+        # Exploration bonus should be non-increasing (agent learns, explores less)
+        curr_exp = getattr(curr.rewards, "exploration_bonus", 0.0)
+        prev_exp = getattr(prev.rewards, "exploration_bonus", 0.0)
+        if curr_exp > prev_exp + 0.005:  # Allow tiny tolerance
+            issues.append(
+                f"{curr_name}: exploration_bonus ({curr_exp}) > {prev_name} ({prev_exp}) - "
+                "exploration should decrease as agent learns"
+            )
+
+        # Daily trade soft limit should be non-increasing (more selective)
+        curr_soft = getattr(curr.rewards, "daily_trade_soft_limit", 50)
+        prev_soft = getattr(prev.rewards, "daily_trade_soft_limit", 50)
+        if curr_soft > prev_soft:
+            issues.append(
+                f"{curr_name}: daily_trade_soft_limit ({curr_soft}) > {prev_name} ({prev_soft})"
+            )
+
+        # Activity target should not spike dramatically (prevents curriculum shock)
+        curr_target = getattr(curr.rewards, "target_trades_per_1k_steps", 10.0)
+        prev_target = getattr(prev.rewards, "target_trades_per_1k_steps", 10.0)
+        if curr_target > prev_target * 1.5:  # Allow some variation but not 5x jumps
+            issues.append(
+                f"{curr_name}: target_trades_per_1k_steps ({curr_target}) > 1.5x {prev_name} ({prev_target}) - "
+                "activity target should not spike dramatically"
+            )
+
+        # Max trades per day should be non-increasing
+        if curr.constraints.max_trades_per_day > prev.constraints.max_trades_per_day:
+            issues.append(
+                f"{curr_name}: max_trades_per_day ({curr.constraints.max_trades_per_day}) > "
+                f"{prev_name} ({prev.constraints.max_trades_per_day})"
             )
 
         # -------------------------------------------------------------

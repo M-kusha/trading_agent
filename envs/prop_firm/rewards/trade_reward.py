@@ -360,14 +360,22 @@ class TradeRewardMixin:
                     if net_pnl < -50:
                         add("high_vol_penalty", -(cfg.high_vol_size_penalty * ss))
 
-        # 8) Streak modifiers
+        # 8) Streak modifiers - BOUNDED POLYNOMIAL penalty for consecutive losses
+        # (Jan 2026 FIX: Exponential penalties saturate reward clip and cause training collapse)
         if cfg.streak_modifier_enabled:
             if net_pnl > 0:
                 streak_bonus = min(self.consecutive_wins, 5) * cfg.win_streak_bonus_per_win
                 if streak_bonus > 0:
                     add("win_streak_bonus", streak_bonus)
             else:
-                streak_pen = min(self.consecutive_losses, 3) * cfg.loss_streak_penalty_per_loss
+                # Bounded polynomial penalty: informative gradient without saturation
+                # Loss 1: 0.35, Loss 2: 0.99, Loss 3: 1.82, Loss 4: 2.80, Loss 5: 3.91 (with 0.35 base)
+                n_losses = min(self.consecutive_losses, 5)
+                # Polynomial: base * layer^1.5 - grows but stays bounded
+                streak_pen = cfg.loss_streak_penalty_per_loss * (n_losses ** 1.5)
+                # Apply configurable cap to prevent reward clipping saturation
+                streak_pen_cap = float(getattr(cfg, "loss_streak_penalty_cap", 4.0))
+                streak_pen = min(streak_pen, streak_pen_cap)
                 if streak_pen > 0:
                     add("loss_streak_penalty", -streak_pen)
 
@@ -383,16 +391,20 @@ class TradeRewardMixin:
         # =====================================================================
         # This teaches "overtrading erodes edge" by looking at cumulative costs
         # vs cumulative profits. If costs > threshold% of gross profit, penalize.
+        # BUG FIX (Jan 2026): Costs must ALWAYS accrue, not just on winners.
+        # Otherwise losing trades bleed fees silently.
         cost_erosion_enabled = bool(getattr(cfg, "cost_erosion_penalty_enabled", True))
-        if cost_erosion_enabled and gross_pnl > 0:
-            # Get episode-level totals (if available)
-            episode_gross = getattr(self, "_episode_gross_profit", 0.0)
-            episode_costs = getattr(self, "_episode_total_costs", 0.0)
-            
-            # Update episode totals
-            if gross_pnl > 0:
-                self._episode_gross_profit = float(episode_gross) + float(gross_pnl)
-            self._episode_total_costs = float(episode_costs) + float(total_fees)
+        
+        # ALWAYS update episode costs (even on losing trades)
+        episode_gross = float(getattr(self, "_episode_gross_profit", 0.0))
+        episode_costs = float(getattr(self, "_episode_total_costs", 0.0))
+        self._episode_total_costs = episode_costs + max(float(total_fees), 0.0)
+        
+        # Only add to gross profit on winning trades
+        if gross_pnl > 0:
+            self._episode_gross_profit = episode_gross + float(gross_pnl)
+        
+        if cost_erosion_enabled:
             
             # Check cost erosion ratio
             updated_gross = getattr(self, "_episode_gross_profit", 0.0)
@@ -425,18 +437,23 @@ class TradeRewardMixin:
         # Cap total shaping so it cannot overwhelm base_pnl signal.
         # This prevents reward hacking where agent optimizes for shaping bonuses
         # while losing money on actual trades.
+        # 
+        # CRITICAL: Use sum of ABSOLUTE magnitudes, not signed sum.
+        # Otherwise +0.30 bonus and -0.30 penalty cancel to 0, bypassing the cap
+        # while still allowing the agent to arbitrage those components.
         max_shaping_ratio = float(getattr(cfg, "max_shaping_to_pnl_ratio", 0.5))
         if max_shaping_ratio > 0 and base_pnl_magnitude > 0:
-            # Calculate total shaping (everything except base_pnl and execution_costs)
+            # Calculate total shaping mass (everything except base_pnl and execution_costs)
             non_pnl_keys = [k for k in reward_components.keys() 
                           if k not in ("base_pnl", "execution_costs")]
-            shaping_total = sum(reward_components.get(k, 0.0) for k in non_pnl_keys)
+            # Use absolute magnitudes to prevent cancellation exploit
+            shaping_mass = sum(abs(reward_components.get(k, 0.0)) for k in non_pnl_keys)
             
             max_shaping = base_pnl_magnitude * max_shaping_ratio
             
-            if abs(shaping_total) > max_shaping:
-                # Scale down shaping components proportionally
-                scale_factor = max_shaping / abs(shaping_total)
+            if shaping_mass > max_shaping:
+                # Scale down shaping components proportionally by absolute mass
+                scale_factor = max_shaping / shaping_mass
                 shaping_adjustment = 0.0
                 
                 for k in non_pnl_keys:

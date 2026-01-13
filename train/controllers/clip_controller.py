@@ -461,3 +461,27 @@ class SmartClipController:
             f"PID_APPLY: health={health:.3f} clip={proposed_clip:.3f} | {pid_reason}",
             True,
         )
+
+    def to_dict(self) -> dict:
+        """Serialize controller state for checkpointing."""
+        return {
+            "current_stage": self.current_stage,
+            "cooldown_steps": self.cooldown_steps,
+            "steps_since_update": self.steps_since_update,
+            "_last_clip": self._last_clip,
+            "_kl_history": list(self._kl_history[-15:]),
+            "_clip_frac_history": list(self._clip_frac_history[-15:]),
+            "pid_state": self.pid.to_dict(),
+        }
+
+    def load_from_dict(self, state: dict) -> None:
+        """Restore controller state from checkpoint."""
+        self.current_stage = int(state.get("current_stage", 0))
+        self.cooldown_steps = int(state.get("cooldown_steps", 0))
+        self.steps_since_update = int(state.get("steps_since_update", 0))
+        self._last_clip = float(state.get("_last_clip", 0.20))
+        self._kl_history = list(state.get("_kl_history", []))
+        self._clip_frac_history = list(state.get("_clip_frac_history", []))
+        pid_state = state.get("pid_state", {})
+        if pid_state:
+            self.pid.load_from_dict(pid_state)

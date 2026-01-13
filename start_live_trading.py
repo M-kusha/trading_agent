@@ -68,7 +68,7 @@ class LiveTradingOrchestrated:
         self.orchestrator: Any = None
         self.info_bus: Any = None
         self.account_info: Any = None
-        self.instruments = ["EURUSD", "XAUUSD"]
+        self.instruments = ["XAUUSD"]
         self.timeframes = ["M15", "H1", "H4", "D1"]
         
     def initialize(self) -> bool:

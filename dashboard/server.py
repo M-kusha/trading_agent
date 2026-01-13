@@ -260,6 +260,40 @@ class MetricsReader:
     def _safe_bool(self, val: Any, default: bool = False) -> bool:
         return val if isinstance(val, bool) else default
 
+    def _normalize_drawdown_percent(self, raw: Dict[str, Any], trading: Dict[str, Any]) -> float:
+        """Return max drawdown as percent (0-100).
+
+        The metrics writer can emit multiple drawdown fields:
+        - root-level `max_drawdown`: usually a fraction (0..1)
+        - `recent_drawdowns`: usually fractions (0..1)
+        - `trading.max_drawdown`: sometimes mis-scaled (e.g. 0.681 meaning $681 loss, not 68%)
+
+        For prop-firm style constraints, fractional DD above 50% is implausible.
+        Prefer plausible fractional sources when available.
+        """
+        root_dd = self._safe_float(raw.get("max_drawdown", 0.0))
+        trading_dd = self._safe_float(trading.get("max_drawdown", 0.0))
+
+        recent_dds = self._safe_list(raw.get("recent_drawdowns", []))
+        recent_last = self._safe_float(recent_dds[-1], 0.0) if recent_dds else 0.0
+
+        # Prefer plausible fraction values first.
+        for candidate in (root_dd, recent_last, trading_dd):
+            if 0.0 < candidate <= 0.5:
+                return candidate * 100.0
+
+        # Next, accept already-percent values (e.g. 6.19 meaning 6.19%).
+        for candidate in (root_dd, trading_dd):
+            if 1.0 < candidate <= 100.0:
+                return candidate
+
+        # Last resort: if a fraction exists (even if large), scale it.
+        for candidate in (root_dd, recent_last, trading_dd):
+            if 0.0 < candidate <= 1.0:
+                return candidate * 100.0
+
+        return 0.0
+
     def _append_history(self, key: str, value: float) -> None:
         if key not in self._history:
             return
@@ -459,9 +493,7 @@ class MetricsReader:
         if 0 < mean_win_rate < 1:
             mean_win_rate *= 100
 
-        max_drawdown = self._safe_float(t.get("max_drawdown", raw.get("max_drawdown", 0)))
-        if 0 < max_drawdown < 1:
-            max_drawdown *= 100
+        max_drawdown = self._normalize_drawdown_percent(raw, t)
 
         mean_trades = self._safe_float(t.get("mean_trades", raw.get("mean_trades", 0)))
         total_trades = self._safe_int(t.get("total_trades", raw.get("total_trades", 0)))
@@ -697,6 +729,43 @@ class MetricsReader:
                 "trend_breakdown": self._safe_dict(ra.get("trend_breakdown", {})),
                 "session_breakdown": self._safe_dict(ra.get("session_breakdown", {})),
                 "spread_breakdown": self._safe_dict(ra.get("spread_breakdown", {})),
+            }
+
+        # Validation gate history and status
+        if isinstance(cp.get("validation_gate_history"), list):
+            out["validation_gate_history"] = self._safe_list(cp.get("validation_gate_history", []))
+        
+        if isinstance(cp.get("last_validation_gate"), dict):
+            vg = cp["last_validation_gate"]
+            out["last_validation_gate"] = {
+                "stage": vg.get("stage", ""),
+                "stage_epoch": self._safe_int(vg.get("stage_epoch", 0)),
+                "stage_episodes": self._safe_int(vg.get("stage_episodes", 0)),
+                "timestamp": vg.get("timestamp", ""),
+                "passed": self._safe_bool(vg.get("passed", False)),
+                "pass_rate": self._safe_float(vg.get("pass_rate", 0)),
+                "scenarios_passed": self._safe_int(vg.get("scenarios_passed", 0)),
+                "scenarios_total": self._safe_int(vg.get("scenarios_total", 0)),
+                "performance_ratio": self._safe_float(vg.get("performance_ratio", 0)),
+                "blocking_reasons": self._safe_list(vg.get("blocking_reasons", [])),
+            }
+
+        # Stress test history and status
+        if isinstance(cp.get("stress_test_history"), list):
+            out["stress_test_history"] = self._safe_list(cp.get("stress_test_history", []))
+        
+        if isinstance(cp.get("last_stress_test"), dict):
+            st = cp["last_stress_test"]
+            out["last_stress_test"] = {
+                "stage": st.get("stage", ""),
+                "stage_epoch": self._safe_int(st.get("stage_epoch", 0)),
+                "stage_episodes": self._safe_int(st.get("stage_episodes", 0)),
+                "timestamp": st.get("timestamp", ""),
+                "passed": self._safe_bool(st.get("passed", False)),
+                "robustness_score": self._safe_float(st.get("robustness_score", 0)),
+                "min_required": self._safe_float(st.get("min_required", 0)),
+                "scenarios_count": self._safe_int(st.get("scenarios_count", 0)),
+                "summary": self._safe_dict(st.get("summary", {})),
             }
 
         out["blockers"] = self._safe_list(cp.get("blockers", []))

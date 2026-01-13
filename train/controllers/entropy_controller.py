@@ -359,3 +359,27 @@ class SmartEntropyController:
             f"PID_APPLY: H_norm={norm_entropy:.3f} target={target:.2f} K_eff={k_eff} | {pid_reason}",
             True,
         )
+
+    def to_dict(self) -> dict:
+        """Serialize controller state for checkpointing."""
+        return {
+            "current_stage": self.current_stage,
+            "cooldown_steps": self.cooldown_steps,
+            "steps_since_update": self.steps_since_update,
+            "_valid_actions_estimate": self._valid_actions_estimate,
+            "_last_ent_coef": self._last_ent_coef,
+            "_emergency_active": self._emergency_active,
+            "pid_state": self.pid.to_dict(),
+        }
+
+    def load_from_dict(self, state: dict) -> None:
+        """Restore controller state from checkpoint."""
+        self.current_stage = int(state.get("current_stage", 0))
+        self.cooldown_steps = int(state.get("cooldown_steps", 0))
+        self.steps_since_update = int(state.get("steps_since_update", 0))
+        self._valid_actions_estimate = float(state.get("_valid_actions_estimate", float(self.n_actions)))
+        self._last_ent_coef = float(state.get("_last_ent_coef", 0.0))
+        self._emergency_active = bool(state.get("_emergency_active", False))
+        pid_state = state.get("pid_state", {})
+        if pid_state:
+            self.pid.load_from_dict(pid_state)

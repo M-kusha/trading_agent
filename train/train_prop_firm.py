@@ -1466,6 +1466,8 @@ def train_curriculum_agent(
     start_stage: str = "EXPLORER",
     resume_path: Optional[str] = None,
     load_model_path: Optional[str] = None,
+    load_controllers_path: Optional[str] = None,
+    load_metrics_path: Optional[str] = None,
     frame_stack: int = 1,
     goal_based_stopping: bool = False,
     max_hours: Optional[float] = None,
@@ -1567,26 +1569,29 @@ def train_curriculum_agent(
                 f"Keeping loaded value."
             )
 
-        if hasattr(model, 'lr_schedule'):
-            model.lr_schedule = lambda _progress, lr=learning_rate: lr
-        if hasattr(model, 'learning_rate'):
-            model.learning_rate = learning_rate
-
-        if hasattr(model, 'ent_coef'):
-            model.ent_coef = ent_coef
-
-        if hasattr(model, 'clip_range'):
-            model.clip_range = lambda _progress, val=clip_range: val
-
+        # PRESERVE saved model hyperparameters instead of overwriting
+        # The model's learned entropy/lr state should be continued, not reset
+        saved_lr = getattr(model, 'learning_rate', learning_rate)
+        if callable(saved_lr):
+            saved_lr = saved_lr(1.0)  # Get current value from schedule
+        saved_ent_coef = getattr(model, 'ent_coef', ent_coef)
+        saved_clip_range = getattr(model, 'clip_range', clip_range)
+        if callable(saved_clip_range):
+            saved_clip_range = saved_clip_range(1.0)
+        
+        # Get optimizer lr for logging
         try:
-            for g in model.policy.optimizer.param_groups:
-                g["lr"] = float(learning_rate)
+            optimizer_lr = model.policy.optimizer.param_groups[0]["lr"]
         except Exception:
-            pass
-
+            optimizer_lr = saved_lr
+        
         logger.info(
-            f"Applied runtime overrides: lr={learning_rate}, ent_coef={ent_coef}, "
-            f"clip_range={clip_range}"
+            f"PRESERVING saved model state: lr={saved_lr:.2e} (optimizer: {optimizer_lr:.2e}), "
+            f"ent_coef={saved_ent_coef:.4f}, clip_range={saved_clip_range:.3f}"
+        )
+        logger.info(
+            f"CLI values (NOT applied): lr={learning_rate:.2e}, ent_coef={ent_coef:.4f}, "
+            f"clip_range={clip_range:.3f}"
         )
 
         try:
@@ -1626,22 +1631,32 @@ def train_curriculum_agent(
 
     save_freq_calls = max(1, checkpoint_freq // max(n_envs, 1))
 
+    curriculum_training_callback = CurriculumTrainingCallback(
+        curriculum_manager=curriculum_manager,
+        total_timesteps=total_timesteps,
+        log_interval_steps=50_000,
+        save_path=str(save_dir),
+        metrics_file="logs/training/live_metrics.json",
+        base_ent_coef=ent_coef,
+        base_clip_range=clip_range,
+        goal_based_stopping=goal_based_stopping,
+        max_hours=max_hours,
+        plateau_stop=True,
+        plateau_threshold_episodes=plateau_threshold_episodes,
+        max_demotions_from_same_stage=max_demotions_from_same_stage,
+        mastery_confirmation_episodes=mastery_confirmation_episodes,
+    )
+    
+    # Load controller states if resuming
+    if load_controllers_path and Path(load_controllers_path).exists():
+        curriculum_training_callback.load_controller_states(Path(load_controllers_path))
+    
+    # Load metrics state (episode history) if resuming
+    if load_metrics_path and Path(load_metrics_path).exists():
+        curriculum_training_callback.load_metrics_state(Path(load_metrics_path))
+    
     callbacks: List[BaseCallback] = [
-        CurriculumTrainingCallback(
-            curriculum_manager=curriculum_manager,
-            total_timesteps=total_timesteps,
-            log_interval_steps=50_000,
-            save_path=str(save_dir),
-            metrics_file="logs/training/live_metrics.json",
-            base_ent_coef=ent_coef,
-            base_clip_range=clip_range,
-            goal_based_stopping=goal_based_stopping,
-            max_hours=max_hours,
-            plateau_stop=True,
-            plateau_threshold_episodes=plateau_threshold_episodes,
-            max_demotions_from_same_stage=max_demotions_from_same_stage,
-            mastery_confirmation_episodes=mastery_confirmation_episodes,
-        ),
+        curriculum_training_callback,
         CheckpointCallback(
             save_freq=save_freq_calls,
             save_path=str(save_dir / "checkpoints"),
@@ -1760,6 +1775,8 @@ def main() -> None:
     )
     parser.add_argument("--resume-curriculum", type=str, default=None, help="Resume curriculum from state file")
     parser.add_argument("--load-model", type=str, default=None, help="Load model weights from checkpoint (.zip file)")
+    parser.add_argument("--load-controllers", type=str, default=None, help="Load controller states from checkpoint (controllers_*.json file)")
+    parser.add_argument("--load-metrics", type=str, default=None, help="Load episode history from checkpoint (metrics_*.json file)")
     parser.add_argument(
         "--goal-based",
         action="store_true",
@@ -1958,6 +1975,8 @@ def main() -> None:
             start_stage=args.start_stage,
             resume_path=args.resume_curriculum,
             load_model_path=args.load_model,
+            load_controllers_path=args.load_controllers,
+            load_metrics_path=args.load_metrics,
             frame_stack=max(1, int(args.frame_stack)),
             goal_based_stopping=args.goal_based,
             max_hours=args.max_hours,

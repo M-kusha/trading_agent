@@ -1953,7 +1953,7 @@
   // ─────────────────────────────────────────────────────────────────────────────
   // SKILLS & PERFORMANCE DASHBOARD (unified)
   // ─────────────────────────────────────────────────────────────────────────────
-  function SkillsPerformanceDashboard({ skillAssessment, compositeScore, learningVelocity, prerequisites, baseline=null, compareOn=false }) {
+  function SkillsPerformanceDashboard({ skillAssessment, compositeScore, learningVelocity, prerequisites, validationGate=null, stressTest=null, baseline=null, compareOn=false }) {
     const skillEntries = skillAssessment?.scores
       ? Object.entries(skillAssessment.scores).map(([k,v]) => ({
           key: k,
@@ -1990,10 +1990,26 @@
       higherIsBetter: true
     }) : { text:null, status:"neutral" };
 
+    // Validation gate status
+    const hasValidationGate = validationGate?.last != null;
+    const validationPassed = validationGate?.last?.passed ?? false;
+    const validationHistory = validationGate?.history || [];
+    const validationPassCount = validationHistory.filter(v => v.passed).length;
+    const validationTotalCount = validationHistory.length;
+
+    // Stress test status
+    const hasStressTest = stressTest?.last != null;
+    const stressPassed = stressTest?.last?.passed ?? false;
+    const stressHistory = stressTest?.history || [];
+    const stressPassCount = stressHistory.filter(s => s.passed).length;
+    const stressTotalCount = stressHistory.length;
+
     // Readiness checks array
     const checks = [
       { label: "Hard Floors", passed: compositeScore?.meets_hard_floors, required: true },
       { label: "Prerequisites", passed: prereqOk, required: true },
+      { label: "Validation Gate", passed: hasValidationGate ? validationPassed : null, required: hasValidationGate, pending: !hasValidationGate },
+      { label: "Stress Test", passed: hasStressTest ? stressPassed : null, required: hasStressTest, pending: !hasStressTest },
       { label: "Base Score", passed: baseReady, required: false },
       { label: "Strict Ready", passed: strictReady, required: false },
     ];
@@ -2167,22 +2183,105 @@
             </div>
             
             <div className="space-y-2">
-              {checks.map((c, i) => (
-                <div key={i} className={"flex items-center gap-2 px-2.5 py-2 rounded-lg border transition-all " + 
-                  (c.passed ? "border-emerald-500/30 bg-emerald-500/5" : c.required ? "border-rose-500/30 bg-rose-500/5" : "border-slate-700/50 bg-slate-800/30")}>
-                  <div className={"w-5 h-5 rounded-md flex items-center justify-center text-xs " + 
-                    (c.passed ? "bg-emerald-500/20 text-emerald-400" : c.required ? "bg-rose-500/20 text-rose-400" : "bg-slate-700 text-slate-500")}>
-                    {c.passed ? "✓" : c.required ? "✕" : "○"}
+              {checks.map((c, i) => {
+                const isPending = c.pending === true;
+                const bgClass = isPending 
+                  ? "border-slate-600/50 bg-slate-700/20"
+                  : c.passed 
+                    ? "border-emerald-500/30 bg-emerald-500/5" 
+                    : c.required 
+                      ? "border-rose-500/30 bg-rose-500/5" 
+                      : "border-slate-700/50 bg-slate-800/30";
+                const iconBgClass = isPending
+                  ? "bg-slate-600 text-slate-400"
+                  : c.passed 
+                    ? "bg-emerald-500/20 text-emerald-400" 
+                    : c.required 
+                      ? "bg-rose-500/20 text-rose-400" 
+                      : "bg-slate-700 text-slate-500";
+                const textClass = isPending
+                  ? "text-slate-400"
+                  : c.passed 
+                    ? "text-emerald-300" 
+                    : c.required 
+                      ? "text-rose-300" 
+                      : "text-slate-400";
+                const icon = isPending ? "◌" : c.passed ? "✓" : c.required ? "✕" : "○";
+                
+                return (
+                  <div key={i} className={"flex items-center gap-2 px-2.5 py-2 rounded-lg border transition-all " + bgClass}>
+                    <div className={"w-5 h-5 rounded-md flex items-center justify-center text-xs " + iconBgClass}>
+                      {icon}
+                    </div>
+                    <span className={"flex-1 text-[10px] font-medium " + textClass}>
+                      {c.label}
+                    </span>
+                    {isPending && (
+                      <span className="text-[9px] text-slate-500 font-bold">PENDING</span>
+                    )}
+                    {c.required && !c.passed && !isPending && (
+                      <span className="text-[9px] text-rose-400 font-bold">REQ</span>
+                    )}
                   </div>
-                  <span className={"flex-1 text-[10px] font-medium " + (c.passed ? "text-emerald-300" : c.required ? "text-rose-300" : "text-slate-400")}>
-                    {c.label}
-                  </span>
-                  {c.required && !c.passed && (
-                    <span className="text-[9px] text-rose-400 font-bold">REQ</span>
-                  )}
-                </div>
-              ))}
+                );
+              })}
             </div>
+
+            {/* Validation Gate History (if available) */}
+            {validationTotalCount > 0 && (
+              <div className="mt-3 pt-3 border-t border-white/5">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-[9px] uppercase tracking-wider text-slate-500 font-bold">Validation History</span>
+                  <span className="text-[9px] mono text-slate-400">{validationPassCount}/{validationTotalCount} passed</span>
+                </div>
+                <div className="flex gap-1 flex-wrap">
+                  {validationHistory.slice(-10).map((v, i) => (
+                    <div 
+                      key={i}
+                      title={`Stage: ${v.stage}\nEpoch: ${v.stage_epoch}\nScenarios: ${v.scenarios_passed}/${v.scenarios_total}\nPerf Ratio: ${(v.performance_ratio * 100).toFixed(0)}%`}
+                      className={"w-5 h-5 rounded-md flex items-center justify-center text-[9px] font-bold cursor-help transition-transform hover:scale-110 " + 
+                        (v.passed ? "bg-emerald-500/30 text-emerald-400" : "bg-rose-500/30 text-rose-400")}
+                    >
+                      {v.passed ? "✓" : "✕"}
+                    </div>
+                  ))}
+                </div>
+                {validationGate?.last && (
+                  <div className="mt-2 text-[9px] text-slate-500">
+                    Last: {validationGate.last.scenarios_passed}/{validationGate.last.scenarios_total} scenarios, 
+                    {(validationGate.last.performance_ratio * 100).toFixed(0)}% perf ratio
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Stress Test History (if available) */}
+            {stressTotalCount > 0 && (
+              <div className="mt-3 pt-3 border-t border-white/5">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-[9px] uppercase tracking-wider text-slate-500 font-bold">Stress Test History</span>
+                  <span className="text-[9px] mono text-slate-400">{stressPassCount}/{stressTotalCount} passed</span>
+                </div>
+                <div className="flex gap-1 flex-wrap">
+                  {stressHistory.slice(-10).map((s, i) => (
+                    <div 
+                      key={i}
+                      title={`Stage: ${s.stage}\nEpoch: ${s.stage_epoch}\nRobustness: ${(s.robustness_score * 100).toFixed(0)}%\nRequired: ${(s.min_required * 100).toFixed(0)}%`}
+                      className={"w-5 h-5 rounded-md flex items-center justify-center text-[9px] font-bold cursor-help transition-transform hover:scale-110 " + 
+                        (s.passed ? "bg-cyan-500/30 text-cyan-400" : "bg-orange-500/30 text-orange-400")}
+                    >
+                      {s.passed ? "✓" : "✕"}
+                    </div>
+                  ))}
+                </div>
+                {stressTest?.last && (
+                  <div className="mt-2 text-[9px] text-slate-500">
+                    Last: {(stressTest.last.robustness_score * 100).toFixed(0)}% robustness 
+                    (req: {(stressTest.last.min_required * 100).toFixed(0)}%)
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Bottom status */}
             <div className={"mt-3 pt-3 border-t border-white/5 text-center " + readinessStatus.color}>
@@ -4148,6 +4247,14 @@
     const compositeScore = cp.composite_score || null;
     const learningVelocity = cp.learning_velocity || null;
     const regimeAssessment = cp.regime_assessment || null;
+    const validationGate = {
+      history: cp.validation_gate_history || [],
+      last: cp.last_validation_gate || null,
+    };
+    const stressTest = {
+      history: cp.stress_test_history || [],
+      last: cp.last_stress_test || null,
+    };
 
     return (
       <div className="space-y-4 animate-fade-in">
@@ -4375,6 +4482,8 @@
           compositeScore={compositeScore}
           learningVelocity={learningVelocity}
           prerequisites={prerequisites}
+          validationGate={validationGate}
+          stressTest={stressTest}
           baseline={baseline}
           compareOn={compareOn}
         />

@@ -509,3 +509,29 @@ class SmartLRController:
             f"PID_APPLY: health={health:.3f} target={target:.2f} inst={instability:.3f} mult={proposed_mult:.3f} lr={proposed_lr:.2e} | {pid_reason}",
             True,
         )
+
+    def to_dict(self) -> dict:
+        """Serialize controller state for checkpointing."""
+        return {
+            "current_stage": self.current_stage,
+            "cooldown_steps": self.cooldown_steps,
+            "steps_since_update": self.steps_since_update,
+            "_last_lr_mult": self._last_lr_mult,
+            "_p_loss_history": list(self._p_loss_history[-20:]),
+            "_v_loss_history": list(self._v_loss_history[-20:]),
+            "_reward_history": list(self._reward_history[-30:]),
+            "pid_state": self.pid.to_dict(),
+        }
+
+    def load_from_dict(self, state: dict) -> None:
+        """Restore controller state from checkpoint."""
+        self.current_stage = int(state.get("current_stage", 0))
+        self.cooldown_steps = int(state.get("cooldown_steps", 0))
+        self.steps_since_update = int(state.get("steps_since_update", 0))
+        self._last_lr_mult = float(state.get("_last_lr_mult", 1.0))
+        self._p_loss_history = list(state.get("_p_loss_history", []))
+        self._v_loss_history = list(state.get("_v_loss_history", []))
+        self._reward_history = list(state.get("_reward_history", []))
+        pid_state = state.get("pid_state", {})
+        if pid_state:
+            self.pid.load_from_dict(pid_state)

@@ -188,6 +188,113 @@ class CurriculumTrainingCallback(BaseCallback):
         """Number of completed episodes."""
         return len(self._ep_rewards)
     
+    def _save_controller_states(self, path: Path) -> None:
+        """Save PID controller states for perfect resume."""
+        import json
+        state = {
+            "entropy_controller": self._smart_entropy_controller.to_dict() if self._smart_entropy_controller else None,
+            "lr_controller": self._smart_lr_controller.to_dict() if self._smart_lr_controller else None,
+            "clip_controller": self._smart_clip_controller.to_dict() if self._smart_clip_controller else None,
+        }
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(state, f, indent=2)
+        logger.debug(f"Controller states saved to {path}")
+    
+    def load_controller_states(self, path: Path) -> None:
+        """Load PID controller states for perfect resume."""
+        import json
+        if not path.exists():
+            logger.warning(f"Controller states file not found: {path}")
+            return
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                state = json.load(f)
+            if state.get("entropy_controller") and self._smart_entropy_controller:
+                self._smart_entropy_controller.load_from_dict(state["entropy_controller"])
+            if state.get("lr_controller") and self._smart_lr_controller:
+                self._smart_lr_controller.load_from_dict(state["lr_controller"])
+            if state.get("clip_controller") and self._smart_clip_controller:
+                self._smart_clip_controller.load_from_dict(state["clip_controller"])
+            logger.info(f"Controller states loaded from {path}")
+        except Exception as e:
+            logger.warning(f"Failed to load controller states: {e}")
+    
+    def _save_metrics_state(self, path: Path) -> None:
+        """Save episode history metrics for perfect resume."""
+        import json
+        state = {
+            # Episode history deques - convert to lists for JSON
+            "ep_rewards": list(self._ep_rewards),
+            "ep_pnls": list(self._ep_pnls),
+            "ep_win_rates": list(self._ep_win_rates),
+            "ep_drawdowns": list(self._ep_drawdowns),
+            "ep_trades": list(self._ep_trades),
+            "ep_lens": list(self._ep_lens),
+            "ep_profit_factors": list(self._ep_profit_factors),
+            "ep_r_multiples": list(self._ep_r_multiples),
+            "ep_entry_quality": list(self._ep_entry_quality),
+            # Cumulative tracking
+            "cumulative_pnl": self._cumulative_pnl,
+            "cumulative_trades": self._cumulative_trades,
+            # Exit/direction stats
+            "exit_reason_counts": self._exit_reason_counts,
+            "direction_stats": self._direction_stats,
+            # Reward components
+            "reward_component_totals": self._reward_component_totals,
+            "reward_component_counts": self._reward_component_counts,
+            # Stage history
+            "stage_history": self._stage_history,
+            # Timestep tracking
+            "num_timesteps": self.num_timesteps,
+        }
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(state, f, indent=2)
+        logger.debug(f"Metrics state saved to {path} ({len(self._ep_rewards)} episodes)")
+    
+    def load_metrics_state(self, path: Path) -> None:
+        """Load episode history metrics for perfect resume."""
+        import json
+        if not path.exists():
+            logger.warning(f"Metrics state file not found: {path}")
+            return
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                state = json.load(f)
+            
+            # Restore episode history deques
+            MAX_EPISODE_HISTORY = 5000
+            self._ep_rewards = deque(state.get("ep_rewards", []), maxlen=MAX_EPISODE_HISTORY)
+            self._ep_pnls = deque(state.get("ep_pnls", []), maxlen=MAX_EPISODE_HISTORY)
+            self._ep_win_rates = deque(state.get("ep_win_rates", []), maxlen=MAX_EPISODE_HISTORY)
+            self._ep_drawdowns = deque(state.get("ep_drawdowns", []), maxlen=MAX_EPISODE_HISTORY)
+            self._ep_trades = deque(state.get("ep_trades", []), maxlen=MAX_EPISODE_HISTORY)
+            self._ep_lens = deque(state.get("ep_lens", []), maxlen=MAX_EPISODE_HISTORY)
+            self._ep_profit_factors = deque(state.get("ep_profit_factors", []), maxlen=MAX_EPISODE_HISTORY)
+            self._ep_r_multiples = deque(state.get("ep_r_multiples", []), maxlen=MAX_EPISODE_HISTORY)
+            self._ep_entry_quality = deque(state.get("ep_entry_quality", []), maxlen=MAX_EPISODE_HISTORY)
+            
+            # Restore cumulative tracking
+            self._cumulative_pnl = state.get("cumulative_pnl", 0.0)
+            self._cumulative_trades = state.get("cumulative_trades", 0)
+            
+            # Restore exit/direction stats
+            self._exit_reason_counts = state.get("exit_reason_counts", {})
+            self._direction_stats = state.get("direction_stats", {
+                "long_count": 0, "short_count": 0, "long_wins": 0, "short_wins": 0,
+                "long_pnl": 0.0, "short_pnl": 0.0
+            })
+            
+            # Restore reward components
+            self._reward_component_totals = state.get("reward_component_totals", {})
+            self._reward_component_counts = state.get("reward_component_counts", {})
+            
+            # Restore stage history
+            self._stage_history = state.get("stage_history", [])
+            
+            logger.info(f"Metrics state loaded from {path} ({len(self._ep_rewards)} episodes)")
+        except Exception as e:
+            logger.warning(f"Failed to load metrics state: {e}")
+    
     def _on_stage_transition(
         self,
         transition_type: str,
@@ -220,6 +327,14 @@ class CurriculumTrainingCallback(BaseCallback):
                 state_path = checkpoint_dir / f"curriculum_{old_stage.name}_to_{new_stage.name}_{self.num_timesteps}.json"
                 self.curriculum_manager.save(state_path)
                 
+                # Save controller states for perfect resume
+                controllers_path = checkpoint_dir / f"controllers_{old_stage.name}_to_{new_stage.name}_{self.num_timesteps}.json"
+                self._save_controller_states(controllers_path)
+                
+                # Save callback metrics state for perfect resume (episode history, etc.)
+                metrics_path = checkpoint_dir / f"metrics_{old_stage.name}_to_{new_stage.name}_{self.num_timesteps}.json"
+                self._save_metrics_state(metrics_path)
+                
                 logger.info(f"  📁 Checkpoint saved: {model_path.name}")
             except Exception as e:
                 logger.warning(f"  ⚠️ Checkpoint failed: {e}")
@@ -248,8 +363,267 @@ class CurriculumTrainingCallback(BaseCallback):
                     self._smart_lr_controller.on_stage_change(stage)
                     self._smart_clip_controller.on_stage_change(stage)
         
+        # Wire up validation/stress test evaluators for curriculum promotion gates
+        if self.curriculum_manager is not None:
+            self._wire_promotion_evaluators()
+        
         # Save initial metrics file so dashboard sees data immediately
         self._save_live_metrics()
+    
+    def _wire_promotion_evaluators(self) -> None:
+        """
+        Wire up evaluator callbacks that CurriculumManager uses for promotion gates.
+        
+        These evaluators are called during try_promote() to run actual validation
+        and stress test episodes. They need access to the training env and model.
+        """
+        # Create closure that captures self for env/model access
+        def validation_gate_evaluator(scenarios, training_stats):
+            """Run validation episodes for each scenario."""
+            return self._run_validation_gate_episodes(scenarios, training_stats)
+        
+        def stress_test_evaluator(scenarios, baseline_stats):
+            """Run stress test episodes for adversarial evaluation."""
+            return self._run_stress_test_episodes(scenarios, baseline_stats)
+        
+        self.curriculum_manager.set_validation_gate_evaluator(validation_gate_evaluator)
+        self.curriculum_manager.set_stress_test_evaluator(stress_test_evaluator)
+        logger.info("Wired validation gate and stress test evaluators for promotion checks")
+    
+    def _run_validation_gate_episodes(
+        self, 
+        scenarios: list, 
+        training_stats: dict,
+        episodes_per_scenario: int = 10,
+    ) -> dict:
+        """
+        Run validation episodes for each scenario.
+        
+        Returns dict mapping scenario_name to list of episode results.
+        """
+        results = {}
+        
+        if self.model is None or self.training_env is None:
+            logger.warning("Cannot run validation: model or env not available")
+            return results
+        
+        # Use the eval env if available, otherwise training env
+        eval_env = getattr(self, '_eval_env', None) or self.training_env
+        
+        for scenario in scenarios:
+            scenario_name = scenario.get('name', 'unknown')
+            scenario_episodes = []
+            
+            try:
+                # Run deterministic episodes
+                obs_result = eval_env.reset()
+                # Handle VecEnv reset return (could be tuple or array)
+                obs = obs_result[0] if isinstance(obs_result, tuple) else obs_result
+                for ep_idx in range(episodes_per_scenario):
+                    done = False
+                    ep_reward = 0.0
+                    ep_info: dict = {}
+                    
+                    while not done:
+                        # Use deterministic actions for validation
+                        action, _ = self.model.predict(obs, deterministic=True)  # type: ignore[arg-type]
+                        obs, reward, done, info = eval_env.step(action)
+                        ep_reward += float(reward[0]) if hasattr(reward, '__len__') else float(reward)
+                        
+                        # Handle vectorized env done and info
+                        if hasattr(done, '__len__'):
+                            done = done[0]
+                        if isinstance(info, list) and len(info) > 0:
+                            ep_info = info[0] if isinstance(info[0], dict) else {}
+                        elif isinstance(info, dict):
+                            ep_info = info
+                    
+                    # Extract episode stats
+                    ep_stats = ep_info.get('episode_stats', ep_info)
+                    scenario_episodes.append({
+                        'win_rate': float(ep_stats.get('win_rate', 0.0)),
+                        'profit_factor': float(ep_stats.get('profit_factor', 0.0)),
+                        'total_pnl': float(ep_stats.get('total_pnl', 0.0)),
+                        'avg_r_multiple': float(ep_stats.get('avg_r_multiple', 0.0)),
+                        'trade_count': int(ep_stats.get('trade_count', 0)),
+                        'max_drawdown': float(ep_stats.get('max_drawdown', 0.0)),
+                        'dd_breach': bool(ep_stats.get('dd_breach', False)),
+                        'episode_reward': ep_reward,
+                    })
+                    
+                    obs = eval_env.reset()
+                    
+            except Exception as e:
+                logger.warning(f"Validation scenario '{scenario_name}' failed: {e}")
+            
+            results[scenario_name] = scenario_episodes
+        
+        return results
+    
+    def _run_stress_test_episodes(
+        self,
+        scenarios: list,
+        baseline_stats: dict,
+        episodes_per_scenario: int = 5,
+    ) -> list:
+        """
+        Run stress test episodes for adversarial evaluation.
+        
+        Returns list of episode results for each scenario (same order as input).
+        
+        Each scenario can specify stress parameters:
+        - spread_multiplier: Multiply spreads by this factor
+        - slippage_multiplier: Multiply slippage by this factor  
+        - latency_bars: Add extra latency to fills
+        - gap_probability: Probability of price gaps
+        
+        These are applied by modifying the underlying env's execution config.
+        """
+        results = []
+        
+        if self.model is None or self.training_env is None:
+            logger.warning("Cannot run stress test: model or env not available")
+            return results
+        
+        eval_env = getattr(self, '_eval_env', None) or self.training_env
+        
+        for scenario in scenarios:
+            scenario_name = scenario.get('name', 'unknown')
+            scenario_episodes = []
+            
+            # Extract stress parameters from scenario
+            spread_mult = float(scenario.get('spread_multiplier', 1.0))
+            slippage_mult = float(scenario.get('slippage_multiplier', 1.0))
+            latency_add = int(scenario.get('latency_bars', 0))
+            
+            try:
+                # Apply stress parameters to env if possible
+                stress_applied = self._apply_stress_to_env(
+                    eval_env, spread_mult, slippage_mult, latency_add
+                )
+                
+                obs_result = eval_env.reset()
+                # Handle VecEnv reset return (could be tuple or array)
+                obs = obs_result[0] if isinstance(obs_result, tuple) else obs_result
+                for ep_idx in range(episodes_per_scenario):
+                    done = False
+                    ep_reward = 0.0
+                    ep_info: dict = {}
+                    
+                    while not done:
+                        action, _ = self.model.predict(obs, deterministic=True)  # type: ignore[arg-type]
+                        obs, reward, done, info = eval_env.step(action)
+                        ep_reward += float(reward[0]) if hasattr(reward, '__len__') else float(reward)
+                        
+                        # Handle vectorized env done and info
+                        if hasattr(done, '__len__'):
+                            done = done[0]
+                        if isinstance(info, list) and len(info) > 0:
+                            ep_info = info[0] if isinstance(info[0], dict) else {}
+                        elif isinstance(info, dict):
+                            ep_info = info
+                    
+                    ep_stats = ep_info.get('episode_stats', ep_info)
+                    scenario_episodes.append({
+                        'win_rate': float(ep_stats.get('win_rate', 0.0)),
+                        'profit_factor': float(ep_stats.get('profit_factor', 0.0)),
+                        'total_pnl': float(ep_stats.get('total_pnl', 0.0)),
+                        'avg_r_multiple': float(ep_stats.get('avg_r_multiple', 0.0)),
+                        'trade_count': int(ep_stats.get('trade_count', 0)),
+                        'max_drawdown': float(ep_stats.get('max_drawdown', 0.0)),
+                        'stress_applied': stress_applied,
+                    })
+                    
+                    obs = eval_env.reset()
+                
+                # Restore normal execution after this scenario
+                self._restore_env_execution(eval_env)
+                    
+            except Exception as e:
+                logger.warning(f"Stress test scenario '{scenario_name}' failed: {e}")
+                self._restore_env_execution(eval_env)  # Ensure cleanup on error
+            
+            results.append(scenario_episodes)
+        
+        return results
+    
+    def _apply_stress_to_env(
+        self, 
+        env, 
+        spread_mult: float, 
+        slippage_mult: float, 
+        latency_add: int
+    ) -> bool:
+        """
+        Apply stress parameters to the env's execution model.
+        
+        Returns True if stress was successfully applied, False otherwise.
+        """
+        try:
+            # Handle VecEnv wrapper - get the underlying env
+            base_env = env
+            while hasattr(base_env, 'envs'):
+                base_env = base_env.envs[0]
+            while hasattr(base_env, 'env'):
+                base_env = base_env.env
+            
+            # Check if env has execution model
+            if not hasattr(base_env, '_exec') or base_env._exec is None:
+                return False
+            
+            exec_model = base_env._exec
+            
+            # Store original values for restoration
+            if not hasattr(self, '_original_exec_params'):
+                self._original_exec_params = {}
+            
+            self._original_exec_params['spread_mult'] = exec_model._spread_mult
+            self._original_exec_params['slippage_mult'] = exec_model._slippage_mult
+            
+            if hasattr(exec_model, 'cfg'):
+                self._original_exec_params['latency_bars'] = exec_model.cfg.latency_bars
+            
+            # Apply stress multipliers
+            exec_model._spread_mult *= spread_mult
+            exec_model._slippage_mult *= slippage_mult
+            
+            if hasattr(exec_model, 'cfg') and latency_add > 0:
+                exec_model.cfg.latency_bars += latency_add
+            
+            return True
+            
+        except Exception as e:
+            logger.debug(f"Could not apply stress to env: {e}")
+            return False
+    
+    def _restore_env_execution(self, env) -> None:
+        """Restore env execution model to original parameters."""
+        if not hasattr(self, '_original_exec_params') or not self._original_exec_params:
+            return
+            
+        try:
+            base_env = env
+            while hasattr(base_env, 'envs'):
+                base_env = base_env.envs[0]
+            while hasattr(base_env, 'env'):
+                base_env = base_env.env
+            
+            if not hasattr(base_env, '_exec') or base_env._exec is None:
+                return
+            
+            exec_model = base_env._exec
+            
+            if 'spread_mult' in self._original_exec_params:
+                exec_model._spread_mult = self._original_exec_params['spread_mult']
+            if 'slippage_mult' in self._original_exec_params:
+                exec_model._slippage_mult = self._original_exec_params['slippage_mult']
+            if 'latency_bars' in self._original_exec_params and hasattr(exec_model, 'cfg'):
+                exec_model.cfg.latency_bars = self._original_exec_params['latency_bars']
+            
+            self._original_exec_params = {}
+            
+        except Exception as e:
+            logger.debug(f"Could not restore env execution: {e}")
     
     def _on_rollout_start(self) -> None:
         """Called at the beginning of each rollout.
@@ -1381,7 +1755,8 @@ class CurriculumTrainingCallback(BaseCallback):
                     "total_trades": total_trades,
                     "mean_trades": mean_trades,
                     "mean_win_rate": mean_win_rate * 100,
-                    "max_drawdown": max_drawdown * 100,
+                    # Keep as a fraction (0.05 = 5%). Dashboard/server is responsible for formatting.
+                    "max_drawdown": max_drawdown,
                 },
                 # Direction stats (buy/sell breakdown) for dashboard
                 "direction_stats": {

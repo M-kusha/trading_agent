@@ -72,15 +72,23 @@ class RewardShapingMixin:
             "max_trades_per_day": 1.10,
             "max_trades_per_session": 1.05,
             "insufficient_bars_for_fill": 1.15,
+            # min_entry_spacing is hard-blocked in env.step(), classify consistently
+            "min_entry_spacing": 0.90,
+            # Governor hard-stop: NOT "bad behavior" - it's a safety mode.
+            # Keep at 0 to avoid negative-reward spirals during stop-trading state.
+            "loss_layer_stop": 0.0,
         }
         SOFT_MULTIPLIERS = {
-            "min_entry_spacing": 0.85,
             "post_loss_cooldown": 0.95,
             "no_new_trades_window": 1.00,   # this is policy-like but still "soft" in your setup
             "entry_quality_gate": 0.70,     # don't punish too hard: you're already teaching quality
         }
 
         if is_hard_block:
+            # Loss-layer stop is a governor state, not misbehavior - zero penalty
+            if reason == "loss_layer_stop":
+                stop_pen = float(getattr(cfg, "loss_layer_stop_penalty", 0.0))
+                return float(max(0.0, stop_pen))
             mult = HARD_MULTIPLIERS.get(reason, 1.0)
             penalty = hard_base * float(mult)
             return float(max(0.0, penalty))
@@ -100,7 +108,7 @@ class RewardShapingMixin:
         bars_in_position: int,
         entry_quality_long: float,
         entry_quality_short: float,
-        took_action: bool,
+        entry_accepted: bool,
     ) -> float:
         """
         Compute per-step reward shaping.
@@ -109,8 +117,12 @@ class RewardShapingMixin:
         - Keep shaping small and bounded.
         - Encourage: not churning, holding cost realism.
         - Encourage patience: don't enter when both entry qualities are low.
-        - Encourage exploration: bonus for taking trades in early stages.
+        - Encourage exploration: bonus for ACCEPTED entries only (pending_entry created).
         - Avoid: rewarding "do nothing" forever.
+        
+        CRITICAL: entry_accepted must be True ONLY when a pending_entry was actually
+        created this step. This prevents exploration bonus farming by spamming
+        blocked entry attempts.
 
         Returns:
             Shaping reward value (can be negative or small positive).
@@ -120,17 +132,17 @@ class RewardShapingMixin:
             # Even if per_step_shaping is disabled, still apply exploration bonus
             # This is critical for early-stage trade encouragement
             exploration_bonus = float(getattr(cfg, "exploration_bonus", 0.0))
-            if exploration_bonus > 0.0 and took_action and not has_position:
-                # Bonus for attempting to enter a trade (long/short action while flat)
+            if exploration_bonus > 0.0 and entry_accepted:
+                # Bonus ONLY for accepted entries (pending_entry created)
                 return exploration_bonus
             return 0.0
 
         shaping = 0.0
 
         # 0) Exploration bonus: encourage trading in early stages
-        # Applied when agent takes entry action while flat
+        # Applied ONLY when entry is accepted (pending_entry created)
         exploration_bonus = float(getattr(cfg, "exploration_bonus", 0.0))
-        if exploration_bonus > 0.0 and took_action and not has_position:
+        if exploration_bonus > 0.0 and entry_accepted:
             shaping += exploration_bonus
 
         # 1) Holding cost (your original behavior)
@@ -150,23 +162,23 @@ class RewardShapingMixin:
         q_best = max(ql, qs)
 
         # 2) Optional anti-churn friction:
-        # Small cost for "taking action" while flat (encourages selectivity).
+        # Small cost for accepting entries (encourages selectivity).
         # This should be tiny to avoid training collapse.
         churn_enabled = bool(getattr(cfg, "anti_churn_enabled", False))
         churn_cost = float(getattr(cfg, "churn_action_cost", 0.0))
-        if churn_enabled and (not has_position) and took_action and churn_cost > 0.0:
+        if churn_enabled and (not has_position) and entry_accepted and churn_cost > 0.0:
             # Reduce cost when there is a genuinely good setup visible
             # (agent is at least "trying" at the right times).
             # If q_best=1.0 -> cost is reduced by 60%.
             shaping -= churn_cost * (1.0 - 0.60 * q_best)
 
         # 3) Optional patience shaping:
-        # If both entry qualities are poor, slightly reward staying flat AND not acting.
+        # If both entry qualities are poor, slightly reward staying flat AND not entering.
         # This teaches "do nothing is a decision" without paying too much.
         patience_enabled = bool(getattr(cfg, "patience_shaping_enabled", False))
         patience_bonus = float(getattr(cfg, "patience_bonus_per_bar", 0.0))
         patience_threshold = float(getattr(cfg, "patience_quality_threshold", 0.35))
-        if patience_enabled and (not has_position) and (not took_action) and patience_bonus > 0.0:
+        if patience_enabled and (not has_position) and (not entry_accepted) and patience_bonus > 0.0:
             if q_best < patience_threshold:
                 shaping += patience_bonus
 
