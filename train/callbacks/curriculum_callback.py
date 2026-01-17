@@ -133,6 +133,9 @@ class CurriculumTrainingCallback(BaseCallback):
         self._reward_component_totals: Dict[str, float] = {}
         self._reward_component_counts: Dict[str, int] = {}
         
+        # v5.5: Governor state tracking for dashboard visualization
+        self._latest_governor_state: Dict[str, float] = {}
+        
         # Direction tracking (buy/sell breakdown)
         self._direction_stats: Dict[str, Any] = {
             "long_count": 0,
@@ -178,6 +181,10 @@ class CurriculumTrainingCallback(BaseCallback):
         self._smart_entropy_controller = SmartEntropyController(initial_ent_coef=base_ent_coef)
         self._smart_lr_controller: Optional[SmartLRController] = None  # Initialized on training start
         self._smart_clip_controller = SmartClipController(base_clip_range=base_clip_range)
+
+        # Evaluation env used for curriculum promotion/holdout checks.
+        # Declared here to make attribute explicit for static checkers (Pylance).
+        self._eval_env: Optional[Any] = None
         
         # Register transition callback
         if self.curriculum_manager is not None:
@@ -242,8 +249,8 @@ class CurriculumTrainingCallback(BaseCallback):
             # Reward components
             "reward_component_totals": self._reward_component_totals,
             "reward_component_counts": self._reward_component_counts,
-            # Stage history
-            "stage_history": self._stage_history,
+            # Stage history (convert deque to list for JSON)
+            "stage_history": list(self._stage_history),
             # Timestep tracking
             "num_timesteps": self.num_timesteps,
         }
@@ -391,8 +398,8 @@ class CurriculumTrainingCallback(BaseCallback):
         logger.info("Wired validation gate and stress test evaluators for promotion checks")
     
     def _run_validation_gate_episodes(
-        self, 
-        scenarios: list, 
+        self,
+        scenarios: list,
         training_stats: dict,
         episodes_per_scenario: int = 10,
     ) -> dict:
@@ -400,64 +407,187 @@ class CurriculumTrainingCallback(BaseCallback):
         Run validation episodes for each scenario.
         
         Returns dict mapping scenario_name to list of episode results.
-        """
-        results = {}
         
+        NOTE: VecEnv auto-resets after done=True, so we track episodes via
+        the 'episode' key in info (set by Monitor wrapper) rather than explicit reset.
+        """
+        results: Dict[str, List[Dict[str, Any]]] = {}
+
         if self.model is None or self.training_env is None:
             logger.warning("Cannot run validation: model or env not available")
             return results
-        
+
         # Use the eval env if available, otherwise training env
-        eval_env = getattr(self, '_eval_env', None) or self.training_env
-        
-        for scenario in scenarios:
-            scenario_name = scenario.get('name', 'unknown')
-            scenario_episodes = []
-            
+        eval_env = getattr(self, "_eval_env", None) or self.training_env
+
+        # Validation budget: stage config (total episodes) split across scenarios
+        total_budget = int(getattr(getattr(self.curriculum_manager.stage_config, "validation", None), "validation_episodes", 0) or 0) if self.curriculum_manager is not None else 0
+        if total_budget <= 0:
+            total_budget = int(episodes_per_scenario) * max(len(scenarios), 1)
+        per_scenario_budget = int(np.ceil(total_budget / max(len(scenarios), 1)))
+
+        # Helper: mask-aware deterministic prediction when MaskablePPO is used
+        def _predict_deterministic(obs_in):
+            masks = None
             try:
-                # Run deterministic episodes
+                if SB3_MASK_UTILS_AVAILABLE and sb3_get_action_masks is not None:
+                    masks = sb3_get_action_masks(eval_env)
+            except Exception:
+                masks = None
+
+            try:
+                return self.model.predict(obs_in, deterministic=True, action_masks=masks)  # type: ignore[arg-type]
+            except TypeError:
+                return self.model.predict(obs_in, deterministic=True)  # type: ignore[arg-type]
+
+        # Helper: unwrap to base env for scenario controls
+        def _unwrap_base_env(venv):
+            base = venv
+            try:
+                while hasattr(base, "venv"):
+                    base = getattr(base, "venv")
+                if hasattr(base, "envs"):
+                    envs_list = getattr(base, "envs")
+                    if envs_list and len(envs_list) > 0:
+                        base = envs_list[0]
+                while hasattr(base, "env"):
+                    base = base.env
+            except Exception:
+                return None
+            return base
+
+        base_env = _unwrap_base_env(eval_env)
+
+        logger.info(f"Running validation gate: {len(scenarios)} scenarios (budget ~{per_scenario_budget} eps each)")
+
+        for scenario in scenarios:
+            scenario_name = str(scenario.get("name", "unknown"))
+            scenario_episodes: List[Dict[str, Any]] = []
+
+            spread_mult = float(scenario.get("spread_multiplier", 1.0) or 1.0)
+            slippage_mult = float(scenario.get("slippage_multiplier", 1.0) or 1.0)
+            vol_filter = (scenario.get("volatility_filter", None) or None)
+            trend_filter = (scenario.get("trend_filter", None) or None)
+            min_eps = int(scenario.get("min_episodes", 0) or 0)
+            min_trades = int(scenario.get("min_trades", 0) or 0)
+
+            # Per-scenario targets: satisfy scenario minimums + stage budget
+            target_episodes = max(int(per_scenario_budget), int(min_eps), 1)
+            max_episodes = max(target_episodes + 10, int(np.ceil(target_episodes * 1.5)))
+
+            total_trades_collected = 0
+            step_count = 0
+
+            # Save/restore scenario controls to avoid leaking into other evaluations
+            original_difficulty = getattr(base_env, "_data_difficulty", None) if base_env is not None else None
+
+            try:
+                # Apply volatility/trend filtering via DataDifficulty (start-index sampling)
+                if base_env is not None and hasattr(base_env, "set_data_difficulty"):
+                    try:
+                        from dataclasses import replace
+                        from envs.curriculum.config.execution import DataDifficulty
+
+                        stage_diff = getattr(self.curriculum_manager.stage_config, "data_difficulty", None) if self.curriculum_manager is not None else None
+                        scenario_diff = replace(stage_diff) if stage_diff is not None else DataDifficulty()
+
+                        # For evaluation: avoid hidden sampling bias toward the most recent bars
+                        scenario_diff.prefer_recent_data = False
+                        scenario_diff.recent_data_weight = 1.0
+
+                        if isinstance(vol_filter, str):
+                            vf = vol_filter.lower().strip()
+                            if vf == "high":
+                                scenario_diff.volatility_percentile_range = (0.70, 1.0)
+                            elif vf == "low":
+                                scenario_diff.volatility_percentile_range = (0.0, 0.30)
+
+                        if isinstance(trend_filter, str):
+                            tf = trend_filter.lower().strip()
+                            if tf in {"trend", "trending", "strong_trend"}:
+                                scenario_diff.min_trend_clarity = max(float(scenario_diff.min_trend_clarity), 0.60)
+                                scenario_diff.max_trend_clarity = 1.0
+                            elif tf in {"range", "ranging", "choppy"}:
+                                scenario_diff.min_trend_clarity = 0.0
+                                scenario_diff.max_trend_clarity = min(float(getattr(scenario_diff, "max_trend_clarity", 1.0)), 0.35)
+
+                        base_env.set_data_difficulty(scenario_diff)
+                    except Exception as e:
+                        logger.debug(f"Validation scenario '{scenario_name}': could not set data difficulty: {e}")
+
+                # Apply execution stress multipliers (spread/slippage)
+                stress_applied = self._apply_stress_to_env(eval_env, spread_mult, slippage_mult, 0)
+
+                # Initial reset
                 obs_result = eval_env.reset()
-                # Handle VecEnv reset return (could be tuple or array)
                 obs = obs_result[0] if isinstance(obs_result, tuple) else obs_result
-                for ep_idx in range(episodes_per_scenario):
-                    done = False
-                    ep_reward = 0.0
-                    ep_info: dict = {}
-                    
-                    while not done:
-                        # Use deterministic actions for validation
-                        action, _ = self.model.predict(obs, deterministic=True)  # type: ignore[arg-type]
-                        obs, reward, done, info = eval_env.step(action)
-                        ep_reward += float(reward[0]) if hasattr(reward, '__len__') else float(reward)
-                        
-                        # Handle vectorized env done and info
-                        if hasattr(done, '__len__'):
-                            done = done[0]
-                        if isinstance(info, list) and len(info) > 0:
-                            ep_info = info[0] if isinstance(info[0], dict) else {}
-                        elif isinstance(info, dict):
-                            ep_info = info
-                    
-                    # Extract episode stats
-                    ep_stats = ep_info.get('episode_stats', ep_info)
-                    scenario_episodes.append({
-                        'win_rate': float(ep_stats.get('win_rate', 0.0)),
-                        'profit_factor': float(ep_stats.get('profit_factor', 0.0)),
-                        'total_pnl': float(ep_stats.get('total_pnl', 0.0)),
-                        'avg_r_multiple': float(ep_stats.get('avg_r_multiple', 0.0)),
-                        'trade_count': int(ep_stats.get('trade_count', 0)),
-                        'max_drawdown': float(ep_stats.get('max_drawdown', 0.0)),
-                        'dd_breach': bool(ep_stats.get('dd_breach', False)),
-                        'episode_reward': ep_reward,
-                    })
-                    
-                    obs = eval_env.reset()
-                    
+
+                # Determine a safe step cap
+                max_steps_per_ep = int(getattr(getattr(base_env, "config", None), "max_steps_per_episode", 3000) or 3000)
+                max_steps = int(max_episodes) * max(3000, max_steps_per_ep + 5)
+
+                while step_count < max_steps:
+                    if len(scenario_episodes) >= max_episodes:
+                        break
+                    if len(scenario_episodes) >= target_episodes and total_trades_collected >= min_trades:
+                        break
+
+                    step_count += 1
+
+                    action, _ = _predict_deterministic(obs)
+                    obs, reward, done, info = eval_env.step(action)
+
+                    done_flag = done[0] if hasattr(done, "__len__") else done
+                    info_raw = info[0] if isinstance(info, list) and len(info) > 0 else info
+                    info_dict: Dict[str, Any] = info_raw if isinstance(info_raw, dict) else {}
+
+                    if done_flag:
+                        ep_stats: Dict[str, Any] = info_dict.get("episode_stats", info_dict)
+                        ep_info = info_dict.get("episode", {})
+                        ep_reward = ep_info.get("r", 0.0) if isinstance(ep_info, dict) else 0.0
+
+                        trades = int(ep_stats.get("trade_count", 0) or 0)
+                        total_trades_collected += max(trades, 0)
+
+                        scenario_episodes.append({
+                            "win_rate": float(ep_stats.get("win_rate", 0.0)),
+                            "profit_factor": float(ep_stats.get("profit_factor", 0.0)),
+                            "total_pnl": float(ep_stats.get("total_pnl", 0.0)),
+                            "avg_r_multiple": float(ep_stats.get("avg_r_multiple", 0.0)),
+                            "trade_count": trades,
+                            "max_drawdown": float(ep_stats.get("max_drawdown", 0.0)),
+                            "dd_breach": bool(ep_stats.get("dd_breach", False)),
+                            "episode_reward": float(ep_reward),
+                            "stress_applied": bool(stress_applied),
+                        })
+
+                if step_count >= max_steps:
+                    logger.warning(f"Validation scenario '{scenario_name}' hit step limit ({max_steps})")
+                if min_trades > 0 and total_trades_collected < min_trades:
+                    logger.warning(
+                        f"Validation scenario '{scenario_name}' collected {total_trades_collected} trades "
+                        f"(< {min_trades}) in {len(scenario_episodes)} episodes"
+                    )
+
             except Exception as e:
                 logger.warning(f"Validation scenario '{scenario_name}' failed: {e}")
-            
+                import traceback
+                logger.debug(traceback.format_exc())
+            finally:
+                # Restore normal execution and sampling after this scenario
+                try:
+                    self._restore_env_execution(eval_env)
+                except Exception:
+                    pass
+                try:
+                    if base_env is not None and hasattr(base_env, "set_data_difficulty"):
+                        base_env.set_data_difficulty(original_difficulty)
+                except Exception:
+                    pass
+
             results[scenario_name] = scenario_episodes
-        
+            logger.info(f"Validation scenario '{scenario_name}': collected {len(scenario_episodes)} episodes")
+
         return results
     
     def _run_stress_test_episodes(
@@ -478,6 +608,9 @@ class CurriculumTrainingCallback(BaseCallback):
         - gap_probability: Probability of price gaps
         
         These are applied by modifying the underlying env's execution config.
+        
+        NOTE: VecEnv auto-resets after done=True, so we track episodes via
+        the 'episode' key in info (set by Monitor wrapper) rather than explicit reset.
         """
         results = []
         
@@ -486,6 +619,8 @@ class CurriculumTrainingCallback(BaseCallback):
             return results
         
         eval_env = getattr(self, '_eval_env', None) or self.training_env
+        
+        logger.info(f"Running stress test: {len(scenarios)} scenarios, {episodes_per_scenario} episodes each")
         
         for scenario in scenarios:
             scenario_name = scenario.get('name', 'unknown')
@@ -503,55 +638,69 @@ class CurriculumTrainingCallback(BaseCallback):
                 )
                 
                 obs_result = eval_env.reset()
-                # Handle VecEnv reset return (could be tuple or array)
                 obs = obs_result[0] if isinstance(obs_result, tuple) else obs_result
-                for ep_idx in range(episodes_per_scenario):
-                    done = False
-                    ep_reward = 0.0
-                    ep_info: dict = {}
-                    
-                    while not done:
+                
+                episodes_collected = 0
+                max_steps = episodes_per_scenario * 3000  # Safety limit
+                step_count = 0
+                
+                while episodes_collected < episodes_per_scenario and step_count < max_steps:
+                    step_count += 1
+
+                    masks = None
+                    try:
+                        if SB3_MASK_UTILS_AVAILABLE and sb3_get_action_masks is not None:
+                            masks = sb3_get_action_masks(eval_env)
+                    except Exception:
+                        masks = None
+                    try:
+                        action, _ = self.model.predict(obs, deterministic=True, action_masks=masks)  # type: ignore[arg-type]
+                    except TypeError:
                         action, _ = self.model.predict(obs, deterministic=True)  # type: ignore[arg-type]
-                        obs, reward, done, info = eval_env.step(action)
-                        ep_reward += float(reward[0]) if hasattr(reward, '__len__') else float(reward)
-                        
-                        # Handle vectorized env done and info
-                        if hasattr(done, '__len__'):
-                            done = done[0]
-                        if isinstance(info, list) and len(info) > 0:
-                            ep_info = info[0] if isinstance(info[0], dict) else {}
-                        elif isinstance(info, dict):
-                            ep_info = info
+                    obs, reward, done, info = eval_env.step(action)
                     
-                    ep_stats = ep_info.get('episode_stats', ep_info)
-                    scenario_episodes.append({
-                        'win_rate': float(ep_stats.get('win_rate', 0.0)),
-                        'profit_factor': float(ep_stats.get('profit_factor', 0.0)),
-                        'total_pnl': float(ep_stats.get('total_pnl', 0.0)),
-                        'avg_r_multiple': float(ep_stats.get('avg_r_multiple', 0.0)),
-                        'trade_count': int(ep_stats.get('trade_count', 0)),
-                        'max_drawdown': float(ep_stats.get('max_drawdown', 0.0)),
-                        'stress_applied': stress_applied,
-                    })
+                    # Handle vectorized env outputs
+                    done_flag = done[0] if hasattr(done, '__len__') else done
+                    info_raw = info[0] if isinstance(info, list) and len(info) > 0 else info
+                    info_dict: Dict[str, Any] = info_raw if isinstance(info_raw, dict) else {}
                     
-                    obs = eval_env.reset()
+                    # Check if episode ended
+                    if done_flag:
+                        ep_stats: Dict[str, Any] = info_dict.get('episode_stats', info_dict)
+                        scenario_episodes.append({
+                            'win_rate': float(ep_stats.get('win_rate', 0.0)),
+                            'profit_factor': float(ep_stats.get('profit_factor', 0.0)),
+                            'total_pnl': float(ep_stats.get('total_pnl', 0.0)),
+                            'avg_r_multiple': float(ep_stats.get('avg_r_multiple', 0.0)),
+                            'trade_count': int(ep_stats.get('trade_count', 0)),
+                            'max_drawdown': float(ep_stats.get('max_drawdown', 0.0)),
+                            'stress_applied': stress_applied,
+                        })
+                        episodes_collected += 1
+                        # VecEnv already reset - obs is from the new episode
+                
+                if step_count >= max_steps:
+                    logger.warning(f"Stress test scenario '{scenario_name}' hit step limit ({max_steps})")
                 
                 # Restore normal execution after this scenario
                 self._restore_env_execution(eval_env)
                     
             except Exception as e:
                 logger.warning(f"Stress test scenario '{scenario_name}' failed: {e}")
+                import traceback
+                logger.debug(traceback.format_exc())
                 self._restore_env_execution(eval_env)  # Ensure cleanup on error
             
             results.append(scenario_episodes)
+            logger.info(f"Stress test scenario '{scenario_name}': collected {len(scenario_episodes)} episodes")
         
         return results
     
     def _apply_stress_to_env(
-        self, 
-        env, 
-        spread_mult: float, 
-        slippage_mult: float, 
+        self,
+        env,
+        spread_mult: float,
+        slippage_mult: float,
         latency_add: int
     ) -> bool:
         """
@@ -560,68 +709,92 @@ class CurriculumTrainingCallback(BaseCallback):
         Returns True if stress was successfully applied, False otherwise.
         """
         try:
-            # Handle VecEnv wrapper - get the underlying env
+            # Handle VecEnv + wrapper stack
             base_env = env
-            while hasattr(base_env, 'envs'):
+            while hasattr(base_env, 'venv'):
+                base_env = base_env.venv
+            if hasattr(base_env, 'envs') and getattr(base_env, 'envs'):
                 base_env = base_env.envs[0]
             while hasattr(base_env, 'env'):
                 base_env = base_env.env
-            
-            # Check if env has execution model
+
+            # Prefer scenario-level overrides that persist across resets
+            if hasattr(base_env, 'set_scenario_execution_overrides') and callable(getattr(base_env, 'set_scenario_execution_overrides')):
+                if not hasattr(self, '_original_exec_params'):
+                    self._original_exec_params = {}
+                self._original_exec_params['scenario_spread_mult'] = getattr(base_env, '_scenario_spread_mult', 1.0)
+                self._original_exec_params['scenario_slippage_mult'] = getattr(base_env, '_scenario_slippage_mult', 1.0)
+                self._original_exec_params['scenario_latency_add'] = getattr(base_env, '_scenario_latency_add', 0)
+
+                base_env.set_scenario_execution_overrides(
+                    spread_mult=float(spread_mult),
+                    slippage_mult=float(slippage_mult),
+                    latency_add=int(latency_add),
+                )
+                return True
+
+            # Fallback: direct exec-model mutation (non-persistent across resets)
             if not hasattr(base_env, '_exec') or base_env._exec is None:
                 return False
-            
+
             exec_model = base_env._exec
-            
-            # Store original values for restoration
+
             if not hasattr(self, '_original_exec_params'):
                 self._original_exec_params = {}
-            
-            self._original_exec_params['spread_mult'] = exec_model._spread_mult
-            self._original_exec_params['slippage_mult'] = exec_model._slippage_mult
-            
+            self._original_exec_params['spread_mult'] = getattr(exec_model, '_spread_mult', 1.0)
+            self._original_exec_params['slippage_mult'] = getattr(exec_model, '_slippage_mult', 1.0)
             if hasattr(exec_model, 'cfg'):
-                self._original_exec_params['latency_bars'] = exec_model.cfg.latency_bars
-            
-            # Apply stress multipliers
-            exec_model._spread_mult *= spread_mult
-            exec_model._slippage_mult *= slippage_mult
-            
-            if hasattr(exec_model, 'cfg') and latency_add > 0:
-                exec_model.cfg.latency_bars += latency_add
-            
+                self._original_exec_params['latency_bars'] = getattr(exec_model.cfg, 'latency_bars', 0)
+
+            exec_model._spread_mult *= float(spread_mult)
+            exec_model._slippage_mult *= float(slippage_mult)
+            if hasattr(exec_model, 'cfg') and int(latency_add) > 0:
+                exec_model.cfg.latency_bars += int(latency_add)
+
             return True
-            
+
         except Exception as e:
             logger.debug(f"Could not apply stress to env: {e}")
             return False
-    
+
     def _restore_env_execution(self, env) -> None:
         """Restore env execution model to original parameters."""
         if not hasattr(self, '_original_exec_params') or not self._original_exec_params:
             return
-            
+
         try:
             base_env = env
-            while hasattr(base_env, 'envs'):
+            while hasattr(base_env, 'venv'):
+                base_env = base_env.venv
+            if hasattr(base_env, 'envs') and getattr(base_env, 'envs'):
                 base_env = base_env.envs[0]
             while hasattr(base_env, 'env'):
                 base_env = base_env.env
-            
+
+            # Scenario-level overrides (preferred)
+            if hasattr(base_env, 'set_scenario_execution_overrides') and callable(getattr(base_env, 'set_scenario_execution_overrides')):
+                base_env.set_scenario_execution_overrides(
+                    spread_mult=float(self._original_exec_params.get('scenario_spread_mult', 1.0)),
+                    slippage_mult=float(self._original_exec_params.get('scenario_slippage_mult', 1.0)),
+                    latency_add=int(self._original_exec_params.get('scenario_latency_add', 0)),
+                )
+                self._original_exec_params = {}
+                return
+
             if not hasattr(base_env, '_exec') or base_env._exec is None:
                 return
-            
+
             exec_model = base_env._exec
-            
+
             if 'spread_mult' in self._original_exec_params:
                 exec_model._spread_mult = self._original_exec_params['spread_mult']
             if 'slippage_mult' in self._original_exec_params:
                 exec_model._slippage_mult = self._original_exec_params['slippage_mult']
             if 'latency_bars' in self._original_exec_params and hasattr(exec_model, 'cfg'):
                 exec_model.cfg.latency_bars = self._original_exec_params['latency_bars']
-            
+
             self._original_exec_params = {}
-            
+
         except Exception as e:
             logger.debug(f"Could not restore env execution: {e}")
     
@@ -1091,7 +1264,13 @@ class CurriculumTrainingCallback(BaseCallback):
                 wr = wr / 100.0
             wr = float(np.clip(wr, 0.0, 1.0))
             self._ep_win_rates.append(wr)
-            self._ep_drawdowns.append(float(finfo.get("drawdown", info.get("drawdown", 0.0))))
+            
+            # Normalize drawdown to 0..1 (some envs or restored states may have percent)
+            dd = float(finfo.get("drawdown", info.get("drawdown", 0.0)))
+            if dd > 1.0:
+                dd = dd / 100.0
+            dd = float(np.clip(dd, 0.0, 1.0))
+            self._ep_drawdowns.append(dd)
             self._ep_trades.append(trades)
             
             # Track reward for adaptive LR controller
@@ -1127,6 +1306,11 @@ class CurriculumTrainingCallback(BaseCallback):
                     count = 1
                 self._reward_component_totals[comp_name] = self._reward_component_totals.get(comp_name, 0.0) + total
                 self._reward_component_counts[comp_name] = self._reward_component_counts.get(comp_name, 0) + count
+            
+            # v5.5: Capture governor state from episode_stats for dashboard
+            governor_state = ep_stats.get("governor_state", {}) or {}
+            if governor_state:
+                self._latest_governor_state = governor_state
             
             # Track direction stats (buy/sell breakdown) for dashboard
             dir_stats = ep_stats.get("direction_stats", {})
@@ -1236,6 +1420,7 @@ class CurriculumTrainingCallback(BaseCallback):
         self._maybe_save_live_metrics(force=False)
 
         # Goal-based stopping check (only if enabled)
+        # DISABLED: plateau_stop always False - let training continue
         if self.goal_based_stopping and self.curriculum_manager is not None:
             # Check periodically (after each episode completion is enough)
             if self.episodes_done > 0 and self.episodes_done % 10 == 0:
@@ -1244,7 +1429,7 @@ class CurriculumTrainingCallback(BaseCallback):
                     max_episodes=None,
                     max_hours=self.max_hours,
                     start_time=self.training_start_time,
-                    plateau_stop=self.plateau_stop,
+                    plateau_stop=False,  # DISABLED - never stop on plateau
                     plateau_threshold_episodes=self.plateau_threshold_episodes,
                     max_demotions_from_same_stage=self.max_demotions_from_same_stage,
                     mastery_confirmation_episodes=self.mastery_confirmation_episodes,
@@ -1806,6 +1991,17 @@ class CurriculumTrainingCallback(BaseCallback):
                 "total_pnl": total_pnl,
                 "mean_win_rate": mean_win_rate,
                 "max_drawdown": max_drawdown,
+                # v5.5: Governor state for dashboard Governor Panel
+                "governor": self._latest_governor_state or {
+                    "loss_layer_ratio": 0.0,
+                    "loss_layer_level": 0.0,
+                    "win_streak_ratio": 0.0,
+                    "session_pnl_headroom": 1.0,
+                    "session_trade_budget": 1.0,
+                    "session_consec_loss_ratio": 0.0,
+                    "session_progress": 0.0,
+                    "pending_order_progress": 0.0,
+                },
             }
             
             # Atomic write

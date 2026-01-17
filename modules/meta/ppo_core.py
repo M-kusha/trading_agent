@@ -73,7 +73,7 @@ class PPOCoreConfig:
     """
 
     # Network dimensions
-    obs_size: int = 76  # Updated for v5.4 HTF expansion
+    obs_size: int = 84  # Updated for v5.5 Governor expansion
     act_size: int = 2  # (direction_score, size_score)
     hidden_size: int = 128
 
@@ -1070,9 +1070,11 @@ class PPOCore:
             # Try MaskablePPO first (training uses this), fall back to PPO
             self._is_maskable_ppo = False
             
-            if MASKABLE_PPO_AVAILABLE:
+            # Pylance: MASKABLE_PPO_AVAILABLE does not narrow MaskablePPO from Optional,
+            # so guard on the symbol as well.
+            if MASKABLE_PPO_AVAILABLE and MaskablePPO is not None:
                 try:
-                    self._sb3_model = MaskablePPO.load(path, device="cpu")
+                    self._sb3_model = MaskablePPO.load(path, device="cpu")      
                     self._sb3_model_path = str(path)
                     self._is_maskable_ppo = True
                     

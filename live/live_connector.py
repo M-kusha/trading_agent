@@ -449,7 +449,7 @@ class InfoBusLiveDataConnector:
             if info_bus is not None:
                 self._update_infobus_data_quality(info_bus, symbol, timeframe, df, fetch_time)
 
-            self.live_logger.info(
+            self.live_logger.debug(
                 format_operator_message(
                     "📊",
                     "DATA_FETCHED",
@@ -516,7 +516,7 @@ class InfoBusLiveDataConnector:
         if not self.connected:
             raise RuntimeError("Not connected to MT5")
 
-        self.live_logger.info(
+        self.live_logger.debug(
             format_operator_message(
                 "📈",
                 "FETCHING_HISTORICAL_DATA",
@@ -583,7 +583,7 @@ class InfoBusLiveDataConnector:
         collection_time = time.time() - collection_start
 
         # Log collection summary
-        self.live_logger.info(
+        self.live_logger.debug(
             format_operator_message(
                 "✅",
                 "DATA_COLLECTION_COMPLETE",

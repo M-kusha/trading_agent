@@ -67,6 +67,50 @@ def _safe_float(v: Any, default: float = 0.0) -> float:
         return default
 
 
+def _open_time_to_ts(v: Any) -> float:
+    """
+    Best-effort parse of a position `open_time` field into a Unix timestamp (seconds).
+
+    Supports numeric seconds, numeric milliseconds, ISO8601 strings, and numeric strings.
+    Returns 0.0 when parsing fails.
+    """
+    if v is None:
+        return 0.0
+
+    # Already numeric
+    if isinstance(v, (int, float)):
+        ts = float(v)
+    elif isinstance(v, str):
+        s = v.strip()
+        if not s:
+            return 0.0
+        # Numeric string?
+        try:
+            ts = float(s)
+        except Exception:
+            # ISO8601 (e.g. 2025-12-09T20:10:59Z)
+            try:
+                from datetime import datetime
+
+                dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+                ts = float(dt.timestamp())
+            except Exception:
+                return 0.0
+    else:
+        try:
+            ts = float(v)
+        except Exception:
+            return 0.0
+
+    if not math.isfinite(ts):
+        return 0.0
+
+    # Milliseconds -> seconds
+    if ts > 1e12:
+        ts /= 1000.0
+    return ts
+
+
 # ─────────────────────────────────────────────────────────
 # Base Interface + Robust Wrappers
 # ─────────────────────────────────────────────────────────
@@ -536,12 +580,13 @@ class BaseLiveAdapter:
              'units': float,
              'entry_price': float,
              'notional_eur': float,
-             'open_time': iso|unix (optional),
-             'unrealized_pnl': float,  # Current P&L
-             'current_price': float,   # Current market price
-             'ticket': int,            # MT5 ticket for modifications
-             'sl': float,              # Stop loss price
-             'tp': float,              # Take profit price
+              'open_time': iso|unix (optional),
+              'age_hours': float,        # Best-effort derived from open_time
+              'unrealized_pnl': float,  # Current P&L
+              'current_price': float,   # Current market price
+              'ticket': int,            # MT5 ticket for modifications     
+              'sl': float,              # Stop loss price
+              'tp': float,              # Take profit price
           }, ...
         }
         """
@@ -560,13 +605,21 @@ class BaseLiveAdapter:
                         units = _safe_float(node.get("units", node.get("volume", 0.0)))
                         entry = _safe_float(node.get("entry_price", node.get("price", 0.0)))
                         notional = _safe_float(node.get("notional_eur", units * entry))
+                        open_time_raw = node.get("open_time", node.get("time", None))
+                        open_ts = _open_time_to_ts(open_time_raw)
+                        age_hours = (
+                            max(0.0, (_now() - open_ts) / 3600.0)
+                            if open_ts > 0.0
+                            else 0.0
+                        )
                         out[inst] = {
                             "instrument": inst,
                             "side": side,
                             "units": units,
                             "entry_price": entry,
                             "notional_eur": notional,
-                            "open_time": node.get("open_time", node.get("time", None)),
+                            "open_time": open_time_raw,
+                            "age_hours": float(age_hours),
                             # Pass through P&L and price data
                             "unrealized_pnl": _safe_float(node.get("unrealized_pnl", node.get("profit", 0.0))),
                             "profit": _safe_float(node.get("profit", node.get("unrealized_pnl", 0.0))),

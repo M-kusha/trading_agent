@@ -162,6 +162,11 @@ class RewardShaping:
     patience_bonus_per_bar: float = 0.0
     patience_quality_threshold: float = 0.35
 
+    # Loss streak caution (penalize entry attempts while tilted)
+    loss_streak_caution_enabled: bool = True
+    loss_streak_caution_base: float = 0.03
+    loss_streak_caution_cap: float = 0.25
+
     # Bounds for per-step shaping so it never dominates trade-close reward
     per_step_min: float = -0.05
     per_step_max: float = 0.05
@@ -183,6 +188,19 @@ class TradingConstraints:
     max_trades_per_day: int = 100
     max_trades_per_session: int = 50
     max_consecutive_losses: int = 10
+    
+    # Loss-layer governor: hard stop-trading mode after this many consecutive losses
+    # Early stages should be permissive (10+) to allow exploration
+    # Later stages tighten to enforce loss discipline
+    loss_layer_stop: int = 5
+    
+    # Session budget constraints (v5.5 - governor/budget observation)
+    # These are ALWAYS computed but limits start "effectively infinite" in early stages.
+    # This ensures observation features are meaningful from day one (no distribution shift).
+    # session_loss_limit_pct: max % loss within a session before entries blocked
+    # session_consecutive_loss_limit: max consecutive losses within a session before blocked
+    session_loss_limit_pct: float = 0.99  # Default: effectively infinite (99% loss allowed)
+    session_consecutive_loss_limit: int = 99  # Default: effectively infinite
 
     # Backward compat: was a coarse switch, newer code uses the three flags below.
     # If True, we will auto-enable enforce_no_new_trades_window and enforce_hard_close unless explicitly set.

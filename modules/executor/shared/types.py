@@ -134,6 +134,9 @@ class PositionSnap:
         cs = _contract_size_for_symbol(self.instrument)
         lot_size = u / cs if (u > 0.0 and cs > 0.0) else 0.0
 
+        open_ts = _parse_timestamp(self.open_time) or 0.0
+        age_hours = max(0.0, (time.time() - open_ts) / 3600.0) if open_ts > 0.0 else 0.0
+
         out: Dict[str, Any] = {
             "instrument": self.instrument,
             "side": int(s),
@@ -143,6 +146,7 @@ class PositionSnap:
             "unrealized_pnl": float(upnl),
             "unrealized_pnl_eur": float(upnl),  # alias some modules expect
             "open_time": _iso(self.open_time) if self.open_time else time.time(),
+            "age_hours": float(age_hours),
             "peak_unrealized": float(_sf(self.peak_unrealized)),
 
             # Additional fields for visualizer and monitoring

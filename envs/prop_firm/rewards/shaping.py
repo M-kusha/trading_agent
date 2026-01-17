@@ -182,6 +182,21 @@ class RewardShapingMixin:
             if q_best < patience_threshold:
                 shaping += patience_bonus
 
+        # 3b) Loss streak caution penalty (CRITICAL for consecutive loss control):
+        # Penalize ENTRY ATTEMPTS when agent is on a consecutive loss streak.
+        # This teaches the agent to STOP trading when tilted, not push through.
+        # Only triggers when a new entry is accepted (pending_entry created).
+        loss_streak_caution_enabled = bool(getattr(cfg, "loss_streak_caution_enabled", True))
+        if loss_streak_caution_enabled and entry_accepted:
+            consecutive_losses = int(getattr(self, "consecutive_losses", 0))
+            if consecutive_losses >= 2:
+                # Escalating penalty for entering while on loss streak
+                # Loss 2: -0.03, Loss 3: -0.07, Loss 4+: capped at -0.25
+                caution_base = float(getattr(cfg, "loss_streak_caution_base", 0.03))
+                caution_penalty = caution_base * (consecutive_losses - 1) ** 1.5
+                caution_cap = float(getattr(cfg, "loss_streak_caution_cap", 0.25))
+                shaping -= min(caution_penalty, caution_cap)
+
         # 4) Bound shaping so it cannot dominate
         # Default bounds are conservative; if RewardConfig has explicit bounds, use them.
         min_s = float(getattr(cfg, "per_step_min", -0.05))
@@ -191,3 +206,93 @@ class RewardShapingMixin:
         shaping = max(min_s, min(max_s, shaping))
 
         return float(shaping)
+
+    # ---------------------------
+    # Governor approaching-limit penalties (v5.5)
+    # ---------------------------
+
+    def _compute_governor_approaching_penalties(self) -> float:
+        """
+        Compute gradient signal penalties when approaching hard blocks.
+
+        This provides learning signal BEFORE hard blocks engage, teaching the agent
+        to anticipate and avoid limit-hitting situations rather than learning only
+        from blocked actions.
+
+        Penalties are progressive - they increase as the agent gets closer to limits:
+        - Loss layer: penalty scales with consecutive_losses / loss_layer_stop
+        - Session PnL: penalty when session_pnl approaches session_loss_limit
+        - Session consecutive losses: penalty as approaching session limit
+
+        Design philosophy (per GPT feedback):
+        - Gradient signal BEFORE hard blocks (not after)
+        - Smooth scaling (no cliffs)
+        - Conservative magnitudes (subordinate to trade rewards)
+
+        Returns:
+            Negative penalty value (0.0 if not approaching any limits).
+        """
+        cfg = self.config.reward
+
+        # Config flags
+        governor_penalty_enabled = bool(getattr(cfg, "governor_approaching_penalty_enabled", True))
+        if not governor_penalty_enabled:
+            return 0.0
+
+        penalty = 0.0
+
+        # Base penalty magnitude (small - should be subordinate to trade rewards)
+        base_penalty = float(getattr(cfg, "governor_approaching_base_penalty", 0.02))
+        
+        # Threshold at which penalty starts (as fraction of limit)
+        approach_threshold = float(getattr(cfg, "governor_approach_threshold", 0.5))
+
+        # 1) Loss layer approaching penalty
+        # Penalty scales as consecutive_losses / loss_layer_stop approaches 1.0
+        loss_layer_stop = int(getattr(self.config, "loss_layer_stop", 4))
+        if loss_layer_stop > 0:
+            consecutive_losses = int(getattr(self, "consecutive_losses", 0))
+            loss_ratio = consecutive_losses / loss_layer_stop
+            
+            if loss_ratio > approach_threshold:
+                # Scale penalty from 0 at threshold to full at limit
+                progress = (loss_ratio - approach_threshold) / (1.0 - approach_threshold)
+                progress = min(1.0, max(0.0, progress))
+                # Quadratic scaling for stronger signal near limit
+                penalty -= base_penalty * (progress ** 2) * 2.0
+
+        # 2) Session loss limit approaching penalty
+        session_loss_limit = float(getattr(self.config, "session_loss_limit_pct", 0.99))
+        if session_loss_limit < 0.99:  # Only apply if limit is actually constraining
+            session_start_balance = float(getattr(self, "session_start_balance", 0.0))
+            session_pnl = float(getattr(self, "session_pnl", 0.0))
+            
+            if session_start_balance > 0:
+                session_pnl_pct = session_pnl / session_start_balance
+                # Negative pnl_pct is bad, approaching -session_loss_limit
+                if session_pnl_pct < 0:
+                    loss_ratio = abs(session_pnl_pct) / session_loss_limit
+                    
+                    if loss_ratio > approach_threshold:
+                        progress = (loss_ratio - approach_threshold) / (1.0 - approach_threshold)
+                        progress = min(1.0, max(0.0, progress))
+                        penalty -= base_penalty * (progress ** 2) * 1.5
+
+        # 3) Session consecutive loss limit approaching penalty
+        session_consec_limit = int(getattr(self.config, "session_consecutive_loss_limit", 99))
+        if session_consec_limit < 99:  # Only apply if limit is actually constraining
+            session_consecutive_losses = int(getattr(self, "session_consecutive_losses", 0))
+            
+            if session_consec_limit > 0:
+                consec_ratio = session_consecutive_losses / session_consec_limit
+                
+                if consec_ratio > approach_threshold:
+                    progress = (consec_ratio - approach_threshold) / (1.0 - approach_threshold)
+                    progress = min(1.0, max(0.0, progress))
+                    penalty -= base_penalty * (progress ** 2) * 1.5
+
+        # Bound total penalty to avoid dominating rewards
+        max_penalty = float(getattr(cfg, "governor_max_approaching_penalty", 0.10))
+        penalty = max(-max_penalty, penalty)
+
+        return float(penalty)

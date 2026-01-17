@@ -249,6 +249,11 @@ class SessionTimingMixin:
             if self._current_session_key != key:
                 self._current_session_key = key
                 self._session_trades = 0
+                # Session budget reset (v5.5)
+                self.session_start_balance = self.equity
+                self.session_pnl = 0.0
+                self.session_consecutive_losses = 0
+                self.session_start_step = self.current_step
 
             if self._current_day != cur_day:
                 self._current_day = cur_day
@@ -272,3 +277,8 @@ class SessionTimingMixin:
         if self._current_session_key != key:
             self._current_session_key = key
             self._session_trades = 0
+            # Session budget reset (v5.5)
+            self.session_start_balance = self.equity
+            self.session_pnl = 0.0
+            self.session_consecutive_losses = 0
+            self.session_start_step = self.current_step

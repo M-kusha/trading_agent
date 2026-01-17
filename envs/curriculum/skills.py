@@ -422,7 +422,7 @@ class DemotionAnalyzer:
             timestamp=_now_iso(),
             failure_reasons=failure_reasons,
             skill_assessment=skill_assessment.to_dict() if skill_assessment else None,
-            stats_snapshot=asdict(stats) if stats else None,
+            stats_snapshot=stats.to_dict() if stats else None,
             global_episode=global_episode,
         )
         self.demotion_history.append(record)

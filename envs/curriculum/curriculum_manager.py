@@ -683,7 +683,7 @@ class CurriculumManager:
         3. Checks for transitions if enabled
         4. Returns the resulting state
         
-        MUST be called exactly once per episode to maintain counter integrity.
+            "episode_idx": self.total_episodes + 1,
         Calling multiple times for the same episode is a no-op (idempotent).
         
         Args:
@@ -1177,9 +1177,11 @@ class CurriculumManager:
             avg_entry_quality=_clamp(_safe_float(ep_stats.get("avg_entry_quality", info.get("avg_entry_quality", 0.5)), 0.5), 0.0, 1.0),
             consecutive_losses=_safe_int(info.get("consecutive_losses", ep_stats.get("consecutive_losses", 0)), 0),
             consecutive_wins=_safe_int(info.get("consecutive_wins", ep_stats.get("consecutive_wins", 0)), 0),
-            max_consecutive_losses_reached=_safe_int(ep_stats.get("max_consecutive_losses_reached", 
+            max_consecutive_losses_reached=_safe_int(ep_stats.get("max_consecutive_losses_reached",
                                                                    info.get("consecutive_losses", ep_stats.get("consecutive_losses", 0))), 0),
             hit_max_consecutive_losses=hit_max_consec,
+            mask_collapse_steps=_safe_int(ep_stats.get("mask_collapse_steps", info.get("mask_collapse_steps", 0)), 0),
+            stop_mode_steps=_safe_int(ep_stats.get("stop_mode_steps", info.get("stop_mode_steps", 0)), 0),
             trailing_stop_exits=trailing_stops,
             agent_close_exits=agent_closes,
             hard_stop_exits=hard_stops,
@@ -1299,7 +1301,7 @@ class CurriculumManager:
         window = self._current_epoch_window(window_size)
         
         if not window:
-            self._rolling_stats = RollingStats(window_size=0)
+            self._rolling_stats = RollingStats(0)
             self._rolling_stats_dirty = False
             return self._rolling_stats
         
@@ -1307,6 +1309,9 @@ class CurriculumManager:
         pnls = np.array([_safe_float(m.total_pnl, 0.0) for m in window], dtype=np.float64)
         win_rates = np.array([_clamp(_safe_float(m.win_rate, 0.0), 0.0, 1.0) for m in window], dtype=np.float64)
         trade_counts = np.array([max(0.0, float(m.trade_count)) for m in window], dtype=np.float64)
+        episode_lengths = np.array([max(0.0, float(getattr(m, "episode_length", 0))) for m in window], dtype=np.float64)
+        mask_collapse_steps = np.array([max(0.0, float(getattr(m, "mask_collapse_steps", 0))) for m in window], dtype=np.float64)
+        stop_mode_steps = np.array([max(0.0, float(getattr(m, "stop_mode_steps", 0))) for m in window], dtype=np.float64)
         drawdowns = np.array([_clamp(_safe_float(m.max_drawdown, 0.0), 0.0, 1.0) for m in window], dtype=np.float64)
         dd_breaches = np.array([bool(m.dd_breach) for m in window], dtype=np.bool_)
         profit_factors = np.array([_clamp(_safe_float(m.profit_factor, 0.0), 0.0, 10.0) for m in window], dtype=np.float64)
@@ -1323,10 +1328,34 @@ class CurriculumManager:
         mean_win_rate = float(np.mean(win_rates))
         std_win_rate = float(np.std(win_rates, ddof=1)) if len(win_rates) > 1 else 0.0
         mean_trade_count = float(np.mean(trade_counts))
-        
+
         total_trades = int(np.sum(trade_counts))
         total_wins = int(sum(max(0, m.winning_trades) for m in window))
         total_losses = int(sum(max(0, m.losing_trades) for m in window))
+
+        # Trade-aware win-rate stability:
+        # - Ignore episodes with very low trade counts (stop-mode / constraint-driven low activity).
+        # - Weight per-episode win_rate variance by trade count to reflect estimate confidence.
+        min_trades_per_ep = int(getattr(thresholds, "min_trades_per_episode_for_win_rate_stability", 0) or 0)
+        if min_trades_per_ep < 0:
+            min_trades_per_ep = 0
+
+        eligible_mask = (trade_counts >= float(min_trades_per_ep)) if min_trades_per_ep > 0 else (trade_counts > 0)
+        eligible_win_rates = win_rates[eligible_mask]
+        eligible_trade_counts = trade_counts[eligible_mask]
+        eligible_episodes = int(np.sum(eligible_mask))
+        eligible_trades = int(np.sum(eligible_trade_counts)) if eligible_episodes > 0 else 0
+
+        std_win_rate_trade_weighted = 0.0
+        if eligible_episodes >= 2 and eligible_trades > 0:
+            wsum = float(np.sum(eligible_trade_counts))
+            wmean = float(np.sum(eligible_trade_counts * eligible_win_rates) / max(wsum, 1e-12))
+            wvar = float(np.sum(eligible_trade_counts * (eligible_win_rates - wmean) ** 2) / max(wsum, 1e-12))
+            std_win_rate_trade_weighted = float(np.sqrt(max(wvar, 0.0)))
+
+        std_win_rate_eligible_unweighted = (
+            float(np.std(eligible_win_rates, ddof=1)) if eligible_episodes > 1 else 0.0
+        )
         
         mean_drawdown = float(np.mean(drawdowns))
         max_drawdown_seen = float(np.max(drawdowns)) if len(drawdowns) else 0.0
@@ -1345,6 +1374,16 @@ class CurriculumManager:
         avg_max_consecutive_losses = float(np.mean(max_consec_losses)) if len(max_consec_losses) else 0.0
         # Rate of episodes with 3+ consecutive losses (catches problematic streaks earlier)
         consecutive_loss_streak_rate = float(np.mean(max_consec_losses >= 3)) if len(max_consec_losses) else 0.0
+
+        # Action-mask collapse / stop-mode: tracks sample-efficiency collapse periods
+        # (HOLD-only mask while flat due to loss-layer stop-mode).
+        total_steps = float(np.sum(episode_lengths))
+        if total_steps > 0.0:
+            mask_collapse_rate = float(np.sum(mask_collapse_steps) / total_steps)
+            stop_mode_rate = float(np.sum(stop_mode_steps) / total_steps)
+        else:
+            mask_collapse_rate = 0.0
+            stop_mode_rate = 0.0
         
         # Sharpe/Sortino
         if std_pnl > 1e-9:
@@ -1367,6 +1406,7 @@ class CurriculumManager:
         # (total_trades may include breakevens not counted in wins+losses)
         wl_n = max(total_trades, total_wins + total_losses, 0)
         win_low, win_high = _wilson_interval(total_wins, wl_n, z=1.96) if wl_n > 0 else (0.0, 0.0)
+        win_width = float(win_high - win_low) if wl_n > 0 else 0.0
         
         # Mean PnL CI
         ci_low, ci_high = _mean_ci_normal(mean_pnl, std_pnl, n=len(window), z=1.96)
@@ -1392,41 +1432,46 @@ class CurriculumManager:
         else:
             trailing_stop_rate = agent_close_rate = hard_stop_rate = risk_liquidation_rate = 0.0
         
-        stats = RollingStats(
-            window_size=len(window),
-            mean_pnl=mean_pnl,
-            std_pnl=std_pnl,
-            mean_win_rate=mean_win_rate,
-            std_win_rate=std_win_rate,
-            mean_trade_count=mean_trade_count,
-            total_trades=total_trades,
-            total_wins=total_wins,
-            total_losses=total_losses,
-            win_rate_trade_weighted=float(total_wins / max(total_trades, 1)),  # Trade-pooled win rate
-            mean_drawdown=mean_drawdown,
-            max_drawdown_seen=max_drawdown_seen,
-            dd_breach_rate=dd_breach_rate,
-            mean_profit_factor=mean_profit_factor,
-            mean_r_multiple=mean_r_multiple,
-            mean_entry_quality=mean_entry_quality,
-            consecutive_loss_breach_rate=consecutive_loss_breach_rate,
-            avg_max_consecutive_losses=avg_max_consecutive_losses,
-            consecutive_loss_streak_rate=consecutive_loss_streak_rate,
-            sharpe_ratio=float(sharpe),
-            sortino_ratio=float(sortino),
-            win_loss_ratio=float(win_loss_ratio),
-            win_rate_wilson_low=float(win_low),
-            win_rate_wilson_high=float(win_high),
-            pnl_mean_ci_low=float(ci_low),
-            pnl_mean_ci_high=float(ci_high),
-            mean_entropy=mean_entropy,
-            std_entropy=std_entropy,
-            entropy_samples=entropy_samples,
-            trailing_stop_rate=trailing_stop_rate,
-            agent_close_rate=agent_close_rate,
-            hard_stop_rate=hard_stop_rate,
-            risk_liquidation_rate=risk_liquidation_rate,
-        )
+        stats = RollingStats(len(window))
+        stats.mean_pnl = mean_pnl
+        stats.std_pnl = std_pnl
+        stats.mean_win_rate = mean_win_rate
+        stats.std_win_rate = std_win_rate
+        stats.std_win_rate_trade_weighted = std_win_rate_trade_weighted
+        stats.std_win_rate_eligible_unweighted = std_win_rate_eligible_unweighted
+        stats.win_rate_stability_eligible_episodes = eligible_episodes
+        stats.win_rate_stability_eligible_trades = eligible_trades
+        stats.mean_trade_count = mean_trade_count
+        stats.total_trades = total_trades
+        stats.total_wins = total_wins
+        stats.total_losses = total_losses
+        stats.win_rate_trade_weighted = float(total_wins / max(total_trades, 1))
+        stats.mean_drawdown = mean_drawdown
+        stats.max_drawdown_seen = max_drawdown_seen
+        stats.dd_breach_rate = dd_breach_rate
+        stats.mean_profit_factor = mean_profit_factor
+        stats.mean_r_multiple = mean_r_multiple
+        stats.mean_entry_quality = mean_entry_quality
+        stats.consecutive_loss_breach_rate = consecutive_loss_breach_rate
+        stats.avg_max_consecutive_losses = avg_max_consecutive_losses
+        stats.consecutive_loss_streak_rate = consecutive_loss_streak_rate
+        stats.mask_collapse_rate = mask_collapse_rate
+        stats.stop_mode_rate = stop_mode_rate
+        stats.sharpe_ratio = float(sharpe)
+        stats.sortino_ratio = float(sortino)
+        stats.win_loss_ratio = float(win_loss_ratio)
+        stats.win_rate_wilson_low = float(win_low)
+        stats.win_rate_wilson_high = float(win_high)
+        stats.win_rate_wilson_width = float(win_width)
+        stats.pnl_mean_ci_low = float(ci_low)
+        stats.pnl_mean_ci_high = float(ci_high)
+        stats.mean_entropy = mean_entropy
+        stats.std_entropy = std_entropy
+        stats.entropy_samples = entropy_samples
+        stats.trailing_stop_rate = trailing_stop_rate
+        stats.agent_close_rate = agent_close_rate
+        stats.hard_stop_rate = hard_stop_rate
+        stats.risk_liquidation_rate = risk_liquidation_rate
         
         self._rolling_stats = stats
         self._rolling_stats_dirty = False
@@ -1491,7 +1536,7 @@ class CurriculumManager:
                 "passed": False,
             }
             results["promotion_ready"] = False
-            results["stats"] = asdict(stats)
+            results["stats"] = stats.to_dict()
             return False, results
         
         # Performance checks
@@ -1559,14 +1604,50 @@ class CurriculumManager:
             "note": wilson_note,
             "pooled_trades": pooled_trades_for_wilson,
         }
-        all_passed = all_passed and passed_mean and passed_wilson
+        # Optional Wilson width gate (uncertainty): blocks promotion if win-rate estimate is too uncertain.
+        max_wilson_width = float(getattr(thresholds, "max_win_rate_wilson_width", 0.0) or 0.0)
+        if max_wilson_width > 0.0:
+            if pooled_trades_for_wilson < int(min_trades_for_wilson):
+                passed_wilson_width = True
+                wilson_width_note = (
+                    f"Skipped Wilson width gate (pooled_trades={pooled_trades_for_wilson} < {int(min_trades_for_wilson)})"
+                )
+            else:
+                passed_wilson_width = stats.win_rate_wilson_width <= max_wilson_width
+                wilson_width_note = "Trade-level 95% Wilson interval width"
+
+            results["checks"]["win_rate_wilson_width"] = {
+                "required": float(max_wilson_width),
+                "actual": stats.win_rate_wilson_width,
+                "passed": passed_wilson_width,
+                "note": wilson_width_note,
+                "pooled_trades": pooled_trades_for_wilson,
+            }
+        else:
+            passed_wilson_width = True
+
+        all_passed = all_passed and passed_mean and passed_wilson and passed_wilson_width
         
         # Consistency checks
-        passed = stats.std_win_rate <= thresholds.max_win_rate_std
+        min_trades_ep = int(getattr(thresholds, "min_trades_per_episode_for_win_rate_stability", 0) or 0)
+        eligible_eps = int(getattr(stats, "win_rate_stability_eligible_episodes", 0) or 0)
+        eligible_trades = int(getattr(stats, "win_rate_stability_eligible_trades", 0) or 0)
+        # Avoid artificially "perfect" stability when most episodes have too few trades.
+        stability_std = (
+            float(getattr(stats, "std_win_rate_trade_weighted", stats.std_win_rate))
+            if eligible_eps >= 2
+            else float(stats.std_win_rate)
+        )
+        passed = stability_std <= thresholds.max_win_rate_std
         results["checks"]["win_rate_stability"] = {
             "required": thresholds.max_win_rate_std,
-            "actual": stats.std_win_rate,
+            "actual": stability_std,
             "passed": passed,
+            "std_unweighted": float(stats.std_win_rate),
+            "std_trade_weighted": float(getattr(stats, "std_win_rate_trade_weighted", stats.std_win_rate)),
+            "eligible_episodes": eligible_eps,
+            "eligible_trades": eligible_trades,
+            "min_trades_per_episode": min_trades_ep,
         }
         all_passed = all_passed and passed
         
@@ -1606,6 +1687,24 @@ class CurriculumManager:
         # Entropy check - use EntropyTargets.min_entropy for single source of truth
         # (same threshold used for penalties and promotion gating)
         # FIX: Only gate on entropy if we have sufficient samples (≥80% of window)
+        passed = stats.mask_collapse_rate <= thresholds.max_mask_collapse_rate
+        results["checks"]["mask_collapse_rate"] = {
+            "required": thresholds.max_mask_collapse_rate,
+            "actual": stats.mask_collapse_rate,
+            "passed": passed,
+            "note": "Fraction of steps with HOLD-only action mask (flat/no pending entry)",
+        }
+        all_passed = all_passed and passed
+
+        passed = stats.stop_mode_rate <= thresholds.max_stop_mode_rate
+        results["checks"]["stop_mode_rate"] = {
+            "required": thresholds.max_stop_mode_rate,
+            "actual": stats.stop_mode_rate,
+            "passed": passed,
+            "note": "Fraction of steps in loss-layer stop-mode while flat",
+        }
+        all_passed = all_passed and passed
+
         entropy_targets = self.stage_config.entropy_targets
         min_entropy_samples = int(stats.window_size * 0.8)  # Require 80% coverage
         has_sufficient_entropy_samples = stats.entropy_samples >= min_entropy_samples
@@ -1667,7 +1766,7 @@ class CurriculumManager:
         
         # Phase 2: Anti-gaming checks
         # Run anti-gaming analysis to detect degenerate strategies
-        gaming_results = self._anti_gaming_checker.run_all_checks(asdict(stats))
+        gaming_results = self._anti_gaming_checker.run_all_checks(stats.to_dict())
         aggregate_gaming, gaming_concerns = self._anti_gaming_checker.get_aggregate_gaming_score(gaming_results)
         
         results["anti_gaming"] = {
@@ -1784,7 +1883,7 @@ class CurriculumManager:
                 results["regime_assessment"] = {"status": "insufficient_data"}
         
         results["promotion_ready"] = all_passed
-        results["stats"] = asdict(stats)
+        results["stats"] = stats.to_dict()
         
         return all_passed, results
     
@@ -1813,7 +1912,7 @@ class CurriculumManager:
         if stats.window_size < min_episodes_for_demotion:
             results["should_demote"] = False
             results["reason"] = "insufficient_data"
-            results["stats"] = asdict(stats)
+            results["stats"] = stats.to_dict()
             return False, results
         
         # Check composite score for demotion
@@ -1822,7 +1921,7 @@ class CurriculumManager:
                 results["should_demote"] = True
                 results["reason"] = "composite_score_below_threshold"
                 results["composite_score"] = self._composite_score.to_dict()
-                results["stats"] = asdict(stats)
+                results["stats"] = stats.to_dict()
                 return True, results
         
         # Traditional demotion checks
@@ -1855,7 +1954,7 @@ class CurriculumManager:
         results["critical_failures"] = critical_failures
         results["failure_reasons"] = failure_reasons
         results["should_demote"] = should_demote
-        results["stats"] = asdict(stats)
+        results["stats"] = stats.to_dict()
         
         return should_demote, results
     
@@ -1888,15 +1987,39 @@ class CurriculumManager:
         recent_episodes = self._current_epoch_window(recent_window)
         
         if len(recent_episodes) >= 20:
-            recent_wr = [ep.win_rate for ep in recent_episodes]
-            wr_std = float(np.std(recent_wr))
+            recent_wr = np.array([_clamp(_safe_float(ep.win_rate, 0.0), 0.0, 1.0) for ep in recent_episodes], dtype=np.float64)
+            recent_trades = np.array([max(0.0, float(getattr(ep, "trade_count", 0))) for ep in recent_episodes], dtype=np.float64)
+
+            min_trades_ep = int(
+                getattr(self.stage_config.competence, "min_trades_per_episode_for_win_rate_stability", 0) or 0
+            )
+            if min_trades_ep < 0:
+                min_trades_ep = 0
+            eligible = (recent_trades >= float(min_trades_ep)) if min_trades_ep > 0 else (recent_trades > 0)
+            eligible_n = int(np.sum(eligible))
+
+            if eligible_n >= 2 and float(np.sum(recent_trades[eligible])) > 0.0:
+                w = recent_trades[eligible]
+                x = recent_wr[eligible]
+                wsum = float(np.sum(w))
+                mean = float(np.sum(w * x) / max(wsum, 1e-12))
+                var = float(np.sum(w * (x - mean) ** 2) / max(wsum, 1e-12))
+                wr_std = float(np.sqrt(max(var, 0.0)))
+                wr_std_unweighted = float(np.std(x, ddof=1)) if eligible_n > 1 else 0.0
+            else:
+                wr_std = float(np.std(recent_wr))
+                wr_std_unweighted = wr_std
+
             max_wr_std = 0.15 if stage_idx >= 6 else 0.20  # Stricter for prop stages
-            
+
             wr_stable = wr_std <= max_wr_std
             result["checks"]["win_rate_stability"] = {
                 "std": wr_std,
                 "max_allowed": max_wr_std,
                 "passed": wr_stable,
+                "std_unweighted": float(wr_std_unweighted),
+                "eligible_episodes": int(eligible_n),
+                "min_trades_per_episode": int(min_trades_ep),
             }
             if not wr_stable:
                 result["passed"] = False
@@ -2064,8 +2187,9 @@ class CurriculumManager:
                         return False, None
                         
                 except Exception as e:
-                    logger.warning(f"Validation gate evaluator error: {e}; skipping gate.")
+                    logger.warning(f"Validation gate evaluator error: {e}; blocking promotion.")
                     results["validation_gate"] = {"error": str(e)}
+                    return False, None
             else:
                 # No evaluator provided - mark as pending
                 results["validation_gate_pending"] = True
@@ -2149,11 +2273,11 @@ class CurriculumManager:
                 if self.verbose:
                     logger.debug("Stress test enabled but no evaluator provided - skipping")
         
-        # =================================================================
+        # =================================================================     
         # Holdout validation gate (if enabled and evaluator provided)
-        # =================================================================
+        # =================================================================     
         val_cfg = self.stage_config.validation
-        if val_cfg.enabled:
+        if val_cfg.enabled and self.validation_gate_evaluator is None:
             if self.validation_evaluator is None:
                 # Use internal validation gate based on rolling stats stability
                 val_result = self._internal_validation_check(results)
@@ -2265,13 +2389,67 @@ class CurriculumManager:
         promoted, new_stage = self.try_promote()
         if promoted:
             return True, new_stage
-        
+
         demoted, new_stage = self.try_demote()
         if demoted:
             return True, new_stage
-        
+
         return False, None
-    
+
+    # ---------------------------------------------------------------------
+    # Backward-compatible aliases (tests/tools)
+    # ---------------------------------------------------------------------
+
+    def check_and_maybe_promote(self) -> Tuple[bool, Dict[str, Any]]:
+        """
+        Backward-compatible wrapper (older API).
+
+        Returns:
+            (promoted, results_dict)
+        """
+        promotion_ready, results = self.check_promotion_criteria()
+        if not isinstance(results, dict):
+            results = {}
+        results.setdefault("promotion_ready", bool(promotion_ready))
+
+        if not promotion_ready:
+            return False, results
+
+        promoted, _ = self.try_promote()
+        if promoted and self._transitions:
+            last = self._transitions[-1]
+            if isinstance(last, dict) and last.get("type") == "promotion":
+                crit = last.get("criteria_results")
+                if isinstance(crit, dict):
+                    return True, crit
+
+        return bool(promoted), results
+
+    def check_and_maybe_demote(self) -> Tuple[bool, Dict[str, Any]]:
+        """
+        Backward-compatible wrapper (older API).
+
+        Returns:
+            (demoted, results_dict)
+        """
+        should_demote, results = self.check_demotion_criteria()
+        if not isinstance(results, dict):
+            results = {}
+        results.setdefault("should_demote", bool(should_demote))
+
+        if not should_demote:
+            return False, results
+
+        demoted, _ = self.try_demote()
+        if demoted and self._transitions:
+            last = self._transitions[-1]
+            if isinstance(last, dict) and last.get("type") == "demotion":
+                crit = last.get("criteria_results")
+                if isinstance(crit, dict):
+                    return True, crit
+
+        return bool(demoted), results
+
     def force_stage(self, stage: CurriculumStage, reason: str = "manual") -> None:
         """Force transition to a specific stage."""
         old_stage = self.current_stage
@@ -2403,7 +2581,7 @@ class CurriculumManager:
                 
                 # Determine if this is a "max" metric (lower is better)
                 is_max_metric = any(kw in check_name.lower() for kw in [
-                    "max_", "std", "breach", "drawdown", "loss"
+                    "max_", "std", "breach", "drawdown", "loss", "collapse", "stop_mode"
                 ])
                 
                 if is_max_metric:
@@ -2454,7 +2632,7 @@ class CurriculumManager:
             "stage_episodes": self.stage_episodes,
             
             # Stats
-            "rolling_stats": asdict(stats),
+            "rolling_stats": stats.to_dict(),
             
             # Promotion/Demotion
             "promotion_ready": meets_promotion,
@@ -2643,7 +2821,220 @@ class CurriculumManager:
     # -------------------------------------------------------------------------
     # Persistence
     # -------------------------------------------------------------------------
-    
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize curriculum state to a dict (no file I/O)."""
+        history_serialized: Dict[str, List[Dict[str, Any]]] = {}
+        for stage, episodes in self._history.items():
+            history_serialized[stage.name] = [asdict(ep) for ep in episodes]
+
+        return {
+            "version": STATE_VERSION,
+            "tz": self.tz,
+            "current_stage": self.current_stage.name,
+            "current_stage_epoch": self._current_stage_epoch,
+            "total_timesteps": self.total_timesteps,
+            "total_episodes": self.total_episodes,
+            "stage_timesteps_total": {s.name: t for s, t in self._stage_timesteps_total.items()},
+            "stage_episodes_total": {s.name: e for s, e in self._stage_episodes_total.items()},
+            "stage_epoch_counter": {s.name: e for s, e in self._stage_epoch_counter.items()},
+            "stage_timesteps_current": self.stage_timesteps,
+            "stage_episodes_current": self.stage_episodes,
+            "history": history_serialized,
+            "transitions": self._transitions,
+            "demotion_analyzer": self._demotion_analyzer.to_dict(),
+            "recovery_state": self._recovery_state.to_dict(),
+            "review_state": self._review_state.to_dict(),
+            "learning_velocity": {
+                "plateau_episodes": self._learning_velocity.plateau_episodes,
+                "improvement_rates": self._learning_velocity.improvement_rates,
+                "metric_history": (
+                    {k: list(v)[-100:] for k, v in self._learning_velocity.metric_history.items()}
+                    if hasattr(self._learning_velocity, "metric_history")
+                    else {}
+                ),
+            },
+            # Transition counters (prevents behavior change on resume)
+            "transition_cooldown_remaining": self._transition_cooldown_remaining,
+            "reward_blend_remaining": self._reward_blend_remaining,
+            # Needed to restore reward blending correctly across resumes
+            "previous_stage": self._previous_stage_name,
+            "lr_warmup_active": self._lr_warmup_active,
+            "lr_warmup_steps_remaining": self._lr_warmup_steps_remaining,
+            "lr_warmup_factor": self._lr_warmup_factor,
+            # Episode tracking
+            "last_episode_end_idx": self._last_episode_end_idx,
+            # True idempotency tracking (bounded list of processed episode IDs)
+            "processed_episode_ids": list(self._processed_episode_ids),
+            # Current entropy state
+            "current_entropy": self._current_entropy,
+            # Review tick latch
+            "review_tick_episode": self._review_tick_episode,
+            # RNG state for reproducible mixed-stage sampling
+            "rng_state": self._rng.bit_generator.state,
+            # Validation gate history
+            "validation_gate_history": self._validation_gate_history[-100:],
+            # Stress test history
+            "stress_test_history": self._stress_test_history[-100:],
+            "saved_at": _now_iso(self.tz),
+        }
+
+    @classmethod
+    def from_dict(cls, state: Dict[str, Any], **kwargs: Any) -> "CurriculumManager":
+        """Construct a CurriculumManager from a serialized dict (no file I/O)."""
+        # Version compatibility check
+        loaded_version = state.get("version", "1.0")
+        if loaded_version != STATE_VERSION:
+            logger.warning(
+                f"Loading checkpoint from v{loaded_version} (current: v{STATE_VERSION}). "
+                "New features (recovery_state, review_state, learning_velocity) may use defaults."
+            )
+
+        tz = state.get("tz", DEFAULT_TZ)
+        current_stage = CurriculumStage[state["current_stage"]]
+
+        manager = cls(initial_stage=current_stage, tz=tz, **kwargs)
+        manager.total_timesteps = _safe_int(state.get("total_timesteps", 0), 0)
+        manager.total_episodes = _safe_int(state.get("total_episodes", 0), 0)
+
+        # Restore totals
+        for stage_name, timesteps in (state.get("stage_timesteps_total", {}) or {}).items():
+            try:
+                manager._stage_timesteps_total[CurriculumStage[stage_name]] = _safe_int(timesteps, 0)
+            except KeyError:
+                logger.debug(f"Unknown stage in timesteps_total: {stage_name}")
+
+        for stage_name, episodes in (state.get("stage_episodes_total", {}) or {}).items():
+            try:
+                manager._stage_episodes_total[CurriculumStage[stage_name]] = _safe_int(episodes, 0)
+            except KeyError:
+                logger.debug(f"Unknown stage in episodes_total: {stage_name}")
+
+        # Restore epoch counters
+        for stage_name, epoch in (state.get("stage_epoch_counter", {}) or {}).items():
+            try:
+                manager._stage_epoch_counter[CurriculumStage[stage_name]] = _safe_int(epoch, 0)
+            except KeyError:
+                logger.debug(f"Unknown stage in epoch_counter: {stage_name}")
+
+        manager._current_stage_epoch = _safe_int(
+            state.get("current_stage_epoch", manager._current_stage_epoch),
+            manager._current_stage_epoch,
+        )
+        manager.stage_timesteps = _safe_int(state.get("stage_timesteps_current", 0), 0)
+        manager.stage_episodes = _safe_int(state.get("stage_episodes_current", 0), 0)
+
+        # Restore history (use progression list, not enum iteration)
+        progression = get_stage_progression()
+        manager._history = {stage: deque(maxlen=manager.max_history_size) for stage in progression}
+        for stage_name, episodes_data in (state.get("history", {}) or {}).items():
+            try:
+                stage = CurriculumStage[stage_name]
+            except KeyError:
+                logger.debug(f"Unknown stage in history: {stage_name}")
+                continue
+            for ep_data in (episodes_data or []):
+                try:
+                    manager._history[stage].append(EpisodeMetrics.from_dict(ep_data))
+                except Exception as e:
+                    logger.debug(f"Skipping malformed episode in history: {e}")
+                    continue
+
+        manager._transitions = state.get("transitions", []) or []
+
+        # Restore demotion analyzer
+        demotion_data = state.get("demotion_analyzer", {})
+        if demotion_data:
+            manager._demotion_analyzer.load_from_dict(demotion_data)
+
+        # Restore recovery state
+        recovery_data = state.get("recovery_state", {})
+        if recovery_data:
+            manager._recovery_state = RecoveryProtocolState.from_dict(recovery_data)
+
+        # Restore review state
+        review_data = state.get("review_state", {})
+        if review_data:
+            manager._review_state = ReviewSessionState.from_dict(review_data)
+
+        # Restore learning velocity
+        velocity_data = state.get("learning_velocity", {})
+        if velocity_data:
+            manager._learning_velocity.plateau_episodes = velocity_data.get("plateau_episodes", 0)
+            manager._learning_velocity.improvement_rates = velocity_data.get("improvement_rates", {})
+            metric_history = velocity_data.get("metric_history", {})
+            if metric_history and hasattr(manager._learning_velocity, "metric_history"):
+                for k, v in metric_history.items():
+                    manager._learning_velocity.metric_history[k] = deque(v, maxlen=100)
+
+        # Restore transition counters (prevents behavior change on resume)
+        manager._transition_cooldown_remaining = _safe_int(state.get("transition_cooldown_remaining", 0), 0)
+        manager._reward_blend_remaining = _safe_int(state.get("reward_blend_remaining", 0), 0)
+        manager._lr_warmup_active = bool(state.get("lr_warmup_active", False))
+        manager._lr_warmup_steps_remaining = _safe_int(state.get("lr_warmup_steps_remaining", 0), 0)
+        manager._lr_warmup_factor = _safe_float(state.get("lr_warmup_factor", 1.0), 1.0)
+
+        # Restore reward blend provenance (prevents behavior change on resume)
+        prev_stage_name = state.get("previous_stage", None)
+        manager._previous_stage_name = prev_stage_name
+        if prev_stage_name and manager._reward_blend_remaining > 0:
+            try:
+                manager._previous_stage_config = get_stage_config(CurriculumStage[prev_stage_name])
+            except Exception as e:
+                logger.warning(f"Could not restore previous_stage_config for blending: {e}; disabling blend.")
+                manager._previous_stage_config = None
+                manager._reward_blend_remaining = 0
+
+        # Restore episode tracking
+        manager._last_episode_end_idx = _safe_int(state.get("last_episode_end_idx", -1), -1)
+
+        # Restore true idempotency tracking
+        processed_ids = state.get("processed_episode_ids", [])
+        if processed_ids:
+            trimmed = list(processed_ids)[-PROCESSED_EPISODE_ID_LIMIT:]
+            manager._processed_episode_ids = deque(trimmed)
+            manager._processed_episode_id_set = set(trimmed)
+
+        # Restore current entropy state
+        manager._current_entropy = _safe_float(state.get("current_entropy", -1.0), -1.0)
+
+        # Restore review tick latch
+        manager._review_tick_episode = _safe_int(state.get("review_tick_episode", -1), -1)
+
+        # Restore RNG state for reproducible mixed-stage sampling
+        rng_state = state.get("rng_state")
+        if rng_state is not None:
+            try:
+                manager._rng.bit_generator.state = rng_state
+            except Exception as e:
+                logger.warning(f"Could not restore RNG state: {e}")
+
+        # Restore validation gate history
+        manager._validation_gate_history = state.get("validation_gate_history", []) or []
+
+        # Restore stress test history
+        manager._stress_test_history = state.get("stress_test_history", []) or []
+
+        manager._rolling_stats_dirty = True
+        return manager
+
+    def load_from_dict(self, state: Dict[str, Any]) -> None:
+        """Load curriculum state from a dict into this instance (no file I/O)."""
+        restored = self.__class__.from_dict(
+            state,
+            max_history_size=self.max_history_size,
+            auto_promote=self.auto_promote,
+            auto_demote=self.auto_demote,
+            verbose=self.verbose,
+            on_transition_callback=self.on_transition_callback,
+            validation_evaluator=self.validation_evaluator,
+            stress_test_evaluator=self.stress_test_evaluator,
+            validation_gate_evaluator=self.validation_gate_evaluator,
+            bars_per_trading_day=self.bars_per_trading_day,
+        )
+        self.__dict__.clear()
+        self.__dict__.update(restored.__dict__)
+
     def save(self, path: Path) -> None:
         """Save curriculum state to file."""
         path = Path(path)

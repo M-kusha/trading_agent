@@ -473,7 +473,7 @@ modules:
     config:
       # Trained SB3 PPO model (used by PPOAgentShell via PPOCore.load)
       # Use PropFirm MaskablePPO model trained with discrete actions
-      model_path: "models/propfirm/best/best_model.zip"
+      model_path: "models/curriculum/best/best_model.zip"
 
       # Instrument order must match the trading config/environment order
       instruments: ["EURUSD", "XAUUSD"]
@@ -499,6 +499,8 @@ modules:
       circuit_breaker_threshold: 3
       # Debug
       debug: true
+      # Live MaskablePPO: hard-enforce timing/trade-count rules to reduce overtrading
+      live_mask_enforce_hard_rules: true
 
   # Memory
   UnifiedMemory:
@@ -705,9 +707,13 @@ modules:
       local_trade_start_hour: 9     # Must match risk_policy.yaml no_new_trades_end
       local_trade_end_hour: 18      # Must match risk_policy.yaml no_new_trades_start
       local_hard_close_hour: 22     # Must match risk_policy.yaml hard_close_hour
-      no_trade_last_minutes: 30
+      no_trade_last_minutes: 60
       # TEST MODE: Set to true to allow trades during off-hours (for testing only)
-      allow_off_hours_trading: true
+      allow_off_hours_trading: false
+
+  TrendExpert:
+    config:
+      instruments: ["EURUSD", "XAUUSD"]
 
   # DEPRECATED - use SeasonalityRiskExpert instead
   EnhancedSeasonalityRiskExpert:

@@ -555,10 +555,14 @@
       if (m > 0) return `${m}m ${s}s`;
       return `${s}s`;
     },
+    // Convert to percentage display. Values <= 1.0 are treated as fractions (0.5 → 50%).
+    // Values > 1.0 are assumed to already be percentages (50 → 50%).
+    // Note: For metrics like drawdown that should never exceed 100%, this works well.
+    // For win_rate stored as 60.5 (percent), it also works since 60.5 > 1.0.
     pct: (x, d=1) => {
       if (x == null || isNaN(x)) return "—%";
       const v = Number(x);
-      const p = (Math.abs(v) <= 1.5) ? v * 100 : v;
+      const p = (Math.abs(v) <= 1.0) ? v * 100 : v;
       return p.toFixed(d) + "%";
     },
     pct100: (x, d=1) => (x == null || isNaN(x)) ? "—%" : Number(x).toFixed(d) + "%",
@@ -1503,6 +1507,159 @@
   }
 
   // Direction Stats Panel (Buy/Sell Breakdown)
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // GOVERNOR PANEL (v5.5 - Loss Layer & Session Budget Visualization)
+  // ─────────────────────────────────────────────────────────────────────────────
+  function GovernorPanel({ data }) {
+    const gov = data.governor || {};
+    
+    // Loss layer metrics
+    const lossLayerRatio = gov.loss_layer_ratio ?? 0;
+    const lossLayerLevel = gov.loss_layer_level ?? 0;
+    const winStreakRatio = gov.win_streak_ratio ?? 0;
+    
+    // Session budget metrics
+    const sessionPnlHeadroom = gov.session_pnl_headroom ?? 1;
+    const sessionTradeBudget = gov.session_trade_budget ?? 1;
+    const sessionConsecLossRatio = gov.session_consec_loss_ratio ?? 0;
+    const sessionProgress = gov.session_progress ?? 0;
+    
+    // Also get raw consecutive losses from quality section for context
+    const quality = data.quality || {};
+    const maxConsecLosses = quality.max_consecutive_losses || 0;
+    const avgConsecLosses = quality.avg_consecutive_losses || 0;
+    
+    // Determine overall governor status
+    const getGovernorStatus = () => {
+      if (lossLayerRatio >= 0.9 || sessionConsecLossRatio >= 0.9 || sessionPnlHeadroom <= 0.1) return "critical";
+      if (lossLayerRatio >= 0.7 || sessionConsecLossRatio >= 0.7 || sessionPnlHeadroom <= 0.3) return "warning";
+      if (lossLayerRatio >= 0.5 || sessionConsecLossRatio >= 0.5 || sessionPnlHeadroom <= 0.5) return "caution";
+      return "healthy";
+    };
+    
+    const status = getGovernorStatus();
+    const statusColors = {
+      critical: { bg: "bg-rose-500/20", text: "text-rose-400", border: "border-rose-500/40", label: "🚨 CRITICAL" },
+      warning: { bg: "bg-amber-500/20", text: "text-amber-400", border: "border-amber-500/40", label: "⚠️ WARNING" },
+      caution: { bg: "bg-yellow-500/20", text: "text-yellow-400", border: "border-yellow-500/30", label: "◐ CAUTION" },
+      healthy: { bg: "bg-emerald-500/20", text: "text-emerald-400", border: "border-emerald-500/30", label: "● HEALTHY" },
+    };
+    const sc = statusColors[status];
+
+    // Helper for progress bar color
+    const getBarColor = (ratio, inverted=false) => {
+      const v = inverted ? (1 - ratio) : ratio;
+      if (v >= 0.8) return "bg-rose-500";
+      if (v >= 0.5) return "bg-amber-500";
+      return "bg-emerald-500";
+    };
+
+    return (
+      <Glass className="p-0 overflow-hidden">
+        {/* Header */}
+        <div className="px-4 py-3 border-b border-white/5">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-rose-500 to-amber-600 flex items-center justify-center shadow-lg shadow-rose-500/25">
+                <span className="text-lg">🛡️</span>
+              </div>
+              <div>
+                <div className="text-sm font-black text-white">Governor State</div>
+                <div className="text-[10px] text-slate-500">Loss-layer & session budget limits</div>
+              </div>
+            </div>
+            <div className={`px-3 py-1.5 rounded-lg text-[11px] font-black ${sc.bg} ${sc.text}`}>
+              {sc.label}
+            </div>
+          </div>
+        </div>
+
+        <div className="p-4">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {/* Loss Layer Ratio */}
+            <div className="rounded-xl border border-white/5 bg-black/20 p-3">
+              <div className="text-[10px] text-slate-500 uppercase font-black">Loss Layer</div>
+              <div className="flex items-center gap-2 mt-2">
+                <div className="flex-1 h-2 bg-slate-800 rounded-full overflow-hidden">
+                  <div 
+                    className={`h-full transition-all ${getBarColor(lossLayerRatio)}`} 
+                    style={{ width: `${lossLayerRatio * 100}%` }} 
+                  />
+                </div>
+                <span className="mono text-xs font-bold text-slate-300">{(lossLayerRatio * 100).toFixed(0)}%</span>
+              </div>
+              <div className="text-[9px] text-slate-600 mt-1.5">
+                Level {Math.round(lossLayerLevel * 5)}/5 • Max streak: {maxConsecLosses}
+              </div>
+            </div>
+
+            {/* Session PnL Headroom */}
+            <div className="rounded-xl border border-white/5 bg-black/20 p-3">
+              <div className="text-[10px] text-slate-500 uppercase font-black">Session Headroom</div>
+              <div className="flex items-center gap-2 mt-2">
+                <div className="flex-1 h-2 bg-slate-800 rounded-full overflow-hidden">
+                  <div 
+                    className={`h-full transition-all ${getBarColor(sessionPnlHeadroom, true)}`} 
+                    style={{ width: `${Math.min(sessionPnlHeadroom, 1) * 100}%` }} 
+                  />
+                </div>
+                <span className="mono text-xs font-bold text-slate-300">{(Math.min(sessionPnlHeadroom, 1) * 100).toFixed(0)}%</span>
+              </div>
+              <div className="text-[9px] text-slate-600 mt-1.5">
+                Budget remaining this session
+              </div>
+            </div>
+
+            {/* Session Trade Budget */}
+            <div className="rounded-xl border border-white/5 bg-black/20 p-3">
+              <div className="text-[10px] text-slate-500 uppercase font-black">Trade Budget</div>
+              <div className="flex items-center gap-2 mt-2">
+                <div className="flex-1 h-2 bg-slate-800 rounded-full overflow-hidden">
+                  <div 
+                    className={`h-full transition-all ${getBarColor(sessionTradeBudget, true)}`} 
+                    style={{ width: `${sessionTradeBudget * 100}%` }} 
+                  />
+                </div>
+                <span className="mono text-xs font-bold text-slate-300">{(sessionTradeBudget * 100).toFixed(0)}%</span>
+              </div>
+              <div className="text-[9px] text-slate-600 mt-1.5">
+                Trades remaining this session
+              </div>
+            </div>
+
+            {/* Session Consec Loss */}
+            <div className="rounded-xl border border-white/5 bg-black/20 p-3">
+              <div className="text-[10px] text-slate-500 uppercase font-black">Consec Loss</div>
+              <div className="flex items-center gap-2 mt-2">
+                <div className="flex-1 h-2 bg-slate-800 rounded-full overflow-hidden">
+                  <div 
+                    className={`h-full transition-all ${getBarColor(sessionConsecLossRatio)}`} 
+                    style={{ width: `${sessionConsecLossRatio * 100}%` }} 
+                  />
+                </div>
+                <span className="mono text-xs font-bold text-slate-300">{(sessionConsecLossRatio * 100).toFixed(0)}%</span>
+              </div>
+              <div className="text-[9px] text-slate-600 mt-1.5">
+                Avg: {avgConsecLosses.toFixed(1)} losses
+              </div>
+            </div>
+          </div>
+
+          {/* Win streak indicator (positive feedback) */}
+          {winStreakRatio > 0.2 && (
+            <div className="mt-3 px-3 py-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center gap-2">
+              <span className="text-emerald-400">🔥</span>
+              <span className="text-[11px] text-emerald-400 font-bold">
+                Win streak active ({Math.round(winStreakRatio * 5)}/5)
+              </span>
+            </div>
+          )}
+        </div>
+      </Glass>
+    );
+  }
+
   function DirectionStatsPanel({ data }) {
     const dirStats = data.direction_stats || {};
     const longCount = dirStats.long_count || 0;
@@ -2839,6 +2996,9 @@
         </Glass>
 
         <HealthMatrix data={data} derived={derived} baseline={baseline} compareOn={compareOn} focusMode={focusMode} />
+
+        {/* Governor State Panel (v5.5 - Loss Layer & Session Budget) */}
+        <GovernorPanel data={data} />
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           {/* Learning Stability + Curriculum Progress Combined */}

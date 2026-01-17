@@ -42,11 +42,20 @@ class CompetenceThresholds:
     min_entropy: float = 0.0
 
     max_win_rate_std: float = 0.30
+    # Trade-aware stability: ignore very-low-trade episodes when computing win-rate variance
+    # (e.g., stop-mode / constraint-induced low activity).
+    min_trades_per_episode_for_win_rate_stability: int = 3
+    # Optional uncertainty gate: pooled-trade Wilson interval width must be below this.
+    # Set to 0 to disable.
+    max_win_rate_wilson_width: float = 0.0
     max_pnl_std: float = 10000.0
     min_trade_count_avg: float = 1.0
 
     max_dd_breach_rate: float = 0.50
     max_consecutive_loss_rate: float = 0.30
+    # Sample-efficiency / behavioral collapse gates (0..1 fraction of steps)
+    max_mask_collapse_rate: float = 1.0
+    max_stop_mode_rate: float = 1.0
 
     evaluation_window: int = 50
 

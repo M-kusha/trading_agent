@@ -101,6 +101,8 @@ class EpisodeMetrics:
     consecutive_wins: int = 0
     max_consecutive_losses_reached: int = 0  # Peak consecutive losses during episode
     hit_max_consecutive_losses: bool = False
+    mask_collapse_steps: int = 0  # Steps where valid actions collapsed to HOLD-only
+    stop_mode_steps: int = 0      # Steps in loss-layer stop-mode while flat
 
     # Exit quality tracking
     trailing_stop_exits: int = 0
@@ -138,6 +140,7 @@ class EpisodeMetrics:
                 "trade_count", "winning_trades", "losing_trades",
                 "consecutive_losses", "consecutive_wins",
                 "max_consecutive_losses_reached",
+                "mask_collapse_steps", "stop_mode_steps",
                 "trailing_stop_exits", "agent_close_exits", "hard_stop_exits",
                 "risk_liquidation_exits", "other_exits",
                 "episode_length", "stage_epoch", "global_episode_idx",
@@ -193,6 +196,12 @@ class RollingStats:
     std_pnl: float = 0.0
     mean_win_rate: float = 0.0      # Episode-averaged win rate
     std_win_rate: float = 0.0
+    # Trade-aware stability (episode win-rate variance weighted by trade counts, excluding
+    # very-low-trade episodes per thresholds.min_trades_per_episode_for_win_rate_stability).
+    std_win_rate_trade_weighted: float = 0.0
+    std_win_rate_eligible_unweighted: float = 0.0
+    win_rate_stability_eligible_episodes: int = 0
+    win_rate_stability_eligible_trades: int = 0
     mean_trade_count: float = 0.0
     total_trades: int = 0
     total_wins: int = 0
@@ -213,6 +222,8 @@ class RollingStats:
     consecutive_loss_breach_rate: float = 0.0
     avg_max_consecutive_losses: float = 0.0  # Average of peak consecutive losses per episode
     consecutive_loss_streak_rate: float = 0.0  # Rate of episodes with 3+ consecutive losses
+    mask_collapse_rate: float = 0.0  # Fraction of steps with HOLD-only mask (flat/no pending entry)
+    stop_mode_rate: float = 0.0      # Fraction of steps in loss-layer stop-mode (flat)
 
     # Computed metrics
     sharpe_ratio: float = 0.0
@@ -222,6 +233,7 @@ class RollingStats:
     # Statistical confidence
     win_rate_wilson_low: float = 0.0
     win_rate_wilson_high: float = 0.0
+    win_rate_wilson_width: float = 0.0
     pnl_mean_ci_low: float = 0.0
     pnl_mean_ci_high: float = 0.0
 
@@ -235,6 +247,12 @@ class RollingStats:
     agent_close_rate: float = 0.0
     hard_stop_rate: float = 0.0
     risk_liquidation_rate: float = 0.0
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return a JSON-serializable dict representation of the rolling stats."""
+        # Use dataclasses.asdict to ensure future fields are included
+        from dataclasses import asdict
+        return asdict(self)
 
 
 @dataclass
@@ -406,11 +424,12 @@ def compute_composite_score(
     components["drawdown"] = max(0, dd_score)
     
     # Consistency
+    cons_std = float(getattr(stats, "std_win_rate_trade_weighted", stats.std_win_rate))
     if thresholds.max_win_rate_std > 0:
-        cons_ratio = stats.std_win_rate / thresholds.max_win_rate_std
+        cons_ratio = cons_std / thresholds.max_win_rate_std
         cons_score = 1.0 - min(cons_ratio, 1.5) / 1.5
     else:
-        cons_score = 1.0 if stats.std_win_rate <= 0.05 else 0.5
+        cons_score = 1.0 if cons_std <= 0.05 else 0.5
     components["consistency"] = max(0, cons_score)
     
     # R-multiple

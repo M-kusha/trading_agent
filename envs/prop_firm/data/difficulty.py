@@ -73,6 +73,7 @@ class DataDifficultyMixin:
             config_hash = hash((
                 getattr(d, 'volatility_percentile_range', (0.0, 1.0)),
                 getattr(d, 'min_trend_clarity', 0.0),
+                getattr(d, 'max_trend_clarity', 1.0),
                 getattr(d, 'include_asian_session', True),
                 getattr(d, 'include_london_session', True),
                 getattr(d, 'include_ny_session', True),
@@ -117,10 +118,16 @@ class DataDifficultyMixin:
                 valid_mask &= (self._volatility_percentiles <= vol_range[1])
 
         # Apply trend clarity filter
-        min_trend = getattr(difficulty, "min_trend_clarity", 0.0)
-        if min_trend > 0.0:
+        min_trend = float(getattr(difficulty, "min_trend_clarity", 0.0) or 0.0)
+        max_trend = float(getattr(difficulty, "max_trend_clarity", 1.0) or 1.0)
+        min_trend = float(np.clip(min_trend, 0.0, 1.0))
+        max_trend = float(np.clip(max_trend, 0.0, 1.0))
+        if min_trend > 0.0 or max_trend < 1.0:
             trend_clarity = self._compute_trend_clarity(df)
-            valid_mask &= (trend_clarity >= min_trend)
+            if min_trend > 0.0:
+                valid_mask &= (trend_clarity >= min_trend)
+            if max_trend < 1.0:
+                valid_mask &= (trend_clarity <= max_trend)
 
         # Apply session filters
         if isinstance(df.index, pd.DatetimeIndex):

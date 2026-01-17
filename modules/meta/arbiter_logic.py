@@ -1389,6 +1389,22 @@ class ArbiterLogic:
             instrument=instrument,
         )
 
+        # Discrete action metadata (MaskablePPO): HOLD vs CLOSE must remain distinct.
+        # PPOCore converts discrete actions to a continuous proxy for arbiter compatibility,
+        # but HOLD and CLOSE both map to (0.0, 0.0). Preserve the original decoded intent
+        # so downstream modules can behave like training.
+        discrete_action: Optional[Dict[str, Any]] = None
+        try:
+            decoded = getattr(self.ppo_core, "last_discrete_action", None)
+            if decoded is not None:
+                discrete_action = {
+                    "intent": str(getattr(decoded, "intent", "") or ""),
+                    "size_mult": float(getattr(decoded, "size_mult", 0.0) or 0.0),
+                    "action_id": int(getattr(decoded, "action_id", -1) or -1),
+                }
+        except Exception:
+            discrete_action = None
+
         direction_score = float(action[0]) if len(action) > 0 else 0.0
         size_score = float(action[1]) if len(action) > 1 else 0.0
 
@@ -1412,7 +1428,7 @@ class ArbiterLogic:
             )
 
         # 3) Interpret direction_score – PPO is MASTER
-        direction, confidence, reasoning = self._interpret_direction(
+        direction, confidence, reasoning = self._interpret_direction(     
             direction_score=direction_score,
             committee_action=committee_action,
             committee_confidence=committee_confidence,
@@ -1421,18 +1437,39 @@ class ArbiterLogic:
             instrument=instrument,
         )
 
-        # 4) Hysteresis on direction (stability for OPEN positions only)
+        # Snapshot position state early (used for discrete HOLD normalization and gates)
+        pos = position or PositionSnapshot()
+        has_existing_position = bool(pos.has)
+
+        # Discrete HOLD intent: keep holding the real position direction instead of
+        # treating it as "flat" (which would later be interpreted as an EXIT/CLOSE).
+        try:
+            if (
+                discrete_action
+                and str(discrete_action.get("intent", "")).lower() == "hold"
+                and has_existing_position
+            ):
+                held_dir_effective = (
+                    pos.direction
+                    if pos.direction != "flat"
+                    else self._last_directions.get(instrument, "flat")
+                )
+                if held_dir_effective in ("long", "short"):
+                    direction = held_dir_effective
+                    reasoning += " | DISCRETE_HOLD: maintain position"
+        except Exception:
+            pass
+
+        # 4) Hysteresis on direction (stability for OPEN positions only)  
         hysteresis_score = direction_score
         direction = self._apply_hysteresis(
             instrument=instrument,
             proposed_direction=direction,
             trust_score=hysteresis_score,
-            position=position or PositionSnapshot(),
+            position=pos,
         )
 
         # 5) Gating pipeline (memory + risk)
-        pos = position or PositionSnapshot()
-        has_existing_position = bool(pos.has)
         gating_result = GatingResult.apply_gates(
             memory_info, risk_info, direction_score,
             has_existing_position=has_existing_position,
@@ -1598,9 +1635,21 @@ class ArbiterLogic:
         # Action intent (explicit CLOSE / OPEN / REVERSE inference)
         # ─────────────────────────────────────────────────────────
         # v5.6: Use REAL position direction (side-aware), not stale last_dir
-        held_dir = (pos.direction if has_existing_position and pos.direction != "flat" else self._last_directions.get(instrument, "flat"))
+        held_dir = (
+            pos.direction
+            if has_existing_position and pos.direction != "flat"
+            else self._last_directions.get(instrument, "flat")
+        )
         if has_existing_position:
-            if direction == "flat" or position_size == 0.0:
+            # Hard vetoes imply we must prioritize reducing/closing risk.
+            hard_veto = bool(
+                getattr(gating_result, "hard_veto_triggered", False)
+                or risk_info.hard_block
+                or risk_info.emergency_mode
+                or memory_info.veto
+            )
+
+            if hard_veto:
                 action_intent = "close"
             elif direction == held_dir:
                 # DISABLED v5.5: PPO cannot scale positions - SmartPosition handles scaling
@@ -1609,6 +1658,8 @@ class ArbiterLogic:
                 position_size = 0.0  # No trade signal for scaling
                 gating_result.gate_passed = False
                 gating_result.reasons.append("SCALE_DISABLED_PPO")
+            elif direction == "flat" or position_size == 0.0:
+                action_intent = "close"
             else:
                 action_intent = "reverse"  # close then open opposite
         else:
@@ -1685,6 +1736,7 @@ class ArbiterLogic:
                 world_model_info=wm,
                 autonomy_state=autonomy_meta,
                 position=pos,
+                discrete_action=discrete_action,
             ),
         )
 
@@ -2082,6 +2134,7 @@ class ArbiterLogic:
         world_model_info: Optional[WorldModelInfo] = None,
         autonomy_state: Optional[Dict[str, Any]] = None,
         position: Optional[PositionSnapshot] = None,
+        discrete_action: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Build rich metadata for debugging, dashboards, and execution modules.
@@ -2118,6 +2171,7 @@ class ArbiterLogic:
                 "hysteresis": dict(self._hysteresis_cfg),
             },
             "action_intent": action_intent,
+            "discrete_action": discrete_action or {},
             "ppo_exit": {
                 "explicit_close": explicit_close,
                 "explicit_reverse": explicit_reverse,

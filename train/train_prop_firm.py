@@ -1475,6 +1475,7 @@ def train_curriculum_agent(
     max_demotions_from_same_stage: int = 5,
     mastery_confirmation_episodes: int = 100,
     seed: int = 42,
+    holdout_ratio: float = 0.15,
 ) -> BaseAlgorithm:
     """
     Train with curriculum learning - progressive difficulty stages.
@@ -1508,8 +1509,59 @@ def train_curriculum_agent(
     if get_stage_progression is not None:
         logger.info(f"Stage progression: {' → '.join(s.name for s in get_stage_progression())}")
 
+    # ---------------------------------------------------------------------
+    # Holdout split (unseen tail of data) for real validation/stress gating
+    # ---------------------------------------------------------------------
+    n_bars = _min_len_across(data)
+    if n_bars <= 0:
+        raise ValueError("No bars available for curriculum training")
+
+    try:
+        holdout_ratio = float(holdout_ratio)
+    except Exception:
+        holdout_ratio = 0.0
+    if not np.isfinite(holdout_ratio):
+        holdout_ratio = 0.0
+    holdout_ratio = float(np.clip(holdout_ratio, 0.0, 0.50))
+
+    # Use the maximum stage episode length so holdout remains valid all the way
+    # to LIVE_READY (later stages have longer episodes).
+    stage_max_steps = int(getattr(curriculum_manager.stage_config, "max_steps_per_episode", 0) or 0)
+    max_steps_required = stage_max_steps
+    if get_stage_progression is not None and get_stage_config is not None:
+        try:
+            max_steps_required = max(
+                int(get_stage_config(s).max_steps_per_episode) for s in get_stage_progression()
+            )
+        except Exception:
+            max_steps_required = stage_max_steps
+    # Heuristic: ensure holdout can support buffer + varied start indices.
+    min_holdout_len = max(1500, max_steps_required + 800)
+    holdout_len = int(max(min_holdout_len, int(n_bars * holdout_ratio))) if holdout_ratio > 0 else 0
+
+    min_train_len = max(3000, max_steps_required + 2000)
+    if holdout_len <= 0 or (n_bars - holdout_len) < min_train_len:
+        if holdout_len > 0:
+            logger.warning(
+                "Holdout disabled: insufficient bars for requested holdout "
+                f"(n={n_bars}, holdout_len={holdout_len}, min_train_len={min_train_len}). "
+                "Using full data for training/evaluation."
+            )
+        train_data = data
+        holdout_data = data
+        holdout_enabled = False
+    else:
+        train_end = int(n_bars - holdout_len)
+        train_data = slice_data_by_index(data, 0, train_end)
+        holdout_data = slice_data_by_index(data, train_end, n_bars)
+        holdout_enabled = True
+        logger.info(
+            f"Holdout split: train=[0:{train_end}] ({train_end} bars), "
+            f"holdout=[{train_end}:{n_bars}] ({holdout_len} bars, ratio={holdout_ratio:.0%})"
+        )
+
     train_env = create_curriculum_vec_envs(
-        data=data,
+        data=train_data,
         curriculum_manager=curriculum_manager,
         n_envs=n_envs,
         seed=seed,
@@ -1518,20 +1570,24 @@ def train_curriculum_agent(
         frame_stack=frame_stack,
     )
 
-    from envs.prop_firm_env import PropFirmConfig as _PropFirmConfig
-    current_stage_config = curriculum_manager.stage_config
-    eval_config = _PropFirmConfig(
-        initial_balance=100_000.0,
-        daily_drawdown_limit=0.05,
-        max_drawdown_limit=0.10,
-        max_steps_per_episode=current_stage_config.max_steps_per_episode,
-    )
-    eval_env = create_vec_envs(
-        data=data,
-        config=eval_config,
+    # Evaluation environments on HOLDOUT data:
+    # - eval_env: used by SB3 EvalCallback for model selection tracking
+    # - holdout_validation_env: dedicated for curriculum validation/stress gates
+    eval_env = create_curriculum_vec_envs(
+        data=holdout_data,
+        curriculum_manager=curriculum_manager,
         n_envs=1,
         seed=seed + 1337,
-        monitor_dir=str(save_dir / "eval"),
+        monitor_dir=str(save_dir / "holdout_eval"),
+        use_action_masking=use_masking,
+        frame_stack=frame_stack,
+    )
+    holdout_validation_env = create_curriculum_vec_envs(
+        data=holdout_data,
+        curriculum_manager=curriculum_manager,
+        n_envs=1,
+        seed=seed + 4242,
+        monitor_dir=str(save_dir / "holdout_validation"),
         use_action_masking=use_masking,
         frame_stack=frame_stack,
     )
@@ -1654,7 +1710,11 @@ def train_curriculum_agent(
     # Load metrics state (episode history) if resuming
     if load_metrics_path and Path(load_metrics_path).exists():
         curriculum_training_callback.load_metrics_state(Path(load_metrics_path))
-    
+
+    # Use a dedicated holdout env for promotion gates (validation + stress),
+    # so scenario overrides do not interfere with EvalCallback's environment.
+    curriculum_training_callback._eval_env = holdout_validation_env
+
     callbacks: List[BaseCallback] = [
         curriculum_training_callback,
         CheckpointCallback(
@@ -1724,6 +1784,11 @@ def train_curriculum_agent(
             "curriculum_progress": curriculum_manager.get_progress_report(),
             "completed_at": datetime.now().isoformat(),
             "seed": int(seed),
+            "holdout": {
+                "enabled": bool(holdout_enabled),
+                "ratio": float(holdout_ratio),
+                "min_bars": int(n_bars),
+            },
         }
         with open(save_dir / "training_summary.json", "w", encoding="utf-8") as f:
             json.dump(summary, f, indent=2)
@@ -1738,6 +1803,11 @@ def train_curriculum_agent(
 
         try:
             eval_env.close()
+        except Exception:
+            pass
+
+        try:
+            holdout_validation_env.close()
         except Exception:
             pass
 
@@ -1821,6 +1891,12 @@ def main() -> None:
     parser.add_argument("--instruments", type=str, nargs="+", default=["XAUUSD"])
 
     parser.add_argument("--frame-stack", type=int, default=1, help="Frame stack. 1=disabled (recommended).")
+    parser.add_argument(
+        "--holdout-ratio",
+        type=float,
+        default=0.15,
+        help="Fraction of latest bars reserved for holdout evaluation (curriculum validation/stress gates). 0 disables.",
+    )
 
     parser.add_argument("--entry-quality-threshold", type=float, default=None)
     parser.add_argument("--reward-scale", type=float, default=None)
@@ -1983,6 +2059,7 @@ def main() -> None:
             plateau_threshold_episodes=args.plateau_episodes,
             mastery_confirmation_episodes=args.mastery_episodes,
             seed=args.seed,
+            holdout_ratio=args.holdout_ratio,
         )
     else:
         train_prop_firm_agent(

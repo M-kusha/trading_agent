@@ -152,6 +152,7 @@ class SmartEntropyController:
         )
 
         self._last_ent_coef = float(initial_ent_coef)
+        self._emergency_active = False  # Track emergency mode state
 
     # ---------------------------- entropy normalization ----------------------------
 

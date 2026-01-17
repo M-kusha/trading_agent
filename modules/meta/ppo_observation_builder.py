@@ -28,7 +28,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List, Tuple
 
 import numpy as np
 
@@ -74,6 +74,15 @@ except ImportError:
 # [52-59] Account/Position State - 8 dims
 # [60-67] World Model Predictions - 8 dims
 # [68-75] Trading Mode State (incl. timing features) - 8 dims
+# [76-83] Governor/Budget State (v5.5) - 8 dims
+#         [0] loss_layer_ratio: consecutive_losses / loss_layer_stop [0,1]
+#         [1] loss_layer_level: clamped loss layer / 5.0 [0,1]
+#         [2] win_streak_ratio: consecutive_wins / 5.0 [0,1]
+#         [3] session_pnl_headroom: remaining session loss headroom [0,2] -> normalized to [0,1]
+#         [4] session_trade_budget: 1 - session_trades/max [0,1]
+#         [5] session_consec_loss_ratio: session consec losses / limit [0,1]
+#         [6] session_progress: bars into session / duration [0,1]
+#         [7] pending_order_progress: bars until fill / max_latency [0,1]
 #
 # HTF FEATURE EXPANSION (v5.4):
 # Each higher timeframe (H1, H4, D1) now gets 6 dedicated features:
@@ -87,8 +96,8 @@ except ImportError:
 # This gives the agent REAL higher timeframe signals instead of crushed averages!
 # ═══════════════════════════════════════════════════════════════════
 
-PPO_OBS_VERSION = "5.4"
-PPO_OBS_SIZE = 76
+PPO_OBS_VERSION = "5.5"
+PPO_OBS_SIZE = 84
 
 FEATURE_GROUPS: Dict[str, tuple[int, int]] = {
     "m15_price": (0, 10),
@@ -99,7 +108,135 @@ FEATURE_GROUPS: Dict[str, tuple[int, int]] = {
     "account": (52, 60),
     "world_model": (60, 68),
     "trading_mode": (68, 76),
+    "governor": (76, 84),
 }
+
+
+def _build_feature_names() -> List[str]:
+    """
+    Return the canonical feature name list for the 84-dim observation.
+
+    This is primarily used for explain/audit tooling so you can map raw
+    `observation[i]` values back to their semantic meaning.
+    """
+    names: List[str] = []
+
+    # 0..9: M15 primary price features (10)
+    names += [
+        "m15_price_vs_mean",
+        "m15_range_pct",
+        "m15_close_open_pct",
+        "m15_sr_proximity",
+        "m15_rsi_norm",
+        "m15_macd_hist_norm",
+        "m15_atr_norm_x10",
+        "m15_trend_slope_norm",
+        "m15_roc_x10",
+        "m15_volatility_std_x100",
+    ]
+
+    # 10..27: HTF context (H1/H4/D1, 6 each = 18)
+    for tf in ("H1", "H4", "D1"):
+        names += [
+            f"htf_{tf}_trend",
+            f"htf_{tf}_momentum",
+            f"htf_{tf}_rsi_norm",
+            f"htf_{tf}_atr_norm",
+            f"htf_{tf}_sr_proximity",
+            f"htf_{tf}_structure_bias",
+        ]
+
+    # 28..35: expert voting features (8)
+    names += [
+        "expert_trend_signed_strength",
+        "expert_trend_confidence",
+        "expert_momentum_signed_strength",
+        "expert_momentum_confidence_adj",
+        "expert_theme_signed_strength",
+        "expert_theme_confidence_adj",
+        "expert_seasonality_signed_strength",
+        "expert_seasonality_confidence",
+    ]
+
+    # 36..43: committee/consensus features (8)
+    names += [
+        "committee_signed_consensus",
+        "committee_confidence",
+        "committee_expert_agreement",
+        "committee_expert_conf_mean",
+        "committee_fragility",
+        "committee_market_regime",
+        "committee_market_regime_strength",
+        "committee_structure_composite",
+    ]
+
+    # 44..51: risk/memory features (8)
+    names += [
+        "risk_memory_gate",
+        "risk_danger_zone_count",
+        "risk_drawdown_norm",
+        "risk_balance_ratio",
+        "risk_portfolio_exposure",
+        "risk_budget",
+        "risk_win_rate",
+        "risk_pnl_trend",
+    ]
+
+    # 52..59: account/position features (8)
+    names += [
+        "account_step_ratio",
+        "account_episode_return_norm",
+        "account_position_direction",
+        "account_position_size_norm",
+        "account_unrealized_pnl_norm",
+        "account_time_in_position_norm",
+        "account_trades_today_norm",
+        "account_on_cooldown",
+    ]
+
+    # 60..67: world model features (8)
+    names += [
+        "wm_model_confidence",
+        "wm_m15_price_change",
+        "wm_weighted_price_change",
+        "wm_volatility_pred",
+        "wm_regime_signal",
+        "wm_is_trained",
+        "wm_bullish_probability",
+        "wm_stability_score",
+    ]
+
+    # 68..75: trading mode features (8)
+    names += [
+        "mode_trading_mode",
+        "mode_entry_allowed",
+        "mode_entry_quality",
+        "mode_theme_stability",
+        "mode_zone_quality",
+        "mode_vol_state",
+        "mode_liquidity_score",
+        "mode_effectiveness",
+    ]
+
+    # 76..83: governor/budget features (8)
+    names += [
+        "gov_loss_layer_ratio",
+        "gov_loss_layer_level",
+        "gov_win_streak_ratio",
+        "gov_session_pnl_headroom",
+        "gov_session_trade_budget",
+        "gov_session_consec_loss_ratio",
+        "gov_session_progress",
+        "gov_pending_order_progress",
+    ]
+
+    if len(names) != PPO_OBS_SIZE:
+        raise ValueError(f"Feature name list mismatch: {len(names)} != {PPO_OBS_SIZE}")
+
+    return names
+
+
+PPO_OBS_FEATURE_NAMES: List[str] = _build_feature_names()
 
 
 @dataclass
@@ -152,6 +289,7 @@ class PPOObservationBuilder:
         if self.config.obs_size != PPO_OBS_SIZE:
             self.config.obs_size = PPO_OBS_SIZE
         self._eps: float = 1e-8
+        self._warned_missing_governor_state: bool = False
 
     @property
     def obs_size(self) -> int:
@@ -160,6 +298,30 @@ class PPOObservationBuilder:
     @property
     def version(self) -> str:
         return self.config.version
+
+    @property
+    def feature_groups(self) -> Dict[str, tuple[int, int]]:
+        """Named slices of the observation vector (start,end)."""
+        return dict(FEATURE_GROUPS)
+
+    @property
+    def feature_names(self) -> List[str]:
+        """Canonical feature names aligned to `build()` output indices."""
+        return list(PPO_OBS_FEATURE_NAMES)
+
+    def get_schema(self) -> Dict[str, Any]:
+        """
+        Return a JSON-friendly schema describing the observation layout.
+
+        Used by explain/audit tooling to map raw observation vectors to named
+        features without re-deriving the builder internals.
+        """
+        return {
+            "version": self.version,
+            "obs_size": int(self.obs_size),
+            "feature_groups": {k: {"start": int(v[0]), "end": int(v[1])} for k, v in FEATURE_GROUPS.items()},
+            "feature_names": self.feature_names,
+        }
 
     # ======================================================================
     # Public Builders
@@ -175,6 +337,7 @@ class PPOObservationBuilder:
         account_state: Optional[Dict[str, Any]] = None,
         world_model_state: Optional[Dict[str, Any]] = None,
         trading_mode_state: Optional[Dict[str, Any]] = None,
+        governor_state: Optional[Dict[str, Any]] = None,  # v5.5: governor/budget observation
         smart_bus: Optional[Any] = None,
         module_name: str = "PPOObservationBuilder",
     ) -> np.ndarray:
@@ -190,6 +353,7 @@ class PPOObservationBuilder:
             account_state = account_state or self._fetch_account_state(smart_bus, module_name)
             world_model_state = world_model_state or self._fetch_world_model_state(smart_bus, module_name)
             trading_mode_state = trading_mode_state or self._fetch_trading_mode_state(smart_bus, module_name)
+            governor_state = governor_state or self._fetch_governor_state(smart_bus, module_name)
 
         obs[0:10] = self._build_m15_features(market_data)
         obs[10:28] = self._build_htf_context(market_data, expert_signals)
@@ -199,6 +363,7 @@ class PPOObservationBuilder:
         obs[52:60] = self._build_account_features(account_state)
         obs[60:68] = self._build_world_model_features(world_model_state)
         obs[68:76] = self._build_trading_mode_features(trading_mode_state)
+        obs[76:84] = self._build_governor_features(governor_state)
 
         return np.nan_to_num(obs, nan=0.0, posinf=1.0, neginf=-1.0)
 
@@ -213,6 +378,7 @@ class PPOObservationBuilder:
         account_state: Optional[Dict[str, Any]] = None,
         world_model_state: Optional[Dict[str, Any]] = None,
         trading_mode_state: Optional[Dict[str, Any]] = None,
+        governor_state: Optional[Dict[str, Any]] = None,  # v5.5: governor/budget observation
         smart_bus: Optional[Any] = None,
         module_name: str = "PPOObservationBuilder",
     ) -> np.ndarray:
@@ -238,6 +404,7 @@ class PPOObservationBuilder:
             trading_mode_state = trading_mode_state or self._fetch_trading_mode_state_for_instrument(
                 smart_bus, module_name, instrument
             )
+            governor_state = governor_state or self._fetch_governor_state(smart_bus, module_name)
 
         obs[0:10] = self._build_m15_features_for_instrument(market_data, instrument)
         obs[10:28] = self._build_htf_context_for_instrument(market_data, instrument, expert_signals)
@@ -247,6 +414,7 @@ class PPOObservationBuilder:
         obs[52:60] = self._build_account_features(account_state)
         obs[60:68] = self._build_world_model_features(world_model_state)
         obs[68:76] = self._build_trading_mode_features(trading_mode_state)
+        obs[76:84] = self._build_governor_features(governor_state)
 
         return np.nan_to_num(obs, nan=0.0, posinf=1.0, neginf=-1.0)
 
@@ -345,6 +513,30 @@ class PPOObservationBuilder:
 
         target = self._norm_symbol(instrument)
 
+        def _dir_label(raw: Any) -> str:
+            if isinstance(raw, (int, float)):
+                if float(raw) > 0:
+                    return "bullish"
+                if float(raw) < 0:
+                    return "bearish"
+                return "neutral"
+            s = str(raw).lower().strip()
+            if s in ("bullish", "long", "buy", "up", "uptrend"):
+                return "bullish"
+            if s in ("bearish", "short", "sell", "down", "downtrend"):
+                return "bearish"
+            # Non-directional / management actions
+            if s in ("exit", "close", "tighten", "hold"):
+                return "neutral"
+            return "neutral"
+
+        def _clip01(x: Any, default: float = 0.0) -> float:
+            try:
+                return float(np.clip(float(x), 0.0, 1.0))
+            except Exception:
+                return default
+
+        # 1) If expert signals already include per-instrument maps, select those.
         for expert_name, sig in list(experts.items()):
             if isinstance(sig, dict) and "instruments" in sig:
                 instruments_map = sig.get("instruments", {})
@@ -352,11 +544,168 @@ class PPOObservationBuilder:
                     inst_sig = instruments_map.get(instrument)
                     if not isinstance(inst_sig, dict) and target:
                         for k, v in instruments_map.items():
-                            if isinstance(k, str) and isinstance(v, dict) and self._norm_symbol(k) == target:
+                            if (
+                                isinstance(k, str)
+                                and isinstance(v, dict)
+                                and self._norm_symbol(k) == target
+                            ):
                                 inst_sig = v
                                 break
                     if isinstance(inst_sig, dict):
                         experts[expert_name] = inst_sig
+
+        # 2) Enrich from live expert analysis blobs (per-instrument) for parity
+        # with training expert_signals schema.
+        try:
+            trend_analysis = bus.get("trend_analysis", module)
+        except Exception:
+            trend_analysis = None
+        if isinstance(trend_analysis, dict):
+            per_inst = trend_analysis.get("per_instrument", {})
+            inst_trend = self._lookup_symbol_block(per_inst, instrument)
+            if isinstance(inst_trend, dict):
+                prev = experts.get("trend", {})
+                sig = dict(prev) if isinstance(prev, dict) else {}
+                sig["direction"] = _dir_label(
+                    inst_trend.get("current_trend", inst_trend.get("action", "neutral"))
+                )
+                try:
+                    ts = float(inst_trend.get("trend_strength", 0.0) or 0.0)
+                except Exception:
+                    ts = 0.0
+                sig["score"] = float(np.clip(abs(ts), 0.0, 1.0))
+                sig["confidence"] = _clip01(inst_trend.get("confidence", sig.get("confidence", 0.0)))
+
+                proposal = sig.get("proposal", {})
+                if not isinstance(proposal, dict):
+                    proposal = {}
+
+                # Map keys to training proposal schema (best-effort).
+                key_map = {
+                    "near_support": "near_support",
+                    "near_resistance": "near_resistance",
+                    "structure_trend": "structure_trend",
+                    "structure_strength": "structure_strength",
+                    "bos_signal": "bos_signal",
+                    "liquidity_above": "liquidity_above",
+                    "liquidity_below": "liquidity_below",
+                    "order_block_bull": "order_block_bull",
+                    "order_block_bear": "order_block_bear",
+                    "plus_di": "plus_di",
+                    "minus_di": "minus_di",
+                    "sar_direction": "sar_direction",
+                    "ma_alignment": "ma_alignment",
+                    "trend_slope": "trend_slope",
+                }
+                for src, dst in key_map.items():
+                    if src in inst_trend:
+                        proposal[dst] = inst_trend[src]
+
+                # Rename/alias common fields
+                if "adx" in inst_trend and "adx_value" not in proposal:
+                    proposal["adx_value"] = inst_trend.get("adx")
+
+                if "bullish_confluence" in inst_trend or "bearish_confluence" in inst_trend:
+                    try:
+                        bc = float(inst_trend.get("bullish_confluence", 0.0) or 0.0)
+                        bc2 = float(inst_trend.get("bearish_confluence", 0.0) or 0.0)
+                        proposal.setdefault("confluence_score", float(max(abs(bc), abs(bc2))))
+                    except Exception:
+                        pass
+
+                sig["proposal"] = proposal
+                experts["trend"] = sig
+
+        try:
+            mom_analysis = bus.get("momentum_analysis", module)
+        except Exception:
+            mom_analysis = None
+        if isinstance(mom_analysis, dict):
+            per_inst = mom_analysis.get("per_instrument", {})
+            inst_mom = self._lookup_symbol_block(per_inst, instrument)
+            if isinstance(inst_mom, dict):
+                prev = experts.get("momentum", {})
+                sig = dict(prev) if isinstance(prev, dict) else {}
+                sig["direction"] = _dir_label(inst_mom.get("direction", inst_mom.get("action", "neutral")))
+                # Prefer confluence-based strength, fall back to composite momentum magnitude.
+                try:
+                    bc = float(inst_mom.get("bullish_confluence", 0.0) or 0.0)
+                    sc = float(inst_mom.get("bearish_confluence", 0.0) or 0.0)
+                    cm = float(inst_mom.get("composite_momentum", 0.0) or 0.0)
+                    sig["score"] = float(np.clip(max(abs(bc), abs(sc), abs(cm)), 0.0, 1.0))
+                except Exception:
+                    sig["score"] = 0.0
+                sig["confidence"] = _clip01(inst_mom.get("confidence", sig.get("confidence", 0.0)))
+
+                proposal = sig.get("proposal", {})
+                if not isinstance(proposal, dict):
+                    proposal = {}
+                # Merge full analysis for richer signals (safe dict-only).
+                proposal.update(inst_mom)
+
+                proposal.setdefault("divergence_signal", proposal.get("divergence"))
+                rsi_val = proposal.get("rsi", 50.0)
+                try:
+                    rsi_val_f = float(rsi_val)
+                except Exception:
+                    rsi_val_f = 50.0
+                proposal.setdefault(
+                    "overbought",
+                    max(0.0, (rsi_val_f - 70.0) / 30.0) if rsi_val_f > 70.0 else 0.0,
+                )
+                proposal.setdefault(
+                    "oversold",
+                    max(0.0, (30.0 - rsi_val_f) / 30.0) if rsi_val_f < 30.0 else 0.0,
+                )
+                proposal.setdefault("rsi_value", rsi_val_f)
+
+                sig["proposal"] = proposal
+                experts["momentum"] = sig
+
+        try:
+            theme_analysis = bus.get("theme_analysis", module)
+        except Exception:
+            theme_analysis = None
+        if isinstance(theme_analysis, dict):
+            per_inst = theme_analysis.get("per_instrument", {})
+            inst_theme = self._lookup_symbol_block(per_inst, instrument)
+            if isinstance(inst_theme, dict):
+                prev = experts.get("theme", {})
+                sig = dict(prev) if isinstance(prev, dict) else {}
+                sig["direction"] = _dir_label(inst_theme.get("action", "neutral"))
+                sig["score"] = _clip01(inst_theme.get("composite_score", inst_theme.get("vol_score", 0.0)))
+                sig["confidence"] = _clip01(inst_theme.get("confidence", sig.get("confidence", 0.0)))
+
+                proposal = sig.get("proposal", {})
+                if not isinstance(proposal, dict):
+                    proposal = {}
+                proposal.update(inst_theme)
+                sig["proposal"] = proposal
+                experts["theme"] = sig
+
+        try:
+            seasonality_analysis = bus.get("seasonality_analysis", module)
+        except Exception:
+            seasonality_analysis = None
+        if isinstance(seasonality_analysis, dict):
+            per_inst = seasonality_analysis.get("per_instrument", {})
+            inst_seas = self._lookup_symbol_block(per_inst, instrument)
+            if isinstance(inst_seas, dict):
+                prev = experts.get("seasonality", {})
+                sig = dict(prev) if isinstance(prev, dict) else {}
+                sig["direction"] = _dir_label(inst_seas.get("action", "neutral"))
+                sig["score"] = _clip01(inst_seas.get("composite_score", 0.0))
+                sig["confidence"] = _clip01(inst_seas.get("confidence", sig.get("confidence", 0.0)))
+
+                proposal = sig.get("proposal", {})
+                if not isinstance(proposal, dict):
+                    proposal = {}
+                proposal.update(inst_seas)
+                sig["proposal"] = proposal
+                experts["seasonality"] = sig
+
+        # Ensure HTF expert signals map to the current instrument.
+        global_signals["htf_experts"] = self._extract_htf_experts_from_bus(bus, module, instrument=instrument)
 
         global_signals["experts"] = experts
         return global_signals
@@ -1438,6 +1787,202 @@ class PPOObservationBuilder:
         return feats
 
     # ======================================================================
+    # Governor/Budget Features (v5.5) - 8 dims
+    # ======================================================================
+
+    def _build_governor_features(self, governor_state: Optional[Dict[str, Any]]) -> np.ndarray:
+        """
+        Build governor/budget observation features (v5.5).
+        
+        These features expose the agent's constraint state so it can learn to avoid
+        hitting hard blocks. ALWAYS computed (even with loose limits in early stages)
+        to prevent observation distribution shift during curriculum progression.
+        
+        [0] loss_layer_ratio: consecutive_losses / loss_layer_stop [0,1]
+        [1] loss_layer_level: clamped loss layer / 5.0 [0,1]
+        [2] win_streak_ratio: consecutive_wins / 5.0 [0,1]
+        [3] session_pnl_headroom: remaining session loss headroom [0,1]
+        [4] session_trade_budget: 1 - session_trades/max [0,1]
+        [5] session_consec_loss_ratio: session consec losses / limit [0,1]
+        [6] session_progress: bars into session / duration [0,1]
+        [7] pending_order_progress: bars until fill / max_latency [0,1]
+        """
+        feats = np.zeros(8, dtype=np.float32)
+        
+        if not governor_state or not isinstance(governor_state, dict):
+            # Default: all signals at neutral/safe values
+            feats[3] = 1.0  # Full headroom
+            feats[4] = 1.0  # Full trade budget
+            return feats
+        
+        # [0] Loss layer ratio: how close to loss_layer_stop
+        try:
+            feats[0] = float(np.clip(governor_state.get("loss_layer_ratio", 0.0), 0.0, 1.0))
+        except (TypeError, ValueError):
+            feats[0] = 0.0
+        
+        # [1] Loss layer level: current behavioral restriction level (0-5 normalized)
+        try:
+            feats[1] = float(np.clip(governor_state.get("loss_layer_level", 0.0), 0.0, 1.0))
+        except (TypeError, ValueError):
+            feats[1] = 0.0
+        
+        # [2] Win streak ratio: winning momentum signal
+        try:
+            feats[2] = float(np.clip(governor_state.get("win_streak_ratio", 0.0), 0.0, 1.0))
+        except (TypeError, ValueError):
+            feats[2] = 0.0
+        
+        # [3] Session PnL headroom: normalized to [0,1] from [0,2] raw
+        try:
+            raw_headroom = float(governor_state.get("session_pnl_headroom", 1.0))
+            feats[3] = float(np.clip(raw_headroom / 2.0, 0.0, 1.0))
+        except (TypeError, ValueError):
+            feats[3] = 1.0  # Default: full headroom
+        
+        # [4] Session trade budget: remaining capacity
+        try:
+            feats[4] = float(np.clip(governor_state.get("session_trade_budget", 1.0), 0.0, 1.0))
+        except (TypeError, ValueError):
+            feats[4] = 1.0  # Default: full budget
+        
+        # [5] Session consecutive loss ratio
+        try:
+            feats[5] = float(np.clip(governor_state.get("session_consec_loss_ratio", 0.0), 0.0, 1.0))
+        except (TypeError, ValueError):
+            feats[5] = 0.0
+        
+        # [6] Session progress: how far into current session
+        try:
+            feats[6] = float(np.clip(governor_state.get("session_progress", 0.0), 0.0, 1.0))
+        except (TypeError, ValueError):
+            feats[6] = 0.0
+        
+        # [7] Pending order progress: time until pending order fills
+        try:
+            feats[7] = float(np.clip(governor_state.get("pending_order_progress", 0.0), 0.0, 1.0))
+        except (TypeError, ValueError):
+            feats[7] = 0.0
+        
+        return feats
+
+    def _fetch_governor_state(self, bus: Any, module: str) -> Dict[str, Any]:
+        """
+        Fetch governor state from InfoBus for live trading.
+        
+        In live, this must be published to InfoBus with key 'governor_state'
+        by the live trading system, containing the same fields as
+        PropFirmTradingEnv._get_governor_state().
+        
+        Fallback chain:
+        1. Direct 'governor_state' key
+        2. Build from 'trade_statistics' + 'market_state'
+        3. Build from 'risk_assessment' + 'session_metrics'
+        """
+        try:
+            # 1. Direct governor_state key (preferred)
+            state = bus.get("governor_state", module)
+            if isinstance(state, dict) and "loss_layer_ratio" in state:
+                return state
+            
+            # 2. Fallback: build from trade_statistics + market_state
+            trade_stats = bus.get("trade_statistics", module) or {}
+            market_state = bus.get("market_state", module) or {}
+            
+            if isinstance(trade_stats, dict) and trade_stats:
+                consecutive_losses = int(trade_stats.get("consecutive_losses", 0))
+                consecutive_wins = int(trade_stats.get("consecutive_wins", 0))
+                session_trades = int(trade_stats.get("session_trades", 0))
+                session_pnl = float(trade_stats.get("session_pnl", 0.0))
+                session_consecutive_losses = int(trade_stats.get("session_consecutive_losses", 0))
+                
+                # Get limits from config or use defaults
+                loss_layer_stop = int(market_state.get("loss_layer_stop", 5))
+                session_loss_limit = float(market_state.get("session_loss_limit_pct", 0.99))
+                session_consec_limit = int(market_state.get("session_consecutive_loss_limit", 99))
+                max_session_trades = int(market_state.get("max_trades_per_session", 99))
+                session_start_balance = float(market_state.get("session_start_balance", 100000))
+                
+                # Compute headroom
+                if session_start_balance > 0:
+                    session_pnl_pct = session_pnl / session_start_balance
+                else:
+                    session_pnl_pct = 0.0
+                headroom = (session_loss_limit + session_pnl_pct) / max(session_loss_limit, 0.001)
+                
+                return {
+                    "loss_layer_ratio": float(np.clip(consecutive_losses / max(loss_layer_stop, 1), 0.0, 1.0)),
+                    "loss_layer_level": float(np.clip(min(consecutive_losses, 5) / 5.0, 0.0, 1.0)),
+                    "win_streak_ratio": float(np.clip(consecutive_wins / 5.0, 0.0, 1.0)),
+                    "session_pnl_headroom": float(np.clip(headroom, 0.0, 2.0)),
+                    "session_trade_budget": float(np.clip(1.0 - (session_trades / max(max_session_trades, 1)), 0.0, 1.0)),
+                    "session_consec_loss_ratio": float(np.clip(session_consecutive_losses / max(session_consec_limit, 1), 0.0, 1.0)),
+                    "session_progress": 0.5,  # Default mid-session
+                    "pending_order_progress": 0.0,
+                }
+            
+            # 3. Fallback: build from risk_assessment + session_metrics (DynamicRiskController publishes these)
+            risk_assessment = bus.get("risk_assessment", module) or {}
+            session_metrics = bus.get("session_metrics", module) or {}
+            
+            if isinstance(risk_assessment, dict) and risk_assessment:
+                consecutive_losses = int(risk_assessment.get("consecutive_losses", 0))
+                consecutive_wins = int(risk_assessment.get("consecutive_wins", 0))
+                
+                # Session data from session_metrics
+                session_trades = int(session_metrics.get("session_trades", 0)) if isinstance(session_metrics, dict) else 0
+                session_pnl = float(session_metrics.get("session_pnl", 0.0)) if isinstance(session_metrics, dict) else 0.0
+                
+                # Use defaults for session limits (not tracked by risk controller)
+                loss_layer_stop = 5
+                session_loss_limit = 0.99
+                session_consec_limit = 99
+                max_session_trades = 99
+                session_start_balance = 100000
+                
+                # Compute headroom
+                if session_start_balance > 0:
+                    session_pnl_pct = session_pnl / session_start_balance
+                else:
+                    session_pnl_pct = 0.0
+                headroom = (session_loss_limit + session_pnl_pct) / max(session_loss_limit, 0.001)
+                
+                return {
+                    "loss_layer_ratio": float(np.clip(consecutive_losses / max(loss_layer_stop, 1), 0.0, 1.0)),
+                    "loss_layer_level": float(np.clip(min(consecutive_losses, 5) / 5.0, 0.0, 1.0)),
+                    "win_streak_ratio": float(np.clip(consecutive_wins / 5.0, 0.0, 1.0)),
+                    "session_pnl_headroom": float(np.clip(headroom, 0.0, 2.0)),
+                    "session_trade_budget": float(np.clip(1.0 - (session_trades / max(max_session_trades, 1)), 0.0, 1.0)),
+                    "session_consec_loss_ratio": 0.0,  # Not tracked separately in live
+                    "session_progress": 0.5,  # Default mid-session
+                    "pending_order_progress": 0.0,
+                }
+                
+        except Exception:
+            pass
+        
+        # Return defaults - log once so operator notices missing data without spamming logs
+        import logging
+        logger = logging.getLogger("PPOObservationBuilder")
+        if not self._warned_missing_governor_state:
+            self._warned_missing_governor_state = True
+            logger.warning(
+                "[LIVE] Governor state not found on InfoBus - using defaults. "
+                "Ensure LiveSessionTracker is running and publishing 'governor_state'. "
+                "Observation dims [76-83] will be defaults until fixed."
+            )
+        return {
+            "loss_layer_ratio": 0.0,
+            "loss_layer_level": 0.0,
+            "win_streak_ratio": 0.0,
+            "session_pnl_headroom": 1.0,
+            "session_trade_budget": 1.0,
+            "session_consec_loss_ratio": 0.0,
+            "session_progress": 0.0,
+            "pending_order_progress": 0.0,
+        }
+
+    # ======================================================================
     # SmartInfoBus Data Fetchers
     # ======================================================================
 
@@ -1582,13 +2127,18 @@ class PPOObservationBuilder:
             }
 
             # Extract HTF expert signals for train/live parity (v5.4)
-            htf_experts = self._extract_htf_experts_from_bus(bus, module)
+            htf_experts = self._extract_htf_experts_from_bus(bus, module, instrument=None)
 
             return {"experts": experts, "htf_experts": htf_experts, "market": market}
         except Exception:
             return {}
 
-    def _extract_htf_experts_from_bus(self, bus: Any, module: str) -> Dict[str, Dict[str, Any]]:
+    def _extract_htf_experts_from_bus(
+        self,
+        bus: Any,
+        module: str,
+        instrument: Optional[str] = None,
+    ) -> Dict[str, Dict[str, Any]]:
         """
         Extract HTF (higher timeframe) expert signals from live SmartBus data.
         
@@ -1623,12 +2173,15 @@ class PPOObservationBuilder:
             if not isinstance(per_inst, dict) or not per_inst:
                 return {}
             
-            # Get first instrument's analysis (typically the active trading instrument)
-            inst_data = None
-            for inst_analysis in per_inst.values():
-                if isinstance(inst_analysis, dict):
-                    inst_data = inst_analysis
-                    break
+            # Prefer requested instrument to avoid cross-instrument leakage.
+            inst_data = self._lookup_symbol_block(per_inst, instrument) if instrument else None
+            if not isinstance(inst_data, dict):
+                if instrument:
+                    return {}
+                for inst_analysis in per_inst.values():
+                    if isinstance(inst_analysis, dict):
+                        inst_data = inst_analysis
+                        break
             
             if not inst_data:
                 return {}
@@ -1644,9 +2197,18 @@ class PPOObservationBuilder:
             
             # Get momentum analysis for RSI (if available)
             mom_analysis = bus.get("momentum_analysis", module)
-            per_inst_mom = {}
+            per_inst_mom: Dict[str, Any] = {}
             if isinstance(mom_analysis, dict):
-                per_inst_mom = mom_analysis.get("per_instrument", {})
+                per_inst_mom = mom_analysis.get("per_instrument", {}) or {}
+
+            inst_mom = None
+            if isinstance(per_inst_mom, dict) and per_inst_mom:
+                inst_mom = self._lookup_symbol_block(per_inst_mom, instrument) if instrument else None
+                if not isinstance(inst_mom, dict) and not instrument:
+                    for v in per_inst_mom.values():
+                        if isinstance(v, dict):
+                            inst_mom = v
+                            break
             
             # Map each HTF to training schema
             for tf in ["H1", "H4", "D1"]:
@@ -1672,15 +2234,13 @@ class PPOObservationBuilder:
                 # RSI from momentum analysis (if available for this TF)
                 rsi = 50.0
                 rsi_signal = "neutral"
-                for inst_mom in per_inst_mom.values():
-                    if isinstance(inst_mom, dict):
-                        # Momentum may have per-TF RSI or just primary TF
-                        rsi = float(inst_mom.get("rsi", 50.0))
-                        if rsi > 70:
-                            rsi_signal = "overbought"
-                        elif rsi < 30:
-                            rsi_signal = "oversold"
-                        break
+                if isinstance(inst_mom, dict):
+                    # Momentum may have per-TF RSI or just primary TF
+                    rsi = float(inst_mom.get("rsi", 50.0))
+                    if rsi > 70:
+                        rsi_signal = "overbought"
+                    elif rsi < 30:
+                        rsi_signal = "oversold"
                 
                 # Structure bias from slope
                 structure_bias = float(np.clip(slope * 50.0, -1.0, 1.0))
@@ -2144,6 +2704,7 @@ def build_ppo_observation_for_instrument(
     account_state: Optional[Dict[str, Any]] = None,
     world_model_state: Optional[Dict[str, Any]] = None,
     trading_mode_state: Optional[Dict[str, Any]] = None,
+    governor_state: Optional[Dict[str, Any]] = None,  # v5.5: governor/budget observation
     smart_bus: Optional[Any] = None,
     module_name: str = "PPOObservationBuilder",
 ) -> np.ndarray:
@@ -2158,6 +2719,7 @@ def build_ppo_observation_for_instrument(
         account_state=account_state,
         world_model_state=world_model_state,
         trading_mode_state=trading_mode_state,
+        governor_state=governor_state,
         smart_bus=smart_bus,
         module_name=module_name,
     )

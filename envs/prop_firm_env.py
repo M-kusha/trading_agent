@@ -100,8 +100,8 @@ try:
     OBS_BUILDER_AVAILABLE = True
 except Exception:
     PPOObservationBuilder = None  # type: ignore
-    PPO_OBS_SIZE = 76  # Updated for v5.4 HTF expansion
-    PPO_OBS_VERSION = "5.4"
+    PPO_OBS_SIZE = 84  # Updated for v5.5 Governor expansion
+    PPO_OBS_VERSION = "5.5"
     OBS_BUILDER_AVAILABLE = False
 
 
@@ -293,6 +293,12 @@ class PropFirmTradingEnv(
         self._current_day: Optional[date] = None
         self._current_session_key: Optional[Tuple[date, str]] = None
         self._session_trades = 0
+        
+        # Session budget tracking (v5.5 - governor/budget observation)
+        self.session_start_balance: float = float(self.config.initial_balance)
+        self.session_pnl: float = 0.0
+        self.session_consecutive_losses: int = 0
+        self.session_start_step: int = 0
 
         # Timing
         self._last_entry_dt: Optional[datetime] = None
@@ -307,6 +313,12 @@ class PropFirmTradingEnv(
         self.episode_step = 0
         self.episode_bars = 0
         self._episode_return = 0.0
+        self._mask_decision_steps = 0
+        self._mask_collapse_steps = 0
+        self._stop_mode_steps = 0
+        self._mask_decision_steps = 0
+        self._mask_collapse_steps = 0
+        self._stop_mode_steps = 0
 
         # Execution anti-cheat (seeded in reset)
         self._exec: Optional[ExecutionModel] = None
@@ -340,14 +352,55 @@ class PropFirmTradingEnv(
         self._episode_latency_bars = 0
         self._episode_vol_scale = 1.0
 
+        # Scenario-level execution overrides (used by validation/stress evaluators)
+        self._scenario_spread_mult = 1.0
+        self._scenario_slippage_mult = 1.0
+        self._scenario_latency_add = 0
+
         # Data difficulty settings (curriculum-based filtering)
         self._data_difficulty: Optional[Any] = None
         self._valid_start_indices: Optional[np.ndarray] = None
         self._volatility_percentiles: Optional[np.ndarray] = None
 
-        # Step-local caches (always defined to avoid attribute drift)
+        # Step-local caches (always defined to avoid attribute drift)    
         self._step_entry_quality_cache: Dict[str, float] = {}
         self._step_expert_signals_cache: Optional[Dict[str, Any]] = None
+
+    def _track_action_mask_state_for_metrics(self) -> None:
+        """
+        Track decision-time periods where the agent effectively has no choice
+        (valid_actions==1) and when loss-layer stop-mode is active while flat.
+        """
+        try:
+            mask = self.action_masks()
+            n_valid = int(np.sum(mask))
+        except Exception:
+            return
+
+        self._mask_decision_steps = int(getattr(self, "_mask_decision_steps", 0)) + 1
+
+        flat_no_pending = (self.position is None) and (self.pending_entry is None)
+        if flat_no_pending and n_valid <= 1:
+            self._mask_collapse_steps = int(getattr(self, "_mask_collapse_steps", 0)) + 1
+
+        if flat_no_pending and self._loss_layer() >= self._loss_layer_stop():
+            self._stop_mode_steps = int(getattr(self, "_stop_mode_steps", 0)) + 1
+
+    def set_scenario_execution_overrides(
+        self,
+        *,
+        spread_mult: float = 1.0,
+        slippage_mult: float = 1.0,
+        latency_add: int = 0,
+    ) -> None:
+        self._scenario_spread_mult = float(max(0.0, spread_mult))
+        self._scenario_slippage_mult = float(max(0.0, slippage_mult))
+        self._scenario_latency_add = int(latency_add)
+
+    def clear_scenario_execution_overrides(self) -> None:
+        self._scenario_spread_mult = 1.0
+        self._scenario_slippage_mult = 1.0
+        self._scenario_latency_add = 0
 
     # ---------------------------
     # Curriculum wiring
@@ -398,6 +451,59 @@ class PropFirmTradingEnv(
             reward_overrides = getattr(stage_cfg, "reward_overrides", None)
             execution_overrides = getattr(stage_cfg, "execution_overrides", None)
             generic = getattr(stage_cfg, "overrides", None)
+            
+            # NEW: Apply TradingConstraints from curriculum stage
+            constraints = getattr(stage_cfg, "constraints", None)
+            if constraints is not None:
+                # Map constraint fields to PropFirmConfig fields
+                constraint_mapping = {
+                    "max_positions": "max_positions",
+                    "max_trades_per_day": "max_trades_per_day",
+                    "max_trades_per_session": "max_trades_per_session",
+                    "max_consecutive_losses": "max_consecutive_losses",
+                    "loss_layer_stop": "loss_layer_stop",
+                    # Session budget constraints (v5.5)
+                    "session_loss_limit_pct": "session_loss_limit_pct",
+                    "session_consecutive_loss_limit": "session_consecutive_loss_limit",
+                    "enforce_session_windows": "enforce_session_windows",
+                    "enforce_no_new_trades_window": "enforce_no_new_trades_window",
+                    "enforce_weekend_block": "enforce_weekend_block",
+                    "enforce_hard_close": "enforce_hard_close",
+                    "min_minutes_between_entries": "min_minutes_between_entries",
+                    "min_minutes_after_loss": "min_minutes_after_loss",
+                    "daily_drawdown_limit": "daily_drawdown_limit",
+                    "max_drawdown_limit": "max_drawdown_limit",
+                    "daily_dd_safety_buffer": "daily_dd_safety_buffer",
+                    "max_dd_safety_buffer": "max_dd_safety_buffer",
+                    "emergency_close_threshold": "emergency_close_threshold",
+                    "entry_quality_gate_enabled": "entry_quality_gate_enabled",
+                    "entry_quality_threshold": "entry_quality_threshold",
+                    "hard_stop_loss_eur": "hard_stop_loss_eur",
+                    "soft_stop_loss_eur": "soft_stop_loss_eur",
+                    "trailing_activation_eur": "trailing_activation_eur",
+                    "trailing_retrace_pct": "trailing_retrace_pct",
+                    "time_decay_hours": "time_decay_hours",
+                    "risk_per_trade_pct": "risk_per_trade_pct",
+                    "max_risk_per_trade_pct": "max_risk_per_trade_pct",
+                }
+                applied_constraints = {}
+                for constraint_key, config_key in constraint_mapping.items():
+                    try:
+                        value = getattr(constraints, constraint_key, None)
+                        if value is not None and hasattr(self.config, config_key):
+                            setattr(self.config, config_key, value)
+                            applied_constraints[config_key] = value
+                    except Exception:
+                        pass
+                
+                # Log key constraints for debugging entropy issues
+                stage_name = getattr(current_stage, "name", "UNKNOWN")
+                loss_stop = applied_constraints.get("loss_layer_stop", "N/A")
+                max_consec = applied_constraints.get("max_consecutive_losses", "N/A")
+                logger.debug(
+                    f"[Curriculum] Stage {stage_name}: loss_layer_stop={loss_stop}, "
+                    f"max_consecutive_losses={max_consec}"
+                )
 
             if isinstance(generic, dict):
                 self._apply_overrides_to_object(self.config, generic)
@@ -464,23 +570,49 @@ class PropFirmTradingEnv(
     # More effective than exponential reward penalties (which saturate clip and lose gradient).
 
     def _loss_layer(self) -> int:
-        """Governor layer: 0..5 based on consecutive losses."""
-        return int(np.clip(int(getattr(self, "consecutive_losses", 0)), 0, 5))
+        """Governor layer based on consecutive losses (unclamped for curriculum flexibility)."""
+        return int(max(0, getattr(self, "consecutive_losses", 0)))
+
+    def _loss_layer_clamped(self) -> int:
+        """Governor layer clamped to 0-5 for table lookups (cooldown, quality, risk)."""
+        return int(np.clip(self._loss_layer(), 0, 5))
 
     def _loss_layer_stop(self) -> int:
         """Layer at which new entries are fully blocked (hard stop-trading mode)."""
         return int(getattr(self.config, "loss_layer_stop", 5))
 
+    def _maybe_relax_loss_layer_on_session_roll(self, *, session_rolled: bool) -> None:
+        """
+        Relax loss-layer stop on session boundaries.
+
+        Many curriculum stages set `loss_layer_stop = max_consecutive_losses - 1` to prevent a
+        hard breach. Episodes can span multiple sessions; without relaxing the loss-layer at a
+        natural boundary, a single loss streak can trap the agent in HOLD-only mode for the
+        rest of a long episode.
+
+        We treat a session roll as a "break" and step the loss layer down to `loss_layer_stop - 1`.
+        """
+        if not session_rolled:
+            return
+
+        stop = int(self._loss_layer_stop())
+        if stop <= 0:
+            return
+
+        if int(getattr(self, "consecutive_losses", 0)) >= stop:
+            self.consecutive_losses = max(0, stop - 1)
+            self.consecutive_wins = 0
+
     def _loss_layer_cooldown_minutes(self, base_minutes: float) -> float:
         """
         Dynamic post-loss cooldown. Escalates with consecutive losses.
-        
+
         Override via config.loss_layer_cooldown_minutes (list of 6 values for layers 0-5)
         or config.loss_layer_cooldown_multipliers.
         
         Default: layer 0-1 = base, layer 2 = 1.5x, layer 3 = 2.5x, layer 4 = 4x, layer 5 = 8x
         """
-        layer = self._loss_layer()
+        layer = self._loss_layer_clamped()
         
         # Option A: explicit minutes per layer (preferred for curriculum control)
         mins_table = getattr(self.config, "loss_layer_cooldown_minutes", None)
@@ -504,7 +636,7 @@ class PropFirmTradingEnv(
         
         Default: layer 0-1 = base, layer 2 = +0.05, layer 3 = +0.10, layer 4 = +0.18, layer 5 = +0.30
         """
-        layer = self._loss_layer()
+        layer = self._loss_layer_clamped()
         
         adds = getattr(self.config, "loss_layer_entry_q_add", None)
         if isinstance(adds, (list, tuple)) and len(adds) >= 6:
@@ -523,7 +655,7 @@ class PropFirmTradingEnv(
         
         Default: layer 0 = 100%, layer 1 = 90%, layer 2 = 75%, layer 3 = 60%, layer 4 = 45%, layer 5 = 30%
         """
-        layer = self._loss_layer()
+        layer = self._loss_layer_clamped()
         
         mults = getattr(self.config, "loss_layer_risk_mult", None)
         if isinstance(mults, (list, tuple)) and len(mults) >= 6:
@@ -979,6 +1111,9 @@ class PropFirmTradingEnv(
         self.equity = self.balance
         self.total_pnl += realized_pnl
         self.daily_pnl += realized_pnl
+        
+        # Session budget tracking (v5.5)
+        self.session_pnl += realized_pnl
 
         self.total_trades += 1
 
@@ -987,9 +1122,13 @@ class PropFirmTradingEnv(
             self.winning_trades += 1
             self.consecutive_wins += 1
             self.consecutive_losses = 0
+            # Session consecutive losses reset on win
+            self.session_consecutive_losses = 0
         else:
             self.consecutive_losses += 1
             self.consecutive_wins = 0
+            # Session consecutive losses increment
+            self.session_consecutive_losses += 1
             if self.consecutive_losses > self.max_consecutive_losses_reached:
                 self.max_consecutive_losses_reached = self.consecutive_losses
             if dt is not None:
@@ -1076,6 +1215,19 @@ class PropFirmTradingEnv(
         # Check this FIRST (prevents revenge trading spiral)
         if self._loss_layer() >= self._loss_layer_stop():
             return False, "loss_layer_stop"
+        
+        # Session budget constraints (v5.5)
+        # Check session loss limit (% of session start balance)
+        session_loss_limit = getattr(self.config, "session_loss_limit_pct", 0.99)
+        if self.session_start_balance > 0:
+            session_pnl_pct = self.session_pnl / self.session_start_balance
+            if session_pnl_pct < -session_loss_limit:
+                return False, "session_loss_limit"
+        
+        # Check session consecutive loss limit
+        session_consec_limit = getattr(self.config, "session_consecutive_loss_limit", 99)
+        if self.session_consecutive_losses >= session_consec_limit:
+            return False, "session_consecutive_losses"
         
         if dt is not None:
             if getattr(self.config, "enforce_weekend_block", True):
@@ -1206,6 +1358,12 @@ class PropFirmTradingEnv(
         self._current_day = None
         self._current_session_key = None
         self._session_trades = 0
+        
+        # Session budget reset (v5.5)
+        self.session_start_balance = float(self.config.initial_balance)
+        self.session_pnl = 0.0
+        self.session_consecutive_losses = 0
+        self.session_start_step = 0
 
         self._last_entry_dt = None
         self._last_loss_dt = None
@@ -1244,12 +1402,29 @@ class PropFirmTradingEnv(
 
         self._apply_domain_randomization()
         self._episode_execution_cfg = self._build_episode_execution_config()
+
+        # Scenario overrides (validation/stress): persist across resets by applying to the per-episode config.
+        scenario_latency_add = int(getattr(self, "_scenario_latency_add", 0) or 0)
+        if self._episode_execution_cfg is not None and scenario_latency_add:
+            try:
+                self._episode_execution_cfg.latency_bars = max(
+                    0, int(getattr(self._episode_execution_cfg, "latency_bars", 0)) + scenario_latency_add
+                )
+            except Exception:
+                pass
+        try:
+            self._episode_latency_bars = int(getattr(self._episode_execution_cfg, "latency_bars", self._episode_latency_bars))
+        except Exception:
+            pass
+
         self._exec = ExecutionModel(self._episode_execution_cfg, self.np_random)
 
         # Apply domain randomization to execution model (critical)
+        effective_spread_mult = float(self._episode_spread_mult) * float(getattr(self, "_scenario_spread_mult", 1.0) or 1.0)
+        effective_slip_mult = float(self._episode_slip_mult) * float(getattr(self, "_scenario_slippage_mult", 1.0) or 1.0)
         self._exec.set_episode_randomization(
-            spread_mult=self._episode_spread_mult,
-            slippage_mult=self._episode_slip_mult,
+            spread_mult=effective_spread_mult,
+            slippage_mult=effective_slip_mult,
         )
 
         # Buffer derived from indicator lookbacks, but bounded so episode can still run
@@ -1277,6 +1452,7 @@ class PropFirmTradingEnv(
         self._maybe_roll_day_session(dt)
 
         obs = self._get_observation()
+        self._track_action_mask_state_for_metrics()
         info = {"balance": self.balance, "equity": self.equity, "step": self.current_step}
         info.update(self._curriculum_step_metadata())
         return obs, info
@@ -1338,7 +1514,10 @@ class PropFirmTradingEnv(
         self._update_peak_balance()
 
         # Roll day/session AFTER mark-to-market to prevent daily-DD reset exploits
+        prev_session_key = getattr(self, "_current_session_key", None)
         self._maybe_roll_day_session(dt)
+        session_rolled = prev_session_key != getattr(self, "_current_session_key", None)
+        self._maybe_relax_loss_layer_on_session_roll(session_rolled=session_rolled)
 
         current_dd, current_daily_dd = self._calc_dds()
 
@@ -1652,6 +1831,10 @@ class PropFirmTradingEnv(
             entry_accepted=entry_accepted,
         )
         reward += shaping
+        
+        # Session budget approaching-limit penalties (v5.5)
+        # Provides gradient signal BEFORE hard blocks (loss_layer, session limits)
+        reward += self._compute_governor_approaching_penalties()
 
         # Final clipping
         cfg = self.config.reward
@@ -1697,8 +1880,8 @@ class PropFirmTradingEnv(
             "reward_components": dict(self._last_reward_components) if trade_closed else {},
             "episode_trade_count": len(self._episode_trade_results),
             "domain_randomization": {
-                "spread_mult": float(self._episode_spread_mult),
-                "slippage_mult": float(self._episode_slip_mult),
+                "spread_mult": float(self._episode_spread_mult) * float(getattr(self, "_scenario_spread_mult", 1.0) or 1.0),
+                "slippage_mult": float(self._episode_slip_mult) * float(getattr(self, "_scenario_slippage_mult", 1.0) or 1.0),
                 "latency_bars": int(self._episode_latency_bars),
                 "vol_scale": float(self._episode_vol_scale),
             },
@@ -1707,6 +1890,8 @@ class PropFirmTradingEnv(
 
         if terminated or truncated:
             info["episode_stats"] = self.get_episode_stats()
+        else:
+            self._track_action_mask_state_for_metrics()
 
         return obs, reward, terminated, truncated, info
 
@@ -1729,6 +1914,7 @@ class PropFirmTradingEnv(
         account_state = self._prepare_account_state(inst)
         trading_mode_state = self._prepare_trading_mode_state(inst)
         world_model_state = self._prepare_world_model_state(inst, expert_signals, committee_state)
+        governor_state = self._get_governor_state()  # v5.5: governor/budget observation
 
         assert self.obs_builder is not None
         obs = self.obs_builder.build(
@@ -1740,6 +1926,7 @@ class PropFirmTradingEnv(
             account_state=account_state,
             world_model_state=world_model_state,
             trading_mode_state=trading_mode_state,
+            governor_state=governor_state,  # v5.5: governor/budget observation
         )
         return obs
 
@@ -1871,6 +2058,11 @@ class PropFirmTradingEnv(
     # ---------------------------
 
     def get_episode_stats(self) -> Dict[str, Any]:
+        decision_steps = int(getattr(self, "_mask_decision_steps", self.episode_step) or 0)
+        mask_collapse_steps = int(getattr(self, "_mask_collapse_steps", 0) or 0)
+        stop_mode_steps = int(getattr(self, "_stop_mode_steps", 0) or 0)
+        denom = max(decision_steps, 1)
+
         if not self._episode_trade_results:
             return {
                 "trade_count": 0,
@@ -1884,6 +2076,11 @@ class PropFirmTradingEnv(
                 "consecutive_losses": int(self.consecutive_losses),
                 "consecutive_wins": int(self.consecutive_wins),
                 "hit_max_consecutive_losses": self.consecutive_losses >= self.config.max_consecutive_losses,
+                "mask_decision_steps": decision_steps,
+                "mask_collapse_steps": mask_collapse_steps,
+                "stop_mode_steps": stop_mode_steps,
+                "mask_collapse_rate": float(mask_collapse_steps / denom),
+                "stop_mode_rate": float(stop_mode_steps / denom),
             }
 
         results = self._episode_trade_results
@@ -1955,8 +2152,15 @@ class PropFirmTradingEnv(
             "consecutive_wins": int(self.consecutive_wins),
             "max_consecutive_losses_reached": int(self.max_consecutive_losses_reached),
             "hit_max_consecutive_losses": hit_max_consec_losses,
+            "mask_decision_steps": decision_steps,
+            "mask_collapse_steps": mask_collapse_steps,
+            "stop_mode_steps": stop_mode_steps,
+            "mask_collapse_rate": float(mask_collapse_steps / denom),
+            "stop_mode_rate": float(stop_mode_steps / denom),
             "reward_components": reward_components,
             "trades_with_regime": self._build_trades_with_regime(results),
+            # v5.5: Governor state for dashboard visualization
+            "governor_state": self._get_governor_state(),
         }
 
     def _build_trades_with_regime(self, results: List[TradeResult]) -> List[Dict[str, Any]]:

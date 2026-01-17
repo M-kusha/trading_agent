@@ -347,6 +347,11 @@ class PPODecisionView:
     position_size: float = 0.0       # 0–1
     action_intent: str = ""          # "open_long", "close", "reverse", ...
 
+    # Discrete-action metadata (MaskablePPO): HOLD vs CLOSE are distinct in training,
+    # but both map to a (0,0) continuous proxy. Use this to respect true CLOSE only.
+    discrete_intent: str = ""        # "hold" | "long" | "short" | "close"
+    discrete_action_id: int = -1
+
     explicit_close: bool = False
     explicit_reverse: bool = False
 
@@ -944,6 +949,15 @@ class SmartPositionManager:
                     meta = inst_dec.get("meta", {}) or {}
 
                 action_intent = str(meta.get("action_intent", "") or "")
+                discrete = meta.get("discrete_action") or {}
+                discrete_intent = ""
+                discrete_action_id = -1
+                if isinstance(discrete, dict):
+                    discrete_intent = str(discrete.get("intent", "") or "").lower()
+                    try:
+                        discrete_action_id = int(discrete.get("action_id", -1) or -1)
+                    except Exception:
+                        discrete_action_id = -1
                 ppo_exit = meta.get("ppo_exit", {}) or {}
 
                 explicit_close = bool(ppo_exit.get("explicit_close", False))
@@ -964,15 +978,17 @@ class SmartPositionManager:
 
                 view.direction = direction
                 view.confidence = max(0.0, min(1.0, confidence))
-                view.position_size = max(0.0, min(1.0, position_size))
+                view.position_size = max(0.0, min(1.0, position_size))    
                 view.action_intent = action_intent
+                view.discrete_intent = discrete_intent
+                view.discrete_action_id = discrete_action_id
                 view.explicit_close = explicit_close
                 view.explicit_reverse = explicit_reverse
                 view.wants_flat = wants_flat
                 view.is_reversal = is_reversal
 
-                decision_sig = f"{direction}|{action_intent}|{explicit_close}|{explicit_reverse}"
-                last_sig = self._last_ppo_decision.get(symbol, "")
+                decision_sig = f"{direction}|{action_intent}|{discrete_intent}|{explicit_close}|{explicit_reverse}"
+                last_sig = self._last_ppo_decision.get(symbol, "")        
                 if decision_sig != last_sig:
                     self._last_ppo_decision[symbol] = decision_sig
                     if action_intent not in ("hold", "no_position", "") or explicit_close or explicit_reverse:
@@ -1037,7 +1053,12 @@ class SmartPositionManager:
         sym_cfg = self._get_symbol_cfg(symbol)
         ppo_exit_threshold = float(sym_cfg.get("ppo_exit_conf_threshold", self.config.ppo_exit_conf_threshold))
 
-        if ppo_view.explicit_close and ppo_view.confidence >= ppo_exit_threshold:
+        # For MaskablePPO discrete actions, treat explicit CLOSE as authoritative even if
+        # the derived confidence is low (flat score). For continuous models, keep the
+        # confidence threshold to avoid churn from noisy near-zero outputs.
+        if ppo_view.explicit_close and (
+            ppo_view.discrete_intent == "close" or ppo_view.confidence >= ppo_exit_threshold
+        ):
             reasons.append(f"🎯 PPO explicit CLOSE intent (conf={ppo_view.confidence:.2f})")
             self.logger.info(f"[PPO_EXIT] {symbol}: PPO explicit CLOSE (conf={ppo_view.confidence:.3f})")
             return self._make_decision(
@@ -2033,6 +2054,17 @@ class SmartPositionManager:
         forced = self._maybe_force_final_exit(symbol, position, reasons, management_ctx=management_ctx, support_ratio=support_ratio)
         if forced is not None:
             return forced
+
+        # PPO explicit exits/reversals (if any) should override management heuristics.
+        ppo_override = self._maybe_apply_ppo_exit_override(
+            symbol,
+            position,
+            reasons,
+            support_ratio=support_ratio,
+            management_ctx=management_ctx,
+        )
+        if ppo_override is not None:
+            return ppo_override
 
         # PRIORITY -1: Breakeven + Profit-lock ladder
         be_threshold = float(sym_cfg.get("breakeven_activation_eur", cfg.breakeven_activation_eur))

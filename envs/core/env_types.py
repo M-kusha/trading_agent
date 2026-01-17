@@ -331,6 +331,14 @@ class PropFirmConfig:
     max_drawdown_limit: float = 0.10
     trailing_drawdown: bool = False
 
+    # Live/trading flags (compat with backend/main TradingConfig construction)
+    live_mode: bool = False
+    debug: bool = False
+
+    # Position sizing caps used by live backend
+    max_position_pct: float = 0.05  # fraction of balance per position
+    max_total_exposure: float = 1.0  # fraction of balance across positions
+
     daily_dd_safety_buffer: float = 0.008
     max_dd_safety_buffer: float = 0.015
     emergency_close_threshold: float = 0.09
@@ -357,6 +365,13 @@ class PropFirmConfig:
     max_trades_per_day: int = 20
     max_trades_per_session: int = 10
     max_consecutive_losses: int = 3
+    loss_layer_stop: int = 5  # Hard stop-trading layer after N consecutive losses
+    
+    # Session budget constraints (v5.5 - governor/budget observation)
+    # These are ALWAYS computed but limits start "effectively infinite" in early stages.
+    # This ensures observation features are meaningful from day one (no distribution shift).
+    session_loss_limit_pct: float = 0.99  # Max % loss within session before entries blocked
+    session_consecutive_loss_limit: int = 99  # Max consecutive losses within session
 
     # --------------------
     # Timing policy

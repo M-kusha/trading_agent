@@ -76,6 +76,7 @@ class DataDifficulty:
     """
     volatility_percentile_range: Tuple[float, float] = (0.0, 1.0)
     min_trend_clarity: float = 0.0
+    max_trend_clarity: float = 1.0
 
     include_asian_session: bool = True
     include_london_session: bool = True

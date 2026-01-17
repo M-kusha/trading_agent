@@ -98,6 +98,12 @@ class PPOShellConfig:
     # When False, each instrument is evaluated independently (multi-position allowed)
     position_focus_blocks_other_instruments: bool = False
 
+    # Live discrete action masking
+    # When True, apply timing/drawdown/trade-count rules as a hard mask (safer, reduces overtrading).
+    # When False, only physical impossibilities are masked (matches training when soft rules were
+    # learned via penalties).
+    live_mask_enforce_hard_rules: bool = False
+
     # ═══════════════════════════════════════════════════════════════════
     # WARMUP SETTINGS (v3.2.0)
     # ═══════════════════════════════════════════════════════════════════
@@ -255,6 +261,26 @@ class PPOAgentShell(
         project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         
         resolved_model_path = model_path
+        # If a model_path is provided, resolve it robustly (cwd vs project root)
+        if resolved_model_path:
+            try:
+                resolved_model_path = os.path.expandvars(
+                    os.path.expanduser(str(resolved_model_path))
+                )
+                if (not os.path.isabs(resolved_model_path)) and (
+                    not os.path.exists(resolved_model_path)
+                ):
+                    abs_try = os.path.join(project_root, resolved_model_path)
+                    if os.path.exists(abs_try):
+                        resolved_model_path = abs_try
+
+                if resolved_model_path and (not os.path.exists(resolved_model_path)):
+                    self.logger.warning(
+                        f"[PPO] model_path not found: {resolved_model_path}; trying auto-discovery"
+                    )
+                    resolved_model_path = None
+            except Exception:
+                pass
         if not resolved_model_path:
             # Prioritize propfirm models (trained for prop firm rules)
             candidates = [
@@ -291,8 +317,9 @@ class PPOAgentShell(
             self.logger.warning("[PPO] No model_path provided; using untrained PPOCore weights")
 
         # Live action mask builder (for MaskablePPO parity)
-        self._live_mask_builder = LiveActionMaskBuilder(LiveMaskConfig(
+        self._live_mask_builder = LiveActionMaskBuilder(LiveMaskConfig(   
             size_buckets=self._cfg.core_config.size_buckets,
+            enforce_hard_rules=bool(self._cfg.live_mask_enforce_hard_rules),
         ))
         
         # Register action mask callback with PPOCore
@@ -918,38 +945,127 @@ class PPOAgentShell(
             # Get account state
             account_state = self.smart_bus.get("account_state", "PPOAgentShell", default={})
             if isinstance(account_state, dict):
-                balance = float(account_state.get("balance", 100000))
-                equity = float(account_state.get("equity", balance))
-                day_start_balance = float(account_state.get("day_start_balance", balance))
-                peak_balance = float(account_state.get("peak_balance", balance))
+                balance = float(account_state.get("balance", 100000))     
+                equity = float(account_state.get("equity", balance))      
+                day_start_balance = account_state.get("day_start_balance")
+                peak_balance = account_state.get("peak_balance")
             else:
                 balance = 100000.0
                 equity = balance
+
+                day_start_balance = None
+                peak_balance = None
+
+            # Fallback tracking for drawdown features (in case account_state doesn't include day/peak)
+            try:
+                today = datetime.now().date()
+                if getattr(self, "_mask_day_start_date", None) != today:
+                    self._mask_day_start_date = today
+                    self._mask_day_start_balance = float(balance)
+                    self._mask_peak_equity = float(equity)
+                else:
+                    # Update peak equity during the day
+                    peak_eq = float(getattr(self, "_mask_peak_equity", equity) or equity)
+                    self._mask_peak_equity = max(peak_eq, float(equity))
+
+                if not isinstance(day_start_balance, (int, float)) or float(day_start_balance) <= 0:
+                    day_start_balance = float(getattr(self, "_mask_day_start_balance", balance) or balance)
+                if not isinstance(peak_balance, (int, float)) or float(peak_balance) <= 0:
+                    peak_balance = float(getattr(self, "_mask_peak_equity", equity) or equity)
+            except Exception:
                 day_start_balance = balance
                 peak_balance = balance
-            
+
             # Compute drawdowns
             current_dd = max(0.0, (peak_balance - equity) / max(peak_balance, 1.0))
             daily_dd = max(0.0, (day_start_balance - equity) / max(day_start_balance, 1.0))
-            
+
             # Get trade counts from SmartInfoBus
             trade_stats = self.smart_bus.get("trade_statistics", "PPOAgentShell", default={})
             if isinstance(trade_stats, dict):
-                daily_trades = int(trade_stats.get("daily_trades", 0))
+                daily_trades = int(trade_stats.get("daily_trades", 0))    
                 session_trades = int(trade_stats.get("session_trades", 0))
                 consecutive_losses = int(trade_stats.get("consecutive_losses", 0))
             else:
                 daily_trades = 0
                 session_trades = 0
                 consecutive_losses = 0
-            
+
+            # Fallback trade stats from Executor trade ledger (entries only)
+            try:
+                trade_ledger = self.smart_bus.get("trades", "PPOAgentShell", default=[]) or []
+                if isinstance(trade_ledger, list) and trade_ledger:
+                    now_dt = datetime.now()
+                    today_start_ts = now_dt.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+
+                    def _is_new_entry(t: Mapping[str, Any]) -> bool:
+                        action = str(t.get("action", "")).lower()
+                        comment = str(t.get("comment", "")).lower()
+                        if any(x in action for x in ("scale", "close", "exit", "reverse", "reduce")):
+                            return False
+                        if any(x in action for x in ("open", "long", "short", "buy", "sell")):
+                            return True
+                        if "open" in comment:
+                            return True
+                        return False
+
+                    tail = trade_ledger[-300:]
+                    computed_daily_entries = 0
+                    last_entry_ts = 0.0
+                    last_loss_ts = 0.0
+
+                    for t in reversed(tail):
+                        if not isinstance(t, dict):
+                            continue
+                        try:
+                            ts = float(t.get("ts", t.get("timestamp", 0.0)) or 0.0)
+                        except Exception:
+                            ts = 0.0
+                        if ts <= 0.0:
+                            continue
+
+                        if _is_new_entry(t):
+                            if ts >= today_start_ts:
+                                computed_daily_entries += 1
+                            if last_entry_ts <= 0.0:
+                                last_entry_ts = ts
+
+                        # Best-effort loss timestamp if realized PnL is present
+                        action = str(t.get("action", "")).lower()
+                        if ("close" in action) or ("exit" in action):
+                            try:
+                                pnl = float(
+                                    t.get("realized_pnl", t.get("pnl", t.get("profit", 0.0))) or 0.0
+                                )
+                            except Exception:
+                                pnl = 0.0
+                            if pnl < 0.0 and last_loss_ts <= 0.0:
+                                last_loss_ts = ts
+
+                    if (not daily_trades) and computed_daily_entries > 0:
+                        daily_trades = computed_daily_entries
+                    if (not session_trades) and computed_daily_entries > 0:
+                        session_trades = computed_daily_entries
+
+                    # Store fallbacks for timing if missing
+                    if not hasattr(self, "_mask_last_entry_ts"):
+                        self._mask_last_entry_ts = 0.0
+                    if last_entry_ts > 0.0:
+                        self._mask_last_entry_ts = last_entry_ts
+                    if not hasattr(self, "_mask_last_loss_ts"):
+                        self._mask_last_loss_ts = 0.0
+                    if last_loss_ts > 0.0:
+                        self._mask_last_loss_ts = last_loss_ts
+            except Exception:
+                pass
+
             # Get timing info
             timing_state = self.smart_bus.get("timing_state", "PPOAgentShell", default={})
             last_entry_time = None
             last_loss_time = None
             if isinstance(timing_state, dict):
-                last_entry_str = timing_state.get("last_entry_time")
-                last_loss_str = timing_state.get("last_loss_time")
+                last_entry_str = timing_state.get("last_entry_time")      
+                last_loss_str = timing_state.get("last_loss_time")        
                 if last_entry_str:
                     try:
                         last_entry_time = datetime.fromisoformat(last_entry_str)
@@ -960,7 +1076,23 @@ class PPOAgentShell(
                         last_loss_time = datetime.fromisoformat(last_loss_str)
                     except Exception:
                         pass
-            
+
+            # If timing_state isn't published, fall back to derived timestamps
+            if last_entry_time is None:
+                try:
+                    ts = float(getattr(self, "_mask_last_entry_ts", 0.0) or 0.0)
+                    if ts > 0.0:
+                        last_entry_time = datetime.fromtimestamp(ts)
+                except Exception:
+                    pass
+            if last_loss_time is None:
+                try:
+                    ts = float(getattr(self, "_mask_last_loss_ts", 0.0) or 0.0)
+                    if ts > 0.0:
+                        last_loss_time = datetime.fromtimestamp(ts)
+                except Exception:
+                    pass
+
             # Build mask
             mask = self._live_mask_builder.get_action_mask(
                 has_position=has_position,
@@ -1601,6 +1733,7 @@ class PPOAgentShell(
                 htf_abs = _g_abs("htf_context")
                 acct_abs = _g_abs("account")
                 mode_abs = _g_abs("trading_mode")
+                gov_abs = _g_abs("governor")
 
                 prev = self._obs_diag_prev.get(inst)
                 delta_abs = None
@@ -1614,6 +1747,7 @@ class PPOAgentShell(
                     "htf_abs": htf_abs,
                     "acct_abs": acct_abs,
                     "mode_abs": mode_abs,
+                    "gov_abs": gov_abs,
                     "min": float(np.min(arr)),
                     "max": float(np.max(arr)),
                     "delta_abs": delta_abs,
@@ -1622,9 +1756,11 @@ class PPOAgentShell(
                 # Heuristics: missing market data usually means price groups are all zeros.
                 if m15_abs < 1e-8 or htf_abs < 1e-8:
                     suspicious = True
+                if gov_abs < 1e-8:
+                    suspicious = True
                 if zero_pct > 0.95:
                     suspicious = True
-                if delta_abs is not None and delta_abs < 1e-10 and cycle > 10:
+                if delta_abs is not None and delta_abs < 1e-10 and cycle > 10:  
                     suspicious = True
 
             # Pairwise similarity (use config order for stable logs)
@@ -1710,7 +1846,7 @@ class PPOAgentShell(
                 delta_str = f"{s['delta_abs']:.3e}" if s["delta_abs"] is not None else "n/a"
                 level_fn(
                     f"[PPO][OBS] {inst}: m15={s['m15_abs']:.3f} htf={s['htf_abs']:.3f} "
-                    f"acct={s['acct_abs']:.3f} mode={s['mode_abs']:.3f} "
+                    f"acct={s['acct_abs']:.3f} mode={s['mode_abs']:.3f} gov={s['gov_abs']:.3f} "
                     f"zero={s['zero_pct']:.0%} Δ={delta_str} "
                     f"min={s['min']:.2f} max={s['max']:.2f} last={last}"
                 )

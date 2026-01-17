@@ -193,7 +193,11 @@ class ValidationScenario:
             "end_date": self.end_date,
             "spread_multiplier": self.spread_multiplier,
             "slippage_multiplier": self.slippage_multiplier,
+            "volatility_filter": self.volatility_filter,
+            "trend_filter": self.trend_filter,
             "difficulty": self.difficulty,
+            "min_episodes": self.min_episodes,
+            "min_trades": self.min_trades,
         }
 
 

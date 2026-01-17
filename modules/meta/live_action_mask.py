@@ -49,7 +49,12 @@ class LiveMaskConfig:
     # Timing policy
     min_minutes_between_entries: int = 5
     min_minutes_after_loss: int = 15
-    
+
+    # When True, enforce timing/drawdown/trade-count rules as a HARD mask in
+    # live. When False (default), only physical impossibilities are masked,
+    # matching training where soft rules were learned via penalties.
+    enforce_hard_rules: bool = False
+
     # Session times (Europe/Berlin)
     no_new_trades_start: dtime = dtime(18, 0)
     no_new_trades_end: dtime = dtime(9, 0)
@@ -123,6 +128,7 @@ class LiveActionMaskBuilder:
         - Can't open if already in position
         - Can't close if no position
         - Can't enter if pending entry exists
+        - Loss-layer stop: mask entries after loss streak
         
         Returns:
             Boolean array of shape (n_actions,) where True = action allowed
@@ -137,7 +143,27 @@ class LiveActionMaskBuilder:
         # NOTE: We do NOT mask based on timing/drawdown here - agent learned to
         # avoid bad times via penalties, not via masking
         can_enter = (not has_position) and (not has_pending_entry)
-        
+
+        # Loss-layer governor hard stop (matches PropFirmTradingEnv.action_masks)
+        if consecutive_losses >= int(self.config.max_consecutive_losses):
+            can_enter = False
+
+        # Optional: hard rule enforcement for live safety / overtrading control
+        if self.config.enforce_hard_rules and can_enter:
+            now = current_time or datetime.now()
+            hard_allowed, _ = self._hard_entry_allowed(
+                current_dd=current_dd,
+                daily_dd=daily_dd,
+                daily_trades=daily_trades,
+                session_trades=session_trades,
+                consecutive_losses=consecutive_losses,
+                last_entry_time=last_entry_time,
+                last_loss_time=last_loss_time,
+                current_time=now,
+            )
+            if not hard_allowed:
+                can_enter = False
+
         if not can_enter:
             # Mask all entry actions (LONG and SHORT)
             mask[self._ACTION_LONG_START: self._ACTION_LONG_START + self._K] = False

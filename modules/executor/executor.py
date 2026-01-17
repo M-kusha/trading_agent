@@ -108,6 +108,13 @@ class ExecutorConfig:
     debug_enabled: bool = True
     debug_config: Optional[Dict[str, Any]] = None
 
+    # When running without the full orchestrator stack (no expert/arbiter outputs),
+    # the executor may only receive an intent once (order_queue is pruned after one cycle).
+    # On subsequent cycles, signal_strength becomes 0.0 which can trigger ExitEngine
+    # "signal weak" exits inside SmartPositionManager. Enable this to keep managing
+    # positions cooperatively (default HOLD) when no fresh signal is available.
+    hold_positions_without_signal: bool = False
+
 
 @module(**module_args(
     "Executor",
@@ -2112,6 +2119,7 @@ class Executor(BaseModule):
             else:
                 signal_direction = 0
                 signal_strength = 0.0
+                matched_intent = False
 
                 for intent in intents:
                     inst_intent = self._normalize_symbol(intent.get("instrument", ""))
@@ -2134,14 +2142,18 @@ class Executor(BaseModule):
                                 signal_strength = intent_strength
                         else:
                             signal_strength = intent_strength
+                        matched_intent = True
                         break
 
-                decision = self.smart_position_manager.decide(
-                    symbol=symbol,
-                    signal_direction=signal_direction,
-                    signal_strength=signal_strength,
-                    consensus_confidence=signal_strength,
-                )
+                if (not matched_intent) and bool(getattr(self.cfg, "hold_positions_without_signal", False)):
+                    decision = self.smart_position_manager.manage_position(mgmt_signal)
+                else:
+                    decision = self.smart_position_manager.decide(
+                        symbol=symbol,
+                        signal_direction=signal_direction,
+                        signal_strength=signal_strength,
+                        consensus_confidence=signal_strength,
+                    )
 
             # CLOSE
             if decision.action == PositionAction.CLOSE:

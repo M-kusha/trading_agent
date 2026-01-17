@@ -516,6 +516,11 @@ class MetricsReader:
         mean_r_multiple = self._safe_float(q.get("mean_r_multiple", raw.get("mean_r_multiple", 0)))
         mean_profit_factor = self._safe_float(q.get("mean_profit_factor", raw.get("mean_profit_factor", 0)))
         mean_entry_quality = self._safe_float(q.get("mean_entry_quality", raw.get("mean_entry_quality", 0.5)))
+        
+        # v5.5: Consecutive loss tracking for governor panel
+        max_consecutive_losses = self._safe_int(q.get("max_consecutive_losses", 0))
+        avg_consecutive_losses = self._safe_float(q.get("avg_consecutive_losses", 0))
+        consecutive_loss_streak_rate = self._safe_float(q.get("consecutive_loss_streak_rate", 0))
 
         self._append_history("r_multiples", mean_r_multiple)
 
@@ -526,6 +531,10 @@ class MetricsReader:
             "mean_profit_factor_status": get_status_color(mean_profit_factor, THRESHOLDS.pf_good, THRESHOLDS.pf_ok, True),
             "mean_entry_quality": mean_entry_quality,
             "mean_entry_quality_status": get_status_color(mean_entry_quality, THRESHOLDS.eq_good, THRESHOLDS.eq_ok, True),
+            # v5.5: Consecutive loss metrics for governor panel
+            "max_consecutive_losses": max_consecutive_losses,
+            "avg_consecutive_losses": avg_consecutive_losses,
+            "consecutive_loss_streak_rate": consecutive_loss_streak_rate,
         }
 
         # Exit distribution
@@ -570,6 +579,9 @@ class MetricsReader:
         # Direction stats (buy/sell breakdown)
         direction_stats = self._safe_dict(raw.get("direction_stats", {}))
 
+        # v5.5: Governor state (loss layer & session budget)
+        governor = self._safe_dict(raw.get("governor", {}))
+
         return {
             "status": "active",
             "message": "",
@@ -585,6 +597,7 @@ class MetricsReader:
             "reward_components": reward_components,
             "stage_comparison": stage_comparison,
             "direction_stats": direction_stats,
+            "governor": governor,  # v5.5: Loss layer & session budget state
 
             "curriculum_stage": raw.get("curriculum_stage", "N/A"),
             "curriculum_stage_idx": raw.get("curriculum_stage_idx", 0),

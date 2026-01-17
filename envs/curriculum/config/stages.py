@@ -139,12 +139,25 @@ class CurriculumStageConfig:
         e = self.execution
         out: Dict[str, Any] = {}
 
+        # Critical: keep env episode length consistent with stage definition
+        # (PropFirmTradingEnv reads this from PropFirmConfig.max_steps_per_episode).
+        try:
+            max_steps = int(self.max_steps_per_episode)
+            if max_steps > 0:
+                out["max_steps_per_episode"] = max_steps
+        except Exception:
+            pass
+
         # Constraints -> PropFirmConfig fields
         for k in (
             "max_positions",
             "max_trades_per_day",
             "max_trades_per_session",
             "max_consecutive_losses",
+            "loss_layer_stop",
+            # Session budget constraints (v5.5)
+            "session_loss_limit_pct",
+            "session_consecutive_loss_limit",
             "enforce_no_new_trades_window",
             "enforce_weekend_block",
             "enforce_hard_close",

@@ -191,6 +191,81 @@ class ObservationBuildersMixin:
 
         return state
 
+    def _get_governor_state(self) -> Dict[str, float]:
+        """
+        Prepare governor/budget state for observation (v5.5).
+        
+        This state is ALWAYS computed (even in early curriculum stages with loose limits)
+        to ensure observation features are meaningful from day one and avoid distribution shift.
+        
+        Returns 8 normalized values for the governor observation block:
+        - loss_layer_ratio: consecutive_losses / loss_layer_stop [0, 1]
+        - loss_layer_level: clamped loss layer / 5.0 [0, 1]
+        - win_streak_ratio: consecutive_wins / 5.0 [0, 1]
+        - session_pnl_headroom: remaining headroom before session loss limit [0, 2]
+        - session_trade_budget: remaining session trade capacity [0, 1]
+        - session_consec_loss_ratio: session_consecutive_losses / limit [0, 1]
+        - session_progress: bars into session / estimated session duration [0, 1]
+        - pending_order_progress: bars until pending order fills / max latency [0, 1]
+        """
+        # Get config limits with safe defaults
+        loss_layer_stop = getattr(self.config, "loss_layer_stop", 5)
+        session_loss_limit = getattr(self.config, "session_loss_limit_pct", 0.99)
+        session_consec_limit = getattr(self.config, "session_consecutive_loss_limit", 99)
+        max_session_trades = getattr(self.config, "max_trades_per_session", 99)
+        
+        # Loss layer features (always computed)
+        consecutive_losses = getattr(self, "consecutive_losses", 0)
+        consecutive_wins = getattr(self, "consecutive_wins", 0)
+        loss_layer = min(consecutive_losses, 5)  # Clamped to 0-5
+        
+        # Session budget features
+        session_pnl = getattr(self, "session_pnl", 0.0)
+        session_start_balance = getattr(self, "session_start_balance", 0.0)
+        session_consecutive_losses = getattr(self, "session_consecutive_losses", 0)
+        session_trades = getattr(self, "_session_trades", 0)
+        session_start_step = getattr(self, "session_start_step", 0)
+        current_step = getattr(self, "current_step", 0)
+        
+        # Compute session pnl headroom: (limit + current_pnl%) / limit
+        # Positive headroom = safe, approaching 0 = danger
+        if session_start_balance > 0:
+            session_pnl_pct = session_pnl / session_start_balance
+        else:
+            session_pnl_pct = 0.0
+        # headroom = how much of the limit is remaining (1.0 = full limit available)
+        headroom = (session_loss_limit + session_pnl_pct) / max(session_loss_limit, 0.001)
+        
+        # Estimate session duration in bars (use bars_per_day / 3 as rough estimate for 3 sessions)
+        bars_per_day = getattr(self, "_bars_per_day", lambda: 96)()  # M15 = 96 bars/day
+        session_duration_bars = max(bars_per_day // 3, 1)  # ~32 bars per session for M15
+        session_progress = (current_step - session_start_step) / max(session_duration_bars, 1)
+        
+        # Pending order progress
+        pending_entry = getattr(self, "pending_entry", None)
+        pending_exit = getattr(self, "pending_exit", None)
+        episode_latency = getattr(self, "_episode_latency_bars", 1)
+        max_latency = max(episode_latency, 1)
+        
+        pending_bars = 0
+        if pending_entry and isinstance(pending_entry, dict):
+            fill_step = pending_entry.get("fill_step", current_step)
+            pending_bars = max(0, fill_step - current_step)
+        elif pending_exit and isinstance(pending_exit, dict):
+            fill_step = pending_exit.get("fill_step", current_step)
+            pending_bars = max(0, fill_step - current_step)
+        
+        return {
+            "loss_layer_ratio": float(np.clip(consecutive_losses / max(loss_layer_stop, 1), 0.0, 1.0)),
+            "loss_layer_level": float(np.clip(loss_layer / 5.0, 0.0, 1.0)),
+            "win_streak_ratio": float(np.clip(consecutive_wins / 5.0, 0.0, 1.0)),
+            "session_pnl_headroom": float(np.clip(headroom, 0.0, 2.0)),
+            "session_trade_budget": float(np.clip(1.0 - (session_trades / max(max_session_trades, 1)), 0.0, 1.0)),
+            "session_consec_loss_ratio": float(np.clip(session_consecutive_losses / max(session_consec_limit, 1), 0.0, 1.0)),
+            "session_progress": float(np.clip(session_progress, 0.0, 1.0)),
+            "pending_order_progress": float(np.clip(pending_bars / max_latency, 0.0, 1.0) if pending_bars > 0 else 0.0),
+        }
+
     def _prepare_trading_mode_state(self, instrument: str) -> Dict[str, Any]:
         """Prepare trading mode state for observation."""
         cur_dd, _ = self._calc_dds()

@@ -68,6 +68,7 @@ class LiveTradingOrchestrated:
         self.orchestrator: Any = None
         self.info_bus: Any = None
         self.account_info: Any = None
+        self.session_tracker: Any = None  # v5.5: Live session tracking
         self.instruments = ["XAUUSD"]
         self.timeframes = ["M15", "H1", "H4", "D1"]
         
@@ -109,6 +110,25 @@ class LiveTradingOrchestrated:
             logger.error(f"[FAIL] InfoBus initialization failed: {e}")
             return False
         
+        # 2b. Initialize LiveSessionTracker for governor observation (v5.5)
+        try:
+            from modules.monitoring.live_session_tracker import LiveSessionTracker, LiveSessionConfig
+            
+            # Load session config from live config if available
+            session_config = LiveSessionConfig(
+                session_loss_limit_pct=0.03,       # Match LIVE_READY stage
+                session_consecutive_loss_limit=3,  # Match LIVE_READY stage
+                max_trades_per_session=4,
+                loss_layer_stop=3,
+                max_consecutive_losses=3,
+            )
+            self.session_tracker = LiveSessionTracker(self.info_bus, session_config)
+            logger.info("[OK] LiveSessionTracker initialized (v5.5 governor observation)")
+        except Exception as e:
+            logger.warning(f"[WARN] LiveSessionTracker initialization failed: {e}")
+            logger.warning("       Governor observation dims [76-83] will use defaults")
+            self.session_tracker = None
+        
         # 3. Load credentials and connect MT5
         try:
             from live.mt5_credentials import MT5Credentials
@@ -131,6 +151,11 @@ class LiveTradingOrchestrated:
             env_config["initial_balance"] = self.account_info.balance
             self.info_bus.set("environment_config", env_config, module="LiveTrading", thesis="updated with real balance")
             self.info_bus.set("account_balance", self.account_info.balance, module="LiveTrading", thesis="MT5 balance")
+            
+            # Initialize session tracker with real account balance (v5.5)
+            if self.session_tracker:
+                self.session_tracker.initialize_from_account(self.account_info.balance)
+                self.session_tracker.update_and_publish()
             
         except Exception as e:
             logger.error(f"[FAIL] MT5 connection failed: {e}")
@@ -168,10 +193,14 @@ class LiveTradingOrchestrated:
             logger.info(f"[OK] ModuleOrchestrator initialized - {len(self.orchestrator.modules)} modules loaded")
             
             # Verify critical modules are loaded
-            critical_modules = ["PPOAgentShell", "ArbiterLogic", "Executor", "PositionManager"]
-            for name in critical_modules:
+            # NOTE: ArbiterLogic runs inside PPOAgentShell (it's not a standalone orchestrator module).
+            critical_modules = ["PPOAgentShell", "Executor", "PositionManager"]
+            optional_modules = ["ArbiterLogic"]
+            for name in critical_modules + optional_modules:
                 if name in self.orchestrator.modules:
                     logger.info(f"     ✓ {name}")
+                elif name == "ArbiterLogic" and "PPOAgentShell" in self.orchestrator.modules:
+                    logger.info("     ✓ ArbiterLogic (embedded in PPOAgentShell)")
                 else:
                     logger.warning(f"     ✗ {name} NOT LOADED - trading may not work!")
             
@@ -214,6 +243,24 @@ class LiveTradingOrchestrated:
                 # Update market data in InfoBus
                 if market_data:
                     self.info_bus.set("market_data", market_data, module="LiveTrading", thesis="market data update")
+                
+                # Update session tracker (v5.5 governor observation)
+                if self.session_tracker:
+                    self.session_tracker.update_and_publish()
+                    
+                    # Check for trade close events from Executor
+                    try:
+                        last_trade_result = self.info_bus.get("last_trade_result", module="LiveTrading", default=None)
+                        if last_trade_result and isinstance(last_trade_result, dict):
+                            trade_id = last_trade_result.get("trade_id")
+                            # Only process if it's a new trade (track by id)
+                            if trade_id and trade_id != getattr(self, "_last_processed_trade_id", None):
+                                pnl = float(last_trade_result.get("pnl", 0))
+                                self.session_tracker.on_trade_close(pnl)
+                                self._last_processed_trade_id = trade_id
+                                logger.info(f"[SessionTracker] Trade closed: pnl={pnl:.2f}")
+                    except Exception:
+                        pass  # Best-effort trade tracking
                 
                 # Execute orchestrator step - THIS RUNS EVERYTHING:
                 #   - PPOAgentShell builds observations and runs model.predict()

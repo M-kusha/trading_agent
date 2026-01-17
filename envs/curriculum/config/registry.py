@@ -53,9 +53,13 @@ THRESHOLD_FIELDS: Set[str] = {
     "max_dd_breach_rate",
     "max_consecutive_loss_rate",
     "max_win_rate_std",
+    "min_trades_per_episode_for_win_rate_stability",
+    "max_win_rate_wilson_width",
     "max_pnl_std",
     "min_trade_count_avg",
     "min_entropy",
+    "max_mask_collapse_rate",
+    "max_stop_mode_rate",
 }
 
 THRESHOLD_ALIASES: Dict[str, str] = {

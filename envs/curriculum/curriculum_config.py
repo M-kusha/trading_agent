@@ -225,6 +225,10 @@ def get_explorer_config() -> CurriculumStageConfig:
             max_trades_per_day=50,            # Very permissive
             max_trades_per_session=25,
             max_consecutive_losses=20,        # Very permissive
+            loss_layer_stop=19,               # Block at 19 to prevent reaching 20 = no breach
+            # Session budget (v5.5): Very permissive for exploration
+            session_loss_limit_pct=0.99,      # Effectively infinite
+            session_consecutive_loss_limit=99,
             enforce_session_windows=False,
             enforce_no_new_trades_window=False,
             enforce_weekend_block=False,
@@ -448,6 +452,10 @@ def get_experimenter_config() -> CurriculumStageConfig:
             max_trades_per_day=30,  # FIX: Reduced from 40 (soft limit is 18)
             max_trades_per_session=15,  # FIX: Reduced from 20
             max_consecutive_losses=15,
+            loss_layer_stop=14,               # Block at 14 to prevent reaching 15 = no breach
+            # Session budget (v5.5): Very permissive for experimentation
+            session_loss_limit_pct=0.99,      # Effectively infinite
+            session_consecutive_loss_limit=99,
             enforce_session_windows=False,
             enforce_no_new_trades_window=False,
             enforce_weekend_block=False,
@@ -681,6 +689,10 @@ def get_trend_student_config() -> CurriculumStageConfig:
             max_trades_per_day=25,
             max_trades_per_session=12,
             max_consecutive_losses=10,
+            loss_layer_stop=9,                # Block at 9 to prevent reaching 10 = no breach
+            # Session budget (v5.5): Starting to introduce session awareness
+            session_loss_limit_pct=0.50,      # 50% max session loss
+            session_consecutive_loss_limit=20,
             enforce_session_windows=False,
             enforce_no_new_trades_window=False,
             enforce_weekend_block=False,
@@ -916,6 +928,10 @@ def get_session_student_config() -> CurriculumStageConfig:
             max_trades_per_day=20,
             max_trades_per_session=10,
             max_consecutive_losses=8,
+            loss_layer_stop=7,                # Block at 7 to prevent reaching 8 = no breach
+            # Session budget (v5.5): KEY stage for session budget learning
+            session_loss_limit_pct=0.20,      # 20% max session loss
+            session_consecutive_loss_limit=10,
             enforce_session_windows=True,      # KEY: Session awareness
             enforce_no_new_trades_window=True,
             enforce_weekend_block=True,
@@ -1181,6 +1197,10 @@ def get_timing_student_config() -> CurriculumStageConfig:
             max_trades_per_day=14,        # AUDIT: Reduced from 18
             max_trades_per_session=7,     # AUDIT: Reduced from 9
             max_consecutive_losses=7,
+            loss_layer_stop=6,                # Block at 6 to prevent reaching 7 = no breach
+            # Session budget (v5.5): Tightening further
+            session_loss_limit_pct=0.15,      # 15% max session loss
+            session_consecutive_loss_limit=8,
             enforce_session_windows=True,
             enforce_no_new_trades_window=True,
             enforce_weekend_block=True,
@@ -1431,6 +1451,10 @@ def get_integrator_config() -> CurriculumStageConfig:
             max_trades_per_day=14,
             max_trades_per_session=7,
             max_consecutive_losses=6,
+            loss_layer_stop=5,                # Block at 5 to prevent reaching 6 = no breach
+            # Session budget (v5.5): Prop firm discipline emerging
+            session_loss_limit_pct=0.10,      # 10% max session loss
+            session_consecutive_loss_limit=6,
             enforce_session_windows=True,
             enforce_no_new_trades_window=True,
             enforce_weekend_block=True,
@@ -1669,10 +1693,15 @@ def get_risk_manager_config() -> CurriculumStageConfig:
             per_step_shaping_enabled=True,
             holding_cost_per_bar=0.0003,  # Light holding cost
             patience_shaping_enabled=True,
-            patience_bonus_per_bar=0.0015, # Stronger patience bonus
+            patience_bonus_per_bar=0.002,  # BOOSTED: Was 0.0015
             patience_quality_threshold=0.40,
-            per_step_min=-0.04,
-            per_step_max=0.04,
+            per_step_min=-0.06,  # Monotonic: -0.04 → -0.06 → -0.08 → -0.10 → -0.12
+            per_step_max=0.05,   # Monotonic: 0.04 → 0.05 → 0.05 → 0.05 → 0.05
+            
+            # LOSS STREAK CAUTION: Start teaching this at RISK_MANAGER
+            loss_streak_caution_enabled=True,
+            loss_streak_caution_base=0.025,  # Lighter than STRATEGIST - introduce gradually
+            loss_streak_caution_cap=0.20,
             
             # ACTIVITY CONSISTENCY: Quality over quantity
             # Target moderate activity matching Stage 5 (was 31.0 which contradicts anti-churn tightening)
@@ -1692,6 +1721,10 @@ def get_risk_manager_config() -> CurriculumStageConfig:
             max_trades_per_day=12,
             max_trades_per_session=6,
             max_consecutive_losses=5,
+            loss_layer_stop=4,                # Block at 4 to prevent reaching 5 = no breach
+            # Session budget (v5.5): Risk-focused tightening
+            session_loss_limit_pct=0.08,      # 8% max session loss
+            session_consecutive_loss_limit=5,
             enforce_session_windows=True,
             enforce_no_new_trades_window=True,
             enforce_weekend_block=True,
@@ -1918,23 +1951,28 @@ def get_strategist_config() -> CurriculumStageConfig:
             
             streak_modifier_enabled=True,
             win_streak_bonus_per_win=0.025,
-            loss_streak_penalty_per_loss=0.20,  # FIX: Was 0.50 (5x jump from Stage 6). Now smooth: 0.10→0.20→0.30→0.40
+            loss_streak_penalty_per_loss=0.35,  # BOOSTED: Was 0.20 - need stronger signal to stop loss streaks
             
             anti_churn_enabled=True,
-            daily_trade_soft_limit=8,    # GPT FIX: Increased from 5
-            churn_penalty_per_trade=0.06, # GPT FIX: Reduced from 0.08
+            daily_trade_soft_limit=8,
+            churn_penalty_per_trade=0.06,
             
             hard_block_penalty=0.035,
             soft_block_penalty=0.018,
             
             # PER-STEP SHAPING: Strong patience discipline
             per_step_shaping_enabled=True,
-            holding_cost_per_bar=0.0004,  # Moderate holding cost
+            holding_cost_per_bar=0.0004,
             patience_shaping_enabled=True,
-            patience_bonus_per_bar=0.0018, # Strong patience bonus
+            patience_bonus_per_bar=0.003,  # BOOSTED: Was 0.0018 - stronger reward for waiting
             patience_quality_threshold=0.42,
-            per_step_min=-0.05,
-            per_step_max=0.05,
+            per_step_min=-0.08,  # Monotonic: -0.06 → -0.08 → -0.10 → -0.12
+            per_step_max=0.05,   # Monotonic: 0.04 → 0.05 → 0.05 → 0.05
+            
+            # LOSS STREAK CAUTION: Penalize entries while tilted
+            loss_streak_caution_enabled=True,
+            loss_streak_caution_base=0.04,   # Escalating penalty
+            loss_streak_caution_cap=0.08,    # Capped to fit bounds
             
             # ACTIVITY CONSISTENCY: Quality focus
             # Target moderate activity that doesn't spike vs RISK_MANAGER (6.0)
@@ -1953,7 +1991,11 @@ def get_strategist_config() -> CurriculumStageConfig:
             max_positions=1,
             max_trades_per_day=10,
             max_trades_per_session=5,
-            max_consecutive_losses=4,
+            max_consecutive_losses=5,  # MONOTONIC: Same as RISK_MANAGER, only tighten rate
+            loss_layer_stop=4,                # Block at 4 to prevent reaching 5 = no breach
+            # Session budget (v5.5): Near-prop-firm discipline
+            session_loss_limit_pct=0.05,      # 5% max session loss
+            session_consecutive_loss_limit=4,
             enforce_session_windows=True,
             enforce_no_new_trades_window=True,
             enforce_weekend_block=True,
@@ -2198,10 +2240,15 @@ def get_professional_config() -> CurriculumStageConfig:
             per_step_shaping_enabled=True,
             holding_cost_per_bar=0.0005,  # Real holding cost
             patience_shaping_enabled=True,
-            patience_bonus_per_bar=0.002,  # Full patience bonus
+            patience_bonus_per_bar=0.003,  # BOOSTED: Was 0.002
             patience_quality_threshold=0.45,
-            per_step_min=-0.05,
+            per_step_min=-0.10,  # WIDENED: Allow loss_streak_caution penalty room
             per_step_max=0.05,
+            
+            # LOSS STREAK CAUTION: Strong at this stage
+            loss_streak_caution_enabled=True,
+            loss_streak_caution_base=0.05,   # Stronger than STRATEGIST
+            loss_streak_caution_cap=0.35,
             
             # ACTIVITY CONSISTENCY: Near-live discipline
             # Target moderate activity that doesn't spike vs STRATEGIST (5.5)
@@ -2221,6 +2268,10 @@ def get_professional_config() -> CurriculumStageConfig:
             max_trades_per_day=8,
             max_trades_per_session=4,
             max_consecutive_losses=4,
+            loss_layer_stop=3,                # Block at 3 to prevent reaching 4 = no breach
+            # Session budget (v5.5): Prop firm discipline
+            session_loss_limit_pct=0.04,      # 4% max session loss
+            session_consecutive_loss_limit=3,
             enforce_session_windows=True,
             enforce_no_new_trades_window=True,
             enforce_weekend_block=True,
@@ -2252,10 +2303,14 @@ def get_professional_config() -> CurriculumStageConfig:
             min_avg_r_multiple=0.12,
             min_entropy=0.08,  # AUDIT FIX: Must match entropy_targets.min_entropy
             max_win_rate_std=0.14,
+            min_trades_per_episode_for_win_rate_stability=3,
+            max_win_rate_wilson_width=0.12,
             max_pnl_std=5000.0,
             min_trade_count_avg=5.0,
             max_dd_breach_rate=0.06,
-            max_consecutive_loss_rate=0.12,  # FIX: Was 0.15, now monotonically decreasing from Stage 7 (0.14)
+            max_consecutive_loss_rate=0.14,  # MONOTONIC: Same as STRATEGIST, count already tightened (5→4)
+            max_mask_collapse_rate=0.12,
+            max_stop_mode_rate=0.10,
             evaluation_window=140,
         ),
         max_steps_per_episode=2800,
@@ -2465,10 +2520,15 @@ def get_live_ready_config() -> CurriculumStageConfig:
             per_step_shaping_enabled=True,
             holding_cost_per_bar=0.0005,  # Real holding cost
             patience_shaping_enabled=True,
-            patience_bonus_per_bar=0.002,  # Full patience bonus
+            patience_bonus_per_bar=0.004,  # BOOSTED: Was 0.002 - maximum patience reward
             patience_quality_threshold=0.48,
-            per_step_min=-0.05,
+            per_step_min=-0.12,  # WIDENED: Allow loss_streak_caution penalty room
             per_step_max=0.05,
+            
+            # LOSS STREAK CAUTION: Maximum at live-ready
+            loss_streak_caution_enabled=True,
+            loss_streak_caution_base=0.06,   # Strongest penalty
+            loss_streak_caution_cap=0.40,
             
             # ACTIVITY CONSISTENCY: Live-ready discipline
             # Target moderate activity that doesn't spike vs PROFESSIONAL (5.0)
@@ -2487,7 +2547,11 @@ def get_live_ready_config() -> CurriculumStageConfig:
             max_positions=1,
             max_trades_per_day=7,
             max_trades_per_session=4,
-            max_consecutive_losses=3,
+            max_consecutive_losses=4,  # MONOTONIC: Same as PROFESSIONAL, only tighten rate
+            loss_layer_stop=3,                # Live-ready strict discipline
+            # Session budget (v5.5): FTMO-ready strict discipline
+            session_loss_limit_pct=0.03,      # 3% max session loss (FTMO daily is 5%)
+            session_consecutive_loss_limit=3,
             enforce_session_windows=True,
             enforce_no_new_trades_window=True,
             enforce_weekend_block=True,
@@ -2519,10 +2583,14 @@ def get_live_ready_config() -> CurriculumStageConfig:
             min_avg_r_multiple=0.14,
             min_entropy=0.05,
             max_win_rate_std=0.12,
+            min_trades_per_episode_for_win_rate_stability=3,
+            max_win_rate_wilson_width=0.10,
             max_pnl_std=4500.0,
             min_trade_count_avg=5.5,
             max_dd_breach_rate=0.05,
-            max_consecutive_loss_rate=0.10,  # FIX: Was 0.12, now monotonically decreasing from Stage 8 (0.12)
+            max_consecutive_loss_rate=0.12,  # MONOTONIC: Tighter than PROFESSIONAL (0.14)
+            max_mask_collapse_rate=0.10,
+            max_stop_mode_rate=0.08,
             evaluation_window=160,
         ),
         max_steps_per_episode=3000,
