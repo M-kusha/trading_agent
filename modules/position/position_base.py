@@ -236,7 +236,7 @@ class PositionManagerBase(
         )
 
         self._instruments_forced = instruments is not None
-        self.instruments = instruments or ["XAUUSD", "EURUSD"]
+        self.instruments = instruments or ["XAUUSD"]
         self.genome = genome or {}
         self.env = None
 
@@ -323,7 +323,7 @@ class PositionManagerBase(
         instruments = kwargs.get("instruments", None)
         if instruments is not None:
             self._instruments_forced = True
-            self.instruments = instruments or ["XAUUSD", "EURUSD"]
+            self.instruments = instruments or ["XAUUSD"]
 
         self.genome = kwargs.get("genome", None) or self.genome or {}
         self.env = kwargs.get("env", None) or self.env

@@ -303,13 +303,13 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
                     bus.set('trading_session', 'unknown', module='SessionManager', thesis='Trading session label (init fallback)')
                     bus.set('session_type', 'unknown', module='SessionManager', thesis='Session type label (init fallback)')
                 
-                # Also publish per-instrument session for HorizonAligner
-                try:
-                    bus.set('session_canonical_by_instrument',
-                            {"EURUSD": "unknown", "XAUUSD": "unknown", "EUR_USD": "unknown", "XAU_USD": "unknown"},
-                            module='SessionManager', thesis='Per-instrument session labels (init)')
-                except Exception:
-                    pass
+                    # Also publish per-instrument session for HorizonAligner
+                    try:
+                        bus.set('session_canonical_by_instrument',
+                             {"XAUUSD": "unknown", "XAU_USD": "unknown"},
+                             module='SessionManager', thesis='Per-instrument session labels (init)')
+                    except Exception:
+                        pass
 
                 try:
                     bus.declare_owner('execution_mode', 'SessionManager')
@@ -516,7 +516,7 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
         # All instruments share the same session in this implementation
         # Could be enhanced for multi-market support
         canonical = self._session_canonical()
-        instruments = ["EURUSD", "XAUUSD", "EUR/USD", "XAU/USD"]
+        instruments = ["XAUUSD", "XAU/USD", "XAU_USD"]
         return {inst: canonical for inst in instruments}
 
     def _get_daily_pnl(self, session_pnl_data: Dict[str, Any], trading_result: Any) -> float:

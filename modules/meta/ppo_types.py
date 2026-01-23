@@ -841,5 +841,5 @@ class GatingResult:
 # CONSTANTS
 # ═══════════════════════════════════════════════════════════════════
 
-DEFAULT_INSTRUMENTS: List[str] = ["XAUUSD", "EURUSD"]
+DEFAULT_INSTRUMENTS: List[str] = ["XAUUSD"]
 PRIMARY_INSTRUMENT: str = "XAUUSD"

@@ -13,6 +13,8 @@ Architecture Overview:
 │
 ├── experts/    - Voting members that generate proposals
 │   ├── base.py       - VotingExpertBase abstract class
+│   ├── trend.py      - TrendExpert (structure + MTF trend)
+│   ├── momentum.py   - MomentumExpert (divergence + OB/OS)
 │   ├── theme.py      - ThemeExpert (risk-on/off, volatility, trending)
 │   └── seasonality.py- SeasonalityRiskExpert (session-based adjustments)
 │
@@ -70,6 +72,8 @@ from .core.base import VotingModuleBase
 # ═══════════════════════════════════════════════════════════════════════════════
 
 from .experts.base import VotingExpertBase
+from .experts.trend import TrendExpert
+from .experts.momentum import MomentumExpert
 from .experts.theme import ThemeExpert
 from .experts.seasonality import SeasonalityRiskExpert
 
@@ -134,6 +138,8 @@ __all__ = [
     "VotingModuleBase",
     "VotingExpertBase",
     # Experts
+    "TrendExpert",
+    "MomentumExpert",
     "ThemeExpert",
     "SeasonalityRiskExpert",
     # Stages

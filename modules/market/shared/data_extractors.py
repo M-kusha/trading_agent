@@ -257,7 +257,7 @@ class UnifiedDataExtractor:
         """Generate realistic synthetic data for testing."""
         self.trace("Generating synthetic data", level="WARNING")
         rng = np.random.default_rng(42)  # reproducible
-        instruments = ['EURUSD', 'XAUUSD']
+        instruments = ['XAUUSD']
         data: Dict[str, Any] = {}
 
         for instrument in instruments:

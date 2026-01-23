@@ -43,7 +43,7 @@ MIN_TRADES_FOR_COVERAGE = 3
 
 class VolatilityRegime(Enum):
     """Volatility regime classification."""
-    LOW = "low"           # ATR below 20th percentile
+    LOW = "low"           #  below 20th percentile
     MEDIUM = "medium"     # ATR between 20th and 80th percentile
     HIGH = "high"         # ATR above 80th percentile
 

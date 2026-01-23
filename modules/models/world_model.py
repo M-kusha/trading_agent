@@ -714,9 +714,19 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
                 'model_confidence': self.model_confidence,
                 'prediction_quality': self.prediction_quality,
                 'stability_score': self.stability_score,
+                'training_quality': self.training_quality,
                 'last_training_time': self.last_training_time.isoformat() if self.last_training_time else None,
                 'device': str(self.device),
                 'timestamp': datetime.datetime.now().isoformat()
+            }
+            predictions_data['latest_predictions'] = {
+                'price_changes': [0.0, 0.0, 0.0, 0.0],
+                'volatility_predictions': [0.5],
+                'regime_probabilities': [0.25, 0.25, 0.25, 0.25],
+                'confidence': 0.0,
+                'predicted_regime': -1,
+                'confidence_level': 'very_low',
+                'timestamp': predictions_data['timestamp'],
             }
             if result.get('predictions_generated') and 'predictions' in result:
                 _p = result['predictions']
@@ -726,22 +736,56 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
                     regime_probs = _p['regime_probabilities'].tolist() if hasattr(_p['regime_probabilities'], 'tolist') else list(_p['regime_probabilities'])
                 except Exception:
                     price_changes, vol_preds, regime_probs = [], [], []
-                predictions_data['latest_predictions'] = {
-                    'price_changes': price_changes,
-                    'volatility_predictions': vol_preds,
-                    'regime_probabilities': regime_probs,
-                    'confidence': _p.get('confidence', 0.0),
-                    'predicted_regime': _p.get('predicted_regime', -1),
-                    'confidence_level': _p.get('confidence_level', 'very_low'),
-                    'timestamp': _p.get('timestamp')
-                }
+                    predictions_data['latest_predictions'] = {
+                        'price_changes': price_changes,
+                        'volatility_predictions': vol_preds,
+                        'regime_probabilities': regime_probs,
+                        'confidence': _p.get('confidence', 0.0),
+                        'predicted_regime': _p.get('predicted_regime', -1),
+                        'confidence_level': _p.get('confidence_level', 'very_low'),
+                        'timestamp': _p.get('timestamp')
+                    }
+
+            # Per-step predictive confidence (do not confuse with model_confidence).
+            latest_pred_conf = 0.0
+            try:
+                lp = predictions_data.get('latest_predictions', {})
+                if isinstance(lp, dict):
+                    latest_pred_conf = float(lp.get('confidence', 0.0) or 0.0)
+            except Exception:
+                latest_pred_conf = 0.0
+
+            raw_scenarios: List[Any] = []
+            if isinstance(self.scenario_cache, dict):
+                raw_scenarios = list(self.scenario_cache.get('scenarios', []) or [])
+
+            scenarios_out: List[Dict[str, Any]] = []
+            if raw_scenarios:
+                prob = 1.0 / max(len(raw_scenarios), 1)
+                for s in raw_scenarios:
+                    scenario_id = None
+                    outcome = 0.0
+                    if isinstance(s, dict):
+                        scenario_id = s.get('scenario_id')
+                        summary = s.get('summary')
+                        if isinstance(summary, dict):
+                            tr = summary.get('total_returns')
+                            if isinstance(tr, (list, tuple)) and tr:
+                                try:
+                                    outcome = float(tr[0])
+                                except Exception:
+                                    outcome = 0.0
+                    scenarios_out.append({'scenario_id': scenario_id, 'probability': float(prob), 'outcome': float(outcome)})
+            else:
+                scenarios_out = [{'scenario_id': None, 'probability': 1.0, 'outcome': 0.0, 'fallback': True}]
 
             scenario_data: Dict[str, Any] = {
-                'scenarios_available': bool(self.scenario_cache),
-                'scenario_count': len(self.scenario_cache.get('scenarios', [])) if self.scenario_cache else 0,
-                'scenario_timestamp': self.scenario_cache.get('timestamp') if self.scenario_cache else None,
-                'scenario_parameters': self.scenario_cache.get('parameters', {}) if self.scenario_cache else {},
-                'scenarios': self.scenario_cache.get('scenarios', []) if self.scenario_cache else []
+                'scenarios_available': bool(raw_scenarios),
+                'scenarios_generated': bool(raw_scenarios),
+                'scenario_count': len(scenarios_out),
+                'scenario_timestamp': self.scenario_cache.get('timestamp') if isinstance(self.scenario_cache, dict) else None,
+                'scenario_parameters': self.scenario_cache.get('parameters', {}) if isinstance(self.scenario_cache, dict) else {},
+                'scenarios': scenarios_out,
             }
 
             analytics_data: Dict[str, Any] = {
@@ -774,7 +818,12 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             }
 
             confidence_data: Dict[str, Any] = {
-                'current_confidence': self.model_confidence,
+                # Canonical names (to avoid "confidence" mix-ups downstream)
+                'predictive_confidence': latest_pred_conf,
+                'training_quality': self.training_quality,
+                'model_confidence': self.model_confidence,
+                # Backward-compatible keys (legacy consumers may still read these)
+                'current_confidence': latest_pred_conf,
                 'prediction_confidence': self.prediction_quality,
                 'stability_confidence': self.stability_score,
                 'training_confidence': self.training_quality,
@@ -2340,6 +2389,15 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
                 'device': str(self.device),
                 'timestamp': datetime.datetime.now().isoformat()
             }
+            predictions_data['latest_predictions'] = {
+                'price_changes': [0.0, 0.0, 0.0, 0.0],
+                'volatility_predictions': [0.5],
+                'regime_probabilities': [0.25, 0.25, 0.25, 0.25],
+                'confidence': 0.0,
+                'predicted_regime': -1,
+                'confidence_level': 'very_low',
+                'timestamp': predictions_data['timestamp'],
+            }
             
             # Add latest predictions if available
             if result.get('predictions_generated') and 'predictions' in result:
@@ -2363,22 +2421,45 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
                 thesis=thesis
             )
             
-            # Scenario generation
-            if self.scenario_cache:
-                scenario_data = {
-                    'scenarios_available': True,
-                    'scenario_count': len(self.scenario_cache.get('scenarios', [])),
-                    'scenario_timestamp': self.scenario_cache.get('timestamp'),
-                    'scenario_parameters': self.scenario_cache.get('parameters', {}),
-                    'scenarios': self.scenario_cache.get('scenarios', [])
-                }
-                
-                self.smart_bus.set(
-                    'scenario_generation',
-                    scenario_data,
-                    module='EnhancedWorldModel',
-                    thesis="Market scenario generation and analysis"
-                )
+            raw_scenarios: List[Any] = []
+            if isinstance(self.scenario_cache, dict):
+                raw_scenarios = list(self.scenario_cache.get('scenarios', []) or [])
+
+            scenarios_out: List[Dict[str, Any]] = []
+            if raw_scenarios:
+                prob = 1.0 / max(len(raw_scenarios), 1)
+                for s in raw_scenarios:
+                    scenario_id = None
+                    outcome = 0.0
+                    if isinstance(s, dict):
+                        scenario_id = s.get('scenario_id')
+                        summary = s.get('summary')
+                        if isinstance(summary, dict):
+                            tr = summary.get('total_returns')
+                            if isinstance(tr, (list, tuple)) and tr:
+                                try:
+                                    outcome = float(tr[0])
+                                except Exception:
+                                    outcome = 0.0
+                    scenarios_out.append({'scenario_id': scenario_id, 'probability': float(prob), 'outcome': float(outcome)})
+            else:
+                scenarios_out = [{'scenario_id': None, 'probability': 1.0, 'outcome': 0.0, 'fallback': True}]
+
+            scenario_data = {
+                'scenarios_available': bool(raw_scenarios),
+                'scenarios_generated': bool(raw_scenarios),
+                'scenario_count': len(scenarios_out),
+                'scenario_timestamp': self.scenario_cache.get('timestamp') if isinstance(self.scenario_cache, dict) else None,
+                'scenario_parameters': self.scenario_cache.get('parameters', {}) if isinstance(self.scenario_cache, dict) else {},
+                'scenarios': scenarios_out,
+            }
+
+            self.smart_bus.set(
+                'scenario_generation',
+                scenario_data,
+                module='EnhancedWorldModel',
+                thesis="Market scenario generation and analysis",
+            )
             
             # World model analytics
             analytics_data = {
@@ -2496,12 +2577,21 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             'device': str(self.device),
             'timestamp': datetime.datetime.now().isoformat()
         }
+        predictions_data['latest_predictions'] = {
+            'price_changes': [0.0, 0.0, 0.0, 0.0],
+            'volatility_predictions': [0.5],
+            'regime_probabilities': [0.25, 0.25, 0.25, 0.25],
+            'confidence': 0.0,
+            'predicted_regime': -1,
+            'confidence_level': 'very_low',
+            'timestamp': predictions_data['timestamp'],
+        }
         scenario_data = {
             'scenarios_available': False,
             'scenario_count': 0,
             'scenario_timestamp': None,
             'scenario_parameters': {},
-            'scenarios': []
+            'scenarios': [{'scenario_id': None, 'probability': 1.0, 'outcome': 0.0, 'fallback': True}]
         }
         analytics_data = {
             'model_architecture': {
@@ -2590,12 +2680,21 @@ class EnhancedWorldModel(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingM
             'timestamp': datetime.datetime.now().isoformat(),
             'circuit_breaker_state': self.circuit_breaker['state']
         }
+        predictions_data['latest_predictions'] = {
+            'price_changes': [0.0, 0.0, 0.0, 0.0],
+            'volatility_predictions': [0.5],
+            'regime_probabilities': [0.25, 0.25, 0.25, 0.25],
+            'confidence': 0.0,
+            'predicted_regime': -1,
+            'confidence_level': 'very_low',
+            'timestamp': predictions_data['timestamp'],
+        }
         scenario_data = {
             'scenarios_available': False,
             'scenario_count': 0,
             'scenario_timestamp': None,
             'scenario_parameters': {},
-            'scenarios': []
+            'scenarios': [{'scenario_id': None, 'probability': 1.0, 'outcome': 0.0, 'fallback': True}]
         }
         analytics_data = {
             'model_architecture': {

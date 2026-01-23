@@ -41,7 +41,7 @@ class RegimeMatrixComponent(BaseMarketComponent):
             'accuracy_threshold': 0.60,
 
             # Instruments to look for
-            'instruments': ('XAUUSD', 'EURUSD'),
+            'instruments': ('XAUUSD',),
 
             # Determinism
             'seed': 1337,

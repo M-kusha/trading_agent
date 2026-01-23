@@ -135,7 +135,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
         else:
             self._cfg = config
 
-        self.instruments = instruments or ["EURUSD", "XAUUSD"]
+        self.instruments = instruments or ["XAUUSD"]
 
         # Minimal pre-initialization so BaseModule.__init__ can safely call self._initialize()
         # without attribute errors.
@@ -365,6 +365,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                 "var_95": current_var,
                 "max_correlation": max_correlation,
                 "risk_adjustment": risk_adjustment,
+                "total_exposure": float(0.0),
                 "timestamp": datetime.datetime.now().isoformat(),
             }
             self.smart_bus.set(
@@ -400,6 +401,8 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                 "risk_data",
                 {
                     "current_mode": mode.value if isinstance(mode, RiskMode) else str(mode),
+                    "risk_budget_used": 0.0,
+                    "risk_budget_available": 1.0,
                     "metrics": {
                         "var_95": current_var,
                         "max_correlation": max_correlation,
@@ -482,6 +485,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                     "max_correlation": self.max_correlation,
                     "risk_adjustment": self.risk_adjustment,
                     "bootstrap_mode": self.bootstrap_mode,
+                    "total_exposure": self.performance_metrics.get("total_exposure", 0.0),
                     "timestamp": datetime.datetime.now().isoformat(),
                 },
                 # Minimal risk_metrics bundle for contract compliance
@@ -503,6 +507,10 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                 # Consolidated risk data bundle
                 "risk_data": {
                     "current_mode": self.current_mode.value,
+                    "risk_budget_used": float(getattr(self, "daily_risk_used", 0.0)),
+                    "risk_budget_available": float(
+                        max(0.0, 1.0 - float(getattr(self, "daily_risk_used", 0.0)))
+                    ),
                     "metrics": {
                         "var_95": self.current_var,
                         "max_correlation": self.max_correlation,
@@ -1562,6 +1570,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                 "max_correlation": self.max_correlation,
                 "risk_adjustment": self.risk_adjustment,
                 "bootstrap_mode": self.bootstrap_mode,
+                "total_exposure": self.performance_metrics.get("total_exposure", 0.0),
                 "timestamp": datetime.datetime.now().isoformat(),
             },
             "position_limits": {
@@ -1580,6 +1589,10 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             },
             "risk_data": {
                 "current_mode": self.current_mode.value,
+                "risk_budget_used": float(getattr(self, "daily_risk_used", 0.0)),
+                "risk_budget_available": float(
+                    max(0.0, 1.0 - float(getattr(self, "daily_risk_used", 0.0)))
+                ),
                 "metrics": {
                     "var_95": self.current_var,
                     "max_correlation": self.max_correlation,
@@ -1659,6 +1672,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                 "var_95": 0.1,
                 "max_correlation": 0.9,
                 "risk_adjustment": self.min_risk_adjustment,
+                "total_exposure": self.performance_metrics.get("total_exposure", 0.0),
                 "timestamp": datetime.datetime.now().isoformat(),
             },
             "position_limits": {
@@ -1677,6 +1691,10 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             },
             "risk_data": {
                 "current_mode": RiskMode.EMERGENCY.value,
+                "risk_budget_used": float(getattr(self, "daily_risk_used", 0.0)),
+                "risk_budget_available": float(
+                    max(0.0, 1.0 - float(getattr(self, "daily_risk_used", 0.0)))
+                ),
                 "metrics": {
                     "var_95": 0.1,
                     "max_correlation": 0.9,

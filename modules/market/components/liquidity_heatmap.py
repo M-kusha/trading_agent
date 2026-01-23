@@ -280,7 +280,7 @@ class LiquidityHeatmapComponent(BaseMarketComponent):
                 if not isinstance(nested, dict):
                     continue
                 # choose instrument and timeframe
-                inst_pref = ['EURUSD', 'XAUUSD'] + list(nested.keys())
+                inst_pref = ['XAUUSD'] + list(nested.keys())
                 tf_pref = ['M1', 'M5', 'M15', 'M30', 'H1', 'H4', 'D1']
                 chosen_inst = next((s for s in inst_pref if s in nested), None)
                 if not chosen_inst:

@@ -106,6 +106,7 @@ class LiveActionMaskBuilder:
     def get_action_mask(
         self,
         has_position: bool,
+        trade_open_allowed: Optional[bool] = None,
         has_pending_entry: bool = False,
         has_pending_exit: bool = False,
         current_dd: float = 0.0,
@@ -143,6 +144,11 @@ class LiveActionMaskBuilder:
         # NOTE: We do NOT mask based on timing/drawdown here - agent learned to
         # avoid bad times via penalties, not via masking
         can_enter = (not has_position) and (not has_pending_entry)
+
+        # Global gate: system-level permission for NEW entries (time windows, cooldowns, etc.).
+        # This is applied regardless of enforce_hard_rules.
+        if trade_open_allowed is False:
+            can_enter = False
 
         # Loss-layer governor hard stop (matches PropFirmTradingEnv.action_masks)
         if consecutive_losses >= int(self.config.max_consecutive_losses):

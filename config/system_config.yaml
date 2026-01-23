@@ -96,7 +96,7 @@ execution:
   MarketDataProvider:
     config:
       data_directory: "data/processed"
-      supported_symbols: ["XAUUSD", "EURUSD"]
+      supported_symbols: ["XAUUSD"]
       supported_timeframes: ["M15", "H1", "H4", "D1"]
       primary_timeframe: "H4"
       update_frequency: 1.0  # Update every second for live tick-by-tick data
@@ -116,6 +116,9 @@ execution:
       window_min: 60          # Minimum historical bars to provide (experts need 55-65 bars)
       window_max: 1000        # Maximum historical bars per timeframe (1000 for distinct MTF patterns)
       enable_technical_indicators: true
+      # When true (default): overlay the forming primary-TF bar into multi_timeframe_data/historical_prices.
+      # When false: keep OHLCV windows strictly CLOSED bars (training parity).
+      include_forming_bar_in_primary_tf: true
       timeout_ms: 5000  # Generous timeout for data loading and processing
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -476,7 +479,7 @@ modules:
       model_path: "models/curriculum/best/best_model.zip"
 
       # Instrument order must match the trading config/environment order
-      instruments: ["EURUSD", "XAUUSD"]
+      instruments: ["XAUUSD"]
       primary_instrument: "XAUUSD"
 
       # Core PPO settings
@@ -501,6 +504,8 @@ modules:
       debug: true
       # Live MaskablePPO: hard-enforce timing/trade-count rules to reduce overtrading
       live_mask_enforce_hard_rules: true
+      # Optional: allow NEW entries only once per new primary bar (training cadence)
+      entries_require_new_primary_bar: false
 
   # Memory
   UnifiedMemory:
@@ -600,19 +605,11 @@ modules:
       quality_threshold: 0.95
       timeout_ms: 200
       instruments:
-        EURUSD:
-          timeframes: ['M15', 'H1', 'H4', 'D1']
-          enabled: true
-          priority: "high"
         XAUUSD:
           timeframes: ['M15', 'H1', 'H4', 'D1']
           enabled: true
           priority: "high"
       provides_data:
-        - market_data_EURUSD_M15
-        - market_data_EURUSD_H1
-        - market_data_EURUSD_H4
-        - market_data_EURUSD_D1
         - market_data_XAUUSD_M15
         - market_data_XAUUSD_H1
         - market_data_XAUUSD_H4
@@ -709,11 +706,11 @@ modules:
       local_hard_close_hour: 22     # Must match risk_policy.yaml hard_close_hour
       no_trade_last_minutes: 60
       # TEST MODE: Set to true to allow trades during off-hours (for testing only)
-      allow_off_hours_trading: false
+      allow_off_hours_trading: True
 
   TrendExpert:
     config:
-      instruments: ["EURUSD", "XAUUSD"]
+      instruments: ["XAUUSD"]
 
   # DEPRECATED - use SeasonalityRiskExpert instead
   EnhancedSeasonalityRiskExpert:

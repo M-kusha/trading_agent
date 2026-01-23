@@ -71,7 +71,7 @@ class TimeRiskComponent(BaseMarketComponent):
             'risk_threshold_critical': 0.95,
 
             # Instruments used to derive realized volatility if not provided
-            'instruments': ('XAUUSD', 'EURUSD'),
+            'instruments': ('XAUUSD',),
 
             # Misc
             'timezone': 'UTC',              # informational; we use UTC uniformly

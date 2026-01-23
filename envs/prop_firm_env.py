@@ -69,7 +69,8 @@ import copy
 import warnings
 from datetime import datetime, date
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
-
+from pandas.api.types import is_numeric_dtype
+from typing import Optional
 import numpy as np
 import pandas as pd
 import gymnasium as gym
@@ -796,6 +797,78 @@ class PropFirmTradingEnv(
         except KeyError:
             return 0.0
 
+
+
+    def _df_time_ns(self, df: pd.DataFrame) -> Optional[np.ndarray]:
+        """
+        Return monotonic int64 nanoseconds timestamps for df, using:
+        1) DatetimeIndex if present
+        2) else a time-like column if present
+
+        Always returns a real np.ndarray[int64] (or None).
+        """
+        if df is None or df.empty:
+            return None
+
+        # Prefer DatetimeIndex
+        if isinstance(df.index, pd.DatetimeIndex):
+            idx = df.index
+            try:
+                if idx.tz is not None:
+                    idx = idx.tz_convert(self.tz).tz_localize(None)
+            except Exception:
+                try:
+                    idx = idx.tz_localize(None)
+                except Exception:
+                    pass
+
+            if not idx.is_monotonic_increasing:
+                idx = idx.sort_values()
+
+            return np.asarray(idx.view("int64"), dtype=np.int64)
+
+        # Fallback: time column
+        for tc in ("time", "Time", "timestamp", "datetime", "Datetime"):
+            if tc not in df.columns:
+                continue
+
+            s = df[tc]
+            try:
+                if is_numeric_dtype(s):
+                    # Heuristic: seconds vs milliseconds
+                    v = float(s.iloc[-1]) if len(s) else 0.0
+                    unit = "ms" if v > 1e12 else "s"
+                    dt = pd.to_datetime(s.astype("int64"), unit=unit, utc=True, errors="coerce")
+                else:
+                    dt = pd.to_datetime(s, utc=True, errors="coerce")
+
+                # dt is a Series; convert tz -> local naive, sort, then numpy
+                dt = dt.dt.tz_convert(self.tz).dt.tz_localize(None).sort_values()
+                arr_dt64 = dt.to_numpy(dtype="datetime64[ns]")
+                return arr_dt64.view("int64").astype(np.int64, copy=False)
+
+            except Exception:
+                return None
+
+        return None
+
+
+
+    def _current_primary_time_ns(self, instrument: str) -> Optional[int]:
+        """Get the current primary timeframe bar timestamp (ns) for alignment."""
+        primary_tf = self._primary_tf()
+        primary_df = self.data.get(instrument, {}).get(primary_tf)
+        if primary_df is None or primary_df.empty:
+            return None
+
+        t_ns = self._df_time_ns(primary_df)
+        if t_ns is None or len(t_ns) == 0:
+            return None
+
+        idx = int(np.clip(self.current_step, 0, len(t_ns) - 1))
+        return int(t_ns[idx])
+
+
     def _get_ohlcv(
         self,
         instrument: str,
@@ -803,13 +876,11 @@ class PropFirmTradingEnv(
         timeframe: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        OHLCV slice for (instrument, timeframe) ending at current_step (inclusive).
+        OHLCV slice for (instrument, timeframe) ending at the bar aligned to current primary timestamp.
 
-        IMPROVED (Jan 2025): Now properly time-aligns higher timeframe data.
-        When requesting H1/H4/D1 data, finds the HTF bar that corresponds to
-        the current M15 timestamp instead of using the same index.
-        
-        IMPORTANT: timeframe param exists to satisfy mixin contracts and prevent future TypeErrors.
+        FIX (Jan 2026):
+        - HTF alignment works for DatetimeIndex and for time columns.
+        - Prevents "stale HTF" when HTF has fewer bars than primary.
         """
         tf = str(timeframe) if timeframe is not None else self._primary_tf()
         primary_tf = self._primary_tf()
@@ -828,44 +899,42 @@ class PropFirmTradingEnv(
             self._ohlcv_cache[lb] = {}
             return {}
 
-        # Time alignment for HTF data
-        if tf != primary_tf:
-            # Get current timestamp from primary timeframe
-            primary_df = self.data.get(instrument, {}).get(primary_tf)
-            if primary_df is not None and not primary_df.empty and self.current_step < len(primary_df):
-                time_col = None
-                for tc in ["time", "Time", "timestamp", "datetime"]:
-                    if tc in primary_df.columns:
-                        time_col = tc
-                        break
-                
-                if time_col and time_col in df.columns:
-                    # Get current primary timestamp
-                    current_time = primary_df[time_col].iloc[self.current_step]
-                    
-                    # Find the HTF bar at or before this timestamp
-                    htf_times = df[time_col]
-                    mask = htf_times <= current_time
-                    valid_idx = mask.sum() - 1  # Index of last valid HTF bar
-                    
-                    if valid_idx >= 0:
-                        end = valid_idx + 1
-                        start = max(0, end - lb)
-                    else:
-                        # No valid HTF bars yet
-                        self._ohlcv_cache[lb] = {}
-                        return {}
-                else:
-                    # No time column, fall back to index-based (synthetic ratio)
-                    end = min(self.current_step + 1, len(df))
-                    start = max(0, end - lb)
-            else:
-                end = min(self.current_step + 1, len(df))
-                start = max(0, end - lb)
-        else:
-            # Primary timeframe - use index directly
-            end = min(self.current_step + 1, len(df))
+        # Ensure stable ordering
+        try:
+            if isinstance(df.index, pd.DatetimeIndex) and not df.index.is_monotonic_increasing:
+                df = df.sort_index()
+        except Exception:
+            pass
+
+        # Decide end/start
+        if tf == primary_tf:
+            end = min(int(self.current_step) + 1, len(df))
             start = max(0, end - lb)
+        else:
+            # Align HTF bar to current primary timestamp
+            cur_t = self._current_primary_time_ns(instrument)
+            htf_t = self._df_time_ns(df)
+
+            if cur_t is not None and htf_t is not None and len(htf_t) > 0:
+                # Find last HTF bar with timestamp <= current primary bar timestamp
+                pos = int(np.searchsorted(htf_t, cur_t, side="right") - 1)
+                if pos < 0:
+                    self._ohlcv_cache[lb] = {}
+                    return {}
+                end = min(pos + 1, len(df))
+                start = max(0, end - lb)
+            else:
+                # LAST resort fallback: map by timeframe ratio instead of raw index
+                try:
+                    base_min = max(1, int(timeframe_to_minutes(primary_tf)))
+                    tgt_min = max(1, int(timeframe_to_minutes(tf)))
+                    ratio = max(1, int(round(tgt_min / float(base_min))))
+                except Exception:
+                    ratio = 1
+
+                approx_end = int((int(self.current_step) + 1) / ratio)
+                end = int(np.clip(approx_end, 1, len(df)))
+                start = max(0, end - lb)
 
         try:
             open_col = self._resolve_column(df, "open")
@@ -884,27 +953,20 @@ class PropFirmTradingEnv(
             "close": df[close_col].iloc[start:end].to_numpy(dtype=np.float64, copy=False),
         }
 
-        vol_col = None
-        for v in ["volume", "Volume", "VOLUME"]:
-            if v in df.columns:
-                vol_col = v
-                break
-        if vol_col:
-            out["volume"] = df[vol_col].iloc[start:end].to_numpy(dtype=np.float64, copy=False)
-        else:
-            out["volume"] = np.ones(end - start, dtype=np.float64)
+        vol_col = next((c for c in ("volume", "Volume", "VOLUME") if c in df.columns), None)
+        out["volume"] = (
+            df[vol_col].iloc[start:end].to_numpy(dtype=np.float64, copy=False)
+            if vol_col
+            else np.ones(end - start, dtype=np.float64)
+        )
 
-        # Extract spread from data if available (real FTMO spreads)
-        spread_col = None
-        for s in ["spread", "Spread", "SPREAD"]:
-            if s in df.columns:
-                spread_col = s
-                break
+        spread_col = next((c for c in ("spread", "Spread", "SPREAD") if c in df.columns), None)
         if spread_col:
             out["spread"] = df[spread_col].iloc[start:end].to_numpy(dtype=np.float64, copy=False)
 
         self._ohlcv_cache[lb] = out
         return out
+
 
     def _get_pip_value(self, instrument: str) -> Tuple[float, float]:
         """

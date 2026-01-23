@@ -186,7 +186,7 @@ class UnifiedMarketModule(
             # market_regime_by_instrument - used by HorizonAligner and DynamicThresholds
             bus.set(
                 "market_regime_by_instrument",
-                {"EURUSD": "unknown", "XAUUSD": "unknown", "EUR_USD": "unknown", "XAU_USD": "unknown"},
+                {"XAUUSD": "unknown", "XAU_USD": "unknown"},
                 module="UnifiedMarketModule",
                 thesis="Default per-instrument regime (startup)"
             )
@@ -194,7 +194,7 @@ class UnifiedMarketModule(
             # volatility_by_instrument - used by DynamicThresholds
             bus.set(
                 "volatility_by_instrument",
-                {"EURUSD": 0.008, "XAUUSD": 0.025, "EUR_USD": 0.008, "XAU_USD": 0.025},
+                {"XAUUSD": 0.025, "XAU_USD": 0.025},
                 module="UnifiedMarketModule",
                 thesis="Default per-instrument volatility (startup)"
             )
@@ -436,6 +436,15 @@ class UnifiedMarketModule(
 
             # Ensure all contract-required outputs exist with safe defaults
             aggregated = self._ensure_contract_outputs(aggregated, component_results, thesis)
+
+            # Train/live parity: PPO expects regime_stability (0..1) as a separate key.
+            # Derive it from regime_strength if not explicitly produced.
+            if aggregated.get("regime_stability") is None:
+                try:
+                    rs = aggregated.get("regime_strength", 0.5)
+                    aggregated["regime_stability"] = float(np.clip(float(rs), 0.0, 1.0))
+                except Exception:
+                    aggregated["regime_stability"] = 0.5
 
             # Update SmartInfoBus
             await self._update_smart_bus(aggregated, thesis)
@@ -900,7 +909,7 @@ class UnifiedMarketModule(
             aggregated.setdefault('liquidity_prediction', {})
             aggregated.setdefault('liquidity_score', 0.5)
             aggregated.setdefault('liquidity_thesis', thesis)
-            aggregated.setdefault('liquidity_score_by_instrument', {"EURUSD": 0.5, "XAUUSD": 0.5})
+            aggregated.setdefault('liquidity_score_by_instrument', {"XAUUSD": 0.5})
             aggregated.setdefault('market_depth', {})
             aggregated.setdefault('session_data', {})
             aggregated.setdefault('spread_analysis', {})
@@ -1057,7 +1066,7 @@ class UnifiedMarketModule(
                     return parsed
 
             # 4) Check nested instrument data for timestamps
-            for key in ['EURUSD', 'XAUUSD', 'EUR/USD', 'XAU/USD']:
+            for key in ['XAUUSD', 'XAU/USD', 'XAU_USD']:
                 inst_data = market_data.get(key)
                 if isinstance(inst_data, dict):
                     inst_ts = inst_data.get('timestamp') or inst_data.get('timestamps')
@@ -1465,6 +1474,7 @@ class UnifiedMarketModule(
             ("market_regime", aggregated.get("market_regime")),
             ("regime_data", aggregated.get("regime_data")),
             ("regime_strength", aggregated.get("regime_strength")),
+            ("regime_stability", aggregated.get("regime_stability")),
             ("timestamps", aggregated.get("timestamps")),
             ("trend_direction", aggregated.get("trend_direction")),
 
@@ -1561,6 +1571,7 @@ class UnifiedMarketModule(
             "market_regime": "unknown",
             "regime_data": {},
             "regime_strength": 0.0,
+            "regime_stability": 0.5,
             "timestamps": [],
             "trend_direction": 0.0,
             # Liquidity
@@ -1568,7 +1579,7 @@ class UnifiedMarketModule(
             "liquidity_prediction": {},
             "liquidity_score": 0.5,
             "liquidity_thesis": error_thesis,
-            "liquidity_score_by_instrument": {"EURUSD": 0.5, "XAUUSD": 0.5},
+            "liquidity_score_by_instrument": {"XAUUSD": 0.5},
             "market_depth": {},
             "session_data": {},
             "spread_analysis": {},
