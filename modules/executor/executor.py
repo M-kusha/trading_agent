@@ -538,7 +538,30 @@ class Executor(BaseModule):
         recent = self.trades[-50:] if self.trades else []
         order_data = {"accepted": accepted, "rejected": rejected, "step": int(self.step_idx)}
         execution_data = {"fills": fills, "step": int(self.step_idx)}
-        market_state = {"balance": float(self.balance), "equity": float(self.equity), "step": int(self.step_idx)}
+        initial_balance = float(getattr(self, "initial_balance", 0.0) or 0.0)
+        balance = float(self.balance)
+        equity = float(self.equity)
+        drawdown = max(0.0, (initial_balance - balance) / max(initial_balance, 1e-9)) if initial_balance > 0 else 0.0
+        total_closed = len(self.closed_positions)
+        wins = 0
+        if total_closed > 0:
+            try:
+                wins = sum(1 for p in self.closed_positions if float(p.get("pnl", p.get("profit", 0.0)) or 0.0) > 0.0)
+            except Exception:
+                wins = 0
+        win_rate = (wins / total_closed) if total_closed > 0 else 0.5
+        pnl_trend = float(step_pnl) / max(initial_balance * 0.01, 1e-9) if initial_balance > 0 else 0.0
+        pnl_trend = float(max(-1.0, min(1.0, pnl_trend)))
+
+        market_state = {
+            "balance": balance,
+            "equity": equity,
+            "step": int(self.step_idx),
+            "initial_balance": initial_balance,
+            "drawdown": float(drawdown),
+            "win_rate": float(win_rate),
+            "pnl_trend": float(pnl_trend),
+        }
         portfolio_metrics = {
             "balance": float(self.balance),
             "equity": float(self.equity),
@@ -1072,7 +1095,7 @@ class Executor(BaseModule):
             # Fallback: if no instruments from config, use canonical broker format
             # NOTE: Use ONLY ONE format to avoid duplicate orders!
             if not instruments:
-                instruments = ["EURUSD", "XAUUSD"]  # MT5 canonical format
+                instruments = ["XAUUSD"]  # MT5 canonical format (single-instrument)
             
             # Deduplicate by normalized form (EUR_USD and EURUSD are the same)
             seen_normalized = set()
@@ -3113,7 +3136,30 @@ class Executor(BaseModule):
             "unrealized_pnl": float(unrealized),
             "step": int(self.step_idx),
         }
-        market_state = {"balance": float(self.balance), "equity": float(self.equity), "step": int(self.step_idx)}
+        initial_balance = float(getattr(self, "initial_balance", 0.0) or 0.0)
+        balance = float(self.balance)
+        equity = float(self.equity)
+        drawdown = max(0.0, (initial_balance - balance) / max(initial_balance, 1e-9)) if initial_balance > 0 else 0.0
+        total_closed = len(self.closed_positions)
+        wins = 0
+        if total_closed > 0:
+            try:
+                wins = sum(1 for p in self.closed_positions if float(p.get("pnl", p.get("profit", 0.0)) or 0.0) > 0.0)
+            except Exception:
+                wins = 0
+        win_rate = (wins / total_closed) if total_closed > 0 else 0.5
+        pnl_trend = float(step_pnl) / max(initial_balance * 0.01, 1e-9) if initial_balance > 0 else 0.0
+        pnl_trend = float(max(-1.0, min(1.0, pnl_trend)))
+
+        market_state = {
+            "balance": balance,
+            "equity": equity,
+            "step": int(self.step_idx),
+            "initial_balance": initial_balance,
+            "drawdown": float(drawdown),
+            "win_rate": float(win_rate),
+            "pnl_trend": float(pnl_trend),
+        }
 
         self.bus.set("positions", pos_snap, thesis="Positions snapshot (executor)")
 

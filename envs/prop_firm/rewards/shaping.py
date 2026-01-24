@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import numpy as np
+
 if TYPE_CHECKING:
     from envs.core.env_types import PropFirmConfig
 
@@ -71,6 +73,7 @@ class RewardShapingMixin:
             "max_consecutive_losses": 1.40,
             "max_trades_per_day": 1.10,
             "max_trades_per_session": 1.05,
+            "max_trades_per_episode": 1.10,
             "insufficient_bars_for_fill": 1.15,
             # min_entry_spacing is hard-blocked in env.step(), classify consistently
             "min_entry_spacing": 0.90,
@@ -82,6 +85,7 @@ class RewardShapingMixin:
             "post_loss_cooldown": 0.95,
             "no_new_trades_window": 1.00,   # this is policy-like but still "soft" in your setup
             "entry_quality_gate": 0.70,     # don't punish too hard: you're already teaching quality
+            "setup_quality_gate": 0.65,
         }
 
         if is_hard_block:
@@ -108,6 +112,15 @@ class RewardShapingMixin:
         bars_in_position: int,
         entry_quality_long: float,
         entry_quality_short: float,
+        entry_certainty_long: float,
+        entry_certainty_short: float,
+        setup_quality_long: float,
+        setup_quality_short: float,
+        confluence_long: int,
+        confluence_short: int,
+        bars_since_setup: int,
+        setup_rejections_since_last_trade: int,
+        entry_direction: str,
         entry_accepted: bool,
     ) -> float:
         """
@@ -161,6 +174,27 @@ class RewardShapingMixin:
         qs = max(0.0, min(1.0, qs))
         q_best = max(ql, qs)
 
+        # Directional values for entry-accepted shaping
+        dir_key = str(entry_direction).lower().strip()
+        if dir_key in ("long", "buy"):
+            q_dir = ql
+            certainty_dir = float(entry_certainty_long)
+            setup_dir = float(setup_quality_long)
+            conf_dir = int(confluence_long)
+        elif dir_key in ("short", "sell"):
+            q_dir = qs
+            certainty_dir = float(entry_certainty_short)
+            setup_dir = float(setup_quality_short)
+            conf_dir = int(confluence_short)
+        else:
+            q_dir = q_best
+            certainty_dir = float(max(entry_certainty_long, entry_certainty_short))
+            setup_dir = float(max(setup_quality_long, setup_quality_short))
+            conf_dir = int(max(confluence_long, confluence_short))
+
+        certainty_dir = max(0.0, min(1.0, certainty_dir))
+        setup_dir = max(0.0, min(1.0, setup_dir))
+
         # 2) Optional anti-churn friction:
         # Small cost for accepting entries (encourages selectivity).
         # This should be tiny to avoid training collapse.
@@ -180,7 +214,49 @@ class RewardShapingMixin:
         patience_threshold = float(getattr(cfg, "patience_quality_threshold", 0.35))
         if patience_enabled and (not has_position) and (not entry_accepted) and patience_bonus > 0.0:
             if q_best < patience_threshold:
-                shaping += patience_bonus
+                bonus = patience_bonus
+                # Dynamic patience multipliers based on market state
+                if bool(getattr(cfg, "dynamic_patience_enabled", False)):
+                    base = float(getattr(cfg, "patience_bonus_base", patience_bonus))
+                    mults = getattr(cfg, "patience_bonus_multiplier", {}) or {}
+                    mult = 1.0
+                    ctx = getattr(self, "_last_step_entry_context", {}) or {}
+                    vol_regime = str(ctx.get("volatility_regime", "")).lower()
+                    trend_strength = float(ctx.get("structure_trend", 0.0))
+                    if vol_regime in ("low", "low_volatility"):
+                        mult *= float(mults.get("low_volatility", 1.0))
+                    elif vol_regime in ("high", "high_volatility"):
+                        mult *= float(mults.get("high_volatility", 1.0))
+                    if abs(trend_strength) >= 0.3:
+                        mult *= float(mults.get("trending", 1.0))
+                    else:
+                        mult *= float(mults.get("ranging", 1.0))
+                    bonus = base * mult
+                shaping += float(bonus)
+
+        # 3a) Observation period (foundation discipline)
+        obs_required = bool(getattr(cfg, "observation_period_required", False))
+        if obs_required:
+            min_obs_bars = int(getattr(cfg, "min_bars_observation_before_entry", 0) or 0)
+            episode_bars = int(getattr(self, "episode_bars", 0))
+            if entry_accepted and episode_bars < min_obs_bars:
+                shaping -= float(getattr(cfg, "premature_entry_penalty", 0.0))
+            elif (not entry_accepted) and (not has_position) and min_obs_bars > 0:
+                # One-time bonus for completing observation period
+                if episode_bars >= min_obs_bars and not bool(getattr(self, "_observation_bonus_given", False)):
+                    bonus = float(getattr(cfg, "observation_completion_bonus", 0.0))
+                    if bonus > 0.0:
+                        shaping += bonus
+                    setattr(self, "_observation_bonus_given", True)
+
+        # 3a.1) Win-rate preservation bonus for skipping marginal setups
+        # (Rewards selectivity once win rate is already strong.)
+        if bool(getattr(cfg, "win_rate_preservation_enabled", False)):
+            win_rate = float(getattr(self, "winning_trades", 0) / max(getattr(self, "total_trades", 1), 1))
+            if win_rate >= float(getattr(cfg, "current_win_rate_threshold", 0.45)):
+                sq_thr = float(getattr(cfg, "setup_quality_threshold", 0.7))
+                if (not has_position) and (not entry_accepted) and q_best < sq_thr:
+                    shaping += float(getattr(cfg, "selectivity_bonus", 0.0))
 
         # 3b) Loss streak caution penalty (CRITICAL for consecutive loss control):
         # Penalize ENTRY ATTEMPTS when agent is on a consecutive loss streak.
@@ -196,6 +272,93 @@ class RewardShapingMixin:
                 caution_penalty = caution_base * (consecutive_losses - 1) ** 1.5
                 caution_cap = float(getattr(cfg, "loss_streak_caution_cap", 0.25))
                 shaping -= min(caution_penalty, caution_cap)
+
+        # 3c) Setup quality / certainty shaping at entry
+        if entry_accepted:
+            if bool(getattr(cfg, "setup_quality_enabled", False)):
+                sq_thr = float(getattr(cfg, "setup_quality_threshold", 0.7))
+                if setup_dir >= sq_thr:
+                    shaping += (setup_dir - sq_thr) * float(getattr(cfg, "setup_quality_bonus_scale", 0.0))
+                else:
+                    shaping -= (sq_thr - setup_dir) * float(getattr(cfg, "hasty_entry_penalty", 0.0))
+
+            # Certainty reward/penalty
+            certainty_thr = float(getattr(cfg, "certainty_threshold", 0.7))
+            if certainty_dir >= certainty_thr:
+                bonus_map = getattr(cfg, "entry_certainty_bonus", {}) or {}
+                bonus_val = 0.0
+                for k, v in bonus_map.items():
+                    try:
+                        if isinstance(k, str) and "-" in k:
+                            lo_s, hi_s = k.split("-", 1)
+                            lo = float(lo_s.strip())
+                            hi = float(hi_s.strip())
+                        elif isinstance(k, (tuple, list)) and len(k) == 2:
+                            lo, hi = float(k[0]), float(k[1])
+                        else:
+                            continue
+                        if lo <= certainty_dir < hi:
+                            bonus_val = max(bonus_val, float(v))
+                    except Exception:
+                        continue
+                if bonus_val > 0.0:
+                    shaping += bonus_val
+            else:
+                # Penalize low-certainty entries
+                low_pen = float(getattr(cfg, "low_certainty_penalty", 0.0))
+                if low_pen > 0.0 and certainty_thr > 0:
+                    frac = (certainty_thr - certainty_dir) / certainty_thr
+                    shaping -= low_pen * float(np.clip(frac, 0.0, 1.0))
+
+            # Strategic patience bonus: reward skipping setups before entering
+            if bool(getattr(cfg, "strategic_patience_enabled", False)):
+                min_rejections = 3
+                if setup_rejections_since_last_trade >= min_rejections:
+                    max_bonus_steps = int(getattr(cfg, "max_setup_rejections_for_bonus", 0) or 0)
+                    scale = float(getattr(cfg, "setup_rejection_bonus", 0.0))
+                    if scale > 0.0:
+                        count = setup_rejections_since_last_trade
+                        if max_bonus_steps > 0:
+                            count = min(count, max_bonus_steps)
+                        shaping += scale * float(count)
+
+            # Deliberation time penalty (too-fast entries)
+            if bool(getattr(cfg, "deliberation_time_tracking", False)):
+                min_delib = int(getattr(cfg, "min_deliberation_bars", 0) or 0)
+                if min_delib > 0:
+                    try:
+                        cur_delib = int(getattr(self, "_current_deliberation_bars", 0))
+                    except Exception:
+                        cur_delib = 0
+                    if cur_delib < min_delib:
+                        shaping -= float(getattr(cfg, "too_fast_penalty", 0.0))
+
+            # Win-rate preservation incentive
+            if bool(getattr(cfg, "win_rate_preservation_enabled", False)):
+                win_rate = float(getattr(self, "winning_trades", 0) / max(getattr(self, "total_trades", 1), 1))
+                if win_rate >= float(getattr(cfg, "current_win_rate_threshold", 0.45)):
+                    sq_thr = float(getattr(cfg, "setup_quality_threshold", 0.7))
+                    if setup_dir < sq_thr:
+                        shaping -= float(getattr(cfg, "win_rate_decay_penalty", 0.0))
+
+            # Psychological factors (FOMO / revenge / overconfidence)
+            if bool(getattr(cfg, "psychological_factors_enabled", False)):
+                sq_thr = float(getattr(cfg, "setup_quality_threshold", 0.7))
+                if setup_dir < sq_thr:
+                    shaping -= float(getattr(cfg, "fear_of_missing_out_penalty", 0.0))
+                if int(getattr(self, "consecutive_losses", 0)) >= 2:
+                    shaping -= float(getattr(cfg, "revenge_trading_penalty", 0.0))
+                over_streak = int(getattr(cfg, "overconfidence_streak_threshold", 3) or 3)
+                if int(getattr(self, "consecutive_wins", 0)) >= over_streak:
+                    shaping -= float(getattr(cfg, "overconfidence_penalty", 0.0))
+
+        # 3d) Win-rate preservation selectivity bonus (skip marginal setups)
+        if (not entry_accepted) and (not has_position) and bool(getattr(cfg, "win_rate_preservation_enabled", False)):
+            win_rate = float(getattr(self, "winning_trades", 0) / max(getattr(self, "total_trades", 1), 1))
+            if win_rate >= float(getattr(cfg, "current_win_rate_threshold", 0.45)):
+                sq_thr = float(getattr(cfg, "setup_quality_threshold", 0.7))
+                if max(setup_quality_long, setup_quality_short) < sq_thr:
+                    shaping += float(getattr(cfg, "selectivity_bonus", 0.0))
 
         # 4) Bound shaping so it cannot dominate
         # Default bounds are conservative; if RewardConfig has explicit bounds, use them.

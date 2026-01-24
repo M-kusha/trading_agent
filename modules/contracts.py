@@ -335,7 +335,7 @@ CONTRACTS: Dict[str, ModuleContract] = {
         file='strategy/entry_timing_controller.py',
         provides=['entry_timing', 'entry_timing_array', 'entry_timing_allowed'],
         # v5.2: position_state_summary is optional - code handles missing gracefully with defaults
-        requires=['market_data_latest', 'atr_values', 'session_info'],
+        requires=['market_data_latest', 'multi_timeframe_data', 'atr_values', 'session_info'],
         meta={'thesis_required': False, 'health_monitoring': True, 'performance_tracking': False,
               'category': 'strategy', 'version': '1.0.0'}
     ),
@@ -526,18 +526,33 @@ CONTRACTS: Dict[str, ModuleContract] = {
 
     'TrendExpert': ModuleContract(
         name='TrendExpert',
-        file='voting/experts/trend.py',
+        file='modules/voting/experts/trend.py',
         provides=[
-            'TrendExpert_voting_proposal', 'TrendExpert_confidence',
-            'TrendExpert_per_instrument_votes',  # NEW: Per-instrument votes
-            'trend_voting_proposal', 'trend_confidence',
-            'trend_analysis'
+            # Canonical per-expert outputs (source of truth)
+            'TrendExpert_voting_proposal',
+            'TrendExpert_confidence',
         ],
-        requires=['market_data', 'prices', 'technical_indicators'],
-        meta={'is_voting_member': True, 'thesis_required': True, 'explainable': True,
-              'health_monitoring': True, 'performance_tracking': True,
-              'category': 'voting', 'version': '5.1.0'}  # Version bump
+        requires=[
+            # Minimum: canonical snapshot block used by VotingExpertBase._build_market_data()
+            'market_data',
+
+            # Strongly recommended for stable trend computation (history depth + forming bar)
+            'historical_prices',
+        ],
+        meta={
+            'is_voting_member': True,
+            'thesis_required': True,
+            'explainable': True,
+            'health_monitoring': True,
+            'performance_tracking': True,
+            'category': 'voting',
+            'primary_instrument': 'XAUUSD',
+            'primary_timeframe': 'M15',
+            'supports_per_instrument': True,
+            'version': '5.2.0',
+        }
     ),
+
 
     'CommitteeCoordinator': ModuleContract(
         name='CommitteeCoordinator',
@@ -709,7 +724,7 @@ CONTRACTS: Dict[str, ModuleContract] = {
         file='market/market_module.py',
         provides=[
             # Fractal / Regime
-            'fractal_metrics', 'market_regime', 'regime_data', 'regime_strength', 'timestamps', 'trend_direction',
+            'fractal_metrics', 'market_regime', 'regime_data', 'regime_strength', 'regime_stability', 'timestamps', 'trend_direction',
             # FIX: Per-instrument regime/session for HorizonAligner
             'market_regime_by_instrument', 'regime_probabilities',
             # Liquidity
@@ -745,26 +760,19 @@ CONTRACTS: Dict[str, ModuleContract] = {
         name='MarketDataProvider',
         file='external/market_data_provider.py',
         provides=[
-            # NOTE: Removed stale placeholder keys (alerts, economic_calendar, environment,
-            # input1, input2, learning_context, learning_status, macro_data, market_conditions,
-            # step_data, strategy_status) - these were empty dicts/lists causing stale warnings.
-            # Consumers handle missing keys with fallbacks or get data from other providers.
-            'bid_ask_data', 'historical_prices', 'indicators',
-            'market_data', 'market_liquidity',
-            'module_insights', 'multi_timeframe_data', 'ohlcv_data', 'price_data', 'prices',
-            'session_type', 'step_idx', 'symbols',
-            'technical_indicators', 'timestamp', 'trading_session', 'volatility', 'volatility_data',
-            'volatility_level', 'volume_data', 'liquidity_data',
-            # FIX: Per-instrument volatility for HorizonAligner and Executor
-            'volatility_level_by_instrument', 'volatility_by_instrument',
-            # FIX: Keys required by EntryTimingController
-            'market_data_latest', 'atr_values', 'session_info',
-            # Specific instrument data
-            'market_data_EURUSD_M15',
-            'market_data_EURUSD_H1', 'market_data_EURUSD_H4', 'market_data_EURUSD_D1',
-            'market_data_XAUUSD_M15',
-            'market_data_XAUUSD_H1', 'market_data_XAUUSD_H4', 'market_data_XAUUSD_D1',
-            'universe', 'watched_instruments'
+            "bid_ask_data", "historical_prices", "indicators",
+            "market_data", "market_liquidity",
+            "module_insights", "multi_timeframe_data", "ohlcv_data", "price_data", "prices",
+            "session_type", "step_idx", "symbols",
+            "technical_indicators", "timestamp", "trading_session",
+            # required by downstream
+            "volatility", "volatility_data", "volatility_level",
+            "volume_data", "liquidity_data",
+            "volatility_level_by_instrument", "volatility_by_instrument",
+            "market_data_latest", "atr_values", "session_info",
+            # XAUUSD aliases only
+            "market_data_XAUUSD_M15", "market_data_XAUUSD_H1", "market_data_XAUUSD_H4", "market_data_XAUUSD_D1",
+            "universe", "watched_instruments",
         ],
         requires=[],
         meta={'is_voting_member': False, 'thesis_required': False, 'explainable': False,
@@ -772,16 +780,6 @@ CONTRACTS: Dict[str, ModuleContract] = {
               'category': 'external', 'version': '1.0.1'}
     ),
 
-    # NOTE: NewsSentimentModule is currently DISABLED (entire file commented out).
-    # Keep contract entry for future re-enablement but mark as disabled.
-    'NewsSentimentModule': ModuleContract(
-        name='NewsSentimentModule',
-        file='external/news_sentiment.py',
-        provides=['news_sentiment', 'news_summary', 'sentiment_confidence', 'sentiment_trend'],
-        requires=['market_data', 'symbols', 'trading_session'],
-        meta={'thesis_required': True, 'health_monitoring': True, 'performance_tracking': True,
-              'category': 'external', 'version': '3.0.0', 'disabled': True}
-    ),
 
     'SessionManager': ModuleContract(
         name='SessionManager',

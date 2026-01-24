@@ -32,6 +32,13 @@ OBSERVED_METRICS: Set[str] = {
     "entropy",
     "consistency",
     "trade_activity",
+    # Patience / discipline
+    "avg_bars_between_trades",
+    "setup_skipped_per_episode",
+    "entry_certainty_avg",
+    "avg_setup_quality",
+    "fomo_trade_rate",
+    "revenge_trade_rate",
 }
 
 OBSERVED_ALIASES: Dict[str, str] = {
@@ -41,6 +48,8 @@ OBSERVED_ALIASES: Dict[str, str] = {
     "pf": "profit_factor",
     "winrate": "win_rate",
     "r_mult": "r_multiple",
+    "entry_certainty": "entry_certainty_avg",
+    "setup_skipped": "setup_skipped_per_episode",
 }
 
 # ---- Namespace 2: Threshold Fields ----
@@ -60,6 +69,14 @@ THRESHOLD_FIELDS: Set[str] = {
     "min_entropy",
     "max_mask_collapse_rate",
     "max_stop_mode_rate",
+    # Patience / discipline
+    "min_avg_bars_between_trades",
+    "min_setup_skipped_per_episode",
+    "min_entry_certainty_avg",
+    "min_avg_setup_quality",
+    "max_fomo_trade_rate",
+    "max_revenge_trade_rate",
+    "consistency_streak_required",
 }
 
 THRESHOLD_ALIASES: Dict[str, str] = {
@@ -80,6 +97,12 @@ METRIC_TO_THRESHOLD: Dict[str, str] = {
     "pnl_std": "max_pnl_std",
     "trade_count_avg": "min_trade_count_avg",
     "entropy": "min_entropy",
+    "avg_bars_between_trades": "min_avg_bars_between_trades",
+    "setup_skipped_per_episode": "min_setup_skipped_per_episode",
+    "entry_certainty_avg": "min_entry_certainty_avg",
+    "avg_setup_quality": "min_avg_setup_quality",
+    "fomo_trade_rate": "max_fomo_trade_rate",
+    "revenge_trade_rate": "max_revenge_trade_rate",
 }
 
 # ---- Composite Scoring Component Keys ----

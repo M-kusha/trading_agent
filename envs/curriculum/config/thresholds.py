@@ -51,11 +51,23 @@ class CompetenceThresholds:
     max_pnl_std: float = 10000.0
     min_trade_count_avg: float = 1.0
 
+    # Patience / discipline metrics (v2.1)
+    min_avg_bars_between_trades: float = 0.0
+    min_setup_skipped_per_episode: float = 0.0
+    min_entry_certainty_avg: float = 0.0
+    min_avg_setup_quality: float = 0.0
+    max_fomo_trade_rate: float = 1.0
+    max_revenge_trade_rate: float = 1.0
+
     max_dd_breach_rate: float = 0.50
     max_consecutive_loss_rate: float = 0.30
     # Sample-efficiency / behavioral collapse gates (0..1 fraction of steps)
     max_mask_collapse_rate: float = 1.0
     max_stop_mode_rate: float = 1.0
+
+    # Consistency streak gating (Stage 8+)
+    consistency_streak_required: int = 0
+    consistency_streak_criteria: Dict[str, float] = field(default_factory=dict)
 
     evaluation_window: int = 50
 

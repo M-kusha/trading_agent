@@ -13,12 +13,19 @@ This script lets you A/B test live behavior:
   (full module stack: voting/committee/risk modules, PPOAgentShell, etc).
 
 Default is SAFE: dry-run (no orders are sent).
+
+Diagnostics added (2026-01-19):
+- Per-bar signatures (timestamps + closes) for each timeframe, so you can prove the feed is changing.
+- Stable hashes of expert_signals / committee_state / etc, so you can detect “stuck outputs” even when data moves.
+- Warnings when decision_idx stays constant (expected with fixed window) so you don’t use it as a cache key.
+- Optional “pending order” flags wired into the mask call (still basic, but prevents obvious spam).
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -29,8 +36,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, cast
-
+from typing import Any, Dict, List, Optional, Mapping, Tuple, cast
 import numpy as np
 
 
@@ -130,6 +136,94 @@ def _to_jsonable(obj: Any) -> Any:
     except Exception:
         pass
     return str(obj)
+
+
+def _hash_obj(obj: Any) -> str:
+    """Stable-ish hash of a nested structure (after making it JSONable)."""
+    try:
+        payload = json.dumps(_to_jsonable(obj), sort_keys=True, separators=(",", ":")).encode("utf-8")
+    except Exception:
+        payload = str(obj).encode("utf-8")
+    return hashlib.sha1(payload).hexdigest()  # noqa: S324 (non-crypto use: diagnostics only)
+
+
+
+
+def _safe_close(df: Any, i: int) -> Optional[float]:
+    """Best-effort access to a candle close value (handles different column naming)."""
+    try:
+        cols = getattr(df, "columns", None)
+        if cols is not None:
+            for c in ("close", "Close", "CLOSE", "c"):
+                try:
+                    if c in cols:
+                        return float(df[c].iloc[i])
+                except Exception:
+                    continue
+
+        row = df.iloc[i]
+
+        # If it's dict-like (including pandas Series-as-Mapping in some stubs), check keys directly
+        if isinstance(row, Mapping):
+            for c in ("close", "Close", "CLOSE", "c"):
+                if c in row:
+                    try:
+                        return float(row[c])  # type: ignore[index]
+                    except Exception:
+                        pass
+
+        # pandas Series-like: use getattr + callable to satisfy type checker
+        to_dict_fn = getattr(row, "to_dict", None)
+        if callable(to_dict_fn):
+            try:
+                d = to_dict_fn()
+                if isinstance(d, Mapping):
+                    for c in ("close", "Close", "CLOSE", "c"):
+                        if c in d:
+                            return float(d[c])  # type: ignore[index]
+            except Exception:
+                pass
+
+        # brute fallback (last numeric in row)
+        try:
+            return float(cast(Any, row)[-1])
+        except Exception:
+            return None
+
+    except Exception:
+        return None
+
+
+@dataclass(frozen=True)
+class BarSignature:
+    tf: str
+    closed_ts: str
+    forming_ts: str
+    closed_close: Optional[float]
+    forming_close: Optional[float]
+
+
+def _make_bar_signature(tf: str, df: Any) -> Optional[BarSignature]:
+    """Requires >=2 bars. Uses index[-2] as closed, index[-1] as forming."""
+    try:
+        if df is None or getattr(df, "empty", True):
+            return None
+        idx = getattr(df, "index", None)
+        if idx is None or len(idx) < 2:
+            return None
+        closed_ts = str(idx[-2])
+        forming_ts = str(idx[-1])
+        closed_close = _safe_close(df, -2)
+        forming_close = _safe_close(df, -1)
+        return BarSignature(
+            tf=tf,
+            closed_ts=closed_ts,
+            forming_ts=forming_ts,
+            closed_close=closed_close,
+            forming_close=forming_close,
+        )
+    except Exception:
+        return None
 
 
 def _summarize_live_data(market_data: Dict[str, Any], instrument: str, timeframes: List[str]) -> str:
@@ -244,7 +338,7 @@ def _format_risk_line(
     )
 
 
-def _format_position_line(pos: Optional[_LivePosition], now_dt: datetime) -> str:
+def _format_position_line(pos: Optional["_LivePosition"], now_dt: datetime) -> str:
     if pos is None:
         return "Position: FLAT"
     side = "LONG" if pos.side > 0 else "SHORT"
@@ -602,6 +696,19 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
     winning_trades = 0
     total_trades = 0
 
+    # ---- Diagnostics state: detect “stuck” outputs even when candles change ----
+    last_tf_sigs: Dict[str, Optional[BarSignature]] = {}
+    last_state_hashes: Dict[str, str] = {}
+    same_hash_streak: Dict[str, int] = {}
+    last_closed_ts_str: Optional[str] = None
+    last_decision_idx: Optional[int] = None
+
+    # ---- Basic pending-order gating (prevents obvious spam while fill status lags) ----
+    has_pending_entry = False
+    has_pending_exit = False
+    pending_since: Optional[float] = None
+    pending_timeout_s = 20.0  # conservative, enough for demo server lag
+
     try:
         logger.info(
             "TRAINING-PIPELINE MODE | instruments=%s | primary_tf=%s | only_on_new_bar=%s | enforce_hard_rules=%s | execute=%s",
@@ -702,6 +809,14 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
                     decision_idx = int(len(primary_block) - 1)
                     decision_bar_ts = latest_bar_ts
                     forming_bar_ts = latest_bar_ts
+
+                # ---- Diagnostics: decision_idx warning (expected constant when n_bars fixed) ----
+                if last_decision_idx is not None and decision_idx == last_decision_idx and bool(args.only_on_new_bar):
+                    # This is not an error; it just means your window is fixed-length.
+                    # The important part: NEVER use decision_idx as cache key in live.
+                    pass
+                last_decision_idx = decision_idx
+
                 account = mt5.account_info()
                 if account:
                     balance = float(getattr(account, "balance", initial_balance))
@@ -755,6 +870,19 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
                 if live_pos and live_pos.open_time and (last_entry_time is None):
                     last_entry_time = live_pos.open_time
 
+                # ---- Pending-order resolution (best-effort) ----
+                if has_pending_entry and live_pos is not None:
+                    has_pending_entry = False
+                    pending_since = None
+                if has_pending_exit and live_pos is None:
+                    has_pending_exit = False
+                    pending_since = None
+                if pending_since is not None and (time.time() - pending_since) > pending_timeout_s:
+                    # fail open (do not block forever)
+                    has_pending_entry = False
+                    has_pending_exit = False
+                    pending_since = None
+
                 # Drawdowns
                 try:
                     current_dd, daily_dd = env._calc_dds()
@@ -799,6 +927,34 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
                 env.session_start_balance = float(day_start_balance)
                 env.session_pnl = float(equity - day_start_balance)
 
+                # ---- Per-TF bar signatures (PROVES candles are changing) ----
+                sig_lines: List[str] = []
+                try:
+                    blocks = market_data.get(primary_instrument, {})
+                    if isinstance(blocks, dict):
+                        for tf in timeframes:
+                            df = blocks.get(tf)
+                            sig = _make_bar_signature(tf, df)
+                            last_sig = last_tf_sigs.get(tf)
+                            last_tf_sigs[tf] = sig
+                            if sig is None:
+                                sig_lines.append(f"{tf}:sig=NA")
+                            else:
+                                # show 4 decimals on close (more than your normal logs)
+                                cc = "NA" if sig.closed_close is None else f"{sig.closed_close:.4f}"
+                                fc = "NA" if sig.forming_close is None else f"{sig.forming_close:.4f}"
+                                changed = ""
+                                if last_sig is not None and (sig.closed_ts != last_sig.closed_ts or sig.closed_close != last_sig.closed_close):
+                                    changed = "Δ"
+                                sig_lines.append(f"{tf}:closed={sig.closed_ts} c={cc} forming={sig.forming_ts} c={fc}{changed}")
+                except Exception:
+                    sig_lines = []
+
+                # ---- Detect “stuck outputs” by hashing states per closed bar ----
+                closed_ts_str = str(closed_bar_ts)
+                new_closed = (last_closed_ts_str is None) or (closed_ts_str != last_closed_ts_str)
+                last_closed_ts_str = closed_ts_str
+
                 # Training pipeline states
                 market_state = env._prepare_market_data(primary_instrument)
                 expert_signals = env._prepare_expert_signals(primary_instrument)
@@ -808,6 +964,25 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
                 trading_mode_state = env._prepare_trading_mode_state(primary_instrument)
                 world_model_state = env._prepare_world_model_state(primary_instrument, expert_signals, committee_state)
                 governor_state = env._get_governor_state()
+
+                if new_closed:
+                    for name, obj in (
+                        ("market_state", market_state),
+                        ("expert_signals", expert_signals),
+                        ("committee_state", committee_state),
+                        ("risk_state", risk_state),
+                        ("memory_state", memory_state),
+                        ("trading_mode_state", trading_mode_state),
+                        ("world_model_state", world_model_state),
+                        ("governor_state", governor_state),
+                    ):
+                        h = _hash_obj(obj)
+                        prev = last_state_hashes.get(name)
+                        last_state_hashes[name] = h
+                        if prev == h:
+                            same_hash_streak[name] = same_hash_streak.get(name, 0) + 1
+                        else:
+                            same_hash_streak[name] = 0
 
                 obs = obs_builder.build(
                     market_data=market_state,
@@ -825,8 +1000,8 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
                 if bool(getattr(ppo_core, "is_discrete_action_space", False)):
                     action_mask = mask_builder.get_action_mask(
                         has_position=bool(live_pos is not None),
-                        has_pending_entry=False,
-                        has_pending_exit=False,
+                        has_pending_entry=bool(has_pending_entry),
+                        has_pending_exit=bool(has_pending_exit),
                         current_dd=float(current_dd),
                         daily_dd=float(daily_dd),
                         daily_trades=int(daily_trades),
@@ -877,6 +1052,16 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
 
                 if bool(args.explain):
                     bar_label = "closed_bar" if bool(args.only_on_new_bar) else "bar"
+
+                    # Flag suspicious “same output across bars”
+                    stuck_flags: List[str] = []
+                    if new_closed:
+                        # 2+ consecutive repeats is highly suspicious in live (unless market is dead flat)
+                        for k in ("expert_signals", "committee_state", "trading_mode_state"):
+                            n = same_hash_streak.get(k, 0)
+                            if n >= 2:
+                                stuck_flags.append(f"{k}:same_hash_streak={n}")
+
                     explanation_lines = [
                         f"[DECISION] {primary_instrument} (mt5={primary_mt5_symbol}) tf={env_cfg.primary_timeframe} {bar_label}={decision_bar_ts} latest(forming)={forming_bar_ts}",
                         f"Model: intent={ppo_intent} size={float(size_mult):.2f} discrete={bool(getattr(ppo_core, 'is_discrete_action_space', False))}",
@@ -890,6 +1075,7 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
                             on_cooldown=bool(on_cooldown),
                             env_cfg=env_cfg,
                         ),
+                        f"Pending: entry={has_pending_entry} exit={has_pending_exit}",
                         _format_mask_line(
                             mask_builder=mask_builder,
                             action_mask=action_mask,
@@ -902,6 +1088,15 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
                         _format_committee(committee_state),
                         f"Data: {_summarize_live_data(market_data, primary_instrument, timeframes)}",
                     ]
+
+                    if sig_lines:
+                        explanation_lines.append("Sig: " + " | ".join(sig_lines[:6]))
+
+                    if bool(args.only_on_new_bar):
+                        explanation_lines.append(f"Diag: decision_idx={decision_idx} (fixed window ⇒ constant; do NOT cache on it)")
+
+                    if stuck_flags:
+                        explanation_lines.append("SUSPECT: " + " | ".join(stuck_flags))
 
                     # Quick conflict hint (helps find "bad info" sources)
                     try:
@@ -963,7 +1158,7 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
                         payload = {
                             "meta": {
                                 "instrument": primary_instrument,
-                                "mt5_instrument": primary_mt5_symbol,      
+                                "mt5_instrument": primary_mt5_symbol,
                                 "primary_timeframe": env_cfg.primary_timeframe,
                                 "decision_bar": decision_bar_ts,
                                 "latest_bar": forming_bar_ts,
@@ -974,19 +1169,22 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
                                 "enforce_hard_rules": bool(args.enforce_hard_rules),
                                 "only_on_new_bar": bool(args.only_on_new_bar),
                                 "execute": bool(args.execute),
-                                "hard_block_reasons": list(hard_reasons),  
+                                "hard_block_reasons": list(hard_reasons),
+                                "signatures": sig_lines,
+                                "hashes": dict(last_state_hashes),
+                                "same_hash_streak": dict(same_hash_streak),
                             },
                             "observation_schema": obs_schema,
                             "observation_by_group": obs_by_group,
                             "states": {
                                 "market_state": market_state,
                                 "expert_signals": expert_signals,
-                                "committee_state": committee_state,        
+                                "committee_state": committee_state,
                                 "risk_state": risk_state,
                                 "memory_state": memory_state,
                                 "account_state": account_state,
                                 "world_model_state": world_model_state,
-                                "trading_mode_state": trading_mode_state,  
+                                "trading_mode_state": trading_mode_state,
                                 "governor_state": governor_state,
                             },
                             "observation": obs_arr.tolist(),
@@ -995,11 +1193,23 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
                         }
                         (snap_dir / fname).write_text(json.dumps(_to_jsonable(payload), indent=2), encoding="utf-8")
                     except Exception as e:
-                        logger.warning("Snapshot dump failed: %s", e)      
+                        logger.warning("Snapshot dump failed: %s", e)
 
                 if order_item and executor is not None:
                     # Fill missing symbol if we were flat (translate uses "")
                     order_item["instrument"] = primary_mt5_symbol
+
+                    # ---- Set pending flags BEFORE process() to avoid double-submit on laggy position refresh ----
+                    act = str(order_item.get("action", "")).lower()
+                    if act.startswith("open_"):
+                        has_pending_entry = True
+                        has_pending_exit = False
+                        pending_since = time.time()
+                    elif "close" in act:
+                        has_pending_exit = True
+                        has_pending_entry = False
+                        pending_since = time.time()
+
                     existing = bus.get("order_queue", "LiveTrainingPipeline", default=[]) or []
                     existing.append(order_item)
                     bus.set("order_queue", existing, module="LiveTrainingPipeline", thesis="PPO training-pipeline intent")

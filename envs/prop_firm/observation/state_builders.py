@@ -181,12 +181,19 @@ class ObservationBuildersMixin:
         inst_dt = self._get_bar_dt(instrument)
         if inst_dt is not None and self._last_loss_dt is not None:
             mins = (inst_dt - self._last_loss_dt).total_seconds() / 60.0
-            if mins < self.config.min_minutes_after_loss:
+            tfm = max(1, self._tf_minutes())
+            min_bars_after = int(getattr(self.config, "min_bars_after_loss", 0) or 0)
+            min_mins_after = float(getattr(self.config, "min_minutes_after_loss", 0) or 0.0)
+            effective_min_minutes = max(min_mins_after, min_bars_after * tfm)
+            if mins < effective_min_minutes:
                 state["on_cooldown"] = 1.0
         elif inst_dt is None and self._last_loss_step is not None:
             tfm = max(1, self._tf_minutes())
-            post_loss_bars = int(np.ceil(self.config.min_minutes_after_loss / tfm))
-            if (int(self.current_step) - int(self._last_loss_step)) < max(1, post_loss_bars):
+            min_bars_after = int(getattr(self.config, "min_bars_after_loss", 0) or 0)
+            min_mins_after = float(getattr(self.config, "min_minutes_after_loss", 0) or 0.0)
+            base_after_minutes = max(min_mins_after, min_bars_after * tfm)
+            post_loss_bars = max(1, min_bars_after, int(np.ceil(base_after_minutes / tfm)))
+            if (int(self.current_step) - int(self._last_loss_step)) < post_loss_bars:
                 state["on_cooldown"] = 1.0
 
         return state
@@ -295,6 +302,15 @@ class ObservationBuildersMixin:
         # Use step cache if available (called from step()), fallback to direct compute
         q_long = self._get_step_entry_quality(instrument, "long")
         q_short = self._get_step_entry_quality(instrument, "short")
+        cert_long = self._get_step_entry_certainty(instrument, "long")
+        cert_short = self._get_step_entry_certainty(instrument, "short")
+        setup_long, conf_long = self._get_step_setup_quality(instrument, "long")
+        setup_short, conf_short = self._get_step_setup_quality(instrument, "short")
+
+        confluence_count = int(max(conf_long, conf_short))
+        bars_since_setup = int(getattr(self, "_bars_since_last_setup", 0) or 0)
+        setup_quality_trend = float(getattr(self, "_setup_quality_trend", 0.0) or 0.0)
+        confluence_increasing = 1.0 if bool(getattr(self, "_confluence_increasing", False)) else 0.0
 
         return {
             "trading_mode": mode,
@@ -308,6 +324,14 @@ class ObservationBuildersMixin:
                 "entry_allowed": bool(can_trade),
                 "entry_quality_long": float(q_long),
                 "entry_quality_short": float(q_short),
+                "entry_certainty_long": float(cert_long),
+                "entry_certainty_short": float(cert_short),
+                "setup_quality_long": float(setup_long),
+                "setup_quality_short": float(setup_short),
+                "confluence_count": int(confluence_count),
+                "bars_since_setup": int(bars_since_setup),
+                "setup_quality_trend": float(setup_quality_trend),
+                "confluence_increasing": float(confluence_increasing),
                 "zone_type": zone_type,
                 "vol_state": vol_state,
                 "hour_normalized": float(dt.hour / 24.0) if dt else 0.5,

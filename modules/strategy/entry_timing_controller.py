@@ -8,6 +8,7 @@ It reads inputs from SmartInfoBus and publishes timing features back.
 
 Architecture:
 - Reads: market_data_latest, atr_values, session_info
+- Reads (preferred for OHLC windows): multi_timeframe_data
 - Optional: position_state_summary (gracefully handled if missing)
 - Computes: timing features via timing_features.compute_timing_features()
 - Publishes:
@@ -54,6 +55,7 @@ logger = logging.getLogger(__name__)
     ],
     requires=[
         "market_data_latest",
+        "multi_timeframe_data",
         "atr_values",
         "session_info",
         # v5.2: position_state_summary is optional - code handles missing gracefully
@@ -85,8 +87,8 @@ class EntryTimingController(BaseModule):
         config_path = self.config.get("timing_config_path", "config/timing_policy.yaml")
         self.timing_config: TimingConfig = load_timing_config(config_path)
 
-        # Instruments to track (default to primary instruments)
-        instruments_cfg = self.config.get("instruments", ["XAUUSD", "EURUSD"])
+        # Instruments to track (default to XAUUSD-only; strict pipelines are single-instrument)
+        instruments_cfg = self.config.get("instruments", ["XAUUSD"])
         # Ensure this is a list of strings
         self.instruments: List[str] = [
             str(sym) for sym in instruments_cfg
@@ -111,6 +113,7 @@ class EntryTimingController(BaseModule):
         Args:
             **inputs: Data from orchestrator, usually mirrored from SmartInfoBus:
                 - market_data_latest: dict[instrument -> OHLC/price structure]
+                - multi_timeframe_data: dict[instrument -> timeframe -> OHLC arrays + current_bar] (preferred for OHLC windows)
                 - atr_values: dict[instrument -> float]
                 - session_info: dict with time info (hour, minute, weekday)
                 - position_state_summary: dict[instrument -> state summary]
@@ -133,6 +136,7 @@ class EntryTimingController(BaseModule):
         any_allowed = False
 
         market_data = inputs.get("market_data_latest", {}) or {}
+        multi_timeframe_data = inputs.get("multi_timeframe_data")
         atr_values = inputs.get("atr_values", {}) or {}
         session_info = inputs.get("session_info", {}) or {}
         position_summary = inputs.get("position_state_summary", {}) or {}
@@ -151,11 +155,23 @@ class EntryTimingController(BaseModule):
         if not isinstance(position_summary, dict):
             position_summary = {}
 
+        # Prefer a full OHLC window from multi_timeframe_data; fall back to bus read if orchestrator didn't pass it.
+        if not isinstance(multi_timeframe_data, dict):
+            try:
+                multi_timeframe_data = self.smart_bus.get(
+                    "multi_timeframe_data",
+                    "EntryTimingController",
+                    default={},
+                )
+            except Exception:
+                multi_timeframe_data = {}
+
         for instrument in self.instruments:
             try:
                 features = self._compute_for_instrument(
                     instrument=instrument,
                     market_data=market_data,
+                    multi_timeframe_data=multi_timeframe_data,
                     atr_values=atr_values,
                     session_info=session_info,
                     position_summary=position_summary,
@@ -179,6 +195,7 @@ class EntryTimingController(BaseModule):
                 timing_arrays[instrument] = timing_features_to_array(features).tolist()
 
         # Optional: small debug summary
+        allowed_count = 0
         try:
             allowed_count = sum(
                 1 for inst in self.instruments
@@ -193,16 +210,47 @@ class EntryTimingController(BaseModule):
             # Logging errors should never break the module
             pass
 
-        return {
+        out = {
             "entry_timing": results,
             "entry_timing_array": timing_arrays,
             "entry_timing_allowed": any_allowed,
         }
 
+        # Defensive publish: orchestrator should publish module outputs, but if that path
+        # is misconfigured, publish directly to keep downstream consumers alive.
+        try:
+            thesis = f"Entry timing features computed (allowed={allowed_count}/{len(self.instruments)})"
+            self.smart_bus.set(
+                "entry_timing",
+                results,
+                module="EntryTimingController",
+                thesis=thesis,
+                confidence=0.8,
+            )
+            self.smart_bus.set(
+                "entry_timing_array",
+                timing_arrays,
+                module="EntryTimingController",
+                thesis=thesis,
+                confidence=0.8,
+            )
+            self.smart_bus.set(
+                "entry_timing_allowed",
+                any_allowed,
+                module="EntryTimingController",
+                thesis=thesis,
+                confidence=0.8,
+            )
+        except Exception as e:
+            logger.debug("[EntryTimingController] Bus publish failed: %s", e)
+
+        return out
+
     def _compute_for_instrument(
         self,
         instrument: str,
         market_data: Dict[str, Any],
+        multi_timeframe_data: Dict[str, Any],
         atr_values: Dict[str, Any],
         session_info: Dict[str, Any],
         position_summary: Dict[str, Any],
@@ -212,7 +260,8 @@ class EntryTimingController(BaseModule):
 
         Args:
             instrument: Instrument symbol (e.g., "XAUUSD").
-            market_data: Full market_data_latest dict from inputs.
+            market_data: Full market_data_latest dict from inputs (often single-bar snapshot).
+            multi_timeframe_data: Full multi_timeframe_data dict (preferred for OHLC windows).
             atr_values: Full atr_values dict from inputs.
             session_info: Session info dict.
             position_summary: Per-instrument position state summary.
@@ -235,7 +284,19 @@ class EntryTimingController(BaseModule):
             features.block_reasons.append("NO_INSTRUMENT_DATA")
             return features
 
+        # First attempt: market_data_latest per-instrument block (may be arrays in some modes)
         ohlc_window = self._extract_ohlc_window(instrument, instrument_data)
+
+        # Preferred: multi_timeframe_data[instrument]["M15"] provides a true OHLC window
+        if ohlc_window is None or len(ohlc_window) < 2:
+            try:
+                mtf_inst = multi_timeframe_data.get(instrument, {})
+                if isinstance(mtf_inst, dict):
+                    tf_block = mtf_inst.get("M15")
+                    if isinstance(tf_block, dict):
+                        ohlc_window = self._extract_ohlc_window(instrument, tf_block)
+            except Exception:
+                pass
 
         if ohlc_window is None or len(ohlc_window) < 2:
             logger.debug(

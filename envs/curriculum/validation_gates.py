@@ -182,6 +182,8 @@ class ValidationScenario:
     # Minimum requirements
     min_episodes: int = 10
     min_trades: int = 50
+    # Optional success criteria for behavioral/patience gating
+    success_criteria: Dict[str, Any] = field(default_factory=dict)
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -198,6 +200,7 @@ class ValidationScenario:
             "difficulty": self.difficulty,
             "min_episodes": self.min_episodes,
             "min_trades": self.min_trades,
+            "success_criteria": self.success_criteria,
         }
 
 
@@ -413,6 +416,50 @@ class ValidationGateChecker:
         
         # Cache for results
         self._last_result: Optional[ValidationGateResult] = None
+
+    def add_patience_scenarios(self, stage_index: int) -> List[ValidationScenario]:
+        """Add patience/discipline scenarios for later stages."""
+        scenarios: List[ValidationScenario] = []
+        if stage_index >= 4:  # TIMING_STUDENT+
+            scenarios.append(
+                ValidationScenario(
+                    name="low_volatility_patience",
+                    scenario_type=ValidationScenarioType.LOW_VOLATILITY,
+                    description="Test patience in low volatility (choppy) market",
+                    volatility_filter="low",
+                    difficulty=1.2,
+                    min_episodes=8,
+                    min_trades=2,
+                    success_criteria={
+                        "max_trades_per_episode": 2,
+                        "min_bars_between_trades": 8.0,
+                        "min_win_rate": 0.60,
+                    },
+                )
+            )
+        if stage_index >= 6:  # RISK_MANAGER+
+            scenarios.append(
+                ValidationScenario(
+                    name="fomo_resistance",
+                    scenario_type=ValidationScenarioType.NEWS_PERIODS,
+                    description="Test resistance to FOMO after missed opportunity",
+                    volatility_filter="high",
+                    difficulty=1.4,
+                    min_episodes=6,
+                    min_trades=1,
+                    success_criteria={
+                        "max_fomo_trades": 1,
+                        "max_revenge_trades": 0,
+                    },
+                )
+            )
+        return scenarios
+
+    def get_scenarios_for_stage(self, stage_index: int) -> List[ValidationScenario]:
+        """Return base scenarios plus any stage-specific additions."""
+        scenarios = list(self.scenarios)
+        scenarios.extend(self.add_patience_scenarios(stage_index))
+        return scenarios
     
     def evaluate_scenario(
         self,
@@ -449,6 +496,11 @@ class ValidationGateChecker:
         r_multiples = []
         trade_counts = []
         drawdowns = []
+        bars_between = []
+        setup_qualities = []
+        entry_certainties = []
+        fomo_counts = []
+        revenge_counts = []
         dd_breaches = 0
         liquidations = 0
         
@@ -469,6 +521,21 @@ class ValidationGateChecker:
             ))
             drawdowns.append(_get_episode_value(
                 ep, "max_drawdown", "drawdown", "dd", default=0.0
+            ))
+            bars_between.append(_get_episode_value(
+                ep, "avg_bars_between_trades", "mean_bars_between_trades", default=float("nan")
+            ))
+            setup_qualities.append(_get_episode_value(
+                ep, "avg_setup_quality", "setup_quality", default=float("nan")
+            ))
+            entry_certainties.append(_get_episode_value(
+                ep, "avg_entry_certainty", "entry_certainty", default=float("nan")
+            ))
+            fomo_counts.append(_get_episode_value(
+                ep, "fomo_trade_count", "fomo_trades", default=float("nan")
+            ))
+            revenge_counts.append(_get_episode_value(
+                ep, "revenge_trade_count", "revenge_trades", default=float("nan")
             ))
 
             # DD breach: accept boolean or numeric episode-level indicators
@@ -565,7 +632,52 @@ class ValidationGateChecker:
             result.failure_reasons.append(
                 f"Liquidation rate too high ({result.liquidation_rate:.1%} > {self.config.max_liquidation_rate:.1%})"
             )
-        
+
+        # Scenario-specific success criteria (patience/discipline checks)
+        criteria = getattr(scenario, "success_criteria", {}) or {}
+        if criteria:
+            max_trade_count = _finite_max(trade_counts, float("nan"))
+            mean_bars_between = _finite_mean(bars_between, float("nan"))
+            mean_setup_quality = _finite_mean(setup_qualities, float("nan"))
+            mean_entry_certainty = _finite_mean(entry_certainties, float("nan"))
+            max_fomo = _finite_max(fomo_counts, float("nan"))
+            max_revenge = _finite_max(revenge_counts, float("nan"))
+
+            def _check(name: str, required: float, actual: float) -> None:
+                if not _is_finite(actual):
+                    result.failure_reasons.append(f"Missing metric for criteria '{name}'")
+                    return
+                if name.startswith("min_"):
+                    if actual < required:
+                        result.failure_reasons.append(
+                            f"{name} failed ({actual:.3f} < {required:.3f})"
+                        )
+                elif name.startswith("max_"):
+                    if actual > required:
+                        result.failure_reasons.append(
+                            f"{name} failed ({actual:.3f} > {required:.3f})"
+                        )
+
+            for key, req in criteria.items():
+                try:
+                    req_val = float(req)
+                except Exception:
+                    continue
+                if key == "max_trades_per_episode":
+                    _check("max_trades_per_episode", req_val, max_trade_count)
+                elif key == "min_bars_between_trades":
+                    _check("min_bars_between_trades", req_val, mean_bars_between)
+                elif key == "min_setup_quality":
+                    _check("min_setup_quality", req_val, mean_setup_quality)
+                elif key == "min_entry_certainty":
+                    _check("min_entry_certainty", req_val, mean_entry_certainty)
+                elif key == "min_win_rate":
+                    _check("min_win_rate", req_val, result.mean_win_rate)
+                elif key == "max_fomo_trades":
+                    _check("max_fomo_trades", req_val, max_fomo)
+                elif key == "max_revenge_trades":
+                    _check("max_revenge_trades", req_val, max_revenge)
+
         # Final pass determination
         result.passed = len(result.failure_reasons) == 0
         
@@ -578,6 +690,7 @@ class ValidationGateChecker:
         stage_name: str = "",
         stage_epoch: int = 0,
         stage_index: int = 0,
+        scenarios: Optional[List[ValidationScenario]] = None,
     ) -> ValidationGateResult:
         """
         Evaluate all validation scenarios and compute gate result.
@@ -628,7 +741,8 @@ class ValidationGateChecker:
 
         # Evaluate each scenario
         scenario_weights = []
-        for scenario in self.scenarios:
+        scenario_list = scenarios or self.get_scenarios_for_stage(stage_index)
+        for scenario in scenario_list:
             scenario_name = scenario.name
             episodes = validation_results.get(scenario_name, [])
             
@@ -641,7 +755,7 @@ class ValidationGateChecker:
             # Weight by difficulty for aggregation
             scenario_weights.append((scenario_result, scenario.difficulty))
         
-        result.scenarios_total = len(self.scenarios)
+        result.scenarios_total = len(scenario_list)
         result.pass_rate = result.scenarios_passed / max(result.scenarios_total, 1)
         
         # Compute weighted aggregates
@@ -675,7 +789,7 @@ class ValidationGateChecker:
         adjusted_min_perf_ratio = self.config.min_performance_ratio * threshold_mult
         # Relax/tighten scenario-count requirements with stage, too
         adjusted_min_scenarios_passed = int(np.ceil(self.config.min_scenarios_passed * threshold_mult))
-        adjusted_min_scenarios_passed = int(_clamp(adjusted_min_scenarios_passed, 1, len(self.scenarios)))
+        adjusted_min_scenarios_passed = int(_clamp(adjusted_min_scenarios_passed, 1, len(scenario_list)))
 
         blocking = []
 
@@ -829,6 +943,9 @@ class StressTestConfig:
     max_performance_degradation: float = 0.5  # Can lose up to 50% perf
     must_remain_profitable: bool = False      # Optional: require positive PnL
 
+    # Optional patience/discipline stress scenarios
+    include_patience_scenarios: bool = False
+
 
 @dataclass
 class StressTestResult:
@@ -908,8 +1025,42 @@ class StressTestRunner:
                     "level": prob,
                     "gap_probability": prob,
                 })
+
+        # Optional patience/discipline scenarios
+        if bool(getattr(self.config, "include_patience_scenarios", False)):
+            scenarios.extend(self.get_patience_stress_scenarios())
         
         return scenarios
+
+    def get_patience_stress_scenarios(self) -> List[Dict[str, Any]]:
+        """Return scenarios that stress patience and discipline."""
+        return [
+            {
+                "name": "news_volatility_patience",
+                "type": "patience",
+                "level": 1.0,
+                "simulate_news_event": True,
+                "volatility_spike": 3.0,
+                "duration_bars": 30,
+                "evaluation": {
+                    "max_trades_per_episode": 1,
+                    "min_bars_between_trades": 5.0,
+                    "min_win_rate": 0.67,
+                },
+            },
+            {
+                "name": "choppy_ranging_patience",
+                "type": "patience",
+                "level": 1.0,
+                "volatility_percentile": (0.7, 0.9),
+                "trend_clarity": 0.0,
+                "fake_breakouts": True,
+                "evaluation": {
+                    "max_trades_per_episode": 2,
+                    "min_setup_quality": 0.8,
+                },
+            },
+        ]
     
     def evaluate_stress_result(
         self,
@@ -938,6 +1089,12 @@ class StressTestRunner:
         profit_factors = [_get_episode_value(ep, "profit_factor", "pf", default=0.0) for ep in episodes]
         r_multiples = [_get_episode_value(ep, "avg_r_multiple", "mean_r_multiple", "r_multiple", default=0.0) for ep in episodes]
         pnls = [_get_episode_value(ep, "total_pnl", "pnl", "episode_pnl", "net_pnl", default=0.0) for ep in episodes]
+        trade_counts = [_get_episode_value(ep, "trade_count", "trades", "num_trades", default=float("nan")) for ep in episodes]
+        bars_between = [_get_episode_value(ep, "avg_bars_between_trades", "mean_bars_between_trades", default=float("nan")) for ep in episodes]
+        setup_qualities = [_get_episode_value(ep, "avg_setup_quality", "setup_quality", default=float("nan")) for ep in episodes]
+        entry_certainties = [_get_episode_value(ep, "avg_entry_certainty", "entry_certainty", default=float("nan")) for ep in episodes]
+        fomo_counts = [_get_episode_value(ep, "fomo_trade_count", "fomo_trades", default=float("nan")) for ep in episodes]
+        revenge_counts = [_get_episode_value(ep, "revenge_trade_count", "revenge_trades", default=float("nan")) for ep in episodes]
 
         result.mean_win_rate = _finite_mean(win_rates, 0.0)
         result.mean_pnl = _finite_mean(pnls, 0.0)
@@ -979,6 +1136,57 @@ class StressTestRunner:
         if self.config.must_remain_profitable and result.mean_pnl < 0:
             result.passed = False
             result.failure_reason = f"Unprofitable under stress: PnL={result.mean_pnl:.4f}"
+
+        # Optional: evaluate scenario-specific criteria (patience stress)
+        eval_criteria = scenario.get("evaluation", {}) or {}
+        if eval_criteria:
+            max_trade_count = _finite_max(trade_counts, float("nan"))
+            mean_bars_between = _finite_mean(bars_between, float("nan"))
+            mean_setup_quality = _finite_mean(setup_qualities, float("nan"))
+            mean_entry_certainty = _finite_mean(entry_certainties, float("nan"))
+            max_fomo = _finite_max(fomo_counts, float("nan"))
+            max_revenge = _finite_max(revenge_counts, float("nan"))
+
+            failures = []
+
+            def _check(name: str, required: float, actual: float) -> None:
+                if not _is_finite(actual):
+                    failures.append(f"Missing metric for criteria '{name}'")
+                    return
+                if name.startswith("min_"):
+                    if actual < required:
+                        failures.append(f"{name} failed ({actual:.3f} < {required:.3f})")
+                elif name.startswith("max_"):
+                    if actual > required:
+                        failures.append(f"{name} failed ({actual:.3f} > {required:.3f})")
+
+            for key, req in eval_criteria.items():
+                try:
+                    req_val = float(req)
+                except Exception:
+                    continue
+                if key == "max_trades_per_episode":
+                    _check("max_trades_per_episode", req_val, max_trade_count)
+                elif key == "min_bars_between_trades":
+                    _check("min_bars_between_trades", req_val, mean_bars_between)
+                elif key == "min_setup_quality":
+                    _check("min_setup_quality", req_val, mean_setup_quality)
+                elif key == "min_entry_certainty":
+                    _check("min_entry_certainty", req_val, mean_entry_certainty)
+                elif key == "min_win_rate":
+                    _check("min_win_rate", req_val, result.mean_win_rate)
+                elif key == "max_fomo_trades":
+                    _check("max_fomo_trades", req_val, max_fomo)
+                elif key == "max_revenge_trades":
+                    _check("max_revenge_trades", req_val, max_revenge)
+
+            if failures:
+                result.passed = False
+                msg = "; ".join(failures)
+                if result.failure_reason:
+                    result.failure_reason = f"{result.failure_reason}; {msg}"
+                else:
+                    result.failure_reason = msg
         
         return result
     

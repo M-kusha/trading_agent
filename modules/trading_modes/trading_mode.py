@@ -340,6 +340,53 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
     def _post_health_status(self):
         """Write compact health and status snapshots (namespaced keys)."""
         try:
+            # Seed required (non-namespaced) SmartBus keys early to prevent
+            # downstream strict consumers (e.g., PPO observation builder) from
+            # failing during startup/warmup before the first `process()` tick.
+            try:
+                existing_mode = self.smart_bus.get("trading_mode", "TradingModeManager", default=None)
+                if not isinstance(existing_mode, str) or not existing_mode:
+                    self.smart_bus.set(
+                        "trading_mode",
+                        self.current_mode,
+                        module="TradingModeManager",
+                        thesis="Initialization seed: current trading mode",
+                    )
+
+                existing_stats = self.smart_bus.get("mode_stats", "TradingModeManager", default=None)
+                if not isinstance(existing_stats, dict) or "mode_effectiveness" not in existing_stats:
+                    self.smart_bus.set(
+                        "mode_stats",
+                        dict(self.mode_stats),
+                        module="TradingModeManager",
+                        thesis="Initialization seed: mode stats",
+                    )
+
+                existing_eff = self.smart_bus.get("mode_effectiveness", "TradingModeManager", default=None)
+                eff_ok = isinstance(existing_eff, (int, float, np.integer, np.floating))
+                if not eff_ok and isinstance(existing_eff, dict):
+                    for k in ("value", "effectiveness"):
+                        if k in existing_eff:
+                            try:
+                                v = existing_eff.get(k)
+                                if v is None:
+                                    continue
+                                if isinstance(v, (int, float, np.integer, np.floating, str)):
+                                    float(v)
+                                    eff_ok = True
+                            except Exception:
+                                pass
+                            break
+                if not eff_ok:
+                    self.smart_bus.set(
+                        "mode_effectiveness",
+                        float(self.mode_stats.get("mode_effectiveness", 0.5)),
+                        module="TradingModeManager",
+                        thesis="Initialization seed: mode effectiveness",
+                    )
+            except Exception:
+                pass
+
             status = {
                 'initialized': True,
                 'auto_mode': self.auto_mode,

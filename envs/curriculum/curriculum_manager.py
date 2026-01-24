@@ -108,7 +108,7 @@ from envs.curriculum.regime_skill_assessment import (
 
 logger = get_envs_logger("curriculum_manager")
 
-STATE_VERSION = "2.1"  # Bumped for Phase 1-4 additions
+STATE_VERSION = "2.2"  # Bumped for selectivity phase + patience gating
 DEFAULT_TZ = "Europe/Berlin"
 
 # Limits for persistence
@@ -309,6 +309,14 @@ class CurriculumManager:
         self._recovery_state = RecoveryProtocolState()
         self._review_state = ReviewSessionState()
         self._composite_score: Optional[CompositeScore] = None
+
+        # Selectivity mastery phase (quality-over-quantity bridge)
+        self._selectivity_phase_active: bool = False
+        self._selectivity_phase_episodes_remaining: int = 0
+        self._selectivity_phase_requirements: Dict[str, Any] = {}
+        self._selectivity_phase_completed_epoch: int = -1
+        self._selectivity_phase_target_episodes: int = 0
+        self._selectivity_phase_failures: int = 0
         
         # Phase 1-4 hardening components (v2.1)
         self._invariant_checker = CurriculumInvariantChecker(verbose=verbose)
@@ -607,32 +615,164 @@ class CurriculumManager:
             otherwise the current stage_config unchanged.
         """
         cfg = get_stage_config(self.current_stage)
-        
-        if self._reward_blend_remaining <= 0 or self._previous_stage_config is None:
-            return cfg
-        
-        # Blend rewards from previous stage to current stage
-        alpha = self.reward_blend_factor  # 0.0 = old, 1.0 = new
-        
-        # Create a deep copy to avoid mutating cached config
-        blended_cfg = copy.deepcopy(cfg)
-        prev_rewards = self._previous_stage_config.rewards
-        curr_rewards = cfg.rewards
-        
-        # Blend numeric reward fields
-        # Only blend fields that exist on both and are numeric
-        for field_obj in fields(curr_rewards):
-            field_name = field_obj.name
-            if not hasattr(prev_rewards, field_name):
-                continue
-            prev_val = getattr(prev_rewards, field_name, None)
-            curr_val = getattr(curr_rewards, field_name, None)
-            if isinstance(prev_val, (int, float)) and isinstance(curr_val, (int, float)):
-                # Linear blend: prev * (1-alpha) + curr * alpha
-                blended_val = prev_val * (1 - alpha) + curr_val * alpha
-                setattr(blended_cfg.rewards, field_name, blended_val)
-        
-        return blended_cfg
+
+        # Blend rewards from previous stage to current stage (if active)
+        if self._reward_blend_remaining > 0 and self._previous_stage_config is not None:
+            alpha = self.reward_blend_factor  # 0.0 = old, 1.0 = new
+            blended_cfg = copy.deepcopy(cfg)
+            prev_rewards = self._previous_stage_config.rewards
+            curr_rewards = cfg.rewards
+            for field_obj in fields(curr_rewards):
+                field_name = field_obj.name
+                if not hasattr(prev_rewards, field_name):
+                    continue
+                prev_val = getattr(prev_rewards, field_name, None)
+                curr_val = getattr(curr_rewards, field_name, None)
+                if isinstance(prev_val, (int, float)) and isinstance(curr_val, (int, float)):
+                    blended_val = prev_val * (1 - alpha) + curr_val * alpha
+                    setattr(blended_cfg.rewards, field_name, blended_val)
+            cfg = blended_cfg
+        else:
+            # Copy to allow safe in-place modifications below
+            cfg = copy.deepcopy(cfg)
+
+        # Apply recovery protocol modifiers (if active)
+        if self._recovery_state.is_active():
+            # Reward modifications (multiplicative by default)
+            for k, v in (self._recovery_state.reward_modifications or {}).items():
+                if hasattr(cfg.rewards, k) and isinstance(v, (int, float)):
+                    cur = getattr(cfg.rewards, k)
+                    if isinstance(cur, (int, float)):
+                        setattr(cfg.rewards, k, cur * float(v))
+                    else:
+                        setattr(cfg.rewards, k, v)
+
+            # Constraint modifications (multiplicative by default)
+            for k, v in (self._recovery_state.constraint_modifications or {}).items():
+                if hasattr(cfg.constraints, k) and isinstance(v, (int, float)):
+                    cur = getattr(cfg.constraints, k)
+                    if isinstance(cur, bool):
+                        setattr(cfg.constraints, k, bool(v))
+                    elif isinstance(cur, int):
+                        setattr(cfg.constraints, k, max(1, int(round(cur * float(v)))))
+                    elif isinstance(cur, float):
+                        setattr(cfg.constraints, k, cur * float(v))
+                    else:
+                        setattr(cfg.constraints, k, v)
+
+        # Selectivity phase overrides (quality-over-quantity bridge)
+        if self._selectivity_phase_active:
+            req = self._selectivity_phase_requirements or {}
+            max_trades = int(req.get("max_trades_per_episode", 0) or 0)
+            if max_trades > 0:
+                cfg.constraints.max_trades_per_episode = max_trades
+            min_setup = float(req.get("min_setup_quality", 0.0) or 0.0)
+            if min_setup > 0:
+                cfg.constraints.min_setup_quality_for_entry = min_setup
+                if hasattr(cfg.rewards, "setup_quality_threshold"):
+                    cfg.rewards.setup_quality_threshold = max(cfg.rewards.setup_quality_threshold, min_setup)
+            min_certainty = float(req.get("min_entry_certainty", 0.0) or 0.0)
+            if min_certainty > 0:
+                cfg.rewards.certainty_threshold = max(cfg.rewards.certainty_threshold, min_certainty)
+
+        return cfg
+
+    # ---------------------------------------------------------------------
+    # Selectivity Mastery Phase (quality-over-quantity bridge)
+    # ---------------------------------------------------------------------
+
+    def start_selectivity_phase(
+        self,
+        episodes: int = 20,
+        requirements: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Start a special phase emphasizing low-frequency, high-quality trades."""
+        if episodes <= 0:
+            return
+
+        default_requirements = {
+            "max_trades_per_episode": 3,
+            "min_setup_quality": 0.75,
+            "min_entry_certainty": 0.70,
+            "required_success_rate": 0.67,
+        }
+        req = {**default_requirements, **(requirements or {})}
+
+        self._selectivity_phase_active = True
+        self._selectivity_phase_target_episodes = int(episodes)
+        self._selectivity_phase_episodes_remaining = int(episodes)
+        self._selectivity_phase_failures = 0
+        self._selectivity_phase_requirements = req
+
+        if self.verbose:
+            logger.info(
+                f"⚡ Selectivity Mastery Phase started: {episodes} episodes, "
+                f"max_trades_per_episode={req.get('max_trades_per_episode')}, "
+                f"min_setup_quality={req.get('min_setup_quality')}"
+            )
+
+    def check_selectivity_phase(self, metrics: EpisodeMetrics) -> Dict[str, Any]:
+        """Evaluate an episode against selectivity-phase requirements."""
+        if not self._selectivity_phase_active:
+            return {"active": False}
+
+        req = self._selectivity_phase_requirements or {}
+        result: Dict[str, Any] = {
+            "active": True,
+            "episodes_remaining": self._selectivity_phase_episodes_remaining,
+            "passed": True,
+            "violations": [],
+        }
+
+        max_trades = int(req.get("max_trades_per_episode", 0) or 0)
+        if max_trades > 0 and int(metrics.trade_count) > max_trades:
+            result["passed"] = False
+            result["violations"].append(
+                f"Too many trades: {metrics.trade_count} > {max_trades}"
+            )
+
+        min_setup_quality = float(req.get("min_setup_quality", 0.0) or 0.0)
+        if min_setup_quality > 0 and float(metrics.avg_setup_quality) < min_setup_quality:
+            result["passed"] = False
+            result["violations"].append(
+                f"Setup quality too low: {metrics.avg_setup_quality:.2f} < {min_setup_quality}"
+            )
+
+        min_certainty = float(req.get("min_entry_certainty", 0.0) or 0.0)
+        if min_certainty > 0 and float(metrics.avg_entry_certainty) < min_certainty:
+            result["passed"] = False
+            result["violations"].append(
+                f"Entry certainty too low: {metrics.avg_entry_certainty:.2f} < {min_certainty}"
+            )
+
+        required_wr = float(req.get("required_success_rate", 0.0) or 0.0)
+        if required_wr > 0 and float(metrics.win_rate) < required_wr:
+            result["passed"] = False
+            result["violations"].append(
+                f"Win rate too low: {metrics.win_rate:.2%} < {required_wr:.2%}"
+            )
+
+        if not result["passed"]:
+            self._selectivity_phase_failures += 1
+
+        # Decrement counter
+        self._selectivity_phase_episodes_remaining -= 1
+        if self._selectivity_phase_episodes_remaining <= 0:
+            if self._selectivity_phase_failures == 0:
+                self._selectivity_phase_active = False
+                self._selectivity_phase_completed_epoch = self._current_stage_epoch
+                result["phase_complete"] = True
+                if self.verbose:
+                    logger.info("✅ Selectivity Mastery Phase completed")
+            else:
+                # Require a clean streak of selectivity episodes
+                self._selectivity_phase_episodes_remaining = self._selectivity_phase_target_episodes
+                self._selectivity_phase_failures = 0
+                result["phase_reset"] = True
+                if self.verbose:
+                    logger.info("🔁 Selectivity phase reset due to violations")
+
+        return result
     
     def _seen_episode_id(self, eid: int) -> bool:
         """Check if an episode ID has already been processed."""
@@ -742,6 +882,11 @@ class CurriculumManager:
         
         # Record episode (this handles counters and history)
         self.record_episode(metrics, timesteps=timesteps, effective_stage=effective_stage)
+
+        # Selectivity phase evaluation (quality-over-quantity bridge)
+        selectivity_result = self.check_selectivity_phase(metrics)
+        if selectivity_result.get("active", False):
+            result["selectivity_phase"] = selectivity_result
         
         # Mark as processed (both systems)
         self._last_episode_end_idx = self.total_episodes
@@ -1175,6 +1320,10 @@ class CurriculumManager:
             avg_mfe=_safe_float(ep_stats.get("avg_mfe", info.get("avg_mfe", 0.0)), 0.0),
             avg_bars_held=_safe_float(ep_stats.get("avg_bars_held", info.get("avg_bars_held", 0.0)), 0.0),
             avg_entry_quality=_clamp(_safe_float(ep_stats.get("avg_entry_quality", info.get("avg_entry_quality", 0.5)), 0.5), 0.0, 1.0),
+            avg_bars_between_trades=_safe_float(ep_stats.get("avg_bars_between_trades", info.get("avg_bars_between_trades", 0.0)), 0.0),
+            avg_setup_quality=_clamp(_safe_float(ep_stats.get("avg_setup_quality", info.get("avg_setup_quality", 0.0)), 0.0), 0.0, 1.0),
+            avg_entry_certainty=_clamp(_safe_float(ep_stats.get("avg_entry_certainty", info.get("avg_entry_certainty", 0.0)), 0.0), 0.0, 1.0),
+            min_setup_quality_for_entry=_clamp(_safe_float(ep_stats.get("min_setup_quality_for_entry", info.get("min_setup_quality_for_entry", 0.0)), 0.0), 0.0, 1.0),
             consecutive_losses=_safe_int(info.get("consecutive_losses", ep_stats.get("consecutive_losses", 0)), 0),
             consecutive_wins=_safe_int(info.get("consecutive_wins", ep_stats.get("consecutive_wins", 0)), 0),
             max_consecutive_losses_reached=_safe_int(ep_stats.get("max_consecutive_losses_reached",
@@ -1182,6 +1331,10 @@ class CurriculumManager:
             hit_max_consecutive_losses=hit_max_consec,
             mask_collapse_steps=_safe_int(ep_stats.get("mask_collapse_steps", info.get("mask_collapse_steps", 0)), 0),
             stop_mode_steps=_safe_int(ep_stats.get("stop_mode_steps", info.get("stop_mode_steps", 0)), 0),
+            setup_skipped_count=_safe_int(ep_stats.get("setup_skipped_count", info.get("setup_skipped_count", 0)), 0),
+            fomo_trade_count=_safe_int(ep_stats.get("fomo_trade_count", info.get("fomo_trade_count", 0)), 0),
+            revenge_trade_count=_safe_int(ep_stats.get("revenge_trade_count", info.get("revenge_trade_count", 0)), 0),
+            max_patience_bars=_safe_int(ep_stats.get("max_patience_bars", info.get("max_patience_bars", 0)), 0),
             trailing_stop_exits=trailing_stops,
             agent_close_exits=agent_closes,
             hard_stop_exits=hard_stops,
@@ -1317,6 +1470,14 @@ class CurriculumManager:
         profit_factors = np.array([_clamp(_safe_float(m.profit_factor, 0.0), 0.0, 10.0) for m in window], dtype=np.float64)
         r_multiples = np.array([_safe_float(m.avg_r_multiple, 0.0) for m in window], dtype=np.float64)
         entry_qualities = np.array([_clamp(_safe_float(m.avg_entry_quality, 0.5), 0.0, 1.0) for m in window], dtype=np.float64)
+        bars_between = np.array([max(0.0, _safe_float(getattr(m, "avg_bars_between_trades", 0.0), 0.0)) for m in window], dtype=np.float64)
+        setup_skipped = np.array([max(0.0, _safe_float(getattr(m, "setup_skipped_count", 0.0), 0.0)) for m in window], dtype=np.float64)
+        entry_certainty = np.array([_clamp(_safe_float(getattr(m, "avg_entry_certainty", 0.0), 0.0), 0.0, 1.0) for m in window], dtype=np.float64)
+        setup_quality = np.array([_clamp(_safe_float(getattr(m, "avg_setup_quality", 0.0), 0.0), 0.0, 1.0) for m in window], dtype=np.float64)
+        min_setup_quality = np.array([_clamp(_safe_float(getattr(m, "min_setup_quality_for_entry", 0.0), 0.0), 0.0, 1.0) for m in window], dtype=np.float64)
+        fomo_counts = np.array([max(0.0, _safe_float(getattr(m, "fomo_trade_count", 0.0), 0.0)) for m in window], dtype=np.float64)
+        revenge_counts = np.array([max(0.0, _safe_float(getattr(m, "revenge_trade_count", 0.0), 0.0)) for m in window], dtype=np.float64)
+        max_patience_bars = np.array([max(0.0, _safe_float(getattr(m, "max_patience_bars", 0.0), 0.0)) for m in window], dtype=np.float64)
         consec_loss_breaches = np.array([bool(m.hit_max_consecutive_losses) for m in window], dtype=np.bool_)
         # Track peak consecutive losses per episode (more informative than just breach rate)
         max_consec_losses = np.array([max(0, m.max_consecutive_losses_reached) for m in window], dtype=np.int32)
@@ -1332,6 +1493,8 @@ class CurriculumManager:
         total_trades = int(np.sum(trade_counts))
         total_wins = int(sum(max(0, m.winning_trades) for m in window))
         total_losses = int(sum(max(0, m.losing_trades) for m in window))
+        fomo_trade_rate = float(np.sum(fomo_counts) / max(total_trades, 1))
+        revenge_trade_rate = float(np.sum(revenge_counts) / max(total_trades, 1))
 
         # Trade-aware win-rate stability:
         # - Ignore episodes with very low trade counts (stop-mode / constraint-driven low activity).
@@ -1369,6 +1532,13 @@ class CurriculumManager:
         
         mean_r_multiple = float(np.mean(r_multiples)) if len(r_multiples) else 0.0
         mean_entry_quality = float(np.mean(entry_qualities)) if len(entry_qualities) else 0.5
+        mean_bars_between_trades = float(np.mean(bars_between)) if len(bars_between) else 0.0
+        std_bars_between_trades = float(np.std(bars_between, ddof=1)) if len(bars_between) > 1 else 0.0
+        mean_setup_skipped_per_episode = float(np.mean(setup_skipped)) if len(setup_skipped) else 0.0
+        mean_entry_certainty = float(np.mean(entry_certainty)) if len(entry_certainty) else 0.0
+        mean_setup_quality = float(np.mean(setup_quality)) if len(setup_quality) else 0.0
+        mean_min_setup_quality = float(np.mean(min_setup_quality)) if len(min_setup_quality) else 0.0
+        mean_max_patience_bars = float(np.mean(max_patience_bars)) if len(max_patience_bars) else 0.0
         consecutive_loss_breach_rate = float(np.mean(consec_loss_breaches)) if len(consec_loss_breaches) else 0.0
         # Average of peak consecutive losses per episode
         avg_max_consecutive_losses = float(np.mean(max_consec_losses)) if len(max_consec_losses) else 0.0
@@ -1452,6 +1622,16 @@ class CurriculumManager:
         stats.mean_profit_factor = mean_profit_factor
         stats.mean_r_multiple = mean_r_multiple
         stats.mean_entry_quality = mean_entry_quality
+        stats.mean_bars_between_trades = mean_bars_between_trades
+        stats.std_bars_between_trades = std_bars_between_trades
+        stats.mean_setup_skipped_per_episode = mean_setup_skipped_per_episode
+        stats.mean_entry_certainty = mean_entry_certainty
+        stats.mean_setup_quality = mean_setup_quality
+        stats.mean_min_setup_quality_for_entry = mean_min_setup_quality
+        stats.fomo_trade_rate = fomo_trade_rate
+        stats.revenge_trade_rate = revenge_trade_rate
+        stats.mean_max_patience_bars = mean_max_patience_bars
+        stats.patience_consistency = std_bars_between_trades
         stats.consecutive_loss_breach_rate = consecutive_loss_breach_rate
         stats.avg_max_consecutive_losses = avg_max_consecutive_losses
         stats.consecutive_loss_streak_rate = consecutive_loss_streak_rate
@@ -1666,6 +1846,115 @@ class CurriculumManager:
             "passed": passed,
         }
         all_passed = all_passed and passed
+
+        # Patience / selectivity checks (Phase 2)
+        if getattr(thresholds, "min_avg_bars_between_trades", 0.0) > 0:
+            passed = stats.mean_bars_between_trades >= thresholds.min_avg_bars_between_trades
+            results["checks"]["avg_bars_between_trades"] = {
+                "required": thresholds.min_avg_bars_between_trades,
+                "actual": stats.mean_bars_between_trades,
+                "passed": passed,
+            }
+            all_passed = all_passed and passed
+
+        if getattr(thresholds, "min_setup_skipped_per_episode", 0.0) > 0:
+            passed = stats.mean_setup_skipped_per_episode >= thresholds.min_setup_skipped_per_episode
+            results["checks"]["setup_skipped_per_episode"] = {
+                "required": thresholds.min_setup_skipped_per_episode,
+                "actual": stats.mean_setup_skipped_per_episode,
+                "passed": passed,
+            }
+            all_passed = all_passed and passed
+
+        if getattr(thresholds, "min_entry_certainty_avg", 0.0) > 0:
+            passed = stats.mean_entry_certainty >= thresholds.min_entry_certainty_avg
+            results["checks"]["entry_certainty_avg"] = {
+                "required": thresholds.min_entry_certainty_avg,
+                "actual": stats.mean_entry_certainty,
+                "passed": passed,
+            }
+            all_passed = all_passed and passed
+
+        if getattr(thresholds, "min_avg_setup_quality", 0.0) > 0:
+            passed = stats.mean_setup_quality >= thresholds.min_avg_setup_quality
+            results["checks"]["avg_setup_quality"] = {
+                "required": thresholds.min_avg_setup_quality,
+                "actual": stats.mean_setup_quality,
+                "passed": passed,
+            }
+            all_passed = all_passed and passed
+
+        if getattr(thresholds, "max_fomo_trade_rate", 0.0) > 0:
+            passed = stats.fomo_trade_rate <= thresholds.max_fomo_trade_rate
+            results["checks"]["fomo_trade_rate"] = {
+                "required": thresholds.max_fomo_trade_rate,
+                "actual": stats.fomo_trade_rate,
+                "passed": passed,
+            }
+            all_passed = all_passed and passed
+
+        if getattr(thresholds, "max_revenge_trade_rate", 0.0) > 0:
+            passed = stats.revenge_trade_rate <= thresholds.max_revenge_trade_rate
+            results["checks"]["revenge_trade_rate"] = {
+                "required": thresholds.max_revenge_trade_rate,
+                "actual": stats.revenge_trade_rate,
+                "passed": passed,
+            }
+            all_passed = all_passed and passed
+
+        # Consistency streak gate (Stage 8+)
+        streak_required = int(getattr(thresholds, "consistency_streak_required", 0) or 0)
+        streak_criteria = getattr(thresholds, "consistency_streak_criteria", {}) or {}
+        if streak_required > 0 and streak_criteria:
+            def _metric_from_ep(ep: EpisodeMetrics, key: str) -> float:
+                if key == "win_rate":
+                    return float(ep.win_rate)
+                if key == "avg_bars_between_trades":
+                    return float(ep.avg_bars_between_trades)
+                if key == "entry_certainty_avg":
+                    return float(ep.avg_entry_certainty)
+                if key == "fomo_trade_rate":
+                    return float(ep.fomo_trade_count) / max(int(ep.trade_count), 1)
+                if key == "revenge_trade_rate":
+                    return float(ep.revenge_trade_count) / max(int(ep.trade_count), 1)
+                if key == "setup_skipped_per_episode":
+                    return float(ep.setup_skipped_count)
+                if key == "avg_setup_quality":
+                    return float(ep.avg_setup_quality)
+                return float(getattr(ep, key, 0.0) or 0.0)
+
+            def _passes(ep: EpisodeMetrics, criteria: Dict[str, float]) -> bool:
+                for k, v in criteria.items():
+                    try:
+                        actual = _metric_from_ep(ep, k)
+                        threshold = float(v)
+                    except Exception:
+                        return False
+                    if k in {"fomo_trade_rate", "revenge_trade_rate"}:
+                        if actual > threshold:
+                            return False
+                    else:
+                        if actual < threshold:
+                            return False
+                return True
+
+            streak = 0
+            for ep in reversed(self._history.get(self.current_stage, [])):
+                if _passes(ep, streak_criteria):
+                    streak += 1
+                    if streak >= streak_required:
+                        break
+                else:
+                    break
+
+            passed = streak >= streak_required
+            results["checks"]["consistency_streak"] = {
+                "required": streak_required,
+                "actual": streak,
+                "passed": passed,
+                "criteria": streak_criteria,
+            }
+            all_passed = all_passed and passed
         
         # Behavior checks
         passed = stats.dd_breach_rate <= thresholds.max_dd_breach_rate
@@ -1881,6 +2170,48 @@ class CurriculumManager:
                         }
             else:
                 results["regime_assessment"] = {"status": "insufficient_data"}
+
+        # Consistency streak gate (Phase 3+)
+        streak_required = int(getattr(thresholds, "consistency_streak_required", 0) or 0)
+        streak_criteria = getattr(thresholds, "consistency_streak_criteria", {}) or {}
+        if streak_required > 0 and streak_criteria:
+            recent_eps = self._current_epoch_window(max(streak_required, 1))
+            streak = 0
+            for ep in reversed(recent_eps):
+                meets = True
+                for k, v in streak_criteria.items():
+                    try:
+                        key = str(k).lower()
+                        req = float(v)
+                        if key in ("win_rate",):
+                            meets = meets and (float(ep.win_rate) >= req)
+                        elif key in ("avg_bars_between_trades",):
+                            meets = meets and (float(getattr(ep, "avg_bars_between_trades", 0.0)) >= req)
+                        elif key in ("entry_certainty_avg",):
+                            meets = meets and (float(getattr(ep, "avg_entry_certainty", 0.0)) >= req)
+                        elif key in ("avg_setup_quality",):
+                            meets = meets and (float(getattr(ep, "avg_setup_quality", 0.0)) >= req)
+                        elif key in ("setup_skipped_per_episode",):
+                            meets = meets and (float(getattr(ep, "setup_skipped_count", 0.0)) >= req)
+                        elif key in ("fomo_trades", "fomo_trade_count"):
+                            meets = meets and (float(getattr(ep, "fomo_trade_count", 0.0)) <= req)
+                        elif key in ("revenge_trades", "revenge_trade_count"):
+                            meets = meets and (float(getattr(ep, "revenge_trade_count", 0.0)) <= req)
+                    except Exception:
+                        continue
+                if meets:
+                    streak += 1
+                else:
+                    break
+
+            passed = streak >= streak_required
+            results["checks"]["consistency_streak"] = {
+                "required": streak_required,
+                "actual": streak,
+                "passed": passed,
+                "criteria": streak_criteria,
+            }
+            all_passed = all_passed and passed
         
         results["promotion_ready"] = all_passed
         results["stats"] = stats.to_dict()
@@ -1948,6 +2279,22 @@ class CurriculumManager:
             critical_failures += 1
             failure_reasons.append("dd_breach_critical")
             results["checks"]["dd_breach_critical"] = True
+
+        # Discipline-based demotion checks (patience/psychology)
+        stage_idx = _stage_to_index(self.current_stage)
+        if stage_idx >= 4:
+            if stats.fomo_trade_rate > 0.25:
+                critical_failures += 1
+                failure_reasons.append("excessive_fomo_trading")
+                results["checks"]["excessive_fomo_trading"] = True
+            if stats.revenge_trade_rate > 0.20:
+                critical_failures += 1
+                failure_reasons.append("revenge_trading")
+                results["checks"]["revenge_trading"] = True
+            if stats.mean_bars_between_trades < 2.0:
+                critical_failures += 1
+                failure_reasons.append("overtrading")
+                results["checks"]["overtrading"] = True
         
         should_demote = critical_failures >= 2
         
@@ -2123,9 +2470,12 @@ class CurriculumManager:
         if gate_config is not None and getattr(gate_config, "enabled", False):
             if self.validation_gate_evaluator is not None:
                 try:
-                    # Get scenarios from the validation gate checker
-                    scenarios = [s.to_dict() if hasattr(s, 'to_dict') else {'name': s.name} 
-                                for s in self._validation_gate.scenarios]
+                    stage_idx = _stage_to_index(self.current_stage)
+                    # Get scenarios from the validation gate checker (stage-aware)
+                    scenarios = self._validation_gate.get_scenarios_for_stage(stage_idx)
+                    scenario_payload = [
+                        s.to_dict() if hasattr(s, "to_dict") else {"name": s.name} for s in scenarios
+                    ]
                     
                     # Get training stats for comparison
                     stats = self.get_rolling_stats()
@@ -2139,16 +2489,16 @@ class CurriculumManager:
                     
                     # Call evaluator to run validation episodes
                     # Returns: {scenario_name: [episode_results]}
-                    validation_results = self.validation_gate_evaluator(scenarios, training_stats)
+                    validation_results = self.validation_gate_evaluator(scenario_payload, training_stats)
                     
                     # Evaluate using the validation gate checker
-                    stage_idx = _stage_to_index(self.current_stage)
                     gate_result = self._validation_gate.evaluate_all(
                         validation_results=validation_results,
                         training_stats=training_stats,
                         stage_name=self.current_stage.name,
                         stage_epoch=self._current_stage_epoch,
                         stage_index=stage_idx,
+                        scenarios=scenarios,
                     )
                     
                     results["validation_gate"] = {
@@ -2298,6 +2648,20 @@ class CurriculumManager:
                 except Exception as e:
                     logger.warning(f"Validation evaluator error: {e}; skipping validation gate.")
         
+        # =================================================================
+        # Selectivity Mastery Phase (between Strategist -> Professional)
+        # =================================================================
+        if self.current_stage == CurriculumStage.STRATEGIST and next_stage == CurriculumStage.PROFESSIONAL:
+            # If phase already active, block promotion until complete
+            if self._selectivity_phase_active:
+                return False, None
+
+            # If not completed in this epoch, trigger the phase instead of promoting
+            if self._selectivity_phase_completed_epoch != self._current_stage_epoch:
+                self.start_selectivity_phase(episodes=20)
+                results["selectivity_phase_started"] = True
+                return False, None
+
         old_stage = self.current_stage
         self.current_stage = next_stage
         self._enter_stage(next_stage, reason="promotion")
@@ -2602,6 +2966,22 @@ class CurriculumManager:
         
         # Generate recommendations
         recommendations = self._generate_recommendations(blockers)
+
+        # Patience/discipline recommendations (supplemental)
+        patience_recs: List[str] = []
+        if stats.mean_bars_between_trades < 3.0:
+            patience_recs.append("Wait longer between trades - aim for at least 3 bars")
+        if stats.fomo_trade_rate > 0.2:
+            patience_recs.append("Reduce FOMO trading - wait for clear setups")
+        if stats.revenge_trade_rate > 0.15:
+            patience_recs.append("Avoid revenge trading - enforce cooldown after losses")
+        if stats.mean_setup_skipped_per_episode < 2.0:
+            patience_recs.append("Skip more marginal setups - increase selectivity")
+        if stats.mean_entry_certainty < 0.6:
+            patience_recs.append("Increase entry certainty - trade only high-confidence setups")
+
+        if patience_recs:
+            recommendations = list(dict.fromkeys(recommendations + patience_recs))
         
         # Estimate episodes to promotion (rough heuristic)
         estimated_episodes = 0
@@ -2633,6 +3013,15 @@ class CurriculumManager:
             
             # Stats
             "rolling_stats": stats.to_dict(),
+            "patience_metrics": {
+                "mean_bars_between_trades": stats.mean_bars_between_trades,
+                "std_bars_between_trades": stats.std_bars_between_trades,
+                "mean_setup_skipped_per_episode": stats.mean_setup_skipped_per_episode,
+                "mean_entry_certainty": stats.mean_entry_certainty,
+                "fomo_trade_rate": stats.fomo_trade_rate,
+                "revenge_trade_rate": stats.revenge_trade_rate,
+                "patience_consistency": stats.patience_consistency,
+            },
             
             # Promotion/Demotion
             "promotion_ready": meets_promotion,
@@ -2656,6 +3045,15 @@ class CurriculumManager:
             "recovery_protocol": self._recovery_state.to_dict(),
             "review_session": self._review_state.to_dict(),
             "demotion_analysis": self._demotion_analyzer.to_dict(),
+            "selectivity_phase": {
+                "active": self._selectivity_phase_active,
+                "episodes_remaining": (
+                    self._selectivity_phase_episodes_remaining if self._selectivity_phase_active else 0
+                ),
+                "requirements": self._selectivity_phase_requirements if self._selectivity_phase_active else {},
+                "completed_epoch": self._selectivity_phase_completed_epoch,
+                "failures": self._selectivity_phase_failures,
+            },
             
             # Phase 2.1 hardening
             "invariant_summary": self._invariant_checker.get_summary(),
@@ -2876,6 +3274,15 @@ class CurriculumManager:
             "validation_gate_history": self._validation_gate_history[-100:],
             # Stress test history
             "stress_test_history": self._stress_test_history[-100:],
+            # Selectivity mastery phase
+            "selectivity_phase": {
+                "active": self._selectivity_phase_active,
+                "episodes_remaining": self._selectivity_phase_episodes_remaining,
+                "requirements": self._selectivity_phase_requirements,
+                "completed_epoch": self._selectivity_phase_completed_epoch,
+                "target_episodes": self._selectivity_phase_target_episodes,
+                "failures": self._selectivity_phase_failures,
+            },
             "saved_at": _now_iso(self.tz),
         }
 
@@ -3015,6 +3422,24 @@ class CurriculumManager:
         # Restore stress test history
         manager._stress_test_history = state.get("stress_test_history", []) or []
 
+        # Restore selectivity phase state
+        sel_state = state.get("selectivity_phase", {}) or {}
+        if sel_state:
+            manager._selectivity_phase_active = bool(sel_state.get("active", False))
+            manager._selectivity_phase_episodes_remaining = _safe_int(
+                sel_state.get("episodes_remaining", 0), 0
+            )
+            manager._selectivity_phase_requirements = sel_state.get("requirements", {}) or {}
+            manager._selectivity_phase_completed_epoch = _safe_int(
+                sel_state.get("completed_epoch", -1), -1
+            )
+            manager._selectivity_phase_target_episodes = _safe_int(
+                sel_state.get("target_episodes", 0), 0
+            )
+            manager._selectivity_phase_failures = _safe_int(
+                sel_state.get("failures", 0), 0
+            )
+
         manager._rolling_stats_dirty = True
         return manager
 
@@ -3090,6 +3515,15 @@ class CurriculumManager:
             "validation_gate_history": self._validation_gate_history[-100:],
             # Stress test history
             "stress_test_history": self._stress_test_history[-100:],
+            # Selectivity mastery phase
+            "selectivity_phase": {
+                "active": self._selectivity_phase_active,
+                "episodes_remaining": self._selectivity_phase_episodes_remaining,
+                "requirements": self._selectivity_phase_requirements,
+                "completed_epoch": self._selectivity_phase_completed_epoch,
+                "target_episodes": self._selectivity_phase_target_episodes,
+                "failures": self._selectivity_phase_failures,
+            },
             "saved_at": _now_iso(self.tz),
         }
         
@@ -3239,6 +3673,24 @@ class CurriculumManager:
         
         # Restore stress test history
         manager._stress_test_history = state.get("stress_test_history", []) or []
+
+        # Restore selectivity phase state
+        sel_state = state.get("selectivity_phase", {}) or {}
+        if sel_state:
+            manager._selectivity_phase_active = bool(sel_state.get("active", False))
+            manager._selectivity_phase_episodes_remaining = _safe_int(
+                sel_state.get("episodes_remaining", 0), 0
+            )
+            manager._selectivity_phase_requirements = sel_state.get("requirements", {}) or {}
+            manager._selectivity_phase_completed_epoch = _safe_int(
+                sel_state.get("completed_epoch", -1), -1
+            )
+            manager._selectivity_phase_target_episodes = _safe_int(
+                sel_state.get("target_episodes", 0), 0
+            )
+            manager._selectivity_phase_failures = _safe_int(
+                sel_state.get("failures", 0), 0
+            )
         
         manager._rolling_stats_dirty = True
         

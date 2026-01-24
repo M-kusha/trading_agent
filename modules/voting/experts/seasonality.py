@@ -1,39 +1,58 @@
 """
-Advanced SeasonalityRiskExpert - Time-Based Pattern Voting Module.
+Advanced SeasonalityRiskExpert (v3.3) — Base-Aligned Time/Seasonality Overlay (XAUUSD only)
 
-This expert analyzes seasonal and temporal patterns including:
-- Day-of-week patterns (Monday effect, Friday positioning)
-- Hour-of-day patterns (session overlaps, volatility windows)
-- Month-of-year patterns (January effect, summer doldrums)
-- Session analysis (Asian/European/American sessions)
-- Holiday calendar effects (reduced liquidity periods)
-- Economic calendar awareness (high-impact event windows)
-- Rollover and swap timing
+Purpose
+-------
+This expert is NOT a standalone trading bot.
+It acts as a time/seasonality "overlay" and risk gatekeeper:
 
-Per-Instrument Voting:
-- Different assets have different seasonal patterns
-- Gold has different seasonality than EURUSD
-- Each instrument gets its own vote based on asset-specific patterns
+- Identifies favorable/unfavorable temporal regimes:
+  - sessions (Asia/Europe/US + overlaps)
+  - day-of-week / hour-of-day tendencies
+  - month/quarter effects (lightweight, gold-aware)
+  - rollover / weekend gap risk
+  - holiday / low-liquidity windows
+  - optional economic calendar awareness (fail-open + retry)
+- Outputs a standard long/short/flat vote primarily driven by *signal quality*.
+- Provides "trading_window" metadata so your Committee/Arbiter can gate entries.
 
-Actions: long, short, flat
+Design Principles
+-----------------
+- Base-aligned: uses VotingExpertBase hooks, no duplicated core pipeline logic.
+- Fail-open: missing data => neutral/flat, never crashes downstream.
+- XAUUSD-only: prevents cross-symbol leakage and inconsistent behavior.
+- Overlay-first: prefers veto/flat in bad conditions; directional bias is modest.
+
+Key Upgrades vs v3.2
+--------------------
+- TTL caching (structure, volume, trading window, high-impact window)
+- Throttled adaptive updates (per new closed candle)
+- Config validation/clamping (stdlib-only, no heavy deps)
+- LRU-bounded adaptive patterns (prevents unbounded memory growth)
+- Seasonal-specific circuit breaker (critical-error aware)
+- Economic calendar retry (async, fail-open)
+- Debug integration: uses base _debug_log when available, otherwise buffered JSONL
+- Improved type safety (_safe_float/_safe_dict) to satisfy Pylance and runtime safety
 """
 
 from __future__ import annotations
 
+import asyncio
 import calendar
-from datetime import datetime, time as dt_time
-from typing import Any, Dict, List, Tuple, Optional
+import json
+import os
+import time
+from collections import OrderedDict, deque
+from dataclasses import dataclass
+from datetime import datetime, time as dt_time, timezone as dt_timezone
+from typing import Any, Deque, Dict, List, Optional, Tuple
 
 import numpy as np
 
 from modules.contracts import module_args
 from modules.core.module_base import module
 from modules.voting.experts.base import VotingExpertBase
-from modules.voting.core.per_instrument import (
-    PerInstrumentVote,
-    InstrumentProposal,
-    normalize_instrument,
-)
+from modules.voting.core.per_instrument import normalize_instrument
 from modules.voting.core.constants import (
     CONFIDENCE_THRESHOLD_F,
     MIN_SIGNAL_STRENGTH_F,
@@ -41,1472 +60,1443 @@ from modules.voting.core.constants import (
 )
 
 
+# ─────────────────────────────────────────────────────────────
+# Typed context / state
+# ─────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class SessionContext:
+    current_session: str
+    active_sessions: List[str]
+    session_quality: float
+    liquidity_score: float
+
+
+@dataclass(frozen=True)
+class TimeContext:
+    utc_time: datetime
+    dow: int
+    hour: int
+    minute: int
+    month: int
+    day: int
+    trading_quality: float
+    is_pre_news: bool
+    is_news_hour: bool
+
+
+@dataclass
+class _EmaStats:
+    """Exponential moving stats for adaptive pattern learning."""
+    count: int = 0
+    ema_ret: float = 0.0
+    ema_abs_ret: float = 0.0
+    ema_win: float = 0.5
+    last_ts_iso: str = ""
+
+
+class AdaptivePatternLRU:
+    """LRU wrapper for adaptive EMA stats to cap memory growth."""
+    def __init__(self, max_size: int) -> None:
+        self.max_size = max(64, int(max_size))
+        self._od: "OrderedDict[str, _EmaStats]" = OrderedDict()
+        self.evictions = 0
+        self.hits = 0
+        self.misses = 0
+
+    def get(self, key: str) -> Optional[_EmaStats]:
+        st = self._od.get(key)
+        if st is None:
+            self.misses += 1
+            return None
+        self.hits += 1
+        self._od.move_to_end(key)
+        return st
+
+    def set(self, key: str, value: _EmaStats) -> None:
+        self._od[key] = value
+        self._od.move_to_end(key)
+        if len(self._od) > self.max_size:
+            self._od.popitem(last=False)
+            self.evictions += 1
+
+    def __len__(self) -> int:
+        return len(self._od)
+
+    def snapshot_stats(self) -> Dict[str, int]:
+        return {
+            "size": len(self._od),
+            "max_size": self.max_size,
+            "hits": self.hits,
+            "misses": self.misses,
+            "evictions": self.evictions,
+        }
+
+
+@dataclass(frozen=True)
+class SeasonalityRiskConfig:
+    # Core
+    trading_timezone: str = "Europe/Berlin"
+    instruments: Tuple[str, ...] = ("XAUUSD",)
+
+    # Local trading window (local time)
+    local_trade_start_hour: int = 9
+    local_trade_end_hour: int = 18
+    local_hard_close_hour: int = 22
+    no_trade_last_minutes: int = 60
+
+    local_prime_start_hour: int = 14
+    local_prime_end_hour: int = 17
+    prime_hours_confidence_boost: float = 0.15
+    prime_hours_lot_multiplier: float = 1.25
+
+    allow_off_hours_trading: bool = True
+
+    # Confidence shaping
+    base_confidence: float = 0.35
+    max_confidence: float = 0.85
+    min_confidence: float = 0.12
+    direction_min_threshold: float = 0.22
+
+    # Filters
+    use_chop_filter: bool = True
+    chop_soft_threshold: float = 58.0
+    chop_veto_threshold: float = 65.0
+
+    use_volume_confirmation: bool = True
+    volume_confirm_threshold: float = 0.60
+    volume_lookback: int = 60
+
+    use_structure_confirmation: bool = True
+    structure_lookback: int = 80
+    structure_edge_band: float = 0.15
+
+    # Adaptive learning
+    use_adaptive_patterns: bool = True
+    adaptive_decay: float = 0.995
+    max_adaptive_patterns: int = 1500
+    adaptive_min_new_bars: int = 1  # throttle: update after N new bars
+
+    # High impact hour heuristic (UTC)
+    high_impact_hours_utc: Tuple[int, ...] = (8, 12, 13, 14, 18)
+    high_impact_minutes_pre: int = 10
+    high_impact_minutes_post: int = 30
+
+    # Holidays / thin liquidity
+    holiday_month_days: Tuple[Tuple[int, int], ...] = ((1, 1), (12, 24), (12, 25), (12, 26))
+    late_dec_start_day: int = 20
+    early_jan_end_day: int = 3
+
+    # Rollover / weekend windows (UTC)
+    rollover_start: dt_time = dt_time(21, 0)
+    rollover_end: dt_time = dt_time(22, 0)
+    weekend_risk_start: dt_time = dt_time(20, 0)
+
+    # Persistence smoothing
+    min_regime_persistence: int = 3
+
+    # Debug
+    debug_enabled: bool = True
+    debug_path: str = "logs/seasonality_expert_debug.jsonl"
+    debug_every_n: int = 5
+    debug_buffer_size: int = 50
+    debug_flush_seconds: float = 2.0
+
+    # Caching
+    cache_ttl_structure_s: float = 15.0
+    cache_ttl_volume_s: float = 30.0
+    cache_ttl_trading_window_s: float = 20.0
+    cache_ttl_high_impact_s: float = 20.0
+
+    # Seasonal circuit breaker
+    seasonal_circuit_enabled: bool = True
+    seasonal_error_trip_count: int = 5
+    seasonal_error_window_s: float = 60.0
+    seasonal_cooloff_s: float = 120.0
+
+    @staticmethod
+    def _clamp_float(x: Any, lo: float, hi: float, default: float) -> float:
+        try:
+            v = float(x)
+        except Exception:
+            v = float(default)
+        return float(max(lo, min(hi, v)))
+
+    @staticmethod
+    def _clamp_int(x: Any, lo: int, hi: int, default: int) -> int:
+        try:
+            v = int(x)
+        except Exception:
+            v = int(default)
+        return int(max(lo, min(hi, v)))
+
+    @classmethod
+    def from_dict(cls, raw: Dict[str, Any]) -> "SeasonalityRiskConfig":
+        if not isinstance(raw, dict):
+            return cls()
+
+        def gb(name: str, default: Any) -> Any:
+            return raw.get(name, default)
+
+        cfg = cls(
+            trading_timezone=str(gb("trading_timezone", cls.trading_timezone)),
+            instruments=tuple(gb("instruments", cls.instruments)) if isinstance(gb("instruments", None), (list, tuple)) else cls.instruments,
+
+            local_trade_start_hour=cls._clamp_int(gb("local_trade_start_hour", cls.local_trade_start_hour), 0, 23, cls.local_trade_start_hour),
+            local_trade_end_hour=cls._clamp_int(gb("local_trade_end_hour", cls.local_trade_end_hour), 0, 23, cls.local_trade_end_hour),
+            local_hard_close_hour=cls._clamp_int(gb("local_hard_close_hour", cls.local_hard_close_hour), 0, 23, cls.local_hard_close_hour),
+            no_trade_last_minutes=cls._clamp_int(gb("no_trade_last_minutes", cls.no_trade_last_minutes), 0, 240, cls.no_trade_last_minutes),
+
+            local_prime_start_hour=cls._clamp_int(gb("local_prime_start_hour", cls.local_prime_start_hour), 0, 23, cls.local_prime_start_hour),
+            local_prime_end_hour=cls._clamp_int(gb("local_prime_end_hour", cls.local_prime_end_hour), 0, 23, cls.local_prime_end_hour),
+            prime_hours_confidence_boost=cls._clamp_float(gb("prime_hours_confidence_boost", cls.prime_hours_confidence_boost), 0.0, 1.0, cls.prime_hours_confidence_boost),
+            prime_hours_lot_multiplier=cls._clamp_float(gb("prime_hours_lot_multiplier", cls.prime_hours_lot_multiplier), 0.1, 5.0, cls.prime_hours_lot_multiplier),
+
+            allow_off_hours_trading=bool(gb("allow_off_hours_trading", cls.allow_off_hours_trading)),
+
+            base_confidence=cls._clamp_float(gb("base_confidence", cls.base_confidence), 0.0, 1.0, cls.base_confidence),
+            max_confidence=cls._clamp_float(gb("max_confidence", cls.max_confidence), 0.0, 1.0, cls.max_confidence),
+            min_confidence=cls._clamp_float(gb("min_confidence", cls.min_confidence), 0.0, 1.0, cls.min_confidence),
+            direction_min_threshold=cls._clamp_float(gb("direction_min_threshold", cls.direction_min_threshold), 0.0, 1.0, cls.direction_min_threshold),
+
+            use_chop_filter=bool(gb("use_chop_filter", cls.use_chop_filter)),
+            chop_soft_threshold=cls._clamp_float(gb("chop_soft_threshold", cls.chop_soft_threshold), 0.0, 100.0, cls.chop_soft_threshold),
+            chop_veto_threshold=cls._clamp_float(gb("chop_veto_threshold", cls.chop_veto_threshold), 0.0, 100.0, cls.chop_veto_threshold),
+
+            use_volume_confirmation=bool(gb("use_volume_confirmation", cls.use_volume_confirmation)),
+            volume_confirm_threshold=cls._clamp_float(gb("volume_confirm_threshold", cls.volume_confirm_threshold), 0.0, 3.0, cls.volume_confirm_threshold),
+            volume_lookback=cls._clamp_int(gb("volume_lookback", cls.volume_lookback), 10, 5000, cls.volume_lookback),
+
+            use_structure_confirmation=bool(gb("use_structure_confirmation", cls.use_structure_confirmation)),
+            structure_lookback=cls._clamp_int(gb("structure_lookback", cls.structure_lookback), 20, 5000, cls.structure_lookback),
+            structure_edge_band=cls._clamp_float(gb("structure_edge_band", cls.structure_edge_band), 0.01, 0.49, cls.structure_edge_band),
+
+            use_adaptive_patterns=bool(gb("use_adaptive_patterns", cls.use_adaptive_patterns)),
+            adaptive_decay=cls._clamp_float(gb("adaptive_decay", cls.adaptive_decay), 0.90, 0.9999, cls.adaptive_decay),
+            max_adaptive_patterns=cls._clamp_int(gb("max_adaptive_patterns", cls.max_adaptive_patterns), 100, 100000, cls.max_adaptive_patterns),
+            adaptive_min_new_bars=cls._clamp_int(gb("adaptive_min_new_bars", cls.adaptive_min_new_bars), 1, 10, cls.adaptive_min_new_bars),
+
+            high_impact_hours_utc=tuple(gb("high_impact_hours_utc", cls.high_impact_hours_utc)) if isinstance(gb("high_impact_hours_utc", None), (list, tuple)) else cls.high_impact_hours_utc,
+            high_impact_minutes_pre=cls._clamp_int(gb("high_impact_minutes_pre", cls.high_impact_minutes_pre), 0, 59, cls.high_impact_minutes_pre),
+            high_impact_minutes_post=cls._clamp_int(gb("high_impact_minutes_post", cls.high_impact_minutes_post), 0, 59, cls.high_impact_minutes_post),
+
+            holiday_month_days=tuple(tuple(x) for x in gb("holiday_month_days", cls.holiday_month_days)) if isinstance(gb("holiday_month_days", None), (list, tuple)) else cls.holiday_month_days,
+            late_dec_start_day=cls._clamp_int(gb("late_dec_start_day", cls.late_dec_start_day), 1, 31, cls.late_dec_start_day),
+            early_jan_end_day=cls._clamp_int(gb("early_jan_end_day", cls.early_jan_end_day), 1, 15, cls.early_jan_end_day),
+
+            min_regime_persistence=cls._clamp_int(gb("min_regime_persistence", cls.min_regime_persistence), 1, 20, cls.min_regime_persistence),
+
+            debug_enabled=bool(gb("debug_enabled", cls.debug_enabled)),
+            debug_path=str(gb("debug_path", cls.debug_path)),
+            debug_every_n=cls._clamp_int(gb("debug_every_n", cls.debug_every_n), 1, 1000, cls.debug_every_n),
+            debug_buffer_size=cls._clamp_int(gb("debug_buffer_size", cls.debug_buffer_size), 1, 5000, cls.debug_buffer_size),
+            debug_flush_seconds=cls._clamp_float(gb("debug_flush_seconds", cls.debug_flush_seconds), 0.1, 60.0, cls.debug_flush_seconds),
+
+            cache_ttl_structure_s=cls._clamp_float(gb("cache_ttl_structure_s", cls.cache_ttl_structure_s), 0.1, 300.0, cls.cache_ttl_structure_s),
+            cache_ttl_volume_s=cls._clamp_float(gb("cache_ttl_volume_s", cls.cache_ttl_volume_s), 0.1, 300.0, cls.cache_ttl_volume_s),
+            cache_ttl_trading_window_s=cls._clamp_float(gb("cache_ttl_trading_window_s", cls.cache_ttl_trading_window_s), 0.1, 300.0, cls.cache_ttl_trading_window_s),
+            cache_ttl_high_impact_s=cls._clamp_float(gb("cache_ttl_high_impact_s", cls.cache_ttl_high_impact_s), 0.1, 300.0, cls.cache_ttl_high_impact_s),
+
+            seasonal_circuit_enabled=bool(gb("seasonal_circuit_enabled", cls.seasonal_circuit_enabled)),
+            seasonal_error_trip_count=cls._clamp_int(gb("seasonal_error_trip_count", cls.seasonal_error_trip_count), 1, 100, cls.seasonal_error_trip_count),
+            seasonal_error_window_s=cls._clamp_float(gb("seasonal_error_window_s", cls.seasonal_error_window_s), 5.0, 3600.0, cls.seasonal_error_window_s),
+            seasonal_cooloff_s=cls._clamp_float(gb("seasonal_cooloff_s", cls.seasonal_cooloff_s), 5.0, 3600.0, cls.seasonal_cooloff_s),
+        )
+
+        # Invariants
+        if cfg.chop_veto_threshold <= cfg.chop_soft_threshold:
+            # enforce a minimal gap
+            object.__setattr__(cfg, "chop_veto_threshold", min(100.0, cfg.chop_soft_threshold + 5.0))  # type: ignore
+
+        if cfg.max_confidence < cfg.min_confidence:
+            object.__setattr__(cfg, "max_confidence", cfg.min_confidence)  # type: ignore
+
+        return cfg
+
+
 @module(**module_args("SeasonalityRiskExpert"))
 class SeasonalityRiskExpert(VotingExpertBase):
     """
-    Advanced seasonality and time-pattern analysis expert.
+    Base-aligned seasonality/time overlay expert.
 
-    Combines multiple temporal factors to identify optimal/suboptimal
-    trading windows and seasonal biases.
-
-    Per-instrument:
-    - Different assets have different seasonal patterns (e.g. Gold vs EURUSD).
+    Produces:
+      - SeasonalityRiskExpert_voting_proposal (standard)
+      - SeasonalityRiskExpert_confidence
+      - seasonality_voting_proposal / seasonal_voting_proposal (legacy aliases)
+      - seasonality_risk_analysis (diagnostics)
+      - trading_window (arbiter gating)
     """
 
-    # ═══════════════════════════ INIT ═══════════════════════════
+    # ─────────────────────────────────────────────────────────────
+    # INIT
+    # ─────────────────────────────────────────────────────────────
 
     def _expert_specific_init(self) -> None:
-        """Initialize the seasonality expert with configuration."""
         self.module_name = self.__class__.__name__
 
-        # Instruments to analyze (from config or default)
-        self.instruments = self.config.get("instruments", ["EURUSD", "XAUUSD"])
+        # Parse/validate config (stdlib-only)
+        self.cfg = SeasonalityRiskConfig.from_dict(self.config if isinstance(self.config, dict) else {})
 
-        # Asset class mapping for different seasonal patterns
-        self.asset_classes = {
-            "EURUSD": "forex",
-            "XAUUSD": "commodity",
-            "GBPUSD": "forex",
-            "USDJPY": "forex",
-        }
+        # Enforce XAUUSD-only (hard safety)
+        cfg_instruments = self.cfg.instruments
+        if any(normalize_instrument(x) != "XAUUSD" for x in cfg_instruments):
+            self.log_warning(f"[SEASONALITY] Forcing XAUUSD-only. Ignoring instruments={cfg_instruments}")
+        self.instruments: List[str] = ["XAUUSD"]
 
-        # Session times (UTC)
-        self.sessions = {
+        # Sessions (UTC)
+        self.sessions: Dict[str, Dict[str, dt_time]] = {
             "asian": {"start": dt_time(0, 0), "end": dt_time(9, 0)},
             "european": {"start": dt_time(7, 0), "end": dt_time(16, 0)},
             "american": {"start": dt_time(13, 0), "end": dt_time(22, 0)},
             "overlap_eu_us": {"start": dt_time(13, 0), "end": dt_time(16, 0)},
             "overlap_asia_eu": {"start": dt_time(7, 0), "end": dt_time(9, 0)},
         }
-
-        # Day-of-week biases (0=Monday, 4=Friday) – stylized FX patterns
-        self.dow_biases = {
-            0: {
-                "name": "Monday",
-                "volatility": 0.8,
-                "trend_continuation": 0.6,
-                "reversal_risk": 0.4,
-            },
-            1: {
-                "name": "Tuesday",
-                "volatility": 1.0,
-                "trend_continuation": 0.7,
-                "reversal_risk": 0.3,
-            },
-            2: {
-                "name": "Wednesday",
-                "volatility": 1.1,
-                "trend_continuation": 0.8,
-                "reversal_risk": 0.3,
-            },
-            3: {
-                "name": "Thursday",
-                "volatility": 1.0,
-                "trend_continuation": 0.65,
-                "reversal_risk": 0.35,
-            },
-            4: {
-                "name": "Friday",
-                "volatility": 0.9,
-                "trend_continuation": 0.5,
-                "reversal_risk": 0.5,
-            },
+        self.session_weights: Dict[str, float] = {
+            "overlap_eu_us": 1.30,
+            "european": 1.10,
+            "american": 1.00,
+            "overlap_asia_eu": 0.90,
+            "asian": 0.80,
+            "off_hours": 0.40,
         }
 
-        # Monthly patterns (rough stylized facts)
-        self.monthly_patterns = {
-            1: {"name": "January", "trend_strength": 1.2, "risk_on": True},
-            2: {"name": "February", "trend_strength": 1.0, "risk_on": True},
-            3: {"name": "March", "trend_strength": 1.1, "risk_on": True},
-            4: {"name": "April", "trend_strength": 1.0, "risk_on": True},
-            5: {"name": "May", "trend_strength": 0.8, "risk_on": False},
-            6: {"name": "June", "trend_strength": 0.7, "risk_on": False},
-            7: {"name": "July", "trend_strength": 0.6, "risk_on": False},
-            8: {"name": "August", "trend_strength": 0.5, "risk_on": False},
-            9: {"name": "September", "trend_strength": 1.0, "risk_on": False},
-            10: {"name": "October", "trend_strength": 1.1, "risk_on": True},
-            11: {"name": "November", "trend_strength": 1.0, "risk_on": True},
-            12: {"name": "December", "trend_strength": 0.6, "risk_on": False},
+        # DOW quality factors (overlay quality shaping, not direction oracle)
+        self.dow_quality = {
+            0: 0.80,  # Monday: re-open, repricing
+            1: 1.00,
+            2: 1.05,
+            3: 1.00,
+            4: 0.85,  # Friday: positioning + gap risk
         }
 
-        # High-volatility hours (UTC) - typical macro releases
-        self.high_impact_hours = [8, 12, 13, 14, 18]
-
-        # Rollover window (usually around 21:00-22:00 UTC)
-        self.rollover_start = dt_time(21, 0)
-        self.rollover_end = dt_time(22, 0)
-
-        # Weekend gap risk window (Friday after 20:00 UTC)
-        self.weekend_risk_start = dt_time(20, 0)
-
-        # Historical pattern tracking (reserved for future calibration)
-        self.pattern_history: List[Dict[str, Any]] = []
-        self.pattern_accuracy: Dict[str, float] = {}
-
-        # Confidence parameters
-        self.base_confidence = float(self.config.get("base_confidence", 0.4))
-        self.max_confidence = float(self.config.get("max_confidence", 0.85))
-        self.min_confidence = float(self.config.get("min_confidence", 0.15))
-
-        # Session quality weights
-        self.session_weights = {
-            "overlap_eu_us": 1.3,
-            "european": 1.1,
-            "american": 1.0,
-            "overlap_asia_eu": 0.9,
-            "asian": 0.8,
+        # Gold-aware month bias (overlay, modest)
+        self.gold_month_bias = {
+            1: +0.35,
+            2: +0.10,
+            3: -0.20,
+            4: -0.15,
+            5: -0.10,
+            6: -0.05,
+            7: +0.05,
+            8: +0.25,
+            9: +0.25,
+            10: +0.10,
+            11: +0.10,
+            12: +0.20,
         }
 
-        # Regime persistence for GLOBAL seasonal stance
-        self.regime_history: List[str] = []
-        self.regime_persistence_count = 0
-        self.min_regime_persistence = int(
-            self.config.get("min_regime_persistence", 3)
-        )
+        # Adaptive learning store (LRU bounded)
+        self._adaptive = AdaptivePatternLRU(max_size=self.cfg.max_adaptive_patterns)
+        self._last_seen_len: Dict[str, int] = {}
 
-        # Local trading-window configuration (user's timezone)
-        # Bavaria/Germany timezone: trade 09:00–18:00 local, avoid late new entries.
-        self.trading_timezone: str = self.config.get(
-            "trading_timezone", "Europe/Berlin"
-        )
+        # Persistence smoothing
+        self._action_history: Deque[str] = deque(maxlen=32)
+        self._action_streak: int = 0
 
-        # Primary trading window (local hours) - Bavaria time
-        self.local_trade_start_hour: int = int(
-            self.config.get("local_trade_start_hour", 9)   # 9:00 local time
-        )
-        self.local_trade_end_hour: int = int(
-            self.config.get("local_trade_end_hour", 18)    # 18:00 local time
-        )
+        # Debug
+        self._debug_counter = 0
+        self._debug_buf: List[Dict[str, Any]] = []
+        self._debug_last_flush_s = self._now_s()
 
-        # Hard close hour: by default we consider the day "closed" at 22:00 or 23:00
-        # This is when we want to be flat intraday. You can tune via config.
-        self.local_hard_close_hour: int = int(
-            self.config.get("local_hard_close_hour", 22)
-        )
+        # Internal TTL cache fallback: key -> (expires_at, value)
+        self._ttl_cache: Dict[str, Tuple[float, Any]] = {}
 
-        # In the last N minutes before local_hard_close, we push for exits.
-        # For intraday behaviour, make this a bit wider (e.g. 60 min).
-        self.no_trade_last_minutes: int = int(
-            self.config.get("no_trade_last_minutes", 60)   # was 30
-        )
-
-        # PRIME window (max aggression) – London/NY overlap mapped to local time
-        # Default: 14:00–17:00 Europe/Berlin
-        self.local_prime_start_hour: int = int(
-            self.config.get("local_prime_start_hour", 14)
-        )
-        self.local_prime_end_hour: int = int(
-            self.config.get("local_prime_end_hour", 17)
-        )
-
-        # Prime hours boost parameters
-        self.prime_hours_confidence_boost: float = float(
-            self.config.get("prime_hours_confidence_boost", 0.15)  # +15% confidence in prime hours
-        )
-        self.prime_hours_lot_multiplier: float = float(
-            self.config.get("prime_hours_lot_multiplier", 1.25)  # +25% lot size in prime hours
-        )
-
-        # Final exit window parameters for overnight avoidance
-        self.final_exit_max_loss_pct: float = float(
-            self.config.get("final_exit_max_loss_pct", 0.02)  # Don't exit if loss > 2% of equity
-        )
-        self.final_exit_obligatory: bool = bool(
-            self.config.get("final_exit_obligatory", True)  # Make final exit obligatory
-        )
-
-        # TEST MODE: Allow trades during off-hours (for testing purposes)
-        # Set to True to bypass trading window restrictions
-        self.allow_off_hours_trading: bool = bool(
-            self.config.get("allow_off_hours_trading", False)
-        )
+        # Seasonal circuit breaker state
+        self._seasonal_err_times: Deque[float] = deque()
+        self._seasonal_circuit_until_s: float = 0.0
 
         self.log_info(
-            f"[SEASONALITY] SeasonalityRiskExpert initialized | "
-            f"instruments={self.instruments} | trading_tz={self.trading_timezone} "
-            f"| trade_window={self.local_trade_start_hour}:00-{self.local_trade_end_hour}:00 "
-            f"| hard_close={self.local_hard_close_hour}:00"
-            f"| allow_off_hours={self.allow_off_hours_trading}"
+            f"[SEASONALITY] init v3.3 | instruments={self.instruments} | tz={self.cfg.trading_timezone} "
+            f"| window={self.cfg.local_trade_start_hour}:00-{self.cfg.local_trade_end_hour}:00 "
+            f"| prime={self.cfg.local_prime_start_hour}:00-{self.cfg.local_prime_end_hour}:00 "
+            f"| allow_off_hours={self.cfg.allow_off_hours_trading} | debug={self.cfg.debug_enabled} "
+            f"| adaptive_lru={self.cfg.max_adaptive_patterns}"
         )
 
-        # Publish baseline keys
-        self._publish_baseline_keys()
+        # Publish safe baseline keys (prevents stale consumers)
         self._publish_seasonality_baseline()
 
-    def _publish_seasonality_baseline(self) -> None:
-        """Publish baseline seasonality keys to avoid stale consumers."""
-        from datetime import timezone as dt_timezone
-        thesis = "Seasonality baseline"
-        confidence = 0.1
-        # Generate trading window - default to blocking new trades in baseline state
-        trading_window = self._analyze_trading_window(datetime.now(dt_timezone.utc))
-        proposal = {
-            "action": "flat",
-            "signal_strength": confidence,
-            "reason": thesis,
-            "proposals": {},
-            "trading_window": trading_window,  # Include for arbiter seasonality gate
-        }
-        try:
-            self.smart_bus.set(
-                "seasonality_voting_proposal",
-                proposal,
-                module=self.module_name,
-                thesis=thesis,
-            )
-            self.smart_bus.set(
-                "seasonality_confidence",
-                confidence,
-                module=self.module_name,
-                thesis="Seasonality baseline confidence",
-            )
-            self.smart_bus.set(
-                "seasonal_voting_proposal",
-                proposal,
-                module=self.module_name,
-                thesis=thesis,
-            )
-            self.smart_bus.set(
-                "seasonal_confidence",
-                confidence,
-                module=self.module_name,
-                thesis="Seasonal baseline confidence",
-            )
-            self.smart_bus.set(
-                "seasonality_risk_analysis",
-                {
-                    "session": "unknown",
-                    "dow_bias": "unknown",
-                    "monthly_pattern": "unknown",
-                    "composite_score": 0.5,
-                    "rollover_risk": False,
-                    "weekend_risk": False,
-                    "action": "flat",
-                    "confidence": confidence,
-                    "per_instrument": {},
-                },
-                module=self.module_name,
-                thesis="Seasonality baseline analysis",
-            )
-        except Exception:
-            pass
+    # ─────────────────────────────────────────────────────────────
+    # Base hooks
+    # ─────────────────────────────────────────────────────────────
 
-    # ═══════════════════════════ VOTINGEXPERTBASE LEGACY HOOKS ═══════════════════════════
-
-    async def _generate_expert_specific_proposal(
-        self, market_data: Dict[str, Any]
-    ) -> Dict[str, Any]:
+    async def _generate_expert_specific_proposal(self, market_data: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Legacy hook for VotingExpertBase.
-
-        SeasonalityRiskExpert is primarily per-instrument via process().
+        Base-aligned: produce proposal dict.
+        Includes per-instrument proposals under 'proposals' even though we enforce XAUUSD-only.
         """
-        return {
-            "action": "flat",
-            "signal_strength": 0.0,
-            "reason": "SeasonalityRiskExpert uses per-instrument process() path",
-        }
 
-    async def _calculate_expert_specific_confidence(
-        self, proposal: Dict[str, Any], market_data: Dict[str, Any]
-    ) -> float:
-        """Legacy confidence hook; neutral default."""
-        return 0.3
+        # Seasonal circuit breaker (local)
+        if self.cfg.seasonal_circuit_enabled and self._seasonal_circuit_open():
+            return self._neutral_proposal("seasonal_circuit_open")
 
-    # ═══════════════════════════ MAIN PER-INSTRUMENT PROCESS ═══════════════════════════
-
-    async def process(self, **inputs) -> Dict[str, Any]:
-        """
-        Process temporal data to determine seasonal biases and timing PER INSTRUMENT.
-
-        - Time-based regime (sessions, DOW, month, high-impact windows) is global.
-        - Each instrument applies those temporal regimes plus its own historical bias.
-        - Local trading window (user's timezone) restricts late-day / overnight exposure.
-        """
-        name = self.__class__.__name__
-        start = self._now_ms()
+        now_utc = datetime.now(dt_timezone.utc)
 
         try:
-            # Circuit breaker
-            if self._check_circuit_breaker():
-                return self._degraded_output("circuit_breaker_open")
+            trading_window = self._analyze_trading_window_cached(now_utc)
 
-            # Global time context (UTC) – local trading window derived separately
-            # IMPORTANT: Use timezone-aware datetime to ensure correct UTC→local conversion
-            # datetime.utcnow() returns naive datetime which Python treats as LOCAL time
-            # when calling .astimezone(), causing 1-hour DST errors
-            from datetime import timezone as dt_timezone
-            current_time_utc = datetime.now(dt_timezone.utc)
-            trading_window = self._analyze_trading_window(current_time_utc)
+            # Fail-open data retrieval: use passed market_data, fallback to bus if empty
+            if not isinstance(market_data, dict) or not market_data:
+                market_data = self._safe_bus_get("market_data", default={})
+            features = self._safe_bus_get("features", default={})
 
-            market_data = self.smart_bus.get("market_data", name, default={})
-            features = self.smart_bus.get("features", name, default={})
+            # Global time context
+            session_ctx = self._analyze_session(now_utc)
+            time_ctx = self._analyze_time_context(now_utc)
 
-            # Global temporal components (same for all instruments)
-            session_analysis = self._analyze_session(current_time_utc)
-            dow_analysis = self._analyze_day_of_week(current_time_utc)
-            monthly_analysis = self._analyze_monthly_pattern(current_time_utc)
-            hour_analysis = self._analyze_hour_patterns(current_time_utc)
+            rollover_risk = self._check_rollover_risk(now_utc)
+            weekend_risk = self._check_weekend_risk(now_utc)
+            holiday_risk, holiday_reason = self._check_holiday_risk(now_utc)
 
-            rollover_risk = self._check_rollover_risk(current_time_utc)
-            weekend_risk = self._check_weekend_risk(current_time_utc)
-            high_impact_window = self._check_high_impact_window(current_time_utc)
+            high_impact_risk, high_impact_reason = await self._check_high_impact_window_async(now_utc)
 
-            # Per-instrument container
-            per_instrument_vote = PerInstrumentVote(member=name)
-            per_instrument_analysis: Dict[str, Dict[str, Any]] = {}
+            proposals: Dict[str, Dict[str, Any]] = {}
+            per_inst_analysis: Dict[str, Any] = {}
 
-            # ── Per-instrument seasonal analysis ─────────────────────────────
             for inst in self.instruments:
                 inst_norm = normalize_instrument(inst)
-                asset_class = self.asset_classes.get(inst_norm, "forex")
+                inst_block = self._extract_instrument_block(market_data, inst_norm)
 
-                inst_market = self._extract_instrument_data(market_data, inst)
-                inst_features = self._extract_instrument_data(features, inst)
+                closes = self._extract_series(inst_block, "close")
+                highs = self._extract_series(inst_block, "high")
+                lows = self._extract_series(inst_block, "low")
+                vols = self._extract_series(inst_block, "volume")
+                if vols.size == 0:
+                    vols = self._extract_series(inst_block, "tick_volume")
 
-                historical_score = self._calculate_historical_pattern_score(
-                    current_time_utc, inst_market, inst_features, inst_norm
-                )
+                # Adaptive update (throttled to new closed candle)
+                if self.cfg.use_adaptive_patterns:
+                    self._update_adaptive_throttled(inst_norm, now_utc, closes, session_ctx.current_session)
 
-                composite_score = self._calculate_composite_score(
-                    session_analysis,
-                    dow_analysis,
-                    monthly_analysis,
-                    hour_analysis,
-                    historical_score,
-                )
+                # Filter signals
+                chop_val = self._get_chop_value(inst_norm, features)
+                volume_ratio, volume_confirmed = self._volume_confirmation_cached(vols)
+                struct = self._structure_alignment_cached(highs, lows, closes)
 
-                action, confidence, thesis = self._select_seasonal_action(
-                    composite_score,
-                    session_analysis,
-                    dow_analysis,
-                    monthly_analysis,
-                    rollover_risk,
-                    weekend_risk,
-                    high_impact_window,
-                    instrument=inst_norm,
-                    asset_class=asset_class,
-                    trading_window=trading_window,
-                )
+                # Direction bias (modest overlay)
+                month_bias = float(self.gold_month_bias.get(now_utc.month, 0.0))
+                adaptive_bias, adaptive_rel, adaptive_detail = self._adaptive_bias(inst_norm, now_utc, session_ctx)
 
-                # Calibrate magnitude: seasonality is an overlay, keep it modest
+                # Quality components
+                dow_q = float(self.dow_quality.get(now_utc.weekday(), 1.0))
+                hour_q = float(time_ctx.trading_quality)
+                session_q = float(session_ctx.session_quality)
+
+                # Hard vetoes for entries
+                veto_reasons: List[str] = []
+
+                if not self.cfg.allow_off_hours_trading and trading_window.get("no_new_trades", False):
+                    veto_reasons.append("outside_primary_window")
+
+                if rollover_risk:
+                    veto_reasons.append("rollover_risk")
+
+                if weekend_risk:
+                    veto_reasons.append("weekend_gap_risk")
+
+                if holiday_risk:
+                    veto_reasons.append(f"holiday_low_liquidity:{holiday_reason}")
+
+                if high_impact_risk:
+                    veto_reasons.append(f"high_impact_window:{high_impact_reason}")
+
+                # CHOP veto
+                chop_veto = False
+                if self.cfg.use_chop_filter and chop_val is not None:
+                    chop_veto = float(chop_val) >= self.cfg.chop_veto_threshold
+                    if chop_veto:
+                        veto_reasons.append(f"chop_veto:{float(chop_val):.1f}")
+
+                # Decide action/confidence
+                if veto_reasons:
+                    action = "flat"
+                    confidence = min(0.80, max(0.65, self.cfg.base_confidence + 0.25))
+                    thesis = f"{inst_norm}: VETO -> flat ({', '.join(veto_reasons)})"
+                    direction_score = 0.0
+                    quality_score = 0.0
+                else:
+                    # Direction score: month bias + adaptive bias, lightly structure-aware
+                    direction_score = float(np.clip(month_bias + 0.80 * adaptive_bias, -1.0, 1.0))
+                    direction_strength = abs(direction_score)
+
+                    # Volume multiplier
+                    vol_mult = 1.0
+                    if self.cfg.use_volume_confirmation:
+                        vol_mult = 1.0 if volume_confirmed else 0.60
+
+                    # Quality score: session/hour/DOW * volume
+                    quality_score = float(np.clip(session_q * hour_q * dow_q * vol_mult, 0.0, 1.25))
+                    quality_score = float(np.clip(quality_score / 1.25, 0.0, 1.0))
+
+                    # Structure multiplier: edge bonus => slightly better-defined risk
+                    struct_mult = 1.0
+                    if self.cfg.use_structure_confirmation and bool(struct.get("available", False)):
+                        edge_bonus = self._safe_float(struct.get("edge_bonus"), 0.0)
+                        struct_mult = 0.85 + 0.30 * edge_bonus  # 0.85..1.15
+
+                    # Soft CHOP penalty (even if not veto)
+                    chop_mult = 1.0
+                    if self.cfg.use_chop_filter and chop_val is not None:
+                        c = float(chop_val)
+                        if c >= self.cfg.chop_soft_threshold:
+                            span = max(1e-6, self.cfg.chop_veto_threshold - self.cfg.chop_soft_threshold)
+                            t = float(np.clip((c - self.cfg.chop_soft_threshold) / span, 0.0, 1.0))
+                            chop_mult = 1.0 - 0.35 * t
+
+                    # Confidence composition (overlay, modest)
+                    confidence = (
+                        self.cfg.base_confidence
+                        + 0.35 * quality_score
+                        + 0.25 * direction_strength
+                        + float(trading_window.get("prime_hours_confidence_boost", 0.0))
+                    )
+                    confidence *= struct_mult
+                    confidence *= chop_mult
+                    confidence = float(np.clip(confidence, self.cfg.min_confidence, self.cfg.max_confidence))
+
+                    if direction_strength < self.cfg.direction_min_threshold:
+                        action = "flat"
+                        thesis = (
+                            f"{inst_norm}: Neutral overlay "
+                            f"(dir={direction_score:+.2f}, qual={quality_score:.2f}, rel={adaptive_rel:.2f})"
+                        )
+                    else:
+                        action = "long" if direction_score > 0 else "short"
+                        thesis = (
+                            f"{inst_norm}: Seasonal overlay {action} "
+                            f"(month_bias={month_bias:+.2f}, adapt={adaptive_bias:+.2f} rel={adaptive_rel:.2f}, "
+                            f"qual={quality_score:.2f}, vol_ratio={volume_ratio:.2f})"
+                        )
+
+                # Magnitude shaping (overlay = modest)
                 min_strength = MIN_SIGNAL_STRENGTH_F()
                 if action == "flat":
                     magnitude = 0.0
                 else:
-                    magnitude = float(
-                        max(min_strength * 0.4, min(1.0, confidence * 0.6))
-                    )
+                    magnitude = float(max(min_strength * 0.40, min(1.0, confidence * 0.60)))
 
-                # ═══════════════════════════════════════════════════════════════
-                # POSITION FOCUS MODE (PER-INSTRUMENT)
-                # If we have a position in THIS instrument, reframe signal for position management.
-                # End-of-day window will prefer EXIT to avoid overnight fees.
-                # ═══════════════════════════════════════════════════════════════
-                position_focus = self._get_position_focus_context()
-                supports_position = True
-                position_eval = "no_position"
-                original_action = action
-
-                if position_focus and self._has_position_for_instrument(inst_norm):
-                    position_side = self._get_position_side_for_instrument(inst_norm)
-                    inst_position = self._get_position_for_instrument(inst_norm)
-                    position_pnl = float(
-                        inst_position.get(
-                            "unrealized_pnl", inst_position.get("pnl", 0.0)
-                        )
-                    ) if inst_position else 0.0
-
-                    # Determine if signal supports or threatens position
-                    if position_side > 0:  # LONG position
-                        if action in ("long", "buy"):
-                            supports_position = True
-                            position_eval = "supports_long"
-                        elif action in ("short", "sell"):
-                            supports_position = False
-                            position_eval = "threatens_long"
-                        else:
-                            supports_position = True
-                            position_eval = "neutral_for_long"
-                    elif position_side < 0:  # SHORT position
-                        if action in ("short", "sell"):
-                            supports_position = True
-                            position_eval = "supports_short"
-                        elif action in ("long", "buy"):
-                            supports_position = False
-                            position_eval = "threatens_short"
-                        else:
-                            supports_position = True
-                            position_eval = "neutral_for_short"
-
-                    # Remap action for position management (default behaviour)
-                    if supports_position:
-                        action = "hold"  # Strong support = confident hold
-                    else:
-                        if confidence > 0.7:
-                            action = "exit"  # Strong opposing signal
-                        elif confidence > 0.5:
-                            action = "tighten"  # Moderate opposing signal
-                        else:
-                            action = "hold"  # Weak opposing signal
-
-                    # End-of-day safeguard: prefer exit in final window before hard-close
-                    if trading_window.get("final_exit_window", False):
-                        action = "exit"
-                        position_eval = "eod_exit_window"
-                        confidence = max(confidence, 0.65)
-                        thesis = (
-                            f"{inst_norm}: POSITION_FOCUS(EOD_EXIT_WINDOW) -> exit "
-                            f"(local_close_in={trading_window.get('minutes_to_close', 0)}min, "
-                            f"pnl={position_pnl:.2f})"
-                        )
-
-                    # Adjust confidence based on PnL (risk-aware tweaks)
-                    if position_pnl > 0 and not supports_position:
-                        confidence *= 0.8  # Reduce exit confidence when in profit
-                    elif position_pnl < 0 and not supports_position:
-                        confidence = min(1.0, confidence * 1.2)  # Increase exit confidence when losing
-
-                    self.log_debug(
-                        f"[SEASONALITY] {inst_norm} POSITION_FOCUS: original_action={original_action} -> {action}, "
-                        f"supports={supports_position}, eval={position_eval}, "
-                        f"pnl={position_pnl:.2f}, eod_window={trading_window.get('final_exit_window', False)}"
-                    )
-
-                per_instrument_vote.set_proposal(
-                    InstrumentProposal(
-                        instrument=inst_norm,
-                        action=action,
-                        confidence=confidence,
-                        magnitude=magnitude,
-                        rationale=thesis,
-                    )
-                )
-
-                per_instrument_analysis[inst_norm] = {
-                    "session": session_analysis["current_session"],
-                    "dow_bias": dow_analysis["bias"],
-                    "monthly_pattern": monthly_analysis["pattern"],
-                    "composite_score": composite_score,
-                    "historical_score": historical_score,
+                meta = {
+                    "time_utc": now_utc.isoformat(),
+                    "session": session_ctx.current_session,
+                    "dow": time_ctx.dow,
+                    "month": time_ctx.month,
                     "rollover_risk": rollover_risk,
                     "weekend_risk": weekend_risk,
-                    "high_impact_window": high_impact_window,
-                    "action": action,
-                    "confidence": confidence,
-                    "position_focus_mode": self._has_position_for_instrument(inst_norm),
-                    "supports_position": supports_position,
-                    "position_evaluation": position_eval,
-                    "original_action": original_action,
-                    "trading_window": {
-                        "timezone": trading_window.get("timezone"),
-                        "local_time": trading_window.get("local_time"),
-                        "local_hour": trading_window.get("local_hour"),
-                        "local_minute": trading_window.get("local_minute"),
-                        "in_primary_window": trading_window.get("in_primary_window"),
-                        "no_new_trades": trading_window.get("no_new_trades"),
-                        "final_exit_window": trading_window.get("final_exit_window"),
+                    "holiday_risk": holiday_risk,
+                    "high_impact_risk": high_impact_risk,
+                    "chop": float(chop_val) if chop_val is not None else None,
+                    "volume_ratio": float(volume_ratio),
+                    "volume_confirmed": bool(volume_confirmed),
+                    "structure": struct,
+                    "adaptive": adaptive_detail,
+                    "trading_window": trading_window,
+                    "direction_score": float(direction_score),
+                    "quality_score": float(quality_score),
+                    "cache_stats": {
+                        "adaptive_lru": self._adaptive.snapshot_stats(),
                     },
                 }
 
-                self.log_debug(
-                    f"[SEASONALITY] {inst_norm}: session={session_analysis['current_session']}, "
-                    f"month={monthly_analysis['month_name']}, comp={composite_score:.2f}, "
-                    f"action={action}, conf={confidence:.2f}, "
-                    f"local_time={trading_window.get('local_time')}, "
-                    f"no_new_trades={trading_window.get('no_new_trades')}"
-                )
+                proposals[inst_norm] = {
+                    "action": action,
+                    "confidence": confidence,
+                    "magnitude": magnitude,
+                    "rationale": thesis,
+                    "meta": meta,
+                }
+                per_inst_analysis[inst_norm] = meta
 
-            # ── Global summary / backward compatibility ──────────────────────
-            if per_instrument_vote.proposals:
-                best_proposal = max(
-                    per_instrument_vote.proposals.values(),
-                    key=lambda p: p.confidence,
-                )
-                global_action = best_proposal.action
-                global_confidence = best_proposal.confidence
-                global_thesis = best_proposal.rationale
+            # Select global/top action (single inst anyway)
+            if proposals:
+                inst0 = next(iter(proposals.keys()))
+                best = self._safe_dict(proposals.get(inst0))
+                global_action = str(best.get("action", "flat"))
+                global_conf = self._safe_float(best.get("confidence"), 0.10)
+                global_thesis = str(best.get("rationale", ""))
             else:
                 global_action = "flat"
-                global_confidence = 0.1
-                global_thesis = "No instrument data available"
+                global_conf = 0.10
+                global_thesis = "No proposals available"
 
-            # Regime persistence on global seasonal stance
-            global_action, global_confidence = self._apply_persistence_filter(
-                global_action, global_confidence
-            )
+            # Persistence smoothing (avoid rapid flip-flops)
+            global_action, global_conf = self._apply_persistence_filter(global_action, global_conf)
 
             # Clip global confidence with shared thresholds
             conf_floor = CONFIDENCE_THRESHOLD_F()
             high_conf = HIGH_CONFIDENCE_THRESHOLD_F()
-            global_confidence = float(
-                max(conf_floor * 0.5, min(high_conf, global_confidence))
-            )
-
-            # Per-instrument proposals dict for CommitteeCoordinator
-            proposals_dict: Dict[str, Dict[str, Any]] = {}
-            for inst, prop in per_instrument_vote.proposals.items():
-                proposals_dict[inst] = {
-                    "action": prop.action,
-                    "confidence": prop.confidence,
-                    "magnitude": prop.magnitude,
-                    "rationale": prop.rationale,
-                }
+            global_conf = float(max(conf_floor * 0.50, min(high_conf, global_conf)))
 
             proposal = {
                 "action": global_action,
-                "signal_strength": global_confidence,
+                "signal_strength": global_conf,
+                "confidence": global_conf,
                 "reason": global_thesis,
-                "proposals": proposals_dict,
-                "trading_window": trading_window,  # Include for arbiter seasonality gate
-            }
-
-            # Derive global composite score (first instrument as representative)
-            if per_instrument_analysis:
-                first_inst_analysis = list(per_instrument_analysis.values())[0]
-                global_composite = float(
-                    first_inst_analysis.get("composite_score", 0.5)
-                )
-            else:
-                global_composite = 0.5
-
-            # Publish to SmartInfoBus
-            try:
-                self.smart_bus.set(
-                    "SeasonalityRiskExpert_voting_proposal",
-                    proposal,
-                    module=name,
-                    thesis=global_thesis,
-                )
-                self.smart_bus.set(
-                    "SeasonalityRiskExpert_confidence",
-                    global_confidence,
-                    module=name,
-                    thesis=f"Confidence: {global_confidence:.1%}",
-                )
-                self.smart_bus.set(
-                    "seasonality_voting_proposal",
-                    proposal,
-                    module=name,
-                    thesis=global_thesis,
-                )
-                self.smart_bus.set(
-                    "seasonality_confidence",
-                    global_confidence,
-                    module=name,
-                    thesis=f"Seasonality confidence: {global_confidence:.1%}",
-                )
-                self.smart_bus.set(
-                    "seasonal_voting_proposal",
-                    proposal,
-                    module=name,
-                    thesis=global_thesis,
-                )
-                self.smart_bus.set(
-                    "seasonal_confidence",
-                    global_confidence,
-                    module=name,
-                    thesis=f"Seasonal confidence: {global_confidence:.1%}",
-                )
-
-                per_inst_votes_dict = {
-                    inst: p.to_dict()
-                    for inst, p in per_instrument_vote.proposals.items()
-                }
-                self.smart_bus.set(
-                    "SeasonalityRiskExpert_per_instrument_votes",
-                    per_inst_votes_dict,
-                    module=name,
-                    thesis=(
-                        "Per-instrument seasonality votes: "
-                        f"{list(per_inst_votes_dict.keys())}"
-                    ),
-                )
-            except Exception as e:
-                self.log_warning(f"[SEASONALITY] Failed to publish to bus: {e}")
-
-            seasonality_risk_analysis = {
-                "session": session_analysis["current_session"],
-                "dow_bias": dow_analysis["bias"],
-                "monthly_pattern": monthly_analysis["pattern"],
-                "composite_score": global_composite,
-                "rollover_risk": rollover_risk,
-                "weekend_risk": weekend_risk,
-                "action": global_action,
-                "confidence": global_confidence,
-                "per_instrument": per_instrument_analysis,
+                "proposals": proposals,
                 "trading_window": trading_window,
-            }
-
-            output = {
-                "SeasonalityRiskExpert_voting_proposal": proposal,
-                "SeasonalityRiskExpert_confidence": global_confidence,
-                "SeasonalityRiskExpert_per_instrument_votes": {
-                    inst: p.to_dict()
-                    for inst, p in per_instrument_vote.proposals.items()
-                },
-                "per_instrument_votes": per_instrument_vote,
-                # Aliases for contracts
-                "seasonality_voting_proposal": proposal,
-                "seasonality_confidence": global_confidence,
-                "seasonal_voting_proposal": proposal,
-                "seasonal_confidence": global_confidence,
-                "seasonality_risk_analysis": seasonality_risk_analysis,
-                "seasonality_analysis": {
-                    "session": session_analysis["current_session"],
-                    "dow_bias": dow_analysis["bias"],
-                    "monthly_pattern": monthly_analysis["pattern"],
-                    "composite_score": global_composite,
-                    "per_instrument": per_instrument_analysis,
-                    "trading_window": trading_window,
-                },
-                "seasonality_expert_analysis": {
-                    "session": session_analysis["current_session"],
-                    "dow_bias": dow_analysis["bias"],
-                    "monthly_pattern": monthly_analysis["pattern"],
-                    "composite_score": global_composite,
+                "analysis": {
+                    "session": session_ctx.current_session,
+                    "dow_bias": self._dow_bias_label(time_ctx.dow),
+                    "monthly_pattern": self._month_pattern_label(time_ctx.month),
                     "rollover_risk": rollover_risk,
                     "weekend_risk": weekend_risk,
-                    "per_instrument": per_instrument_analysis,
-                    "trading_window": trading_window,
+                    "holiday_risk": holiday_risk,
+                    "high_impact_risk": high_impact_risk,
+                    "per_instrument": per_inst_analysis,
                 },
-                "seasonality_expert_thesis": global_thesis,
-                "seasonal_session": session_analysis["current_session"],
-                "seasonal_dow_bias": dow_analysis["bias"],
-                "seasonal_monthly_pattern": monthly_analysis["pattern"],
-                "seasonal_composite_score": global_composite,
-                "seasonal_rollover_risk": rollover_risk,
-                "seasonal_weekend_risk": weekend_risk,
-                "_thesis": global_thesis,
             }
 
-            # Perf metrics / success
-            elapsed_ms = self._elapsed_ms(start)
-            try:
-                self.performance_tracker.record_metric(
-                    name, "process", elapsed_ms, True
-                )
-            except Exception:
-                pass
-            self._record_success()
-            return output
+            # Debug emit (buffered)
+            self._debug_counter += 1
+            if self.cfg.debug_enabled and (self._debug_counter % max(1, self.cfg.debug_every_n) == 0):
+                self._debug_emit(event="seasonality_analysis", payload={
+                    "ts_utc": now_utc.isoformat(),
+                    "proposal": proposal,
+                })
+
+            return proposal
 
         except Exception as e:
-            # Degraded-mode path
-            self._record_error(e)
-            if self.error_pinpointer is not None:
-                err_ctx = self.error_pinpointer.analyze_error(e, f"{name}_process")
-                msg = str(err_ctx)
-            else:
-                msg = str(e)
+            # Seasonal circuit breaker recording
+            self._record_seasonal_error(e)
+            self._debug_emit(event="seasonality_exception", payload={
+                "ts_utc": now_utc.isoformat(),
+                "error": str(e),
+            })
+            return self._neutral_proposal(f"exception:{type(e).__name__}")
 
-            self.log_error(f"[SEASONALITY] Process error: {msg}")
+    async def _calculate_expert_specific_confidence(self, proposal: Dict[str, Any], market_data: Dict[str, Any]) -> float:
+        """Base hook: confidence comes from proposal payload."""
+        return self._safe_float(proposal.get("signal_strength", proposal.get("confidence", 0.10)), 0.10)
 
-            elapsed_ms = self._elapsed_ms(start)
-            try:
-                self.performance_tracker.record_metric(
-                    name, "process", elapsed_ms, False
-                )
-            except Exception:
-                pass
-
-            return self._degraded_output(msg)
-
-    # ═══════════════════════════ HELPERS ═══════════════════════════
-
-    def _now_ms(self) -> float:
-        """Monotonic ms helper for perf tracking."""
-        import time as _time
-
-        return _time.time() * 1000.0
-
-    def _elapsed_ms(self, start_ms: float) -> float:
-        import time as _time
-
-        return _time.time() * 1000.0 - start_ms
-
-    def _extract_instrument_data(self, data: Dict, instrument: str) -> Dict:
-        """Extract data for a specific instrument from nested market data."""
-        if not isinstance(data, dict):
-            return {}
-
-        inst_norm = normalize_instrument(instrument)
-
-        for key in [instrument, inst_norm, instrument.upper(), instrument.lower()]:
-            if key in data:
-                return data[key] if isinstance(data[key], dict) else data
-
-        # Fallback: legacy format (single instrument / flat dict)
-        return data
-
-    def _analyze_session(self, current_time: datetime) -> Dict[str, Any]:
+    async def process(self, **inputs) -> Dict[str, Any]:
         """
-        Analyze current trading session and quality (UTC-based).
-
-        Returns:
-            - current_session
-            - active_sessions
-            - session_quality
-            - liquidity_score
-            - session_phase
+        Minimal wrapper:
+        - delegates to VotingExpertBase for the core pipeline
+        - adds legacy aliases + analysis keys for compatibility (and type-safe Pylance behavior)
         """
-        current_hour = current_time.time()
-        active_sessions: List[str] = []
+        out = await super().process(**inputs)
+        name = self.__class__.__name__
 
-        for session_name, times in self.sessions.items():
-            if self._time_in_range(current_hour, times["start"], times["end"]):
-                active_sessions.append(session_name)
+        raw_proposal = out.get(f"{name}_voting_proposal") or out.get("voting_proposal") or out.get("proposal")
+        proposal = self._safe_dict(raw_proposal)
 
-        if "overlap_eu_us" in active_sessions:
-            primary_session = "overlap_eu_us"
-            session_quality = 1.0
-        elif "overlap_asia_eu" in active_sessions:
-            primary_session = "overlap_asia_eu"
-            session_quality = 0.85
-        elif "european" in active_sessions:
-            primary_session = "european"
-            session_quality = 0.9
-        elif "american" in active_sessions:
-            primary_session = "american"
-            session_quality = 0.85
-        elif "asian" in active_sessions:
-            primary_session = "asian"
-            session_quality = 0.7
-        else:
-            primary_session = "off_hours"
-            session_quality = 0.4
+        if not proposal:
+            neutral = self._neutral_output("missing_proposal_from_base")
+            proposal = self._safe_dict(neutral.get(f"{name}_voting_proposal") or neutral.get("seasonality_voting_proposal"))
+            out.update(neutral)
 
-        liquidity_score = self.session_weights.get(primary_session, 0.5)
-        session_phase = self._get_session_phase(current_time, primary_session)
+        confidence_raw = out.get(f"{name}_confidence")
+        if confidence_raw is None:
+            confidence_raw = out.get("confidence")
+        if confidence_raw is None:
+            confidence_raw = proposal.get("signal_strength", proposal.get("confidence", 0.10))
 
-        return {
-            "current_session": primary_session,
-            "active_sessions": active_sessions,
-            "session_quality": session_quality,
-            "liquidity_score": liquidity_score,
-            "session_phase": session_phase,
+        confidence: float = self._safe_float(confidence_raw, 0.10)
+
+        # Legacy aliases
+        out.setdefault(f"{name}_voting_proposal", proposal)
+        out.setdefault(f"{name}_confidence", float(confidence))
+
+        out["seasonality_voting_proposal"] = proposal
+        out["seasonality_confidence"] = float(confidence)
+        out["seasonal_voting_proposal"] = proposal
+        out["seasonal_confidence"] = float(confidence)
+
+        analysis = proposal.get("analysis")
+        analysis_dict = analysis if isinstance(analysis, dict) else {}
+
+        out["seasonality_risk_analysis"] = {
+            "action": proposal.get("action", "flat"),
+            "confidence": float(confidence),
+            "session": analysis_dict.get("session", "unknown"),
+            "dow_bias": analysis_dict.get("dow_bias", "unknown"),
+            "monthly_pattern": analysis_dict.get("monthly_pattern", "unknown"),
+            "rollover_risk": bool(analysis_dict.get("rollover_risk", False)),
+            "weekend_risk": bool(analysis_dict.get("weekend_risk", False)),
+            "holiday_risk": bool(analysis_dict.get("holiday_risk", False)),
+            "high_impact_risk": bool(analysis_dict.get("high_impact_risk", False)),
+            "per_instrument": analysis_dict.get("per_instrument", {}),
+            "trading_window": proposal.get("trading_window", {}),
         }
 
-    def _time_in_range(
-        self, current: dt_time, start: dt_time, end: dt_time
-    ) -> bool:
-        """Check if current time is in range (handles overnight sessions)."""
+        # Required contract keys (ModuleRegistry + Orchestrator enforced)
+        out["seasonal_session"] = str(out["seasonality_risk_analysis"].get("session", "unknown"))
+        out["seasonal_dow_bias"] = str(out["seasonality_risk_analysis"].get("dow_bias", "unknown"))
+        out["seasonal_monthly_pattern"] = str(out["seasonality_risk_analysis"].get("monthly_pattern", "unknown"))
+        out["seasonal_composite_score"] = float(confidence)
+        out["seasonal_rollover_risk"] = bool(out["seasonality_risk_analysis"].get("rollover_risk", False))
+        out["seasonal_weekend_risk"] = bool(out["seasonality_risk_analysis"].get("weekend_risk", False))
+        out["seasonality_analysis"] = out["seasonality_risk_analysis"]
+        out["seasonality_expert_analysis"] = analysis_dict
+        out["seasonality_expert_thesis"] = str(out.get("_thesis") or out.get("thesis") or "")
+
+        # Publish legacy keys (best-effort)
+        try:
+            self.smart_bus.set("seasonality_voting_proposal", proposal, module=name, thesis=str(proposal.get("reason", "")))  # type: ignore
+            self.smart_bus.set("seasonality_confidence", float(confidence), module=name, thesis="Seasonality confidence")  # type: ignore
+            self.smart_bus.set("seasonal_voting_proposal", proposal, module=name, thesis=str(proposal.get("reason", "")))  # type: ignore
+            self.smart_bus.set("seasonal_confidence", float(confidence), module=name, thesis="Seasonal confidence")  # type: ignore
+            self.smart_bus.set("seasonality_risk_analysis", out["seasonality_risk_analysis"], module=name, thesis="Seasonality risk analysis")  # type: ignore
+        except Exception:
+            pass
+
+        return out
+
+    # ─────────────────────────────────────────────────────────────
+    # Baseline / neutral
+    # ─────────────────────────────────────────────────────────────
+
+    def _publish_seasonality_baseline(self) -> None:
+        thesis = "Seasonality baseline"
+        confidence = 0.10
+        now_utc = datetime.now(dt_timezone.utc)
+        trading_window = self._analyze_trading_window_cached(now_utc)
+        proposal = {
+            "action": "flat",
+            "signal_strength": confidence,
+            "confidence": confidence,
+            "reason": thesis,
+            "proposals": {
+                "XAUUSD": {
+                    "action": "flat",
+                    "confidence": confidence,
+                    "magnitude": 0.0,
+                    "rationale": thesis,
+                    "meta": {"time_utc": now_utc.isoformat(), "trading_window": trading_window},
+                }
+            },
+            "trading_window": trading_window,
+            "analysis": {
+                "session": "unknown",
+                "dow_bias": "unknown",
+                "monthly_pattern": "unknown",
+                "rollover_risk": False,
+                "weekend_risk": False,
+                "holiday_risk": False,
+                "high_impact_risk": False,
+                "per_instrument": {},
+            },
+        }
+        try:
+            self.smart_bus.set("seasonality_voting_proposal", proposal, module=self.module_name, thesis=thesis)  # type: ignore
+            self.smart_bus.set("seasonality_confidence", confidence, module=self.module_name, thesis="Seasonality baseline confidence")  # type: ignore
+            self.smart_bus.set("seasonal_voting_proposal", proposal, module=self.module_name, thesis=thesis)  # type: ignore
+            self.smart_bus.set("seasonal_confidence", confidence, module=self.module_name, thesis="Seasonal baseline confidence")  # type: ignore
+            self.smart_bus.set("seasonality_risk_analysis", {
+                "session": "unknown",
+                "dow_bias": "unknown",
+                "monthly_pattern": "unknown",
+                "rollover_risk": False,
+                "weekend_risk": False,
+                "holiday_risk": False,
+                "high_impact_risk": False,
+                "action": "flat",
+                "confidence": confidence,
+                "per_instrument": {"XAUUSD": {"action": "flat", "confidence": confidence}},
+                "trading_window": trading_window,
+            }, module=self.module_name, thesis="Seasonality baseline analysis")  # type: ignore
+        except Exception:
+            pass
+
+    def _neutral_proposal(self, reason: str) -> Dict[str, Any]:
+        """Neutral proposal dict for base hook path."""
+        thesis = f"Seasonal flat: {reason}"
+        conf_floor = CONFIDENCE_THRESHOLD_F()
+        confidence = float(max(0.10, conf_floor * 0.50))
+        now_utc = datetime.now(dt_timezone.utc)
+        trading_window = self._analyze_trading_window_cached(now_utc)
+        per_inst_votes = {
+            "XAUUSD": {
+                "instrument": "XAUUSD",
+                "action": "flat",
+                "confidence": confidence,
+                "signal_strength": 0.0,
+                "magnitude": 0.0,
+                "rationale": thesis,
+            }
+        }
+        return {
+            "action": "flat",
+            "signal_strength": confidence,
+            "confidence": confidence,
+            "reason": thesis,
+            "proposals": per_inst_votes,
+            "trading_window": trading_window,
+            "analysis": {
+                "session": "unknown",
+                "dow_bias": "unknown",
+                "monthly_pattern": "unknown",
+                "rollover_risk": False,
+                "weekend_risk": False,
+                "holiday_risk": False,
+                "high_impact_risk": False,
+                "per_instrument": {"XAUUSD": {"action": "flat", "confidence": confidence, "reason": thesis}},
+            },
+        }
+
+    def _neutral_output(self, reason: str) -> Dict[str, Any]:
+        thesis = f"Seasonal flat: {reason}"
+        conf_floor = CONFIDENCE_THRESHOLD_F()
+        confidence = float(max(0.10, conf_floor * 0.50))
+        now_utc = datetime.now(dt_timezone.utc)
+        trading_window = self._analyze_trading_window_cached(now_utc)
+        proposal = self._neutral_proposal(reason)
+        return {
+            "SeasonalityRiskExpert_voting_proposal": proposal,
+            "SeasonalityRiskExpert_confidence": confidence,
+            "seasonality_voting_proposal": proposal,
+            "seasonality_confidence": confidence,
+            "seasonal_voting_proposal": proposal,
+            "seasonal_confidence": confidence,
+            "seasonality_risk_analysis": {
+                "session": "unknown",
+                "dow_bias": "unknown",
+                "monthly_pattern": "unknown",
+                "rollover_risk": False,
+                "weekend_risk": False,
+                "holiday_risk": False,
+                "high_impact_risk": False,
+                "action": "flat",
+                "confidence": confidence,
+                "per_instrument": {"XAUUSD": {"action": "flat", "confidence": confidence}},
+                "trading_window": trading_window,
+            },
+            "_thesis": thesis,
+        }
+
+    # ─────────────────────────────────────────────────────────────
+    # Time/session/window helpers
+    # ─────────────────────────────────────────────────────────────
+
+    def _time_in_range(self, current: dt_time, start: dt_time, end: dt_time) -> bool:
         if start <= end:
             return start <= current <= end
         return current >= start or current <= end
 
-    def _get_session_phase(self, current_time: datetime, session: str) -> str:
-        """Determine if we're in early, mid, or late session phase."""
-        if session not in self.sessions:
-            return "unknown"
+    def _analyze_session(self, now_utc: datetime) -> SessionContext:
+        current_t = now_utc.time()
+        active: List[str] = []
+        for sname, times in self.sessions.items():
+            if self._time_in_range(current_t, times["start"], times["end"]):
+                active.append(sname)
 
-        session_times = self.sessions[session]
-        start = session_times["start"]
-        end = session_times["end"]
-
-        current = current_time.time()
-
-        start_mins = start.hour * 60 + start.minute
-        end_mins = end.hour * 60 + end.minute
-        current_mins = current.hour * 60 + current.minute
-
-        # Handle overnight sessions
-        if end_mins < start_mins:
-            end_mins += 24 * 60
-            if current_mins < start_mins:
-                current_mins += 24 * 60
-
-        duration = end_mins - start_mins
-        if duration <= 0:
-            return "unknown"
-
-        elapsed = current_mins - start_mins
-        progress = elapsed / duration
-
-        if progress < 0.33:
-            return "early"
-        if progress < 0.67:
-            return "mid"
-        return "late"
-
-    def _analyze_day_of_week(self, current_time: datetime) -> Dict[str, Any]:
-        """Analyze day-of-week patterns and biases."""
-        dow = current_time.weekday()
-        dow_info = self.dow_biases.get(dow, self.dow_biases[1])
-
-        if dow == 0:
-            bias = "cautious"
-            continuation_prob = 0.6
-        elif dow == 4:
-            bias = "closing_bias"
-            continuation_prob = 0.5
-        elif dow in (1, 2):
-            bias = "trending"
-            continuation_prob = 0.75
+        if "overlap_eu_us" in active:
+            primary, quality = "overlap_eu_us", 1.00
+        elif "overlap_asia_eu" in active:
+            primary, quality = "overlap_asia_eu", 0.85
+        elif "european" in active:
+            primary, quality = "european", 0.90
+        elif "american" in active:
+            primary, quality = "american", 0.85
+        elif "asian" in active:
+            primary, quality = "asian", 0.70
         else:
-            bias = "neutral"
-            continuation_prob = 0.65
+            primary, quality = "off_hours", 0.40
 
-        return {
-            "day_name": dow_info["name"],
-            "day_number": dow,
-            "bias": bias,
-            "volatility_factor": dow_info["volatility"],
-            "trend_continuation": dow_info["trend_continuation"],
-            "reversal_risk": dow_info["reversal_risk"],
-            "continuation_probability": continuation_prob,
-        }
+        liquidity = float(self.session_weights.get(primary, 0.50))
+        return SessionContext(
+            current_session=primary,
+            active_sessions=active,
+            session_quality=float(quality),
+            liquidity_score=liquidity,
+        )
 
-    def _analyze_monthly_pattern(self, current_time: datetime) -> Dict[str, Any]:
-        """Analyze monthly and seasonal patterns."""
-        month = current_time.month
-        day = current_time.day
-        month_info = self.monthly_patterns.get(month, self.monthly_patterns[6])
+    def _analyze_time_context(self, now_utc: datetime) -> TimeContext:
+        hour = now_utc.hour
+        minute = now_utc.minute
+        dow = now_utc.weekday()
+        month = now_utc.month
+        day = now_utc.day
 
-        days_in_month = calendar.monthrange(current_time.year, month)[1]
-        is_month_end = day >= days_in_month - 2
-        is_month_start = day <= 3
-
-        quarter = (month - 1) // 3 + 1
-        is_quarter_end = month in (3, 6, 9, 12) and is_month_end
-
-        if month in (1, 2, 3, 4, 10, 11):
-            seasonal_bias = "bullish"
-        elif month in (5, 6, 7, 8, 9):
-            seasonal_bias = "cautious"
-        else:
-            seasonal_bias = "year_end_positioning"
-
-        return {
-            "month": month,
-            "month_name": month_info["name"],
-            "pattern": seasonal_bias,
-            "trend_strength": month_info["trend_strength"],
-            "risk_on": month_info["risk_on"],
-            "is_month_end": is_month_end,
-            "is_month_start": is_month_start,
-            "is_quarter_end": is_quarter_end,
-            "quarter": quarter,
-        }
-
-    def _analyze_hour_patterns(self, current_time: datetime) -> Dict[str, Any]:
-        """Analyze hourly patterns and volatility expectations."""
-        hour = current_time.hour
-        minute = current_time.minute
-
-        is_pre_news = hour in self.high_impact_hours and minute >= 50
-        is_news_hour = hour in self.high_impact_hours and minute < 30
-
-        # Volatility bands (UTC)
+        # Quality bands (UTC)
         if 13 <= hour <= 16:
-            expected_volatility = 1.3
-        elif 7 <= hour <= 9:
-            expected_volatility = 1.1
+            trading_quality = 0.95
+        elif 7 <= hour <= 11:
+            trading_quality = 0.90
         elif 0 <= hour <= 6:
-            expected_volatility = 0.7
-        elif 22 <= hour <= 23:
-            expected_volatility = 0.6
+            trading_quality = 0.65
         else:
-            expected_volatility = 0.9
+            trading_quality = 0.75
 
-        # Trading quality bands
-        if 8 <= hour <= 16:
-            trading_quality = 0.9
-        elif 17 <= hour <= 20:
-            trading_quality = 0.85
-        else:
-            trading_quality = 0.6
+        is_pre_news = hour in self.cfg.high_impact_hours_utc and minute >= (60 - self.cfg.high_impact_minutes_pre)
+        is_news_hour = hour in self.cfg.high_impact_hours_utc and minute <= self.cfg.high_impact_minutes_post
 
-        return {
-            "hour": hour,
-            "is_pre_news": is_pre_news,
-            "is_news_hour": is_news_hour,
-            "expected_volatility": expected_volatility,
-            "trading_quality": trading_quality,
-            "high_impact_window": hour in self.high_impact_hours,
-        }
+        return TimeContext(
+            utc_time=now_utc,
+            dow=dow,
+            hour=hour,
+            minute=minute,
+            month=month,
+            day=day,
+            trading_quality=float(trading_quality),
+            is_pre_news=bool(is_pre_news),
+            is_news_hour=bool(is_news_hour),
+        )
 
-    def _check_rollover_risk(self, current_time: datetime) -> bool:
-        """Check if we're in the rollover window (UTC)."""
-        current = current_time.time()
-        return self._time_in_range(current, self.rollover_start, self.rollover_end)
+    def _check_rollover_risk(self, now_utc: datetime) -> bool:
+        t = now_utc.time()
+        return self._time_in_range(t, self.cfg.rollover_start, self.cfg.rollover_end)
 
-    def _check_weekend_risk(self, current_time: datetime) -> bool:
-        """Check if we're in weekend gap risk window (Friday late UTC)."""
-        is_friday = current_time.weekday() == 4
-        current = current_time.time()
-        return is_friday and current >= self.weekend_risk_start
-
-    def _check_high_impact_window(self, current_time: datetime) -> bool:
-        """Check if we're in a high-impact event window."""
-        hour = current_time.hour
-        minute = current_time.minute
-
-        # On the event hour: 00–30 and 50–59 are dangerous.
-        if hour in self.high_impact_hours and (minute <= 30 or minute >= 50):
-            return True
-
-        # 10 minutes before the event hour (previous hour, :50–:59)
-        if (hour + 1) % 24 in self.high_impact_hours and minute >= 50:
-            return True
-
+    def _check_weekend_risk(self, now_utc: datetime) -> bool:
+        if now_utc.weekday() == 4:
+            return now_utc.time() >= self.cfg.weekend_risk_start
         return False
 
-    def _analyze_trading_window(self, current_time_utc: datetime) -> Dict[str, Any]:
-        """
-        Analyze local trading window in the configured timezone.
+    def _check_holiday_risk(self, now_utc: datetime) -> Tuple[bool, str]:
+        m, d = now_utc.month, now_utc.day
+        if (m, d) in set(self.cfg.holiday_month_days):
+            return True, "fixed_holiday"
+        if m == 12 and d >= self.cfg.late_dec_start_day:
+            return True, "late_dec_thin_liquidity"
+        if m == 1 and d <= self.cfg.early_jan_end_day:
+            return True, "early_jan_thin_liquidity"
+        if m == 8:
+            return True, "august_thin_liquidity"
+        return False, ""
 
-        Goals:
-        - Encourage trading only inside primary local hours (e.g. 09:00–18:00).
-        - Avoid opening new trades after cutoff.
-        - In last N minutes before local_hard_close, push strongly for exits.
-        - Flag PRIME window (e.g. 14:00–17:00) for higher aggression upstream.
-        """
+    async def _check_high_impact_window_async(self, now_utc: datetime) -> Tuple[bool, str]:
+        # Cached by minute bucket
+        minute_bucket = int(now_utc.timestamp() // 60)
+        cache_key = f"hiwin:{minute_bucket}"
+        cached = self._cache_get(cache_key)
+        if isinstance(cached, tuple) and len(cached) == 2:
+            return bool(cached[0]), str(cached[1])
+
+        # 1) Try economic events with retry (fail-open)
+        events = await self._get_economic_calendar_with_retry(max_retries=2)
+        if isinstance(events, list) and events:
+            for e in events:
+                if not isinstance(e, dict):
+                    continue
+                impact = str(e.get("impact", "")).lower()
+                if impact not in ("high", "red"):
+                    continue
+                ts = e.get("time") or e.get("timestamp") or e.get("ts")
+                dt = self._parse_event_time_utc(ts)
+                if dt is None:
+                    continue
+                delta_min = abs((dt - now_utc).total_seconds()) / 60.0
+                if delta_min <= max(self.cfg.high_impact_minutes_pre, self.cfg.high_impact_minutes_post):
+                    res = (True, "economic_calendar_high_impact")
+                    self._cache_set(cache_key, res, ttl_s=self.cfg.cache_ttl_high_impact_s)
+                    return res
+
+        # 2) Fallback heuristic window
+        h = now_utc.hour
+        m = now_utc.minute
+        if h in self.cfg.high_impact_hours_utc and (m <= self.cfg.high_impact_minutes_post or m >= (60 - self.cfg.high_impact_minutes_pre)):
+            res = (True, "heuristic_high_impact_hour")
+            self._cache_set(cache_key, res, ttl_s=self.cfg.cache_ttl_high_impact_s)
+            return res
+
+        res = (False, "")
+        self._cache_set(cache_key, res, ttl_s=self.cfg.cache_ttl_high_impact_s)
+        return res
+
+    async def _get_economic_calendar_with_retry(self, max_retries: int = 2) -> Optional[List[Dict[str, Any]]]:
+        for attempt in range(max_retries + 1):
+            try:
+                events = self._safe_bus_get("economic_calendar_events", default=None)
+                if isinstance(events, list):
+                    return [e for e in events if isinstance(e, dict)]
+            except Exception as e:
+                self._debug_emit(event="economic_calendar_error", payload={
+                    "attempt": attempt,
+                    "error": str(e),
+                })
+            # small exponential backoff
+            if attempt < max_retries:
+                await asyncio.sleep(0.05 * (2 ** attempt))
+        return None
+
+    def _parse_event_time_utc(self, ts: Any) -> Optional[datetime]:
+        if ts is None:
+            return None
+        if isinstance(ts, (int, float)):
+            try:
+                return datetime.fromtimestamp(float(ts), tz=dt_timezone.utc)
+            except Exception:
+                return None
+        if isinstance(ts, str):
+            try:
+                dt = datetime.fromisoformat(ts)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=dt_timezone.utc)
+                return dt.astimezone(dt_timezone.utc)
+            except Exception:
+                return None
+        if isinstance(ts, datetime):
+            if ts.tzinfo is None:
+                return ts.replace(tzinfo=dt_timezone.utc)
+            return ts.astimezone(dt_timezone.utc)
+        return None
+
+    def _analyze_trading_window(self, now_utc: datetime) -> Dict[str, Any]:
         try:
-            from zoneinfo import ZoneInfo  # Python 3.9+
-            tz = ZoneInfo(self.trading_timezone)
-            local_dt = current_time_utc.astimezone(tz)
-            tz_name = self.trading_timezone
+            from zoneinfo import ZoneInfo
+            tz = ZoneInfo(self.cfg.trading_timezone)
+            local_dt = now_utc.astimezone(tz)
+            tz_name = self.cfg.trading_timezone
         except Exception:
-            # Fallback to naive UTC if zoneinfo is unavailable
-            local_dt = current_time_utc
+            local_dt = now_utc
             tz_name = "UTC"
 
-        lh = local_dt.hour
-        lm = local_dt.minute
+        lh, lm = local_dt.hour, local_dt.minute
         local_minutes = lh * 60 + lm
 
-        start_minutes = self.local_trade_start_hour * 60
-        end_minutes = self.local_trade_end_hour * 60
-        hard_close_minutes = self.local_hard_close_hour * 60
+        start_m = self.cfg.local_trade_start_hour * 60
+        end_m = self.cfg.local_trade_end_hour * 60
+        hard_close_m = self.cfg.local_hard_close_hour * 60
 
-        # Primary trading window (e.g. 09:00–18:00)
-        in_primary_window = start_minutes <= local_minutes < end_minutes
-        after_cutoff = local_minutes >= end_minutes
+        in_primary = start_m <= local_minutes < end_m
+        after_cutoff = local_minutes >= end_m
 
-        # PRIME window (e.g. 14:00–17:00) – best quality flow
-        prime_start_minutes = self.local_prime_start_hour * 60
-        prime_end_minutes = self.local_prime_end_hour * 60
-        in_prime_window = prime_start_minutes <= local_minutes < prime_end_minutes
+        prime_start = self.cfg.local_prime_start_hour * 60
+        prime_end = self.cfg.local_prime_end_hour * 60
+        in_prime = prime_start <= local_minutes < prime_end
 
-        # Minutes to hard close
-        minutes_to_close = hard_close_minutes - local_minutes
-        if minutes_to_close < 0:
-            # Past hard close; treat as "already closed" for this day
-            minutes_to_close = 0
+        minutes_to_close = max(0, hard_close_m - local_minutes)
+        final_exit_window = 0 <= minutes_to_close <= self.cfg.no_trade_last_minutes
 
-        final_exit_window = 0 <= minutes_to_close <= self.no_trade_last_minutes
-
-        # TEST MODE: Override no_new_trades if allow_off_hours_trading is enabled
-        if self.allow_off_hours_trading:
+        if self.cfg.allow_off_hours_trading:
             no_new_trades = False
         else:
-            # No new trades after cutoff OR inside final exit window
-            no_new_trades = after_cutoff or final_exit_window or not in_primary_window
-
-        # Prime hours boost for better signal quality
-        confidence_boost = self.prime_hours_confidence_boost if in_prime_window else 0.0
-        lot_multiplier = self.prime_hours_lot_multiplier if in_prime_window else 1.0
+            no_new_trades = after_cutoff or final_exit_window or not in_primary
 
         return {
             "timezone": tz_name,
             "local_time": local_dt.isoformat(),
             "local_hour": lh,
             "local_minute": lm,
-            "in_primary_window": in_primary_window,
-            "in_prime_window": in_prime_window,
+            "in_primary_window": in_primary,
+            "in_prime_window": in_prime,
             "after_cutoff": after_cutoff,
             "minutes_to_close": minutes_to_close,
-            "no_new_trades": no_new_trades,
             "final_exit_window": final_exit_window,
-            "final_exit_obligatory": self.final_exit_obligatory,
-            "final_exit_max_loss_pct": self.final_exit_max_loss_pct,
-            "allow_off_hours_override": self.allow_off_hours_trading,
-            # Prime hours boost signals
-            "prime_hours_confidence_boost": confidence_boost,
-            "prime_hours_lot_multiplier": lot_multiplier,
+            "no_new_trades": no_new_trades,
+            "allow_off_hours_override": self.cfg.allow_off_hours_trading,
+            "prime_hours_confidence_boost": self.cfg.prime_hours_confidence_boost if in_prime else 0.0,
+            "prime_hours_lot_multiplier": self.cfg.prime_hours_lot_multiplier if in_prime else 1.0,
         }
 
+    def _analyze_trading_window_cached(self, now_utc: datetime) -> Dict[str, Any]:
+        # minute bucket caching
+        minute_bucket = int(now_utc.timestamp() // 60)
+        k = f"tw:{minute_bucket}"
+        cached = self._cache_get(k)
+        if isinstance(cached, dict):
+            return cached
+        tw = self._analyze_trading_window(now_utc)
+        self._cache_set(k, tw, ttl_s=self.cfg.cache_ttl_trading_window_s)
+        return tw
 
-    def _calculate_historical_pattern_score(
-        self,
-        current_time: datetime,
-        market_data: Dict[str, Any],
-        features: Dict[str, Any],
-        instrument: str = "",
-    ) -> float:
-        """Calculate a simple score based on historical performance at similar times."""
-        close_prices = self._extract_prices(
-            market_data, features, "close", instrument
-        )
+    # ─────────────────────────────────────────────────────────────
+    # Data extraction / feature guards
+    # ─────────────────────────────────────────────────────────────
 
-        if len(close_prices) < 50:
-            return 0.5
+    def _extract_instrument_block(self, market_data: Dict[str, Any], inst_norm: str) -> Dict[str, Any]:
+        if not isinstance(market_data, dict):
+            return {}
+        candidates = [inst_norm, inst_norm.upper(), inst_norm.lower(), "XAU_USD", "XAUUSD", "GOLDUSD", "GOLD"]
+        for k in candidates:
+            if k in market_data and isinstance(market_data[k], dict):
+                return market_data[k]
+        return market_data
 
-        # ═══════════════════════════════════════════════════════════════
-        # REAL-TIME RESPONSIVENESS: Append forming bar's close price
-        # ═══════════════════════════════════════════════════════════════
+    def _extract_series(self, inst_block: Dict[str, Any], key: str) -> np.ndarray:
+        if not isinstance(inst_block, dict):
+            return np.array([], dtype=float)
+
+        if key in inst_block and isinstance(inst_block[key], (list, np.ndarray)):
+            return np.array(inst_block[key], dtype=float)
+
+        for tf in ("M15", "H1", "H4", "D1"):
+            if tf in inst_block and isinstance(inst_block[tf], dict):
+                v = inst_block[tf].get(key)
+                if isinstance(v, (list, np.ndarray)):
+                    return np.array(v, dtype=float)
+
+        return np.array([], dtype=float)
+
+    def _get_chop_value(self, inst_norm: str, features: Dict[str, Any]) -> Optional[float]:
+        # 1) features dict
         try:
-            inst_norm = normalize_instrument(instrument) if instrument else ""
-            historical = self.smart_bus.get(
-                "historical_prices", self.module_name, default=None
-            )
-            if isinstance(historical, dict):
-                matched_sym = None
-                for sym in historical.keys():
-                    if normalize_instrument(sym) == inst_norm:
-                        matched_sym = sym
-                        break
-                if matched_sym and isinstance(historical.get(matched_sym), dict):
-                    m15_rec = historical[matched_sym].get("M15", {})
-                    if isinstance(m15_rec, dict):
-                        cur_bar = m15_rec.get("current_bar", {})
-                        if isinstance(cur_bar, dict):
-                            forming_close = cur_bar.get("close")
-                            if forming_close is not None and len(close_prices) > 0:
-                                forming_close = float(forming_close)
-                                if abs(forming_close - float(close_prices[-1])) > 0.0001:
-                                    close_prices = np.append(
-                                        close_prices[:-1], forming_close
-                                    )
+            if isinstance(features, dict):
+                blk = features.get(inst_norm) if isinstance(features.get(inst_norm), dict) else features
+                for k in ("chop", "CHOP", "choppiness", "choppiness_index", "market_chop"):
+                    if isinstance(blk, dict) and k in blk:
+                        return float(blk[k])
         except Exception:
-            # Silently continue with original prices
             pass
 
-        recent_returns = np.diff(np.log(close_prices[-20:]))
+        # 2) direct bus keys
+        for k in ("chop", "CHOP", "market_chop", "theme_chop", "ThemeExpert_chop"):
+            try:
+                v = self._safe_bus_get(k, default=None)
+                if v is not None:
+                    return float(v)
+            except Exception:
+                continue
+        return None
 
-        if len(recent_returns) > 0:
-            positive_ratio = float(
-                np.sum(recent_returns > 0) / len(recent_returns)
-            )
+    # ─────────────────────────────────────────────────────────────
+    # Cached calculations
+    # ─────────────────────────────────────────────────────────────
+
+    def _volume_confirmation_cached(self, vols: np.ndarray) -> Tuple[float, bool]:
+        if vols is None or vols.size < 10:
+            return 1.0, True  # fail-open
+
+        last = float(vols[-1])
+        n = int(vols.size)
+        k = f"vol:{n}:{int(last)}"
+        cached = self._cache_get(k)
+        if isinstance(cached, tuple) and len(cached) == 2:
+            return float(cached[0]), bool(cached[1])
+
+        lookback = min(int(self.cfg.volume_lookback), int(vols.size))
+        window = vols[-lookback:]
+        med = float(np.median(window)) if window.size else 0.0
+        if med <= 0.0:
+            res = (1.0, True)
+            self._cache_set(k, res, ttl_s=self.cfg.cache_ttl_volume_s)
+            return res
+
+        ratio = float(np.clip(last / med, 0.0, 3.0))
+        confirmed = ratio >= self.cfg.volume_confirm_threshold
+        res = (ratio, confirmed)
+        self._cache_set(k, res, ttl_s=self.cfg.cache_ttl_volume_s)
+        return res
+
+    def _structure_alignment_cached(self, highs: np.ndarray, lows: np.ndarray, closes: np.ndarray) -> Dict[str, Any]:
+        if closes is None or closes.size < 20 or highs.size < 20 or lows.size < 20:
+            return {"available": False}
+
+        n = int(closes.size)
+        px = float(closes[-1])
+        k = f"struct:{n}:{int(px)}"
+        cached = self._cache_get(k)
+        if isinstance(cached, dict):
+            return cached
+
+        lb = min(int(self.cfg.structure_lookback), int(closes.size), int(highs.size), int(lows.size))
+        hh = float(np.max(highs[-lb:]))
+        ll = float(np.min(lows[-lb:]))
+        rng = max(1e-9, hh - ll)
+        pos = float(np.clip((px - ll) / rng, 0.0, 1.0))
+
+        near_low = pos <= self.cfg.structure_edge_band
+        near_high = pos >= (1.0 - self.cfg.structure_edge_band)
+
+        edge_bonus = 0.0
+        if near_low or near_high:
+            edge_bonus = 1.0
         else:
-            positive_ratio = 0.5
+            dist_to_edge = min(abs(pos - 0.0), abs(pos - 1.0))
+            edge_bonus = float(np.clip((self.cfg.structure_edge_band - dist_to_edge) / max(1e-6, self.cfg.structure_edge_band), 0.0, 1.0))
 
-        historical_score = 0.5 + (positive_ratio - 0.5) * 0.6
-        return float(np.clip(historical_score, 0, 1))
+        out = {
+            "available": True,
+            "range_high": hh,
+            "range_low": ll,
+            "range_pos": pos,
+            "near_support_zone": bool(near_low),
+            "near_resistance_zone": bool(near_high),
+            "edge_bonus": float(edge_bonus),
+        }
+        self._cache_set(k, out, ttl_s=self.cfg.cache_ttl_structure_s)
+        return out
 
-    def _extract_prices(
-        self,
-        market_data: Dict[str, Any],
-        features: Dict[str, Any],
-        price_type: str,
-        instrument: str = "",
-    ) -> np.ndarray:
-        """
-        Extract price array from market data, features, or InfoBus.
+    # ─────────────────────────────────────────────────────────────
+    # Adaptive patterns (EMA) — LRU bounded & throttled
+    # ─────────────────────────────────────────────────────────────
 
-        Args:
-            market_data: Instrument-specific market data (may be pre-filtered)
-            features: Instrument-specific features (may be pre-filtered)
-            price_type: 'close', 'high', 'low', 'open'
-            instrument: Target instrument (e.g., 'EURUSD', 'XAUUSD') for historical lookup
-        """
-        if isinstance(market_data, dict):
-            if price_type in market_data:
-                data = market_data[price_type]
-                if isinstance(data, (list, np.ndarray)):
-                    return np.array(data, dtype=float)
+    def _should_update_adaptive(self, inst_norm: str, closes_len: int) -> bool:
+        prev_len = int(self._last_seen_len.get(inst_norm, 0))
+        if closes_len <= prev_len:
+            return False
+        return (closes_len - prev_len) >= int(self.cfg.adaptive_min_new_bars)
 
-            for tf in ("M15", "H1", "H4", "D1"):
-                if tf in market_data and isinstance(market_data[tf], dict):
-                    if price_type in market_data[tf]:
-                        data = market_data[tf][price_type]
-                        if isinstance(data, (list, np.ndarray)):
-                            return np.array(data, dtype=float)
-
-        if isinstance(features, dict):
-            if price_type in features:
-                data = features[price_type]
-                if isinstance(data, (list, np.ndarray)):
-                    return np.array(data, dtype=float)
+    def _update_adaptive_throttled(self, inst_norm: str, now_utc: datetime, closes: np.ndarray, session: str) -> None:
+        if closes is None or closes.size < 3:
+            return
+        n = int(closes.size)
+        if not self._should_update_adaptive(inst_norm, n):
+            return
 
         try:
-            historical = self.smart_bus.get(
-                "historical_prices", self.module_name, default=None
-            )
+            c1 = float(closes[-2])
+            c2 = float(closes[-1])
+            if c1 <= 0 or c2 <= 0:
+                self._last_seen_len[inst_norm] = n
+                return
+            ret = float(np.log(c2 / c1))
         except Exception:
-            historical = None
+            self._last_seen_len[inst_norm] = n
+            return
 
-        if isinstance(historical, dict) and historical:
-            inst_norm = normalize_instrument(instrument) if instrument else ""
-            inst_aliases = {
-                "EURUSD": ["EUR_USD", "EURUSD"],
-                "XAUUSD": ["XAU_USD", "XAUUSD", "GOLDUSD"],
+        dow = now_utc.weekday()
+        hour = now_utc.hour
+        month = now_utc.month
+
+        keys = [
+            f"{inst_norm}|dow:{dow}",
+            f"{inst_norm}|hour:{hour}",
+            f"{inst_norm}|month:{month}",
+            f"{inst_norm}|session:{session}",
+        ]
+
+        win = 1.0 if ret > 0 else 0.0
+        a = float(self.cfg.adaptive_decay)
+
+        for k in keys:
+            st = self._adaptive.get(k) or _EmaStats()
+            st.count += 1
+            st.ema_ret = a * st.ema_ret + (1.0 - a) * ret
+            st.ema_abs_ret = a * st.ema_abs_ret + (1.0 - a) * abs(ret)
+            st.ema_win = a * st.ema_win + (1.0 - a) * win
+            st.last_ts_iso = now_utc.isoformat()
+            self._adaptive.set(k, st)
+
+        self._last_seen_len[inst_norm] = n
+
+    def _adaptive_bias(self, inst_norm: str, now_utc: datetime, session_ctx: SessionContext) -> Tuple[float, float, Dict[str, Any]]:
+        session = session_ctx.current_session
+        dow = now_utc.weekday()
+        hour = now_utc.hour
+        month = now_utc.month
+
+        keys = [
+            f"{inst_norm}|dow:{dow}",
+            f"{inst_norm}|hour:{hour}",
+            f"{inst_norm}|month:{month}",
+            f"{inst_norm}|session:{session}",
+        ]
+
+        scores: List[float] = []
+        rels: List[float] = []
+        detail: Dict[str, Any] = {}
+
+        for k in keys:
+            st = self._adaptive.get(k)
+            if st is None or st.count < 3:
+                continue
+
+            denom = max(1e-9, float(st.ema_abs_ret))
+            raw = float(st.ema_ret / denom)
+            win_adj = float((st.ema_win - 0.5) * 2.0)  # -1..+1
+            score = float(np.tanh(raw * 1.5) * win_adj)
+            reliability = float(np.clip(st.count / 50.0, 0.0, 1.0))
+
+            scores.append(score * reliability)
+            rels.append(reliability)
+
+            detail[k] = {
+                "count": st.count,
+                "ema_ret": float(st.ema_ret),
+                "ema_abs_ret": float(st.ema_abs_ret),
+                "ema_win": float(st.ema_win),
+                "score": float(score),
+                "reliability": float(reliability),
+                "last_ts": st.last_ts_iso,
             }
-            aliases = inst_aliases.get(inst_norm, [inst_norm, instrument])
 
-            symbol = None
-            for alias in aliases:
-                if alias in historical:
-                    symbol = alias
-                    break
+        if not scores:
+            return 0.0, 0.0, {"available": False}
 
-            if symbol is None:
-                symbol = next(iter(historical.keys()))
+        bias = float(np.clip(float(np.mean(scores)), -1.0, 1.0))
+        rel = float(np.clip(float(np.mean(rels)), 0.0, 1.0))
+        return bias, rel, {"available": True, "bias": bias, "reliability": rel, "detail": detail}
 
-            sym_block = historical.get(symbol)
-            if isinstance(sym_block, dict):
-                tf_rec = None
-                # M15 is primary, H1/H4/D1 are context (ordered by granularity)
-                for tf in ("M15", "H1", "H4", "D1"):
-                    candidate = sym_block.get(tf)
-                    if isinstance(candidate, dict):
-                        tf_rec = candidate
-                        break
-                if tf_rec is None and sym_block:
-                    tf_rec = sym_block.get(next(iter(sym_block.keys())))
-                if isinstance(tf_rec, dict):
-                    seq = tf_rec.get(price_type)
-                    if isinstance(seq, (list, np.ndarray)):
-                        return np.array(seq, dtype=float)
+    # ─────────────────────────────────────────────────────────────
+    # Persistence filter
+    # ─────────────────────────────────────────────────────────────
 
-        return np.array([])
-
-    def _calculate_composite_score(
-        self,
-        session_analysis: Dict[str, Any],
-        dow_analysis: Dict[str, Any],
-        monthly_analysis: Dict[str, Any],
-        hour_analysis: Dict[str, Any],
-        historical_score: float,
-    ) -> float:
-        """
-        Calculate composite seasonal/temporal score.
-
-        Higher scores = more favorable trading conditions.
-        """
-        session_score = float(session_analysis["session_quality"])
-        dow_score = float(dow_analysis["trend_continuation"])
-
-        monthly_score = monthly_analysis["trend_strength"] / 1.2
-        monthly_score = float(np.clip(monthly_score, 0, 1))
-
-        hour_score = float(hour_analysis["trading_quality"])
-
-        composite = (
-            session_score * 0.25
-            + dow_score * 0.20
-            + monthly_score * 0.20
-            + hour_score * 0.15
-            + historical_score * 0.20
-        )
-
-        return float(np.clip(composite, 0, 1))
-
-    def _select_seasonal_action(
-        self,
-        composite_score: float,
-        session_analysis: Dict[str, Any],
-        dow_analysis: Dict[str, Any],
-        monthly_analysis: Dict[str, Any],
-        rollover_risk: bool,
-        weekend_risk: bool,
-        high_impact_window: bool,
-        instrument: str = "",
-        asset_class: str = "forex",
-        trading_window: Optional[Dict[str, Any]] = None,
-    ) -> Tuple[str, float, str]:
-        """
-        Select trading action based on seasonal analysis.
-
-        Instrument-aware:
-        - Gold has different seasonal patterns and safe-haven behaviour.
-        - Local trading-window overlay can veto late-day entries.
-        """
-        inst_norm = normalize_instrument(instrument) if instrument else ""
-        is_gold = inst_norm in ("XAUUSD", "GOLD", "XAU")
-        tw = trading_window or {}
-
-        # High-impact caution: stay flat; Gold may get safe-haven bid
-        if high_impact_window:
-            if is_gold:
-                return (
-                    "long",
-                    0.5,
-                    f"{inst_norm}: Safe haven bid during high-impact window",
-                )
-            return (
-                "flat",
-                0.7,
-                f"{inst_norm}: High-impact event window, recommending caution",
-            )
-
-        # Weekend gap risk
-        if weekend_risk:
-            return (
-                "flat",
-                0.75,
-                f"{inst_norm}: Weekend gap risk - Friday late session",
-            )
-
-        # Rollover / swap widening
-        if rollover_risk:
-            return (
-                "flat",
-                0.6,
-                f"{inst_norm}: Rollover window - wider spreads and lower liquidity",
-            )
-
-        # Local trading window guard (user-local time).
-        # - After local_trade_end_hour or in final_exit_window,
-        #   we do NOT want new entries: flat with strong conviction.
-        if tw.get("no_new_trades", False):
-            lh = tw.get("local_hour")
-            lm = tw.get("local_minute")
-            tz_name = tw.get("timezone", "local")
-            if isinstance(lh, int) and isinstance(lm, int):
-                time_str = f"{lh:02d}:{lm:02d} {tz_name}"
-            else:
-                time_str = f"local time ({tz_name})"
-            return (
-                "flat",
-                0.7,
-                f"{inst_norm}: Outside primary trading window at {time_str} - no new entries",
-            )
-
-        # Poor session quality: stay flat (Gold can still trade in Asia)
-        if session_analysis["session_quality"] < 0.5:
-            if not (is_gold and session_analysis["current_session"] == "asian"):
-                return (
-                    "flat",
-                    0.55,
-                    f"{inst_norm}: Low session quality "
-                    f"({session_analysis['current_session']})",
-                )
-
-        # Gold seasonal patterns (stylized: strong in Jan, Aug, Sep, Dec)
-        if is_gold:
-            month = monthly_analysis.get("month", 0)
-            month_name = monthly_analysis.get("month_name", "Unknown")
-            if month in (1, 8, 9, 12):
-                confidence = self.base_confidence + 0.2
-                return (
-                    "long",
-                    float(np.clip(confidence, 0.5, 0.75)),
-                    f"{inst_norm}: Favorable gold seasonality ({month_name})",
-                )
-            if month in (3, 4, 5):
-                confidence = self.base_confidence
-                return (
-                    "short",
-                    float(np.clip(confidence, 0.4, 0.65)),
-                    f"{inst_norm}: Weak gold seasonality ({month_name})",
-                )
-
-        # Strong seasonal long bias (FX risk-on)
-        if monthly_analysis["risk_on"] and composite_score > 0.6:
-            confidence = self.base_confidence + (composite_score - 0.5) * 0.6
-            return (
-                "long",
-                float(np.clip(confidence, 0.5, 0.8)),
-                f"{inst_norm}: Favorable seasonal "
-                f"({monthly_analysis['month_name']}, risk-on)",
-            )
-
-        # Cautious seasonal short bias
-        if not monthly_analysis["risk_on"] and composite_score < 0.45:
-            confidence = self.base_confidence + (0.5 - composite_score) * 0.6
-            if is_gold:
-                return (
-                    "long",
-                    float(np.clip(confidence, 0.5, 0.75)),
-                    f"{inst_norm}: Safe haven in risk-off season",
-                )
-            return (
-                "short",
-                float(np.clip(confidence, 0.5, 0.75)),
-                f"{inst_norm}: Unfavorable seasonal "
-                f"({monthly_analysis['month_name']}, risk-off)",
-            )
-
-        # Optimal session: use DOW bias if strong continuation
-        if session_analysis["current_session"] in ("overlap_eu_us", "european"):
-            if dow_analysis["trend_continuation"] > 0.55:
-                day_name = dow_analysis["day_name"]
-                bias = dow_analysis.get("bias", "neutral")
-                if bias == "trending":
-                    return (
-                        "long",
-                        0.55,
-                        f"{inst_norm}: Optimal session + trending {day_name}",
-                    )
-
-        # Quarter-end / month-end → flat
-        if monthly_analysis["is_quarter_end"]:
-            return (
-                "flat",
-                0.4,
-                f"{inst_norm}: Quarter-end rebalancing",
-            )
-
-        if monthly_analysis["is_month_end"]:
-            return (
-                "flat",
-                0.35,
-                f"{inst_norm}: Month-end positioning",
-            )
-
-        # Default: use composite score for weak directional bias
-        if composite_score > 0.52:
-            return (
-                "long",
-                0.45,
-                f"{inst_norm}: Slight bullish seasonal "
-                f"(composite={composite_score:.2f})",
-            )
-        if composite_score < 0.48:
-            if is_gold:
-                return (
-                    "flat",
-                    0.35,
-                    f"{inst_norm}: Slight bearish but gold - neutral overlay",
-                )
-            return (
-                "short",
-                0.45,
-                f"{inst_norm}: Slight bearish seasonal "
-                f"(composite={composite_score:.2f})",
-            )
-
-        return (
-            "flat",
-            0.3,
-            f"{inst_norm}: Neutral seasonal - "
-            f"session: {session_analysis['current_session']}",
-        )
-
-    def _apply_persistence_filter(
-        self,
-        action: str,
-        confidence: float,
-    ) -> Tuple[str, float]:
-        """
-        Apply regime persistence filter to GLOBAL seasonal action.
-
-        - Boosts confidence for persistent regimes.
-        - Dampens for brand-new flips.
-        """
-        if len(self.regime_history) > 0 and self.regime_history[-1] == action:
-            self.regime_persistence_count += 1
-            if self.regime_persistence_count >= self.min_regime_persistence:
-                boost = min(0.1, self.regime_persistence_count * 0.02)
-                confidence = min(confidence + boost, self.max_confidence)
+    def _apply_persistence_filter(self, action: str, confidence: float) -> Tuple[str, float]:
+        if self._action_history and self._action_history[-1] == action:
+            self._action_streak += 1
+            if self._action_streak >= self.cfg.min_regime_persistence:
+                confidence = min(self.cfg.max_confidence, confidence + min(0.08, 0.02 * self._action_streak))
         else:
-            self.regime_persistence_count = 1
-            confidence = max(confidence * 0.85, self.min_confidence)
+            self._action_streak = 1
+            confidence = max(self.cfg.min_confidence, confidence * 0.85)
 
-        self.regime_history.append(action)
-        if len(self.regime_history) > 20:
-            self.regime_history = self.regime_history[-20:]
+        self._action_history.append(action)
+        return action, float(confidence)
 
-        return action, confidence
+    # ─────────────────────────────────────────────────────────────
+    # Seasonal circuit breaker
+    # ─────────────────────────────────────────────────────────────
 
-    def _neutral_output(self, reason: str) -> Dict[str, Any]:
-        """Generate neutral output with explanation and publish neutral keys."""
-        from datetime import timezone as dt_timezone
-        name = self.__class__.__name__
-        thesis = f"Seasonal flat: {reason}"
+    def _seasonal_circuit_open(self) -> bool:
+        now = self._now_s()
+        return now < float(self._seasonal_circuit_until_s)
 
-        conf_floor = CONFIDENCE_THRESHOLD_F()
-        confidence = max(0.1, conf_floor * 0.5)
+    def _record_seasonal_error(self, error: Exception) -> None:
+        if not self.cfg.seasonal_circuit_enabled:
+            return
 
-        # Generate trading window for the gate check
-        trading_window = self._analyze_trading_window(datetime.now(dt_timezone.utc))
+        # Ignore transient errors
+        if not self._is_seasonal_error_critical(error):
+            return
 
-        proposal = {
-            "action": "flat",
-            "signal_strength": confidence,
-            "reason": thesis,
-            "proposals": {},
-            "trading_window": trading_window,  # Include for arbiter seasonality gate
-        }
+        now = self._now_s()
+        self._seasonal_err_times.append(now)
 
+        # Drop old
+        window = float(self.cfg.seasonal_error_window_s)
+        while self._seasonal_err_times and (now - self._seasonal_err_times[0]) > window:
+            self._seasonal_err_times.popleft()
+
+        if len(self._seasonal_err_times) >= int(self.cfg.seasonal_error_trip_count):
+            self._seasonal_circuit_until_s = now + float(self.cfg.seasonal_cooloff_s)
+            self._debug_emit(event="seasonal_circuit_tripped", payload={
+                "ts": now,
+                "cooloff_s": float(self.cfg.seasonal_cooloff_s),
+                "error": str(error),
+            })
+
+    def _is_seasonal_error_critical(self, error: Exception) -> bool:
+        s = str(error).lower()
+
+        transient = [
+            "holiday",
+            "weekend",
+            "outside_trading",
+            "off_hours",
+            "low_volume",
+            "insufficient_data",
+        ]
+        if any(t in s for t in transient):
+            return False
+
+        critical = [
+            "timezone",
+            "zoneinfo",
+            "config",
+            "session",
+            "adaptive",
+            "corrupt",
+            "nan",
+        ]
+        return any(c in s for c in critical)
+
+    # ─────────────────────────────────────────────────────────────
+    # Debug (base-integrated, buffered)
+    # ─────────────────────────────────────────────────────────────
+
+    def _debug_emit(self, event: str, payload: Dict[str, Any]) -> None:
+        if not self.cfg.debug_enabled:
+            return
+
+        # Prefer base debug logger if present
+        base_dbg = getattr(self, "_debug_log", None)
+        if callable(base_dbg):
+            try:
+                base_dbg(event=event, **payload)
+                return
+            except Exception:
+                pass
+
+        # Fallback: buffered JSONL writer
+        rec = {"event": event, **payload}
+        self._debug_buf.append(rec)
+
+        now_s = self._now_s()
+        if len(self._debug_buf) >= int(self.cfg.debug_buffer_size) or (now_s - self._debug_last_flush_s) >= float(self.cfg.debug_flush_seconds):
+            self._debug_flush_buffer()
+
+    def _debug_flush_buffer(self) -> None:
+        if not self._debug_buf:
+            return
         try:
-            self.smart_bus.set(
-                "SeasonalityRiskExpert_voting_proposal",
-                proposal,
-                module=name,
-                thesis=thesis,
-            )
-            self.smart_bus.set(
-                "SeasonalityRiskExpert_confidence",
-                confidence,
-                module=name,
-                thesis=f"Confidence: {confidence:.1%}",
-            )
-            self.smart_bus.set(
-                "seasonality_voting_proposal",
-                proposal,
-                module=name,
-                thesis=thesis,
-            )
-            self.smart_bus.set(
-                "seasonality_confidence",
-                confidence,
-                module=name,
-                thesis=f"Seasonality confidence: {confidence:.1%}",
-            )
-            self.smart_bus.set(
-                "seasonal_voting_proposal",
-                proposal,
-                module=name,
-                thesis=thesis,
-            )
-            self.smart_bus.set(
-                "seasonal_confidence",
-                confidence,
-                module=name,
-                thesis=f"Seasonal confidence: {confidence:.1%}",
-            )
+            path = self.cfg.debug_path
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            with open(path, "a", encoding="utf-8") as f:
+                for rec in self._debug_buf:
+                    f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            self._debug_buf.clear()
+            self._debug_last_flush_s = self._now_s()
         except Exception:
-            pass
+            # drop buffer to avoid memory growth if disk is broken
+            self._debug_buf.clear()
+            self._debug_last_flush_s = self._now_s()
 
-        per_inst_vote = PerInstrumentVote(member=name)
+    # ─────────────────────────────────────────────────────────────
+    # Caching wrappers (use base cache if available; else TTL cache)
+    # ─────────────────────────────────────────────────────────────
 
-        seasonality_risk_analysis = {
-            "session": "unknown",
-            "dow_bias": "unknown",
-            "monthly_pattern": "unknown",
-            "composite_score": 0.5,
-            "rollover_risk": False,
-            "weekend_risk": False,
-            "action": "flat",
-            "confidence": confidence,
-            "per_instrument": {},
-        }
+    def _cache_get(self, key: str) -> Any:
+        # Base cache integration if available
+        get_fn = getattr(self, "_get_cached_indicators", None)
+        if callable(get_fn):
+            try:
+                v = get_fn("XAUUSD", np.array([0.0], dtype=float), timeframe=key)  # shape-insensitive probe
+                if v is not None:
+                    return v
+            except Exception:
+                pass
 
-        return {
-            "SeasonalityRiskExpert_voting_proposal": proposal,
-            "SeasonalityRiskExpert_confidence": confidence,
-            "SeasonalityRiskExpert_per_instrument_votes": {},
-            "per_instrument_votes": per_inst_vote,
-            "seasonality_voting_proposal": proposal,
-            "seasonality_confidence": confidence,
-            "seasonal_voting_proposal": proposal,
-            "seasonal_confidence": confidence,
-            "seasonality_risk_analysis": seasonality_risk_analysis,
-            "seasonality_analysis": {
-                "session": "unknown",
-                "dow_bias": "unknown",
-                "monthly_pattern": "unknown",
-                "composite_score": 0.5,
-                "per_instrument": {},
-            },
-            "seasonality_expert_analysis": {
-                "session": "unknown",
-                "dow_bias": "unknown",
-                "monthly_pattern": "unknown",
-                "composite_score": 0.5,
-                "rollover_risk": False,
-                "weekend_risk": False,
-                "per_instrument": {},
-            },
-            "seasonality_expert_thesis": thesis,
-            "seasonal_session": "unknown",
-            "seasonal_dow_bias": "unknown",
-            "seasonal_monthly_pattern": "unknown",
-            "seasonal_composite_score": 0.5,
-            "seasonal_rollover_risk": False,
-            "seasonal_weekend_risk": False,
-            "_thesis": thesis,
-        }
+        # TTL cache fallback
+        entry = self._ttl_cache.get(key)
+        if entry is None:
+            return None
+        exp, val = entry
+        if self._now_s() >= exp:
+            self._ttl_cache.pop(key, None)
+            return None
+        return val
+
+    def _cache_set(self, key: str, value: Any, ttl_s: float) -> None:
+        set_fn = getattr(self, "_set_cached_indicators", None)
+        if callable(set_fn):
+            try:
+                set_fn("XAUUSD", np.array([0.0], dtype=float), value, timeframe=key, ttl_seconds=float(ttl_s))
+                return
+            except Exception:
+                pass
+
+        self._ttl_cache[key] = (self._now_s() + float(ttl_s), value)
+
+    # ─────────────────────────────────────────────────────────────
+    # Small helpers
+    # ─────────────────────────────────────────────────────────────
+
+    def _safe_bus_get(self, key: str, module: str = "", default: Any = None) -> Any:
+        try:
+            mod = module or getattr(self, "module_name", "SeasonalityExpert")
+            return self.smart_bus.get(key, mod, default=default)  # type: ignore
+        except Exception:
+            return default
+
+    @staticmethod
+    def _safe_float(value: Any, default: float = 0.0) -> float:
+        try:
+            f = float(value)
+            return f if np.isfinite(f) else default
+        except (TypeError, ValueError):
+            return default
+
+    def _safe_dict(self, x: Any) -> Dict[str, Any]:
+        return x if isinstance(x, dict) else {}
+
+    def _now_s(self) -> float:
+        return time.time()
+
+    def _dow_bias_label(self, dow: int) -> str:
+        if dow == 0:
+            return "cautious"
+        if dow == 4:
+            return "closing_bias"
+        if dow in (1, 2):
+            return "trending"
+        return "neutral"
+
+    def _month_pattern_label(self, month: int) -> str:
+        if month in (1, 8, 9, 12):
+            return "gold_tailwind"
+        if month in (3, 4, 5):
+            return "gold_headwind"
+        if month in (6, 7):
+            return "summer_transition"
+        return "neutral"

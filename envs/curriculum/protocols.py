@@ -59,6 +59,31 @@ class RecoveryProtocolState:
             "trigger_reason": self.trigger_reason,
             "is_active": self.is_active(),
         }
+
+    @staticmethod
+    def get_patience_focused_recovery() -> Dict[str, Any]:
+        """Return a patience/discipline-focused recovery template."""
+        return {
+            "focus_skill": TradingSkill.DISCIPLINE.value,
+            "reward_modifications": {
+                # Increase selectivity and discourage impulsive entries
+                "churn_penalty_per_trade": 1.5,
+                "loss_streak_caution_base": 1.5,
+                "fear_of_missing_out_penalty": 1.5,
+                "revenge_trading_penalty": 1.5,
+                "daily_trade_soft_limit": 0.6,
+            },
+            "constraint_modifications": {
+                # Reduce frequency + enforce cooling off
+                "max_trades_per_day": 0.5,
+                "min_bars_between_entries": 1.5,
+                "min_bars_after_loss": 1.5,
+                "entry_quality_gate_enabled": 1.0,
+                "entry_quality_threshold": 1.1,
+                "min_setup_quality_for_entry": 1.1,
+            },
+            "description": "focus_patience_discipline",
+        }
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "RecoveryProtocolState":

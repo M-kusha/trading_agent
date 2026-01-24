@@ -152,52 +152,68 @@ class SkillAssessment:
         scores[TradingSkill.DRAWDOWN_CONTROL] = float(_clamp(1.0 - dd_rate, 0.0, 1.0))
         confidence[TradingSkill.DRAWDOWN_CONTROL] = base_conf
         
-        # Patience: trades per trading day (normalized from episode data)
-        # Delta Force discipline: quality over quantity
-        # 
-        # Normalization: Use actual episode length from metrics instead of 
-        # hardcoded M15/2000 bars assumption. This makes the calculation
-        # robust to different timeframes and episode lengths.
-        avg_trades_per_episode = stats.mean_trade_count
-        
-        # Compute average episode length in bars from the episodes
-        episode_lengths = _finite_floats([e.episode_length for e in episodes if getattr(e, "episode_length", 0) > 0])
-        if episode_lengths:
-            avg_episode_bars = float(np.mean(episode_lengths))
+        # Patience: prefer direct bars-between-trades if available, else fallback to trades/day.
+        bars_between = float(_sf(getattr(stats, "mean_bars_between_trades", 0.0), 0.0))
+        if bars_between > 0:
+            # Normalize to target ~3 trades/day: bars_between >= bars_per_day/3 -> score 1.0
+            target_bars_between = max(1.0, bars_per_trading_day / 3.0)
+            patience_score = _clamp(bars_between / target_bars_between, 0.0, 1.0)
         else:
-            avg_episode_bars = 2000.0  # Default fallback
-        
-        # Convert to trading days (at least 10 days minimum for stability)
-        # Use actual episode length (min 1 day) - don't inflate short episodes
-        # Previously hardcoded to max(10.0, ...) which masked overtrading in short episodes
-        est_trading_days_per_episode = max(1.0, avg_episode_bars / bars_per_trading_day)
-        
-        # Convert to trades per day
-        trades_per_day = avg_trades_per_episode / est_trading_days_per_episode
-        
-        # RECALIBRATED: More realistic for intraday gold trading
-        # Target: 1-2 trades/day is acceptable for quality setups
-        # Previous: 0.3-0.5 trades/day was too strict (unrealistic)
-        # 
-        # M15 on gold can legitimately have 2-3 quality setups per day
-        # during London/NY overlap. The key is quality over quantity.
-        if trades_per_day <= 0.5:
-            patience_score = 1.0      # Exceptional discipline (1 trade/2 days)
-        elif trades_per_day <= 1.0:
-            patience_score = 0.90     # Excellent (daily trading)
-        elif trades_per_day <= 1.5:
-            patience_score = 0.75     # Good (~1.5 trades/day)
-        elif trades_per_day <= 2.0:
-            patience_score = 0.60     # Acceptable (2 trades/day)
-        elif trades_per_day <= 3.0:
-            patience_score = 0.40     # Needs improvement
-        elif trades_per_day <= 4.0:
-            patience_score = 0.20     # Poor discipline
-        else:
-            # Severe penalty for extreme overtrading (>4/day = churning)
-            patience_score = max(0.0, 0.20 - (trades_per_day - 4.0) / 5.0)
-        scores[TradingSkill.PATIENCE] = patience_score
+            # Fallback: trades per trading day (normalized from episode data)
+            avg_trades_per_episode = stats.mean_trade_count
+            episode_lengths = _finite_floats([e.episode_length for e in episodes if getattr(e, "episode_length", 0) > 0])
+            if episode_lengths:
+                avg_episode_bars = float(np.mean(episode_lengths))
+            else:
+                avg_episode_bars = 2000.0
+            est_trading_days_per_episode = max(1.0, avg_episode_bars / bars_per_trading_day)
+            trades_per_day = avg_trades_per_episode / est_trading_days_per_episode
+            if trades_per_day <= 0.5:
+                patience_score = 1.0
+            elif trades_per_day <= 1.0:
+                patience_score = 0.90
+            elif trades_per_day <= 1.5:
+                patience_score = 0.75
+            elif trades_per_day <= 2.0:
+                patience_score = 0.60
+            elif trades_per_day <= 3.0:
+                patience_score = 0.40
+            elif trades_per_day <= 4.0:
+                patience_score = 0.20
+            else:
+                patience_score = max(0.0, 0.20 - (trades_per_day - 4.0) / 5.0)
+        scores[TradingSkill.PATIENCE] = float(patience_score)
         confidence[TradingSkill.PATIENCE] = base_conf
+
+        # Selectivity: proportion of setups skipped vs total opportunities (skipped + trades)
+        skipped = float(_sf(getattr(stats, "mean_setup_skipped_per_episode", 0.0), 0.0))
+        trades = float(_sf(getattr(stats, "mean_trade_count", 0.0), 0.0))
+        total_setups = max(skipped + trades, 0.0)
+        if total_setups > 0:
+            skipped_rate = skipped / total_setups
+            target_skipped_rate = 0.50  # Aim to skip ~50% of setups
+            selectivity_score = 1.0 - abs(skipped_rate - target_skipped_rate) / target_skipped_rate
+        else:
+            selectivity_score = 0.5
+        scores[TradingSkill.SELECTIVITY] = float(_clamp(selectivity_score, 0.0, 1.0))
+        confidence[TradingSkill.SELECTIVITY] = base_conf
+
+        # Certainty: average entry confidence score (0..1)
+        certainty = float(_sf(getattr(stats, "mean_entry_certainty", 0.0), 0.0))
+        scores[TradingSkill.CERTAINTY] = float(_clamp(certainty, 0.0, 1.0))
+        confidence[TradingSkill.CERTAINTY] = base_conf
+
+        # Setup quality: average setup quality on entries (0..1)
+        setup_quality = float(_sf(getattr(stats, "mean_setup_quality", 0.0), 0.0))
+        scores[TradingSkill.SETUP_QUALITY] = float(_clamp(setup_quality, 0.0, 1.0))
+        confidence[TradingSkill.SETUP_QUALITY] = base_conf
+
+        # Discipline: penalize FOMO / revenge trading rates
+        fomo_rate = float(_sf(getattr(stats, "fomo_trade_rate", 0.0), 0.0))
+        revenge_rate = float(_sf(getattr(stats, "revenge_trade_rate", 0.0), 0.0))
+        discipline_score = 1.0 - min(1.0, (fomo_rate + revenge_rate) / 2.0)
+        scores[TradingSkill.DISCIPLINE] = float(_clamp(discipline_score, 0.0, 1.0))
+        confidence[TradingSkill.DISCIPLINE] = base_conf
         
         # Risk-reward: based on average R-multiple
         r_mult = stats.mean_r_multiple
@@ -491,7 +507,27 @@ class DemotionAnalyzer:
             reward_mods = {"dd_penalty_scale": 2.0, "reward_scale": 0.8}
             constraint_mods = {"max_trades_per_day": 0.7}  # Reduce by 30%
             description = "focus_drawdown_control"
-        
+
+        elif (
+            reasons.get("excessive_fomo_trading", 0)
+            + reasons.get("revenge_trading", 0)
+            + reasons.get("overtrading", 0)
+        ) > 0:
+            # Patience/discipline failures: apply focused recovery
+            try:
+                from envs.curriculum.protocols import RecoveryProtocolState
+                rec = RecoveryProtocolState.get_patience_focused_recovery()
+            except Exception:
+                rec = {
+                    "reward_modifications": {"churn_penalty_per_trade": 1.5},
+                    "constraint_modifications": {"max_trades_per_day": 0.5},
+                    "description": "focus_patience_discipline",
+                }
+            focus_skill = TradingSkill.DISCIPLINE
+            reward_mods = rec.get("reward_modifications", {})
+            constraint_mods = rec.get("constraint_modifications", {})
+            description = rec.get("description", "focus_patience_discipline")
+
         elif reasons.get("win_rate_critical", 0) > 1:
             focus_skill = TradingSkill.ENTRY_TIMING
             reward_mods = {"entry_quality_weight": 0.5, "soft_block_penalty": 0.1}
@@ -502,6 +538,18 @@ class DemotionAnalyzer:
             reward_mods = {"r_multiple_bonus_scale": 0.5, "time_efficiency_scale": 0.25}
             description = "focus_risk_reward"
         
+        elif skills.get(TradingSkill.DISCIPLINE.value, 1.0) < 0.4:
+            focus_skill = TradingSkill.DISCIPLINE
+            reward_mods = {"loss_streak_caution_base": 0.04}
+            constraint_mods = {"daily_trade_soft_limit": 0.5}
+            description = "focus_discipline"
+
+        elif skills.get(TradingSkill.SELECTIVITY.value, 1.0) < 0.4:
+            focus_skill = TradingSkill.SELECTIVITY
+            reward_mods = {"churn_penalty_per_trade": 0.05}
+            constraint_mods = {"daily_trade_soft_limit": 0.6}
+            description = "increase_selectivity"
+
         elif skills.get(TradingSkill.PATIENCE.value, 1.0) < 0.4:
             focus_skill = TradingSkill.PATIENCE
             reward_mods = {"churn_penalty_per_trade": 0.05}

@@ -17,7 +17,7 @@ Upgrades (Jan 2026):
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Tuple
 
 
 @dataclass
@@ -89,10 +89,22 @@ class RewardShaping:
     entry_quality_integration: bool = False
     entry_quality_weight: float = 0.2
 
+    # Setup quality (confluence) shaping
+    setup_quality_enabled: bool = False
+    setup_quality_threshold: float = 0.70
+    setup_quality_bonus_scale: float = 0.15
+    hasty_entry_penalty: float = 0.08
+
+    # Entry certainty shaping
+    certainty_threshold: float = 0.70
+    entry_certainty_bonus: Dict[str, float] = field(default_factory=dict)
+    low_certainty_penalty: float = 0.15
+
     # Session timing rewards (teach trading hours)
     session_timing_enabled: bool = False
     off_hours_trade_penalty: float = 0.15
     prime_hours_trade_bonus: float = 0.05
+    time_of_day_quality: Dict[str, float] = field(default_factory=dict)
 
     # Market structure rewards (teach WHERE to trade - v5.3)
     market_structure_enabled: bool = False
@@ -161,6 +173,47 @@ class RewardShaping:
     patience_shaping_enabled: bool = False
     patience_bonus_per_bar: float = 0.0
     patience_quality_threshold: float = 0.35
+    dynamic_patience_enabled: bool = False
+    patience_bonus_base: float = 0.001
+    patience_bonus_multiplier: Dict[str, float] = field(default_factory=dict)
+
+    # Observation period (foundation discipline)
+    observation_period_required: bool = False
+    min_bars_observation_before_entry: int = 0
+    observation_completion_bonus: float = 0.0
+    premature_entry_penalty: float = 0.0
+
+    # Strategic patience (reward skipping setups before entering)
+    strategic_patience_enabled: bool = False
+    setup_rejection_bonus: float = 0.0
+    max_setup_rejections_for_bonus: int = 0
+
+    # Deliberation time (thinking before acting)
+    deliberation_time_tracking: bool = False
+    min_deliberation_bars: int = 0
+    optimal_deliberation_range: Tuple[int, int] = (0, 0)
+    too_fast_penalty: float = 0.0
+    deliberation_quality_bonus: float = 0.0
+
+    # Win-rate preservation (avoid quality decay)
+    win_rate_preservation_enabled: bool = False
+    current_win_rate_threshold: float = 0.45
+    selectivity_bonus: float = 0.0
+    win_rate_decay_penalty: float = 0.0
+
+    # Psychological factors (FOMO / revenge / overconfidence)
+    psychological_factors_enabled: bool = False
+    fear_of_missing_out_penalty: float = 0.0
+    revenge_trading_penalty: float = 0.0
+    overconfidence_penalty: float = 0.0
+    overconfidence_streak_threshold: int = 3
+
+    # Compounding success (streaks of high-quality trades)
+    compounding_success_enabled: bool = False
+    consecutive_quality_trades_bonus: List[float] = field(default_factory=list)
+    quality_trade_r_multiple: float = 1.0
+    quality_trade_entry_quality: float = 0.6
+    quality_trade_exit_type: str = "trailing_stop"
 
     # Loss streak caution (penalize entry attempts while tilted)
     loss_streak_caution_enabled: bool = True
@@ -172,8 +225,8 @@ class RewardShaping:
     per_step_max: float = 0.05
 
     # Global clipping
-    min_reward: float = -5.0
-    max_reward: float = 5.0
+    min_reward: float = -50.0
+    max_reward: float = 50.0
 
     # Legacy / external curriculum fields (not necessarily used by env)
     exploration_bonus: float = 0.0
@@ -187,6 +240,7 @@ class TradingConstraints:
 
     max_trades_per_day: int = 100
     max_trades_per_session: int = 50
+    max_trades_per_episode: int = 0
     max_consecutive_losses: int = 10
     
     # Loss-layer governor: hard stop-trading mode after this many consecutive losses
@@ -209,6 +263,13 @@ class TradingConstraints:
     enforce_no_new_trades_window: bool = False
     enforce_weekend_block: bool = False
     enforce_hard_close: bool = False
+    # Observation period gating (foundation discipline)
+    observation_period_required: bool = False
+    min_bars_observation_before_entry: int = 0
+    # Bar-based timing (preferred). If set > 0, env will honor bars and
+    # fall back to minutes only when bars are unset.
+    min_bars_between_entries: int = 0
+    min_bars_after_loss: int = 0
     min_minutes_between_entries: int = 0
     min_minutes_after_loss: int = 0
 
@@ -220,6 +281,7 @@ class TradingConstraints:
 
     entry_quality_gate_enabled: bool = False
     entry_quality_threshold: float = 0.0
+    min_setup_quality_for_entry: float = 0.0
 
     hard_stop_loss_eur: float = 10000.0
     soft_stop_loss_eur: float = 10000.0

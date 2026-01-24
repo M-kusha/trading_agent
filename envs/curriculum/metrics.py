@@ -95,6 +95,10 @@ class EpisodeMetrics:
     avg_mfe: float = 0.0
     avg_bars_held: float = 0.0
     avg_entry_quality: float = 0.5
+    avg_bars_between_trades: float = 0.0
+    avg_setup_quality: float = 0.0
+    avg_entry_certainty: float = 0.0
+    min_setup_quality_for_entry: float = 0.0
 
     # Behavior metrics
     consecutive_losses: int = 0
@@ -103,6 +107,10 @@ class EpisodeMetrics:
     hit_max_consecutive_losses: bool = False
     mask_collapse_steps: int = 0  # Steps where valid actions collapsed to HOLD-only
     stop_mode_steps: int = 0      # Steps in loss-layer stop-mode while flat
+    setup_skipped_count: int = 0
+    fomo_trade_count: int = 0
+    revenge_trade_count: int = 0
+    max_patience_bars: int = 0
 
     # Exit quality tracking
     trailing_stop_exits: int = 0
@@ -133,7 +141,9 @@ class EpisodeMetrics:
             EpisodeMetrics._FLOAT_FIELDS = {
                 "total_pnl", "win_rate", "max_drawdown", "daily_drawdown",
                 "avg_r_multiple", "profit_factor", "avg_mae", "avg_mfe",
-                "avg_bars_held", "avg_entry_quality", "episode_reward",
+                "avg_bars_held", "avg_entry_quality", "avg_bars_between_trades",
+                "avg_setup_quality", "avg_entry_certainty", "min_setup_quality_for_entry",
+                "episode_reward",
                 "policy_entropy",
             }
             EpisodeMetrics._INT_FIELDS = {
@@ -141,6 +151,8 @@ class EpisodeMetrics:
                 "consecutive_losses", "consecutive_wins",
                 "max_consecutive_losses_reached",
                 "mask_collapse_steps", "stop_mode_steps",
+                "setup_skipped_count", "fomo_trade_count", "revenge_trade_count",
+                "max_patience_bars",
                 "trailing_stop_exits", "agent_close_exits", "hard_stop_exits",
                 "risk_liquidation_exits", "other_exits",
                 "episode_length", "stage_epoch", "global_episode_idx",
@@ -217,6 +229,16 @@ class RollingStats:
     mean_profit_factor: float = 0.0
     mean_r_multiple: float = 0.0
     mean_entry_quality: float = 0.5
+    mean_bars_between_trades: float = 0.0
+    std_bars_between_trades: float = 0.0
+    mean_setup_skipped_per_episode: float = 0.0
+    mean_entry_certainty: float = 0.0
+    mean_setup_quality: float = 0.0
+    mean_min_setup_quality_for_entry: float = 0.0
+    fomo_trade_rate: float = 0.0
+    revenge_trade_rate: float = 0.0
+    mean_max_patience_bars: float = 0.0
+    patience_consistency: float = 0.0
 
     # Behavior stats
     consecutive_loss_breach_rate: float = 0.0

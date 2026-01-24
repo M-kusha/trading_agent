@@ -2,15 +2,16 @@
 # File: modules/features/multiscale_feature_engine.py
 # MultiScale Feature Engine (XAUUSD-only, Contract-Clean, Orchestration-Safe, Hard-Audit Logging)
 #
-# Goals (robustness + correctness hardening):
-# - HARD scope: XAUUSD only (no multi-symbol blending, no EURUSD references)
-# - Contract-clean outputs + orchestration-safe bus writes (single-writer lock)
-# - Deterministic fallbacks (NO random vectors) to avoid train/live drift
-# - Uses real per-timeframe mirrors when available: advanced_features_{M15,H1,H4,D1}
-# - Hot-swap networks if upstream feature dimension changes
-# - Circuit breaker with cooldown + health/perf monitoring loops (hot-reload safe)
-# - JSONL rotating audit log (single file) with cycle-level snapshots
-# - No silent exception swallowing in meaningful paths
+# Fixes applied (alignment + correctness hardening):
+# - Strict XAUUSD scope enforcement (market_data + AFE payload if present)
+# - Removed duplicate stats counting (single accounting path per cycle)
+# - Fixed fusion input dim mismatch when some TF mirrors are missing (always build fixed [T] grid)
+# - Unified returned output shapes with bus payloads (dict payloads for neural_embeddings/attention_weights)
+# - Corrected bus_get semantics (raise on hard reads; soft reads return default + audited)
+# - Avoid calling injected AFE.process() (prevents duplicate writers); only reads its last_features best-effort
+# - Feature fusion method honored ("attention" | "concat" | "weighted")
+# - Deterministic fallbacks (no random vectors), stable last-good embedding/attention on failures
+# - Compact publishing of per-TF vectors unless debug_full_vectors=True (hash + head/tail previews)
 # ─────────────────────────────────────────────────────────────
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ import asyncio
 import threading
 import traceback
 import logging
+import hashlib
 from logging.handlers import RotatingFileHandler
 
 from dataclasses import dataclass, asdict
@@ -67,7 +69,7 @@ class MultiScaleConfig:
     num_attention_heads: int = 4
     dropout_rate: float = 0.10
     enable_gpu: bool = True
-    feature_fusion_method: str = "attention"  # "attention" | "concat" | "weighted" (attention default)
+    feature_fusion_method: str = "attention"  # "attention" | "concat" | "weighted"
 
     # If AFE isn't injected and Bus doesn't yet have features, we need a deterministic dim:
     assumed_input_dim: int = 256
@@ -91,8 +93,8 @@ class MultiScaleConfig:
     # Verbosity control
     debug: bool = True
     debug_preview_n: int = 8
-    debug_full_vectors: bool = False
-    debug_full_attention: bool = False
+    debug_full_vectors: bool = True
+    debug_full_attention: bool = True
 
     def __post_init__(self):
         if self.timeframes is None:
@@ -157,10 +159,9 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
         self,
         *,
         config: Optional[Union[MultiScaleConfig, Dict[str, Any]]] = None,
-        afe: Optional["AFEType"] = None,  # optional injection; no default creation
+        afe: Optional["AFEType"] = None,  # optional injection; reader-only
         **kwargs
     ):
-        # Normalize config → dataclass
         if isinstance(config, dict):
             filtered = {k: config[k] for k in MultiScaleConfig.__dataclass_fields__ if k in config}
             self._cfg = MultiScaleConfig(**filtered)
@@ -175,13 +176,12 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
         self._full_vec = bool(self._cfg.debug_full_vectors) if self.debug else False
         self._full_attn = bool(self._cfg.debug_full_attention) if self.debug else False
 
-        # Optional injected AFE
+        # Optional injected AFE (READER ONLY)
         self._afe = afe
 
         super().__init__(config=asdict(self._cfg), **kwargs)
 
     def _initialize(self):
-        # Core handles
         self.smart_bus = InfoBusManager.get_instance()
         self._bus_lock = threading.Lock()
         self._cycle_idx = 0
@@ -195,7 +195,7 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
         self.device = torch.device("cuda" if (torch.cuda.is_available() and self._cfg.enable_gpu) else "cpu")
 
         # Determine input dimension
-        self.input_dim = self._discover_input_dim()
+        self.input_dim = int(self._discover_input_dim())
         self.output_dim = int(self._cfg.embed_dim)
 
         # Subsystems
@@ -246,7 +246,8 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
         self.logger.info(
             format_operator_message(
                 "🧠", "MULTISCALE_READY",
-                details=f"Symbol={self.symbol}, TFs={self.timeframes}, InputDim={self.input_dim}, EmbedDim={self.output_dim}, Device={self.device}, Debug={self.debug}",
+                details=f"Symbol={self.symbol}, TFs={self.timeframes}, InputDim={self.input_dim}, "
+                        f"EmbedDim={self.output_dim}, Device={self.device}, Fusion={self._cfg.feature_fusion_method}, Debug={self.debug}",
                 result="ready",
                 context="multiscale_startup"
             )
@@ -291,7 +292,8 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
     # ─────────────────────────────────────────────────────────
     def _initialize_state(self):
         self.last_embedding = np.zeros(self.output_dim, dtype=np.float32)
-        self.last_attention = np.zeros((1, len(self.timeframes), len(self.timeframes)), dtype=np.float32)
+        T = len(self.timeframes)
+        self.last_attention = np.zeros((1, T, T), dtype=np.float32)
         self.attention_weights_history = deque(maxlen=100)
         self.embedding_history = deque(maxlen=500)
 
@@ -369,7 +371,6 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
                 self._audit_event(level="ERROR", event_type="health_loop_failed", error=str(e), trace=traceback.format_exc())
 
     async def _gpu_monitoring_loop(self):
-        # GPU metrics are optional; still run loop for periodic perf stats
         while True:
             try:
                 await asyncio.sleep(30)
@@ -393,7 +394,7 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
         sr = float(succ) / max(1, total)
 
         hs = float(self.neural_health.get("model_health_score", 100.0))
-        if sr > 0.95:
+        if sr > 0.95 and total > 0:
             hs = min(100.0, hs + 1.0)
             self.neural_health["performance_trend"] = "improving"
         elif sr < 0.8 and total > 10:
@@ -412,6 +413,7 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
             issues.append("Avg forward time > 50ms")
         if float(self.neural_stats.get("avg_attention_entropy", 0.0)) < 0.1 and int(self.neural_stats.get("total_forward_passes", 0)) > 20:
             issues.append("Attention entropy extremely low")
+
         self.neural_health["issues_detected"] = issues
         if issues:
             self.logger.warning(
@@ -428,14 +430,14 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
 
         self.scale_processors = nn.ModuleDict({
             tf: nn.Sequential(
-                nn.Linear(input_dim, E),
+                nn.Linear(int(input_dim), E),
                 nn.ReLU(),
                 nn.LayerNorm(E),
                 nn.Dropout(dr),
             ) for tf in tfs
         })
 
-        fusion_input_dim = E * len(tfs)
+        fusion_input_dim = E * len(tfs)  # FIXED T-grid concat
         self.fusion_network = nn.Sequential(
             nn.Linear(fusion_input_dim, E * 2),
             nn.ReLU(),
@@ -486,10 +488,10 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
         step_idx = self._bus_get("step_idx", default=None, soft=True)
         bus_ts = self._bus_get("timestamp", default=None, soft=True)
 
-        # Circuit breaker gating
+        # Circuit breaker gating (do not overwrite bus outputs when OPEN)
         if not self._check_circuit_breaker():
             out = self._baseline_outputs(reason="circuit_breaker_open")
-            thesis = "Neural circuit breaker OPEN: returning fallback embeddings/attention."
+            thesis = "Neural circuit breaker OPEN: returning last-good fallback embeddings/attention."
             self._audit_cycle(
                 level="WARN",
                 cycle_id=cycle_id,
@@ -512,7 +514,7 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
             self._enforce_xauusd_scope(market_data=market_data, afe_payload=None)
 
             # Read AFE vectors (base + per-TF mirrors when present)
-            afe_bundle = await self._get_afe_bundle(**inputs)
+            afe_bundle = self._get_afe_bundle(**inputs)
             self._enforce_xauusd_scope(market_data=market_data, afe_payload=afe_bundle.get("base_payload"))
 
             # Hot-swap if needed
@@ -529,9 +531,13 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
             # Thesis
             thesis = await self._generate_neural_thesis(afe_bundle, ms_result, nn_result, market_data)
 
-            # Update stats/health
             elapsed_ms = (time.time() - start_ts) * 1000.0
-            self._record_success(forward_time_ms=float(nn_result.get("forward_time_ms", 0.0)))
+
+            # Accounting (single path)
+            self._record_success(
+                forward_time_ms=float(nn_result.get("forward_time_ms", 0.0)),
+                attention_entropy=float(nn_result.get("attention_entropy", 0.0)),
+            )
 
             # Publish declared keys ONLY (single-writer)
             out = self._package_outputs(ms_result, nn_result)
@@ -584,7 +590,7 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
                 except Exception as pe:
                     pin = {"pinpointer_failed": str(pe), "trace": traceback.format_exc()}
 
-            thesis = f"Neural processing failed: {e}. Returning fallback embeddings/attention."
+            thesis = f"Neural processing failed: {e}. Returning last-good fallback embeddings/attention."
             self._audit_cycle(
                 level="ERROR",
                 cycle_id=cycle_id,
@@ -601,13 +607,9 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
             # Publish health only; keep last embeddings/attention stable (avoid flapping).
             try:
                 with self._bus_lock:
-                    self.smart_bus.set(
-                        "neural_health",
-                        self._health_snapshot(),
-                        module="MultiScaleFeatureEngine",
-                        thesis="Neural health snapshot after failure.",
-                    )
-                    self._track_bus_write("neural_health", self._health_snapshot(), "Neural health snapshot after failure.")
+                    nh = self._health_snapshot()
+                    self.smart_bus.set("neural_health", nh, module="MultiScaleFeatureEngine", thesis="Neural health snapshot after failure.")
+                    self._track_bus_write("neural_health", nh, "Neural health snapshot after failure.")
             except Exception as be:
                 self._audit_event(level="ERROR", event_type="bus_set_failed_during_error_reporting", error=str(be), trace=traceback.format_exc())
 
@@ -646,8 +648,16 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
         try:
             return self.smart_bus.get(key, self.__class__.__name__)
         except Exception as e:
-            self._audit_event(level="WARN" if soft else "ERROR", event_type="bus_get_failed", key=key, error=str(e), trace=(traceback.format_exc() if self.debug else None))
-            return default if soft else default
+            self._audit_event(
+                level="WARN" if soft else "ERROR",
+                event_type="bus_get_failed",
+                key=key,
+                error=str(e),
+                trace=(traceback.format_exc() if self.debug else None),
+            )
+            if soft:
+                return default
+            raise
 
     def _get_market_data(self, **inputs) -> Dict[str, Any]:
         md = inputs.get("market_data")
@@ -675,7 +685,7 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
 
         # 2) base advanced_features
         try:
-            adv = self.smart_bus.get("advanced_features", self.__class__.__name__)
+            adv = self._bus_get("advanced_features", default=None, soft=True)
             if isinstance(adv, dict):
                 rf = adv.get("raw_features")
                 if isinstance(rf, (list, tuple)) and len(rf) > 0:
@@ -687,7 +697,7 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
         for tf in (self._cfg.timeframes or ["M15", "H1", "H4", "D1"]):
             try:
                 k = f"advanced_features_{str(tf).upper()}"
-                adv_tf = self.smart_bus.get(k, self.__class__.__name__)
+                adv_tf = self._bus_get(k, default=None, soft=True)
                 if isinstance(adv_tf, dict):
                     rf = adv_tf.get("raw_features")
                     if isinstance(rf, (list, tuple)) and len(rf) > 0:
@@ -697,7 +707,7 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
 
         return int(self._cfg.assumed_input_dim)
 
-    async def _get_afe_bundle(self, **inputs) -> Dict[str, Any]:
+    def _get_afe_bundle(self, **inputs) -> Dict[str, Any]:
         """
         Returns:
           {
@@ -705,57 +715,27 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
             "base_payload": dict|None,
             "tf_vecs": Dict[tf, np.ndarray],
             "tf_payloads": Dict[tf, dict],
-            "source": "injected_afe"|"bus"|"fallback"
+            "source": "bus"|"injected_state"|"fallback"
           }
 
         Rules:
         - No random fallback. If missing: deterministic zeros.
         - Prefer per-timeframe mirrors advanced_features_{TF} if available.
-        - Optional injection: if injected AFE exists, we may read its output (reader mode).
-          WARNING: if AFE.process writes to bus, orchestration must ensure single writer upstream.
+        - Does NOT call injected AFE.process() (avoids duplicate writers).
         """
-        base_payload = None
+        base_payload: Optional[Dict[str, Any]] = None
         tf_payloads: Dict[str, Dict[str, Any]] = {}
+        tf_vecs: Dict[str, np.ndarray] = {}
 
-        # 1) injected AFE (optional)
-        if self._afe is not None and hasattr(self._afe, "process"):
-            try:
-                afe_out = await self._afe.process(**inputs)
-                adv = afe_out.get("advanced_features", {})
-                if isinstance(adv, dict) and isinstance(adv.get("raw_features"), list) and len(adv["raw_features"]) > 0:
-                    base_payload = adv
-                    base_vec = np.asarray(adv["raw_features"], dtype=np.float32).reshape(-1)
-
-                    # also try mirrors from injected output (if present)
-                    tf_vecs: Dict[str, np.ndarray] = {}
-                    for tf in self.timeframes:
-                        k = f"advanced_features_{tf}"
-                        p = afe_out.get(k)
-                        if isinstance(p, dict) and isinstance(p.get("raw_features"), list) and len(p["raw_features"]) > 0:
-                            tf_payloads[tf] = p
-                            tf_vecs[tf] = np.asarray(p["raw_features"], dtype=np.float32).reshape(-1)
-
-                    if base_vec.size > 0:
-                        return {
-                            "base_vec": base_vec,
-                            "base_payload": base_payload,
-                            "tf_vecs": tf_vecs,
-                            "tf_payloads": tf_payloads,
-                            "source": "injected_afe",
-                        }
-            except Exception as e:
-                self._audit_event(level="WARN", event_type="afe_process_failed", error=str(e), trace=(traceback.format_exc() if self.debug else None))
-
-        # 2) Bus base + mirrors
+        # 1) Bus base + mirrors
         try:
-            bus_adv = self.smart_bus.get("advanced_features", self.__class__.__name__)
+            bus_adv = self._bus_get("advanced_features", default=None, soft=True)
             if isinstance(bus_adv, dict):
                 rf = bus_adv.get("raw_features")
                 if isinstance(rf, (list, tuple)) and len(rf) > 0:
                     base_payload = bus_adv
                     base_vec = np.asarray(rf, dtype=np.float32).reshape(-1)
 
-                    tf_vecs: Dict[str, np.ndarray] = {}
                     for tf in self.timeframes:
                         k = f"advanced_features_{tf}"
                         adv_tf = self._bus_get(k, default=None, soft=True)
@@ -775,6 +755,17 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
                         }
         except Exception as e:
             self._audit_event(level="WARN", event_type="bus_advanced_features_unavailable", error=str(e), trace=(traceback.format_exc() if self.debug else None))
+
+        # 2) Injected AFE state (best-effort)
+        if self._afe is not None:
+            try:
+                lf = getattr(self._afe, "last_features", None)
+                if isinstance(lf, np.ndarray) and lf.size > 0:
+                    base_vec = lf.astype(np.float32, copy=False).reshape(-1)
+                    base_payload = {"raw_features": base_vec.tolist(), "instrument": getattr(self._afe, "symbol", self.symbol), "timeframe": getattr(self._afe, "primary_timeframe", self.primary_timeframe)}
+                    return {"base_vec": base_vec, "base_payload": base_payload, "tf_vecs": {}, "tf_payloads": {}, "source": "injected_state"}
+            except Exception as e:
+                self._audit_event(level="WARN", event_type="injected_afe_state_read_failed", error=str(e), trace=(traceback.format_exc() if self.debug else None))
 
         # 3) Deterministic fallback (zeros)
         z = np.zeros(int(self.input_dim), dtype=np.float32)
@@ -805,18 +796,19 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
         # Use real per-tf mirrors when available; otherwise fall back to base.
         timeframe_features: Dict[str, np.ndarray] = {}
         timeframes_used: List[str] = []
+        tf_vecs = afe_bundle.get("tf_vecs") or {}
         for tf in self.timeframes:
-            src = afe_bundle.get("tf_vecs", {}).get(tf)
+            src = tf_vecs.get(tf)
             if src is None:
                 vec = base_fixed
             else:
-                vec = self._pad_trunc(np.nan_to_num(src, nan=0.0, posinf=0.0, neginf=0.0), target_len)
+                vec = self._pad_trunc(np.nan_to_num(np.asarray(src, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0), target_len)
                 timeframes_used.append(tf)
             timeframe_features[tf] = vec
 
-        # Safe correlation on a compact projection to avoid huge-dot instability
-        # (first K dims after centering; deterministic)
+        # Safe correlation on a compact projection
         K = int(min(128, target_len))
+
         def _safe_corr(a: np.ndarray, b: np.ndarray) -> float:
             a = np.asarray(a[:K], dtype=np.float64)
             b = np.asarray(b[:K], dtype=np.float64)
@@ -828,7 +820,7 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
             sb = b.std()
             if not (np.isfinite(sa) and np.isfinite(sb)) or sa < 1e-12 or sb < 1e-12:
                 return 0.0
-            corr = float(np.dot(a, b) / (sa * sb * a.size))
+            corr = float(np.dot(a, b) / (sa * sb * a.size))  # ddof=0 style
             return corr if np.isfinite(corr) else 0.0
 
         correlations: Dict[str, float] = {}
@@ -840,7 +832,7 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
         md_fields = int(len(market_data) if isinstance(market_data, dict) else 0)
 
         return {
-            "timeframe_features": timeframe_features,
+            "timeframe_features": timeframe_features,  # np.ndarray per TF (internal)
             "correlations": correlations,
             "base_features": base_fixed,
             "market_fields_seen": md_fields,
@@ -858,37 +850,53 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
         if not isinstance(tf_feats, dict) or not tf_feats:
             return self._structured_fallback_nn("no timeframe features")
 
+        # Always build a fixed T-grid (prevents fusion dim mismatch)
         processed: Dict[str, torch.Tensor] = {}
-        ordered_tfs: List[str] = []
+        used_tfs: List[str] = []
+
+        zero_in = np.zeros(int(self.input_dim), dtype=np.float32)
+
         for tf in self.timeframes:
-            if tf not in tf_feats:
-                continue
             try:
-                vec = np.asarray(tf_feats[tf], dtype=np.float32).reshape(-1)
-                vec = np.nan_to_num(vec, nan=0.0, posinf=0.0, neginf=0.0)
-                vec = self._pad_trunc(vec, int(self.input_dim))
+                src = tf_feats.get(tf)
+                if src is None:
+                    vec = zero_in
+                else:
+                    vec = np.asarray(src, dtype=np.float32).reshape(-1)
+                    vec = np.nan_to_num(vec, nan=0.0, posinf=0.0, neginf=0.0)
+                    vec = self._pad_trunc(vec, int(self.input_dim))
+                    used_tfs.append(tf)
 
                 x = torch.tensor(vec, dtype=torch.float32, device=self.device).unsqueeze(0)  # [1, D]
                 y = self.scale_processors[tf](x)  # [1, E]
                 processed[tf] = y
-                ordered_tfs.append(tf)
             except Exception as e:
-                self._audit_event(level="WARN", event_type="tf_forward_skip", tf=tf, error=str(e), trace=(traceback.format_exc() if self.debug else None))
-                continue
+                self._audit_event(level="WARN", event_type="tf_forward_failed", tf=tf, error=str(e), trace=(traceback.format_exc() if self.debug else None))
+                # Fail-closed for this TF: use zeros embedding
+                processed[tf] = torch.zeros((1, int(self._cfg.embed_dim)), dtype=torch.float32, device=self.device)
 
-        if not processed:
-            return self._structured_fallback_nn("no processed timeframe tensors")
-
-        # Concat fusion: [B, E*T]
-        concat = torch.cat([processed[tf] for tf in ordered_tfs], dim=-1)
+        # Concat fusion: [B, E*T] in fixed TF order
+        concat = torch.cat([processed[tf] for tf in self.timeframes], dim=-1)
         fused = self.fusion_network(concat)  # [B, E]
 
-        # Attention fusion: [B, T, E]
-        attn_in = torch.stack([processed[tf] for tf in ordered_tfs], dim=1)
+        # Attention fusion: [B, T, E] (fixed TF grid)
+        attn_in = torch.stack([processed[tf] for tf in self.timeframes], dim=1)
         attn_out, attn_w = self.attention_fusion(attn_in)  # [B,T,E], [B,T,T]
 
-        # Combine fused with mean attention output
-        combined = 0.5 * (fused + attn_out.mean(dim=1))  # [B, E]
+        # Fusion method selection
+        method = str(self._cfg.feature_fusion_method or "attention").lower().strip()
+        if method == "concat":
+            combined = fused
+        elif method == "weighted":
+            # Deterministic weights: emphasize higher-energy embeddings (L2 norm) across TFs
+            # w_i = norm_i / sum(norms)
+            norms = torch.stack([processed[tf].norm(p=2, dim=-1) for tf in self.timeframes], dim=1)  # [B,T]
+            w = norms / (norms.sum(dim=1, keepdim=True) + 1e-12)  # [B,T]
+            weighted = (attn_out * w.unsqueeze(-1)).sum(dim=1)  # [B,E]
+            combined = 0.5 * (fused + weighted)
+        else:
+            # attention (default): fused + mean attention output
+            combined = 0.5 * (fused + attn_out.mean(dim=1))  # [B, E]
 
         embedding = combined.detach().cpu().numpy().astype(np.float32, copy=False)      # [B, E]
         attn_weights = attn_w.detach().cpu().numpy().astype(np.float32, copy=False)    # [B, T, T]
@@ -898,51 +906,40 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
 
         # Persist last-good outputs
         self.last_embedding = embedding.reshape(-1).copy()
-        # Expand attention into full TF grid deterministically (missing TFs -> zeros)
-        full_T = len(self.timeframes)
-        full = np.zeros((1, full_T, full_T), dtype=np.float32)
-        idx_map = {tf: i for i, tf in enumerate(self.timeframes)}
-        used_idx = [idx_map[tf] for tf in ordered_tfs if tf in idx_map]
-        # attn_weights is [1, t, t] over ordered_tfs
-        for i_local, i_global in enumerate(used_idx):
-            for j_local, j_global in enumerate(used_idx):
-                full[0, i_global, j_global] = float(attn_weights[0, i_local, j_local])
-        self.last_attention = full
+        self.last_attention = attn_weights.reshape(1, len(self.timeframes), len(self.timeframes)).copy()
 
-        self.attention_weights_history.append(attn_weights)
+        self.attention_weights_history.append(self.last_attention.copy())
         self.embedding_history.append({
             "embedding": self.last_embedding.copy(),
             "timestamp": time.time(),
             "attention_entropy": entropy,
-            "timeframes_used": ordered_tfs,
+            "timeframes_used": used_tfs,
+            "fusion_method": method,
         })
-
-        self._update_neural_stats(forward_ms=forward_ms, attention_entropy=entropy, success=True)
 
         return {
             "embeddings": embedding,                    # [B,E]
-            "attention_weights": attn_weights,          # [B,t,t] (t = used timeframes)
-            "attention_weights_full": full,             # [B,T,T] (T = configured timeframes)
+            "attention_weights_full": attn_weights,      # [B,T,T]
             "processed_features": {k: v.detach().cpu().numpy().astype(np.float32, copy=False) for k, v in processed.items()},
             "forward_time_ms": forward_ms,
             "attention_entropy": entropy,
-            "timeframes_used": ordered_tfs,
+            "timeframes_used": used_tfs,
+            "fusion_method": method,
         }
 
     def _structured_fallback_nn(self, reason: str) -> Dict[str, Any]:
         T = len(self.timeframes)
         emb = self.last_embedding if isinstance(self.last_embedding, np.ndarray) and self.last_embedding.size == self.output_dim else np.zeros(self.output_dim, dtype=np.float32)
         attn = self.last_attention if isinstance(self.last_attention, np.ndarray) and self.last_attention.shape == (1, T, T) else np.zeros((1, T, T), dtype=np.float32)
-        self._update_neural_stats(forward_ms=0.0, attention_entropy=float(self.neural_stats.get("avg_attention_entropy", 0.0)), success=False)
         return {
             "embeddings": emb.reshape(1, -1).astype(np.float32, copy=False),
-            "attention_weights": attn.astype(np.float32, copy=False),
             "attention_weights_full": attn.astype(np.float32, copy=False),
             "processed_features": {},
             "forward_time_ms": 0.0,
-            "attention_entropy": 0.0,
+            "attention_entropy": float(self.neural_stats.get("avg_attention_entropy", 0.0)),
             "_reason": reason,
             "timeframes_used": [],
+            "fusion_method": str(self._cfg.feature_fusion_method),
         }
 
     @staticmethod
@@ -951,7 +948,6 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
             w = np.asarray(attn_w, dtype=np.float64).reshape(-1)
             if w.size == 0:
                 return 0.0
-            # Normalize to a probability distribution
             s = float(np.sum(w)) + 1e-12
             p = w / s
             return float(-np.sum(p * np.log(p + 1e-12)))
@@ -976,11 +972,13 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
             md_seen = int(ms_result.get("market_fields_seen", 0))
             tf_used = nn_result.get("timeframes_used", [])
             src = str(afe_bundle.get("source", "unknown"))
+            method = str(nn_result.get("fusion_method", self._cfg.feature_fusion_method))
 
             return (
                 f"Neural Multi-Scale Feature Analysis ({self.symbol})\n"
                 f"- Source: {src}\n"
-                f"- Timeframes configured: {len(self.timeframes)} | used: {len(tf_used)}\n"
+                f"- Fusion: {method}\n"
+                f"- Timeframes configured: {len(self.timeframes)} | mirrors used: {len(tf_used)}\n"
                 f"- Input dim: {int(self.input_dim)} | Embedding dim: {int(self.output_dim)}\n"
                 f"- Attention entropy: {attn_entropy:.3f}\n"
                 f"- Forward time: {fwd:.1f} ms\n\n"
@@ -1016,48 +1014,87 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
     # ─────────────────────────────────────────────────────────
     # Outputs + bus publishing (declared keys only)
     # ─────────────────────────────────────────────────────────
+    def _hash_bytes(self, b: bytes) -> str:
+        return hashlib.blake2b(b, digest_size=16).hexdigest()
+
+    def _summarize_vector(self, v: np.ndarray) -> Dict[str, Any]:
+        arr = np.asarray(v, dtype=np.float32).reshape(-1)
+        head_n = min(self._preview_n, int(arr.size))
+        tail_n = min(self._preview_n, int(arr.size))
+        out = {
+            "n": int(arr.size),
+            "min": float(np.min(arr)) if arr.size else 0.0,
+            "max": float(np.max(arr)) if arr.size else 0.0,
+            "mean": float(np.mean(arr)) if arr.size else 0.0,
+            "std": float(np.std(arr)) if arr.size > 1 else 0.0,
+            "head": arr[:head_n].tolist(),
+            "tail": arr[-tail_n:].tolist(),
+            "hash": self._hash_bytes(arr.tobytes()) if arr.size else None,
+        }
+        if self._full_vec:
+            out["full"] = arr.tolist()
+        return out
+
     def _package_outputs(self, ms_result: Dict[str, Any], nn_result: Dict[str, Any]) -> Dict[str, Any]:
-        # multiscale_features (numpy → python)
-        tf_feats = ms_result.get("timeframe_features", {})
-        tf_feats_py = {k: (v.tolist() if isinstance(v, np.ndarray) else v) for k, v in tf_feats.items()}
+        # multiscale_features: compact by default
+        tf_feats = ms_result.get("timeframe_features", {}) or {}
+        tf_feats_pub: Dict[str, Any] = {}
+        for tf, v in tf_feats.items():
+            if isinstance(v, np.ndarray):
+                tf_feats_pub[tf] = self._summarize_vector(v)
+            else:
+                try:
+                    tf_feats_pub[tf] = self._summarize_vector(np.asarray(v, dtype=np.float32))
+                except Exception:
+                    tf_feats_pub[tf] = {"error": "non_numeric_vector"}
+
+        emb = np.asarray(nn_result.get("embeddings"), dtype=np.float32).reshape(-1)
+        attn = np.asarray(nn_result.get("attention_weights_full"), dtype=np.float32).reshape(1, len(self.timeframes), len(self.timeframes))
+
+        emb_hash = self._hash_bytes(emb.tobytes()) if emb.size else None
+        attn_hash = self._hash_bytes(attn.tobytes()) if attn.size else None
+        ts = time.time()
 
         out: Dict[str, Any] = {
             "multiscale_features": {
                 "correlations": ms_result.get("correlations", {}),
-                "timeframe_features": tf_feats_py,
+                "timeframe_features": tf_feats_pub,
                 "processing_time_ms": float(ms_result.get("processing_time_ms", 0.0)),
                 "timeframes_used": list(ms_result.get("timeframes_used", [])),
                 "instrument": self.symbol,
                 "primary_timeframe": self.primary_timeframe,
+                "input_dim": int(self.input_dim),
+                "timestamp": ts,
             },
-            # Keep backward-compatible shapes for declared keys:
-            "neural_embeddings": np.asarray(nn_result.get("embeddings"), dtype=np.float32).reshape(-1).tolist(),
-            "attention_weights": np.asarray(nn_result.get("attention_weights_full"), dtype=np.float32).tolist(),  # [1,T,T]
+            "neural_embeddings": {
+                "embeddings": emb.tolist(),
+                "dimensions": [1, int(self.output_dim)],
+                "device": str(self.device),
+                "timestamp": ts,
+                "embedding_hash": emb_hash,
+                "attention_entropy": float(nn_result.get("attention_entropy", 0.0)),
+                "timeframes_used": list(nn_result.get("timeframes_used", [])),
+                "fusion_method": str(nn_result.get("fusion_method", self._cfg.feature_fusion_method)),
+            },
+            "attention_weights": {
+                "weights": attn.tolist(),  # [1,T,T]
+                "entropy": float(nn_result.get("attention_entropy", 0.0)),
+                "num_heads": int(self._cfg.num_attention_heads),
+                "timeframes": list(self.timeframes),
+                "timestamp": ts,
+                "attention_hash": attn_hash,
+            },
             "feature_fusion": {
                 "processed_features": {
                     k: (v.tolist() if isinstance(v, np.ndarray) else v)
                     for k, v in (nn_result.get("processed_features") or {}).items()
                 },
-                "fusion_method": str(self._cfg.feature_fusion_method),
-                "processing_time_ms": float(nn_result.get("forward_time_ms", 0.0)),
+                "fusion_method": str(nn_result.get("fusion_method", self._cfg.feature_fusion_method)),
+                "forward_time_ms": float(nn_result.get("forward_time_ms", 0.0)),
                 "timeframes_used": list(nn_result.get("timeframes_used", [])),
             },
             "neural_capabilities": self._capabilities_snapshot(),
             "neural_health": self._health_snapshot(),
-        }
-
-        # Optional “payload” mirrors (helps debugging without breaking contracts)
-        out["neural_embeddings_payload"] = {
-            "embeddings": out["neural_embeddings"],
-            "dimensions": [1, int(self.output_dim)],
-            "device": str(self.device),
-            "timestamp": time.time(),
-        }
-        out["attention_weights_payload"] = {
-            "weights": out["attention_weights"],
-            "entropy": float(nn_result.get("attention_entropy", 0.0)),
-            "num_heads": int(self._cfg.num_attention_heads),
-            "timeframes": list(self.timeframes),
         }
         return out
 
@@ -1066,7 +1103,8 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
         emb = self.last_embedding if isinstance(self.last_embedding, np.ndarray) and self.last_embedding.size == self.output_dim else np.zeros(self.output_dim, dtype=np.float32)
         attn = self.last_attention if isinstance(self.last_attention, np.ndarray) and self.last_attention.shape == (1, T, T) else np.zeros((1, T, T), dtype=np.float32)
 
-        out: Dict[str, Any] = {
+        ts = time.time()
+        return {
             "multiscale_features": {
                 "correlations": {},
                 "timeframe_features": {},
@@ -1074,35 +1112,40 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
                 "timeframes_used": [],
                 "instrument": self.symbol,
                 "primary_timeframe": self.primary_timeframe,
+                "input_dim": int(self.input_dim),
+                "timestamp": ts,
                 "_reason": reason,
             },
-            "neural_embeddings": emb.reshape(-1).tolist(),
-            "attention_weights": attn.tolist(),
+            "neural_embeddings": {
+                "embeddings": emb.reshape(-1).tolist(),
+                "dimensions": [1, int(self.output_dim)],
+                "device": str(self.device),
+                "timestamp": ts,
+                "embedding_hash": self._hash_bytes(emb.tobytes()) if emb.size else None,
+                "attention_entropy": float(self.neural_stats.get("avg_attention_entropy", 0.0)),
+                "timeframes_used": [],
+                "fusion_method": str(self._cfg.feature_fusion_method),
+                "_reason": reason,
+            },
+            "attention_weights": {
+                "weights": attn.tolist(),
+                "entropy": float(self.neural_stats.get("avg_attention_entropy", 0.0)),
+                "num_heads": int(self._cfg.num_attention_heads),
+                "timeframes": list(self.timeframes),
+                "timestamp": ts,
+                "attention_hash": self._hash_bytes(attn.tobytes()) if attn.size else None,
+                "_reason": reason,
+            },
             "feature_fusion": {
                 "processed_features": {},
                 "fusion_method": str(self._cfg.feature_fusion_method),
-                "processing_time_ms": 0.0,
+                "forward_time_ms": 0.0,
                 "timeframes_used": [],
                 "_reason": reason,
             },
             "neural_capabilities": self._capabilities_snapshot(),
             "neural_health": self._health_snapshot(),
-            "neural_embeddings_payload": {
-                "embeddings": emb.reshape(-1).tolist(),
-                "dimensions": [1, int(self.output_dim)],
-                "device": str(self.device),
-                "timestamp": time.time(),
-                "_reason": reason,
-            },
-            "attention_weights_payload": {
-                "weights": attn.tolist(),
-                "entropy": 0.0,
-                "num_heads": int(self._cfg.num_attention_heads),
-                "timeframes": list(self.timeframes),
-                "_reason": reason,
-            },
         }
-        return out
 
     def _format_declared_outputs(
         self,
@@ -1114,26 +1157,20 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
         out: Dict[str, Any] = {}
 
         out["multiscale_features"] = outputs.get("multiscale_features", {})
-        out["neural_embeddings"] = outputs.get("neural_embeddings", [])
-        out["attention_weights"] = outputs.get("attention_weights", [])
+        out["neural_embeddings"] = outputs.get("neural_embeddings", {})
+        out["attention_weights"] = outputs.get("attention_weights", {})
         out["feature_fusion"] = outputs.get("feature_fusion", {})
         out["neural_capabilities"] = outputs.get("neural_capabilities", {})
         out["neural_health"] = outputs.get("neural_health", {})
 
-        # Helpful extras (non-contract)
-        if thesis:
-            out["_thesis"] = thesis
+        # Orchestrator-required thesis key (aligned with AFE)
+        out["_thesis"] = thesis or f"MultiScaleFeatureEngine completed ({self.symbol})."
+
         if extra and isinstance(extra, dict):
             out.update(extra)
 
-        # Optional payload mirrors
-        if "neural_embeddings_payload" in outputs:
-            out["neural_embeddings_payload"] = outputs["neural_embeddings_payload"]
-        if "attention_weights_payload" in outputs:
-            out["attention_weights_payload"] = outputs["attention_weights_payload"]
-
         # Validate declared provides are present
-        for k in ("multiscale_features", "neural_embeddings", "attention_weights", "feature_fusion", "neural_capabilities", "neural_health"):
+        for k in ("multiscale_features", "neural_embeddings", "attention_weights", "feature_fusion", "neural_capabilities", "neural_health", "_thesis"):
             if k not in out:
                 raise ValueError(f"Critical output '{k}' missing in MultiScaleFeatureEngine")
 
@@ -1143,42 +1180,24 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
         self._reset_last_bus_writes()
         with self._bus_lock:
             # multiscale_features
-            self.smart_bus.set(
-                "multiscale_features",
-                outputs.get("multiscale_features", {}),
-                module="MultiScaleFeatureEngine",
-                thesis="Multiscale features published."
-            )
-            self._track_bus_write("multiscale_features", outputs.get("multiscale_features", {}), "Multiscale features published.")
+            ms = outputs.get("multiscale_features", {})
+            self.smart_bus.set("multiscale_features", ms, module="MultiScaleFeatureEngine", thesis="Multiscale features published.")
+            self._track_bus_write("multiscale_features", ms, "Multiscale features published.")
 
-            # neural_embeddings (bus-friendly dict payload)
-            nep = outputs.get("neural_embeddings_payload") or {
-                "embeddings": outputs.get("neural_embeddings", []),
-                "dimensions": [1, int(self.output_dim)],
-                "device": str(self.device),
-                "timestamp": time.time(),
-            }
-            self.smart_bus.set("neural_embeddings", nep, module="MultiScaleFeatureEngine", thesis="Neural embeddings published.")
-            self._track_bus_write("neural_embeddings", nep, "Neural embeddings published.")
+            # neural_embeddings (dict payload)
+            ne = outputs.get("neural_embeddings", {})
+            self.smart_bus.set("neural_embeddings", ne, module="MultiScaleFeatureEngine", thesis="Neural embeddings published.")
+            self._track_bus_write("neural_embeddings", ne, "Neural embeddings published.")
 
-            # attention_weights (bus-friendly dict payload)
-            awp = outputs.get("attention_weights_payload") or {
-                "weights": outputs.get("attention_weights", []),
-                "entropy": float(outputs.get("attention_entropy", 0.0)) if isinstance(outputs, dict) else 0.0,
-                "num_heads": int(self._cfg.num_attention_heads),
-                "timeframes": list(self.timeframes),
-            }
-            self.smart_bus.set("attention_weights", awp, module="MultiScaleFeatureEngine", thesis="Attention analysis.")
-            self._track_bus_write("attention_weights", awp, "Attention analysis.")
+            # attention_weights (dict payload)
+            aw = outputs.get("attention_weights", {})
+            self.smart_bus.set("attention_weights", aw, module="MultiScaleFeatureEngine", thesis="Attention analysis.")
+            self._track_bus_write("attention_weights", aw, "Attention analysis.")
 
             # feature_fusion
-            self.smart_bus.set(
-                "feature_fusion",
-                outputs.get("feature_fusion", {}),
-                module="MultiScaleFeatureEngine",
-                thesis="Feature fusion summary."
-            )
-            self._track_bus_write("feature_fusion", outputs.get("feature_fusion", {}), "Feature fusion summary.")
+            ff = outputs.get("feature_fusion", {})
+            self.smart_bus.set("feature_fusion", ff, module="MultiScaleFeatureEngine", thesis="Feature fusion summary.")
+            self._track_bus_write("feature_fusion", ff, "Feature fusion summary.")
 
             # neural_capabilities
             caps = outputs.get("neural_capabilities", self._capabilities_snapshot())
@@ -1237,22 +1256,31 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
             return False
         return True
 
-    def _record_success(self, forward_time_ms: float):
+    def _record_success(self, forward_time_ms: float, attention_entropy: float):
+        # Circuit breaker recovery
         if self.circuit_breaker["state"] == "HALF_OPEN":
             self.circuit_breaker["state"] = "CLOSED"
             self.circuit_breaker["failures"] = 0
 
-        self.neural_stats["total_forward_passes"] += 1
-        self.neural_stats["successful_passes"] += 1
+        # Stats (single path)
+        self.neural_stats["total_forward_passes"] = int(self.neural_stats.get("total_forward_passes", 0)) + 1
+        self.neural_stats["successful_passes"] = int(self.neural_stats.get("successful_passes", 0)) + 1
         self.neural_stats["last_success_ts"] = time.time()
 
         n = int(self.neural_stats["total_forward_passes"])
-        prev = float(self.neural_stats.get("avg_forward_time_ms", 0.0))
-        self.neural_stats["avg_forward_time_ms"] = (prev * (n - 1) + float(forward_time_ms)) / max(1, n)
+        prev_t = float(self.neural_stats.get("avg_forward_time_ms", 0.0))
+        self.neural_stats["avg_forward_time_ms"] = (prev_t * (n - 1) + float(forward_time_ms)) / max(1, n)
+
+        prev_e = float(self.neural_stats.get("avg_attention_entropy", 0.0))
+        self.neural_stats["avg_attention_entropy"] = (prev_e * (n - 1) + float(attention_entropy)) / max(1, n)
+
+        if torch.cuda.is_available():
+            self.neural_stats["gpu_memory_usage_mb"] = float(torch.cuda.memory_allocated() / 1024.0 / 1024.0)
 
         # Health bump
         hs = float(self.neural_health.get("model_health_score", 100.0))
         self.neural_health["model_health_score"] = float(min(100.0, hs + 2.0))
+        self.neural_health["performance_trend"] = "improving"
 
         if self.performance_tracker:
             try:
@@ -1261,6 +1289,7 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
                 self._audit_event(level="WARN", event_type="performance_tracker_failed", error=str(e), trace=(traceback.format_exc() if self.debug else None))
 
     def _record_failure(self, error: Exception):
+        # Circuit breaker
         self.circuit_breaker["failures"] = int(self.circuit_breaker.get("failures", 0)) + 1
         self.circuit_breaker["last_failure"] = time.time()
         if int(self.circuit_breaker["failures"]) >= int(self.circuit_breaker["threshold"]):
@@ -1273,35 +1302,22 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
                 )
             )
 
-        self.neural_stats["total_forward_passes"] += 1
-        self.neural_stats["failed_passes"] += 1
+        # Stats (single path)
+        self.neural_stats["total_forward_passes"] = int(self.neural_stats.get("total_forward_passes", 0)) + 1
+        self.neural_stats["failed_passes"] = int(self.neural_stats.get("failed_passes", 0)) + 1
         self.neural_stats["last_failure_ts"] = time.time()
+
+        if torch.cuda.is_available():
+            self.neural_stats["gpu_memory_usage_mb"] = float(torch.cuda.memory_allocated() / 1024.0 / 1024.0)
 
         # Health penalty
         hs = float(self.neural_health.get("model_health_score", 100.0))
         self.neural_health["model_health_score"] = float(max(0.0, hs - 15.0))
+        self.neural_health["performance_trend"] = "degrading"
 
         issues = list(self.neural_health.get("issues_detected", []))
         issues.append(f"{type(error).__name__}: {error}")
         self.neural_health["issues_detected"] = issues
-        self.neural_health["performance_trend"] = "degrading"
-
-    def _update_neural_stats(self, *, forward_ms: float, attention_entropy: float, success: bool):
-        self.neural_stats["total_forward_passes"] = int(self.neural_stats.get("total_forward_passes", 0)) + 1
-        if success:
-            self.neural_stats["successful_passes"] = int(self.neural_stats.get("successful_passes", 0)) + 1
-        else:
-            self.neural_stats["failed_passes"] = int(self.neural_stats.get("failed_passes", 0)) + 1
-
-        n = int(self.neural_stats["total_forward_passes"])
-        avg = float(self.neural_stats.get("avg_forward_time_ms", 0.0))
-        self.neural_stats["avg_forward_time_ms"] = (avg * (n - 1) + float(forward_ms)) / max(1, n)
-
-        ae = float(self.neural_stats.get("avg_attention_entropy", 0.0))
-        self.neural_stats["avg_attention_entropy"] = (ae * (n - 1) + float(attention_entropy)) / max(1, n)
-
-        if torch.cuda.is_available():
-            self.neural_stats["gpu_memory_usage_mb"] = float(torch.cuda.memory_allocated() / 1024.0 / 1024.0)
 
     # ─────────────────────────────────────────────────────────
     # Audit logging (ONE FILE)
@@ -1392,7 +1408,6 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
                 fields["extra"] = extra
 
             if self.debug and isinstance(ms_result, dict):
-                # keep compact
                 fields["ms"] = {
                     "processing_time_ms": float(ms_result.get("processing_time_ms", 0.0)),
                     "market_fields_seen": int(ms_result.get("market_fields_seen", 0)),
@@ -1407,6 +1422,7 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
                     "attention_entropy": float(nn_result.get("attention_entropy", 0.0)),
                     "embedding_n": int(emb.size),
                     "tfs_used": list(nn_result.get("timeframes_used", [])),
+                    "fusion_method": nn_result.get("fusion_method"),
                 }
                 if self._full_vec:
                     fields["nn"]["embedding_full"] = emb.tolist()

@@ -66,6 +66,35 @@ from envs.curriculum.config import (
     get_threshold_for_metric,
 )
 
+# =============================================================================
+# Shared Curriculum Constants
+# =============================================================================
+
+# Granular time-of-day quality map for session timing rewards.
+TIME_OF_DAY_QUALITY = {
+    "00:00-04:00": 0.3,  # Asian session - low quality
+    "04:00-08:00": 0.5,  # Asian/London overlap - medium
+    "08:00-12:00": 0.9,  # London prime - high
+    "12:00-16:00": 0.8,  # London/NY overlap - high
+    "16:00-20:00": 0.7,  # NY afternoon - medium
+    "20:00-00:00": 0.4,  # Late NY - low
+}
+
+# Entry certainty reward bands.
+ENTRY_CERTAINTY_BONUS = {
+    "0.70-0.80": 0.05,
+    "0.80-0.90": 0.12,
+    "0.90-1.00": 0.20,
+}
+
+# Dynamic patience multipliers based on market state.
+PATIENCE_BONUS_MULTIPLIER = {
+    "low_volatility": 0.5,
+    "high_volatility": 2.0,
+    "trending": 1.5,
+    "ranging": 0.8,
+}
+
 
 
 # =============================================================================
@@ -217,8 +246,8 @@ def get_explorer_config() -> CurriculumStageConfig:
             # FIX: Was 0.10 which dominated PnL signal causing reward hacking
             exploration_bonus=0.02,
             directional_accuracy_weight=0.5,  # Light directional signal
-            min_reward=-5.0,  # FIX: Was -1.5, clipping destroyed gradients
-            max_reward=5.0,   # FIX: Was 1.5
+            min_reward=-50.0,  # FIX: Was -1.5, clipping destroyed gradients
+            max_reward=50.0,   # FIX: Was 1.5
         ),
         constraints=TradingConstraints(
             max_positions=1,
@@ -284,6 +313,14 @@ def get_explorer_config() -> CurriculumStageConfig:
             exclude_market_open_close=True,
             prefer_recent_data=False,
             recent_data_weight=1.0,
+            allowed_regimes=[
+                MarketRegime.TRENDING_UP,
+                MarketRegime.TRENDING_DOWN,
+            ],
+            regime_sampling_weights={
+                "trending_up": 0.50,
+                "trending_down": 0.50,
+            },
         ),
         transition=TransitionSettings(
             lr_warmup_enabled=False,
@@ -444,8 +481,8 @@ def get_experimenter_config() -> CurriculumStageConfig:
             # FIX: Was 0.08 which dominated PnL signal causing reward hacking
             exploration_bonus=0.015,
             directional_accuracy_weight=0.7,
-            min_reward=-5.0,  # FIX: Was -2.0, clipping destroyed gradients
-            max_reward=5.0,   # FIX: Was 2.0
+            min_reward=-50.0,  # FIX: Was -2.0, clipping destroyed gradients
+            max_reward=50.0,   # FIX: Was 2.0
         ),
         constraints=TradingConstraints(
             max_positions=1,
@@ -510,6 +547,14 @@ def get_experimenter_config() -> CurriculumStageConfig:
             exclude_market_open_close=True,
             prefer_recent_data=False,
             recent_data_weight=1.0,
+            allowed_regimes=[
+                MarketRegime.TRENDING_UP,
+                MarketRegime.TRENDING_DOWN,
+            ],
+            regime_sampling_weights={
+                "trending_up": 0.50,
+                "trending_down": 0.50,
+            },
         ),
         transition=TransitionSettings(
             lr_warmup_enabled=True,
@@ -670,6 +715,12 @@ def get_trend_student_config() -> CurriculumStageConfig:
             soft_block_penalty=0.005,
             per_step_shaping_enabled=False,
             holding_cost_per_bar=0.0,
+
+            # OBSERVATION PERIOD: Learn to watch before trading
+            observation_period_required=True,
+            min_bars_observation_before_entry=20,
+            observation_completion_bonus=0.06,
+            premature_entry_penalty=0.10,
             
             # ACTIVITY CONSISTENCY: ENABLED - maintain activity level
             activity_consistency_enabled=True,
@@ -681,8 +732,8 @@ def get_trend_student_config() -> CurriculumStageConfig:
             # EXPLORATION: Reduced to keep PnL dominant - must be <= EXPERIMENTER (0.015)
             exploration_bonus=0.015,          # FIX: Was 0.025, now monotone with EXPERIMENTER
             directional_accuracy_weight=1.2,  # INCREASED - reward trend alignment
-            min_reward=-5.0,  # FIX: Was -2.5
-            max_reward=5.0,   # FIX: Was 2.5
+            min_reward=-100.0,  # FIX: Was -2.5
+            max_reward=100.0,   # FIX: Was 2.5
         ),
         constraints=TradingConstraints(
             max_positions=1,
@@ -697,8 +748,12 @@ def get_trend_student_config() -> CurriculumStageConfig:
             enforce_no_new_trades_window=False,
             enforce_weekend_block=False,
             enforce_hard_close=False,
-            min_minutes_between_entries=15,    # FIX: 1 bar minimum (was 1 min = 0 bars for M15)
-            min_minutes_after_loss=30,         # FIX: 2 bars after loss (was 2 min = 0 bars)
+            observation_period_required=True,
+            min_bars_observation_before_entry=20,
+            min_bars_between_entries=2,        # Bar-based pacing (timeframe-agnostic)
+            min_bars_after_loss=4,             # Bar-based cooldown after loss
+            min_minutes_between_entries=0,
+            min_minutes_after_loss=0,
             daily_drawdown_limit=0.25,
             max_drawdown_limit=0.30,
             daily_dd_safety_buffer=0.0,
@@ -746,6 +801,14 @@ def get_trend_student_config() -> CurriculumStageConfig:
             exclude_market_open_close=True,
             prefer_recent_data=False,
             recent_data_weight=1.0,
+            allowed_regimes=[
+                MarketRegime.TRENDING_UP,
+                MarketRegime.TRENDING_DOWN,
+            ],
+            regime_sampling_weights={
+                "trending_up": 0.50,
+                "trending_down": 0.50,
+            },
         ),
         transition=TransitionSettings(
             lr_warmup_enabled=True,
@@ -888,6 +951,7 @@ def get_session_student_config() -> CurriculumStageConfig:
             session_timing_enabled=True,      # Teach agent to prefer prime hours
             off_hours_trade_penalty=0.10,     # Penalty for off-hours trades
             prime_hours_trade_bonus=0.03,     # Bonus for prime hours trades
+            time_of_day_quality=TIME_OF_DAY_QUALITY,
             
             dd_shaping_enabled=True,
             dd_threshold=0.08,
@@ -920,8 +984,8 @@ def get_session_student_config() -> CurriculumStageConfig:
             # Must be <= TREND_STUDENT (0.015) for monotonicity
             exploration_bonus=0.015,
             directional_accuracy_weight=1.15,
-            min_reward=-6.0,  # FIX: Was -2.8
-            max_reward=6.0,   # FIX: Was 2.8
+            min_reward=-100.0,  # FIX: Was -2.8
+            max_reward=100.0,   # FIX: Was 2.8
         ),
         constraints=TradingConstraints(
             max_positions=1,
@@ -936,8 +1000,10 @@ def get_session_student_config() -> CurriculumStageConfig:
             enforce_no_new_trades_window=True,
             enforce_weekend_block=True,
             enforce_hard_close=False,
-            min_minutes_between_entries=30,   # AUDIT FIX: 2 bars minimum (was 2 min = <1 bar)
-            min_minutes_after_loss=45,         # AUDIT FIX: 3 bars after loss (was 3 min = <1 bar)
+            min_bars_between_entries=3,        # Bar-based pacing (timeframe-agnostic)
+            min_bars_after_loss=5,             # Bar-based cooldown after loss
+            min_minutes_between_entries=0,
+            min_minutes_after_loss=0,
             daily_drawdown_limit=0.20,
             max_drawdown_limit=0.25,
             daily_dd_safety_buffer=0.0,
@@ -985,6 +1051,16 @@ def get_session_student_config() -> CurriculumStageConfig:
             exclude_market_open_close=False,
             prefer_recent_data=False,
             recent_data_weight=1.0,
+            allowed_regimes=[
+                MarketRegime.TRENDING_UP,
+                MarketRegime.TRENDING_DOWN,
+                MarketRegime.RANGING,
+            ],
+            regime_sampling_weights={
+                "trending_up": 0.40,
+                "trending_down": 0.40,
+                "ranging": 0.20,
+            },
         ),
         transition=TransitionSettings(
             lr_warmup_enabled=True,
@@ -1127,11 +1203,23 @@ def get_timing_student_config() -> CurriculumStageConfig:
             # ENTRY QUALITY: NEW
             entry_quality_integration=True,
             entry_quality_weight=0.10,
+
+            # SETUP QUALITY: Introduce confluence awareness
+            setup_quality_enabled=True,
+            setup_quality_threshold=0.70,
+            setup_quality_bonus_scale=0.15,
+            hasty_entry_penalty=0.08,
+
+            # ENTRY CERTAINTY: confidence-based rewards
+            certainty_threshold=0.70,
+            entry_certainty_bonus=ENTRY_CERTAINTY_BONUS,
+            low_certainty_penalty=0.15,
             
             # SESSION TIMING: Continue from Stage 3
             session_timing_enabled=True,
             off_hours_trade_penalty=0.12,     # Slightly stronger
             prime_hours_trade_bonus=0.04,
+            time_of_day_quality=TIME_OF_DAY_QUALITY,
             
             # MARKET STRUCTURE: REBALANCED - penalties were dominating (GPT FIX)
             market_structure_enabled=True,
@@ -1176,6 +1264,9 @@ def get_timing_student_config() -> CurriculumStageConfig:
             patience_shaping_enabled=True,
             patience_bonus_per_bar=0.001, # Small bonus for waiting when setups are weak
             patience_quality_threshold=0.35,
+            dynamic_patience_enabled=True,
+            patience_bonus_base=0.001,
+            patience_bonus_multiplier=PATIENCE_BONUS_MULTIPLIER,
             per_step_min=-0.03,
             per_step_max=0.03,
             
@@ -1188,8 +1279,8 @@ def get_timing_student_config() -> CurriculumStageConfig:
             
             exploration_bonus=0.015,  # FIX: Was 0.02, must be <= Stage 3 for monotonicity
             directional_accuracy_weight=1.1,
-            min_reward=-8.0,  # FIX: Was -3.0
-            max_reward=8.0,   # FIX: Was 3.0
+            min_reward=-100.0,  # FIX: Was -3.0
+            max_reward=100.0,   # FIX: Was 3.0
         ),
         constraints=TradingConstraints(
             max_positions=1,
@@ -1205,9 +1296,11 @@ def get_timing_student_config() -> CurriculumStageConfig:
             enforce_no_new_trades_window=True,
             enforce_weekend_block=True,
             enforce_hard_close=True,
-            # D2 AUDIT FIX: Longer cooldowns to reduce revenge trading
-            min_minutes_between_entries=60,    # AUDIT: Increased from 30 (4 bars for M15)
-            min_minutes_after_loss=90,         # AUDIT: Increased from 45 (6 bars after loss)
+            # Bar-based pacing (timeframe-agnostic)
+            min_bars_between_entries=4,
+            min_bars_after_loss=6,
+            min_minutes_between_entries=0,
+            min_minutes_after_loss=0,
             daily_drawdown_limit=0.15,
             max_drawdown_limit=0.20,
             daily_dd_safety_buffer=0.0,
@@ -1215,7 +1308,8 @@ def get_timing_student_config() -> CurriculumStageConfig:
             emergency_close_threshold=0.18,
             entry_quality_gate_enabled=True,
             # D2 AUDIT FIX: Stricter entry quality gate
-            entry_quality_threshold=0.40,   # AUDIT: Increased from 0.30 to reduce low-quality entries
+            entry_quality_threshold=0.35,   # Progressive ladder: 0.35 -> 0.42 -> 0.47 -> 0.50
+            min_setup_quality_for_entry=0.55,
             hard_stop_loss_eur=400.0,
             soft_stop_loss_eur=280.0,
             # D2 AUDIT FIX: More sensitive trailing to capture more winners
@@ -1239,6 +1333,7 @@ def get_timing_student_config() -> CurriculumStageConfig:
             max_win_rate_std=0.25,
             max_pnl_std=8000.0,
             min_trade_count_avg=4.0,
+            min_avg_bars_between_trades=3.0,
             max_dd_breach_rate=0.18,
             max_consecutive_loss_rate=0.20,  # FIX: Was 0.30 which broke monotonicity from Stage 3 (0.22)
             evaluation_window=80,
@@ -1259,6 +1354,17 @@ def get_timing_student_config() -> CurriculumStageConfig:
             exclude_market_open_close=False,
             prefer_recent_data=False,
             recent_data_weight=1.0,
+            allowed_regimes=[
+                MarketRegime.TRENDING_UP,
+                MarketRegime.TRENDING_DOWN,
+                MarketRegime.RANGING,
+            ],
+            regime_sampling_weights={
+                "trending_up": 0.35,
+                "trending_down": 0.35,
+                "ranging": 0.30,
+            },
+            include_setup_maturity_metrics=True,
         ),
         transition=TransitionSettings(
             lr_warmup_enabled=True,
@@ -1381,11 +1487,23 @@ def get_integrator_config() -> CurriculumStageConfig:
             
             entry_quality_integration=True,
             entry_quality_weight=0.15,
+
+            # SETUP QUALITY: stronger confluence awareness
+            setup_quality_enabled=True,
+            setup_quality_threshold=0.70,
+            setup_quality_bonus_scale=0.15,
+            hasty_entry_penalty=0.08,
+
+            # ENTRY CERTAINTY: confidence-based rewards
+            certainty_threshold=0.70,
+            entry_certainty_bonus=ENTRY_CERTAINTY_BONUS,
+            low_certainty_penalty=0.15,
             
             # SESSION TIMING: Strengthened
             session_timing_enabled=True,
             off_hours_trade_penalty=0.15,
             prime_hours_trade_bonus=0.05,
+            time_of_day_quality=TIME_OF_DAY_QUALITY,
             
             # MARKET STRUCTURE: REBALANCED (GPT FIX)
             market_structure_enabled=True,
@@ -1431,20 +1549,35 @@ def get_integrator_config() -> CurriculumStageConfig:
             patience_shaping_enabled=True,
             patience_bonus_per_bar=0.0012, # Slightly stronger patience bonus
             patience_quality_threshold=0.38,
+            dynamic_patience_enabled=True,
+            patience_bonus_base=0.0012,
+            patience_bonus_multiplier=PATIENCE_BONUS_MULTIPLIER,
             per_step_min=-0.04,
             per_step_max=0.04,
+
+            # STRATEGIC PATIENCE: reward skipping setups before entering
+            strategic_patience_enabled=True,
+            setup_rejection_bonus=0.03,
+            max_setup_rejections_for_bonus=5,
+
+            # DELIBERATION TIME: reward thinking before acting
+            deliberation_time_tracking=True,
+            min_deliberation_bars=2,
+            optimal_deliberation_range=(3, 8),
+            too_fast_penalty=0.08,
+            deliberation_quality_bonus=0.05,
             
             # ACTIVITY CONSISTENCY: Maintain discipline
             activity_consistency_enabled=True,
-            target_trades_per_1k_steps=6.0,  # FIX: Same as TIMING_STUDENT for smooth transition
+            target_trades_per_1k_steps=5.0,  # Smooth decline into selectivity
             activity_deviation_penalty_scale=0.8,  # Strong
             activity_deviation_penalty_cap=20.0,
             min_trades_penalty=0.2,
             
             exploration_bonus=0.015,
             directional_accuracy_weight=1.05,
-            min_reward=-10.0,  # FIX: Was -3.5
-            max_reward=10.0,   # FIX: Was 3.5
+            min_reward=-200.0,  # FIX: Was -3.5
+            max_reward=200.0,   # FIX: Was 3.5
         ),
         constraints=TradingConstraints(
             max_positions=1,
@@ -1459,15 +1592,18 @@ def get_integrator_config() -> CurriculumStageConfig:
             enforce_no_new_trades_window=True,
             enforce_weekend_block=True,
             enforce_hard_close=True,
-            min_minutes_between_entries=60,    # MONOTONICITY FIX: Must match Stage 4 (was 30, breaking ladder)
-            min_minutes_after_loss=90,         # MONOTONICITY FIX: Must match Stage 4 (was 45, breaking ladder)
+            min_bars_between_entries=4,
+            min_bars_after_loss=6,
+            min_minutes_between_entries=0,
+            min_minutes_after_loss=0,
             daily_drawdown_limit=0.10,
             max_drawdown_limit=0.15,
             daily_dd_safety_buffer=0.005,
             max_dd_safety_buffer=0.01,
             emergency_close_threshold=0.13,
             entry_quality_gate_enabled=True,
-            entry_quality_threshold=0.40,     # MONOTONICITY FIX: Must not decrease from Stage 4 (was 0.35)
+            entry_quality_threshold=0.42,     # Progressive ladder: 0.35 -> 0.42 -> 0.47 -> 0.50
+            min_setup_quality_for_entry=0.60,
             hard_stop_loss_eur=350.0,
             soft_stop_loss_eur=230.0,
             trailing_activation_eur=80.0,
@@ -1488,6 +1624,12 @@ def get_integrator_config() -> CurriculumStageConfig:
             max_win_rate_std=0.22,
             max_pnl_std=7000.0,
             min_trade_count_avg=4.0,
+            min_avg_bars_between_trades=4.0,
+            min_setup_skipped_per_episode=2.0,
+            min_entry_certainty_avg=0.55,
+            min_avg_setup_quality=0.60,
+            max_fomo_trade_rate=0.20,
+            max_revenge_trade_rate=0.20,
             max_dd_breach_rate=0.15,
             max_consecutive_loss_rate=0.18,
             evaluation_window=90,
@@ -1508,6 +1650,19 @@ def get_integrator_config() -> CurriculumStageConfig:
             exclude_market_open_close=False,
             prefer_recent_data=False,
             recent_data_weight=1.0,
+            allowed_regimes=[
+                MarketRegime.TRENDING_UP,
+                MarketRegime.TRENDING_DOWN,
+                MarketRegime.RANGING,
+                MarketRegime.HIGH_VOLATILITY,
+            ],
+            regime_sampling_weights={
+                "trending_up": 0.30,
+                "trending_down": 0.30,
+                "ranging": 0.20,
+                "high_volatility": 0.20,
+            },
+            include_setup_maturity_metrics=True,
         ),
         transition=TransitionSettings(
             lr_warmup_enabled=True,
@@ -1524,6 +1679,10 @@ def get_integrator_config() -> CurriculumStageConfig:
                 TradingSkill.EXIT_QUALITY: 0.45,
                 TradingSkill.ENTRY_TIMING: 0.42,
                 TradingSkill.DRAWDOWN_CONTROL: 0.50,
+                TradingSkill.PATIENCE: 0.35,
+                TradingSkill.SELECTIVITY: 0.30,
+                TradingSkill.CERTAINTY: 0.40,
+                TradingSkill.SETUP_QUALITY: 0.35,
             },
             min_confidence=0.5,
             require_all_skills=False,
@@ -1644,11 +1803,23 @@ def get_risk_manager_config() -> CurriculumStageConfig:
             
             entry_quality_integration=True,
             entry_quality_weight=0.18,
+
+            # SETUP QUALITY: stronger confluence awareness
+            setup_quality_enabled=True,
+            setup_quality_threshold=0.70,
+            setup_quality_bonus_scale=0.15,
+            hasty_entry_penalty=0.08,
+
+            # ENTRY CERTAINTY: confidence-based rewards
+            certainty_threshold=0.70,
+            entry_certainty_bonus=ENTRY_CERTAINTY_BONUS,
+            low_certainty_penalty=0.15,
             
             # SESSION TIMING: Full strength
             session_timing_enabled=True,
             off_hours_trade_penalty=0.18,
             prime_hours_trade_bonus=0.06,
+            time_of_day_quality=TIME_OF_DAY_QUALITY,
             
             # MARKET STRUCTURE: REBALANCED (GPT FIX)
             market_structure_enabled=True,
@@ -1695,8 +1866,24 @@ def get_risk_manager_config() -> CurriculumStageConfig:
             patience_shaping_enabled=True,
             patience_bonus_per_bar=0.002,  # BOOSTED: Was 0.0015
             patience_quality_threshold=0.40,
+            dynamic_patience_enabled=True,
+            patience_bonus_base=0.002,
+            patience_bonus_multiplier=PATIENCE_BONUS_MULTIPLIER,
             per_step_min=-0.06,  # Monotonic: -0.04 → -0.06 → -0.08 → -0.10 → -0.12
             per_step_max=0.05,   # Monotonic: 0.04 → 0.05 → 0.05 → 0.05 → 0.05
+
+            # DELIBERATION TIME: reward thinking before acting
+            deliberation_time_tracking=True,
+            min_deliberation_bars=2,
+            optimal_deliberation_range=(3, 8),
+            too_fast_penalty=0.08,
+            deliberation_quality_bonus=0.05,
+
+            # WIN-RATE PRESERVATION
+            win_rate_preservation_enabled=True,
+            current_win_rate_threshold=0.45,
+            selectivity_bonus=0.08,
+            win_rate_decay_penalty=0.10,
             
             # LOSS STREAK CAUTION: Start teaching this at RISK_MANAGER
             loss_streak_caution_enabled=True,
@@ -1706,15 +1893,15 @@ def get_risk_manager_config() -> CurriculumStageConfig:
             # ACTIVITY CONSISTENCY: Quality over quantity
             # Target moderate activity matching Stage 5 (was 31.0 which contradicts anti-churn tightening)
             activity_consistency_enabled=True,
-            target_trades_per_1k_steps=6.0,  # FIX: Was 31.0 which exploded vs Stage 5 (6.0)
+            target_trades_per_1k_steps=4.0,  # Progressive selectivity
             activity_deviation_penalty_scale=0.8,  # STRONG: match PnL signal
             activity_deviation_penalty_cap=12.0,  # Match PnL scale
             min_trades_penalty=0.15,
             
             exploration_bonus=0.01,
             directional_accuracy_weight=1.0,
-            min_reward=-10.0,  # FIX: Was -4.0
-            max_reward=10.0,   # FIX: Was 4.0
+            min_reward=-200.0,  # FIX: Was -4.0
+            max_reward=200.0,   # FIX: Was 4.0
         ),
         constraints=TradingConstraints(
             max_positions=1,
@@ -1729,15 +1916,18 @@ def get_risk_manager_config() -> CurriculumStageConfig:
             enforce_no_new_trades_window=True,
             enforce_weekend_block=True,
             enforce_hard_close=True,
-            min_minutes_between_entries=60,    # MONOTONICITY FIX: Must not loosen from Stage 4-5 (was 45)
-            min_minutes_after_loss=90,         # MONOTONICITY FIX: Must not loosen from Stage 4-5 (was 60)
+            min_bars_between_entries=4,
+            min_bars_after_loss=6,
+            min_minutes_between_entries=0,
+            min_minutes_after_loss=0,
             daily_drawdown_limit=0.06,
             max_drawdown_limit=0.10,
             daily_dd_safety_buffer=0.006,
             max_dd_safety_buffer=0.01,
             emergency_close_threshold=0.09,
             entry_quality_gate_enabled=True,
-            entry_quality_threshold=0.40,
+            entry_quality_threshold=0.47,
+            min_setup_quality_for_entry=0.65,
             hard_stop_loss_eur=300.0,
             soft_stop_loss_eur=200.0,
             trailing_activation_eur=70.0,
@@ -1758,6 +1948,12 @@ def get_risk_manager_config() -> CurriculumStageConfig:
             max_win_rate_std=0.18,
             max_pnl_std=6000.0,
             min_trade_count_avg=4.0,
+            min_avg_bars_between_trades=5.0,
+            min_setup_skipped_per_episode=2.0,
+            min_entry_certainty_avg=0.60,
+            min_avg_setup_quality=0.65,
+            max_fomo_trade_rate=0.15,
+            max_revenge_trade_rate=0.15,
             max_dd_breach_rate=0.10,
             max_consecutive_loss_rate=0.16,  # FIX: Was 0.25 which broke monotonicity from Stage 5 (0.18)
             evaluation_window=100,
@@ -1778,6 +1974,19 @@ def get_risk_manager_config() -> CurriculumStageConfig:
             exclude_market_open_close=False,
             prefer_recent_data=False,
             recent_data_weight=1.0,
+            allowed_regimes=[
+                MarketRegime.TRENDING_UP,
+                MarketRegime.TRENDING_DOWN,
+                MarketRegime.RANGING,
+                MarketRegime.HIGH_VOLATILITY,
+            ],
+            regime_sampling_weights={
+                "trending_up": 0.28,
+                "trending_down": 0.28,
+                "ranging": 0.22,
+                "high_volatility": 0.22,
+            },
+            include_setup_maturity_metrics=True,
         ),
         transition=TransitionSettings(
             lr_warmup_enabled=True,
@@ -1795,6 +2004,10 @@ def get_risk_manager_config() -> CurriculumStageConfig:
                 TradingSkill.ENTRY_TIMING: 0.48,
                 TradingSkill.DRAWDOWN_CONTROL: 0.60,
                 TradingSkill.PATIENCE: 0.40,  # FIX: Relaxed from 0.55 - 3 trades/day is acceptable for active gold trading
+                TradingSkill.SELECTIVITY: 0.35,
+                TradingSkill.CERTAINTY: 0.45,
+                TradingSkill.DISCIPLINE: 0.40,
+                TradingSkill.SETUP_QUALITY: 0.40,
             },
             min_confidence=0.55,
             require_all_skills=False,
@@ -1917,11 +2130,23 @@ def get_strategist_config() -> CurriculumStageConfig:
             
             entry_quality_integration=True,
             entry_quality_weight=0.20,
+
+            # SETUP QUALITY: strong confluence awareness
+            setup_quality_enabled=True,
+            setup_quality_threshold=0.70,
+            setup_quality_bonus_scale=0.15,
+            hasty_entry_penalty=0.08,
+
+            # ENTRY CERTAINTY: confidence-based rewards
+            certainty_threshold=0.70,
+            entry_certainty_bonus=ENTRY_CERTAINTY_BONUS,
+            low_certainty_penalty=0.15,
             
             # SESSION TIMING: Full strength
             session_timing_enabled=True,
             off_hours_trade_penalty=0.20,
             prime_hours_trade_bonus=0.08,
+            time_of_day_quality=TIME_OF_DAY_QUALITY,
             
             # MARKET STRUCTURE: REBALANCED (GPT FIX)
             market_structure_enabled=True,
@@ -1966,8 +2191,31 @@ def get_strategist_config() -> CurriculumStageConfig:
             patience_shaping_enabled=True,
             patience_bonus_per_bar=0.003,  # BOOSTED: Was 0.0018 - stronger reward for waiting
             patience_quality_threshold=0.42,
+            dynamic_patience_enabled=True,
+            patience_bonus_base=0.003,
+            patience_bonus_multiplier=PATIENCE_BONUS_MULTIPLIER,
             per_step_min=-0.08,  # Monotonic: -0.06 → -0.08 → -0.10 → -0.12
             per_step_max=0.05,   # Monotonic: 0.04 → 0.05 → 0.05 → 0.05
+
+            # DELIBERATION TIME: reward thinking before acting
+            deliberation_time_tracking=True,
+            min_deliberation_bars=2,
+            optimal_deliberation_range=(3, 8),
+            too_fast_penalty=0.08,
+            deliberation_quality_bonus=0.05,
+
+            # WIN-RATE PRESERVATION
+            win_rate_preservation_enabled=True,
+            current_win_rate_threshold=0.45,
+            selectivity_bonus=0.08,
+            win_rate_decay_penalty=0.10,
+
+            # COMPOUNDING SUCCESS
+            compounding_success_enabled=True,
+            consecutive_quality_trades_bonus=[0.0, 0.02, 0.05, 0.09, 0.14],
+            quality_trade_r_multiple=1.0,
+            quality_trade_entry_quality=0.6,
+            quality_trade_exit_type="trailing_stop",
             
             # LOSS STREAK CAUTION: Penalize entries while tilted
             loss_streak_caution_enabled=True,
@@ -1977,15 +2225,15 @@ def get_strategist_config() -> CurriculumStageConfig:
             # ACTIVITY CONSISTENCY: Quality focus
             # Target moderate activity that doesn't spike vs RISK_MANAGER (6.0)
             activity_consistency_enabled=True,
-            target_trades_per_1k_steps=5.5,  # FIX: Was 26.0 which spiked vs Stage 6
+            target_trades_per_1k_steps=3.5,  # Progressive selectivity
             activity_deviation_penalty_scale=1.0,  # STRONGER: strategic discipline
             activity_deviation_penalty_cap=12.0,  # Match PnL scale
             min_trades_penalty=0.1,
             
             exploration_bonus=0.005,
             directional_accuracy_weight=1.0,
-            min_reward=-12.0,  # FIX: Was -4.5
-            max_reward=12.0,   # FIX: Was 4.5
+            min_reward=-200.0,  # FIX: Was -4.5
+            max_reward=200.0,   # FIX: Was 4.5
         ),
         constraints=TradingConstraints(
             max_positions=1,
@@ -2000,15 +2248,18 @@ def get_strategist_config() -> CurriculumStageConfig:
             enforce_no_new_trades_window=True,
             enforce_weekend_block=True,
             enforce_hard_close=True,
-            min_minutes_between_entries=60,    # MONOTONICITY FIX: Must not loosen from Stage 4-6 (was 45)
-            min_minutes_after_loss=150,        # 10 bars cooldown - balanced patience
+            min_bars_between_entries=4,
+            min_bars_after_loss=10,
+            min_minutes_between_entries=0,
+            min_minutes_after_loss=0,
             daily_drawdown_limit=0.055,
             max_drawdown_limit=0.095,
             daily_dd_safety_buffer=0.007,
             max_dd_safety_buffer=0.012,
             emergency_close_threshold=0.085,
             entry_quality_gate_enabled=True,
-            entry_quality_threshold=0.45,
+            entry_quality_threshold=0.50,
+            min_setup_quality_for_entry=0.70,
             hard_stop_loss_eur=280.0,
             soft_stop_loss_eur=180.0,
             trailing_activation_eur=75.0,
@@ -2029,6 +2280,12 @@ def get_strategist_config() -> CurriculumStageConfig:
             max_win_rate_std=0.16,
             max_pnl_std=5500.0,
             min_trade_count_avg=4.5,
+            min_avg_bars_between_trades=6.0,
+            min_setup_skipped_per_episode=2.5,
+            min_entry_certainty_avg=0.62,
+            min_avg_setup_quality=0.70,
+            max_fomo_trade_rate=0.12,
+            max_revenge_trade_rate=0.12,
             max_dd_breach_rate=0.08,
             max_consecutive_loss_rate=0.14,  # FIX: Was 0.20, now monotonically decreasing from Stage 6 (0.16)
             evaluation_window=120,
@@ -2049,6 +2306,23 @@ def get_strategist_config() -> CurriculumStageConfig:
             exclude_market_open_close=False,
             prefer_recent_data=True,
             recent_data_weight=1.1,
+            allowed_regimes=[
+                MarketRegime.TRENDING_UP,
+                MarketRegime.TRENDING_DOWN,
+                MarketRegime.RANGING,
+                MarketRegime.HIGH_VOLATILITY,
+                MarketRegime.LOW_VOLATILITY,
+                "news_volatility",
+            ],
+            regime_sampling_weights={
+                "trending_up": 0.22,
+                "trending_down": 0.22,
+                "ranging": 0.18,
+                "high_volatility": 0.18,
+                "low_volatility": 0.10,
+                "news_volatility": 0.10,
+            },
+            include_setup_maturity_metrics=True,
         ),
         transition=TransitionSettings(
             lr_warmup_enabled=True,
@@ -2067,6 +2341,10 @@ def get_strategist_config() -> CurriculumStageConfig:
                 TradingSkill.DRAWDOWN_CONTROL: 0.65,
                 TradingSkill.PATIENCE: 0.45,  # FIX: Relaxed from 0.58 - ~3 trades/day acceptable
                 TradingSkill.RISK_REWARD: 0.50,
+                TradingSkill.SELECTIVITY: 0.45,
+                TradingSkill.CERTAINTY: 0.50,
+                TradingSkill.DISCIPLINE: 0.45,
+                TradingSkill.SETUP_QUALITY: 0.45,
             },
             min_confidence=0.58,
             require_all_skills=False,
@@ -2193,11 +2471,23 @@ def get_professional_config() -> CurriculumStageConfig:
             
             entry_quality_integration=True,
             entry_quality_weight=0.22,
+
+            # SETUP QUALITY: pro-level confluence
+            setup_quality_enabled=True,
+            setup_quality_threshold=0.70,
+            setup_quality_bonus_scale=0.15,
+            hasty_entry_penalty=0.08,
+
+            # ENTRY CERTAINTY: confidence-based rewards
+            certainty_threshold=0.70,
+            entry_certainty_bonus=ENTRY_CERTAINTY_BONUS,
+            low_certainty_penalty=0.15,
             
             # SESSION TIMING: Full strength for Pro level
             session_timing_enabled=True,
             off_hours_trade_penalty=0.25,
             prime_hours_trade_bonus=0.10,
+            time_of_day_quality=TIME_OF_DAY_QUALITY,
             
             # MARKET STRUCTURE: REBALANCED (GPT FIX)
             market_structure_enabled=True,
@@ -2242,8 +2532,37 @@ def get_professional_config() -> CurriculumStageConfig:
             patience_shaping_enabled=True,
             patience_bonus_per_bar=0.003,  # BOOSTED: Was 0.002
             patience_quality_threshold=0.45,
+            dynamic_patience_enabled=True,
+            patience_bonus_base=0.003,
+            patience_bonus_multiplier=PATIENCE_BONUS_MULTIPLIER,
             per_step_min=-0.10,  # WIDENED: Allow loss_streak_caution penalty room
             per_step_max=0.05,
+
+            # DELIBERATION TIME: reward thinking before acting
+            deliberation_time_tracking=True,
+            min_deliberation_bars=2,
+            optimal_deliberation_range=(3, 8),
+            too_fast_penalty=0.08,
+            deliberation_quality_bonus=0.05,
+
+            # WIN-RATE PRESERVATION
+            win_rate_preservation_enabled=True,
+            current_win_rate_threshold=0.45,
+            selectivity_bonus=0.08,
+            win_rate_decay_penalty=0.10,
+
+            # COMPOUNDING SUCCESS
+            compounding_success_enabled=True,
+            consecutive_quality_trades_bonus=[0.0, 0.02, 0.05, 0.09, 0.14],
+            quality_trade_r_multiple=1.0,
+            quality_trade_entry_quality=0.6,
+            quality_trade_exit_type="trailing_stop",
+
+            # PSYCHOLOGICAL FACTORS: live trader discipline
+            psychological_factors_enabled=True,
+            fear_of_missing_out_penalty=0.15,
+            revenge_trading_penalty=0.25,
+            overconfidence_penalty=0.12,
             
             # LOSS STREAK CAUTION: Strong at this stage
             loss_streak_caution_enabled=True,
@@ -2253,15 +2572,15 @@ def get_professional_config() -> CurriculumStageConfig:
             # ACTIVITY CONSISTENCY: Near-live discipline
             # Target moderate activity that doesn't spike vs STRATEGIST (5.5)
             activity_consistency_enabled=True,
-            target_trades_per_1k_steps=5.0,  # FIX: Was 21.0 which spiked vs Stage 7
+            target_trades_per_1k_steps=3.0,  # Progressive selectivity
             activity_deviation_penalty_scale=1.2,  # STRONG: specialist discipline
             activity_deviation_penalty_cap=10.0,  # Match PnL scale
             min_trades_penalty=0.1,
             
             exploration_bonus=0.0,
             directional_accuracy_weight=1.0,
-            min_reward=-15.0,  # FIX: Was -5.0
-            max_reward=15.0,   # FIX: Was 5.0
+            min_reward=-300.0,  # FIX: Was -5.0
+            max_reward=300.0,   # FIX: Was 5.0
         ),
         constraints=TradingConstraints(
             max_positions=1,
@@ -2276,15 +2595,18 @@ def get_professional_config() -> CurriculumStageConfig:
             enforce_no_new_trades_window=True,
             enforce_weekend_block=True,
             enforce_hard_close=True,
-            min_minutes_between_entries=60,    # FIX: 4 bars minimum (was 12 min = 0 bars for M15)
-            min_minutes_after_loss=180,        # 12 bars cooldown - forces reflection but allows trading
+            min_bars_between_entries=4,
+            min_bars_after_loss=12,
+            min_minutes_between_entries=0,
+            min_minutes_after_loss=0,
             daily_drawdown_limit=0.05,
             max_drawdown_limit=0.09,
             daily_dd_safety_buffer=0.008,
             max_dd_safety_buffer=0.015,
             emergency_close_threshold=0.08,
             entry_quality_gate_enabled=True,
-            entry_quality_threshold=0.50,
+            entry_quality_threshold=0.55,
+            min_setup_quality_for_entry=0.72,
             hard_stop_loss_eur=260.0,
             soft_stop_loss_eur=170.0,
             trailing_activation_eur=80.0,
@@ -2307,10 +2629,23 @@ def get_professional_config() -> CurriculumStageConfig:
             max_win_rate_wilson_width=0.12,
             max_pnl_std=5000.0,
             min_trade_count_avg=5.0,
+            min_avg_bars_between_trades=7.0,
+            min_setup_skipped_per_episode=3.0,
+            min_entry_certainty_avg=0.65,
+            min_avg_setup_quality=0.75,
+            max_fomo_trade_rate=0.10,
+            max_revenge_trade_rate=0.10,
             max_dd_breach_rate=0.06,
             max_consecutive_loss_rate=0.14,  # MONOTONIC: Same as STRATEGIST, count already tightened (5→4)
             max_mask_collapse_rate=0.12,
             max_stop_mode_rate=0.10,
+            consistency_streak_required=5,
+            consistency_streak_criteria={
+                "win_rate": 0.48,
+                "avg_bars_between_trades": 8.0,
+                "entry_certainty_avg": 0.65,
+                "fomo_trade_rate": 0.10,
+            },
             evaluation_window=140,
         ),
         max_steps_per_episode=2800,
@@ -2329,6 +2664,23 @@ def get_professional_config() -> CurriculumStageConfig:
             exclude_market_open_close=False,
             prefer_recent_data=True,
             recent_data_weight=1.2,
+            allowed_regimes=[
+                MarketRegime.TRENDING_UP,
+                MarketRegime.TRENDING_DOWN,
+                MarketRegime.RANGING,
+                MarketRegime.HIGH_VOLATILITY,
+                MarketRegime.LOW_VOLATILITY,
+                "news_volatility",
+            ],
+            regime_sampling_weights={
+                "trending_up": 0.20,
+                "trending_down": 0.20,
+                "ranging": 0.18,
+                "high_volatility": 0.18,
+                "low_volatility": 0.12,
+                "news_volatility": 0.12,
+            },
+            include_setup_maturity_metrics=True,
         ),
         transition=TransitionSettings(
             lr_warmup_enabled=True,
@@ -2348,6 +2700,10 @@ def get_professional_config() -> CurriculumStageConfig:
                 TradingSkill.PATIENCE: 0.50,  # FIX: Relaxed from 0.62 - ~2.5 trades/day
                 TradingSkill.RISK_REWARD: 0.55,
                 TradingSkill.CONSISTENCY: 0.55,
+                TradingSkill.SELECTIVITY: 0.50,
+                TradingSkill.CERTAINTY: 0.55,
+                TradingSkill.DISCIPLINE: 0.55,
+                TradingSkill.SETUP_QUALITY: 0.50,
             },
             min_confidence=0.62,
             require_all_skills=False,
@@ -2473,11 +2829,23 @@ def get_live_ready_config() -> CurriculumStageConfig:
             
             entry_quality_integration=True,
             entry_quality_weight=0.25,
+
+            # SETUP QUALITY: highest confluence standard
+            setup_quality_enabled=True,
+            setup_quality_threshold=0.70,
+            setup_quality_bonus_scale=0.15,
+            hasty_entry_penalty=0.08,
+
+            # ENTRY CERTAINTY: confidence-based rewards
+            certainty_threshold=0.70,
+            entry_certainty_bonus=ENTRY_CERTAINTY_BONUS,
+            low_certainty_penalty=0.15,
             
             # SESSION TIMING: MAXIMUM strength for Live Ready
             session_timing_enabled=True,
             off_hours_trade_penalty=0.30,
             prime_hours_trade_bonus=0.12,
+            time_of_day_quality=TIME_OF_DAY_QUALITY,
             
             # MARKET STRUCTURE: REBALANCED (GPT FIX)
             market_structure_enabled=True,
@@ -2522,8 +2890,37 @@ def get_live_ready_config() -> CurriculumStageConfig:
             patience_shaping_enabled=True,
             patience_bonus_per_bar=0.004,  # BOOSTED: Was 0.002 - maximum patience reward
             patience_quality_threshold=0.48,
+            dynamic_patience_enabled=True,
+            patience_bonus_base=0.004,
+            patience_bonus_multiplier=PATIENCE_BONUS_MULTIPLIER,
             per_step_min=-0.12,  # WIDENED: Allow loss_streak_caution penalty room
             per_step_max=0.05,
+
+            # DELIBERATION TIME: reward thinking before acting
+            deliberation_time_tracking=True,
+            min_deliberation_bars=2,
+            optimal_deliberation_range=(3, 8),
+            too_fast_penalty=0.08,
+            deliberation_quality_bonus=0.05,
+
+            # WIN-RATE PRESERVATION
+            win_rate_preservation_enabled=True,
+            current_win_rate_threshold=0.45,
+            selectivity_bonus=0.08,
+            win_rate_decay_penalty=0.10,
+
+            # COMPOUNDING SUCCESS
+            compounding_success_enabled=True,
+            consecutive_quality_trades_bonus=[0.0, 0.02, 0.05, 0.09, 0.14],
+            quality_trade_r_multiple=1.0,
+            quality_trade_entry_quality=0.6,
+            quality_trade_exit_type="trailing_stop",
+
+            # PSYCHOLOGICAL FACTORS: maximum discipline
+            psychological_factors_enabled=True,
+            fear_of_missing_out_penalty=0.15,
+            revenge_trading_penalty=0.25,
+            overconfidence_penalty=0.12,
             
             # LOSS STREAK CAUTION: Maximum at live-ready
             loss_streak_caution_enabled=True,
@@ -2533,15 +2930,15 @@ def get_live_ready_config() -> CurriculumStageConfig:
             # ACTIVITY CONSISTENCY: Live-ready discipline
             # Target moderate activity that doesn't spike vs PROFESSIONAL (5.0)
             activity_consistency_enabled=True,
-            target_trades_per_1k_steps=5.0,  # FIX: Was 16.0 which spiked vs Stage 8
+            target_trades_per_1k_steps=3.0,  # Progressive selectivity
             activity_deviation_penalty_scale=1.5,  # VERY STRONG: live discipline
             activity_deviation_penalty_cap=10.0,  # Match PnL scale
             min_trades_penalty=0.1,
             
             exploration_bonus=0.0,
             directional_accuracy_weight=1.0,
-            min_reward=-15.0,  # FIX: Was -5.0
-            max_reward=15.0,   # FIX: Was 5.0
+            min_reward=-300.0,  # FIX: Was -5.0
+            max_reward=300.0,   # FIX: Was 5.0
         ),
         constraints=TradingConstraints(
             max_positions=1,
@@ -2556,15 +2953,18 @@ def get_live_ready_config() -> CurriculumStageConfig:
             enforce_no_new_trades_window=True,
             enforce_weekend_block=True,
             enforce_hard_close=True,
-            min_minutes_between_entries=60,    # FIX: 4 bars minimum (was 15 min = 1 bar for M15)
-            min_minutes_after_loss=240,        # 16 bars cooldown - serious but not crippling
+            min_bars_between_entries=4,
+            min_bars_after_loss=16,
+            min_minutes_between_entries=0,
+            min_minutes_after_loss=0,
             daily_drawdown_limit=0.048,
             max_drawdown_limit=0.085,
             daily_dd_safety_buffer=0.008,
             max_dd_safety_buffer=0.015,
             emergency_close_threshold=0.075,
             entry_quality_gate_enabled=True,
-            entry_quality_threshold=0.55,
+            entry_quality_threshold=0.60,
+            min_setup_quality_for_entry=0.75,
             hard_stop_loss_eur=250.0,
             soft_stop_loss_eur=160.0,
             trailing_activation_eur=85.0,
@@ -2587,10 +2987,23 @@ def get_live_ready_config() -> CurriculumStageConfig:
             max_win_rate_wilson_width=0.10,
             max_pnl_std=4500.0,
             min_trade_count_avg=5.5,
+            min_avg_bars_between_trades=8.0,
+            min_setup_skipped_per_episode=3.0,
+            min_entry_certainty_avg=0.68,
+            min_avg_setup_quality=0.78,
+            max_fomo_trade_rate=0.08,
+            max_revenge_trade_rate=0.08,
             max_dd_breach_rate=0.05,
             max_consecutive_loss_rate=0.12,  # MONOTONIC: Tighter than PROFESSIONAL (0.14)
             max_mask_collapse_rate=0.10,
             max_stop_mode_rate=0.08,
+            consistency_streak_required=5,
+            consistency_streak_criteria={
+                "win_rate": 0.52,
+                "avg_bars_between_trades": 8.0,
+                "entry_certainty_avg": 0.68,
+                "fomo_trade_rate": 0.08,
+            },
             evaluation_window=160,
         ),
         max_steps_per_episode=3000,
@@ -2610,6 +3023,23 @@ def get_live_ready_config() -> CurriculumStageConfig:
             exclude_market_open_close=False,
             prefer_recent_data=True,
             recent_data_weight=1.3,
+            allowed_regimes=[
+                MarketRegime.TRENDING_UP,
+                MarketRegime.TRENDING_DOWN,
+                MarketRegime.RANGING,
+                MarketRegime.HIGH_VOLATILITY,
+                MarketRegime.LOW_VOLATILITY,
+                "news_volatility",
+            ],
+            regime_sampling_weights={
+                "trending_up": 0.20,
+                "trending_down": 0.20,
+                "ranging": 0.18,
+                "high_volatility": 0.18,
+                "low_volatility": 0.12,
+                "news_volatility": 0.12,
+            },
+            include_setup_maturity_metrics=True,
         ),
         transition=TransitionSettings(
             lr_warmup_enabled=True,
@@ -2629,6 +3059,10 @@ def get_live_ready_config() -> CurriculumStageConfig:
                 TradingSkill.PATIENCE: 0.55,  # FIX: Relaxed from 0.68 - ~2 trades/day for expert
                 TradingSkill.RISK_REWARD: 0.60,
                 TradingSkill.CONSISTENCY: 0.65,
+                TradingSkill.SELECTIVITY: 0.55,
+                TradingSkill.CERTAINTY: 0.60,
+                TradingSkill.DISCIPLINE: 0.60,
+                TradingSkill.SETUP_QUALITY: 0.55,
             },
             min_confidence=0.68,
             require_all_skills=False,
@@ -2766,6 +3200,27 @@ def validate_stage_config(cfg: CurriculumStageConfig) -> List[str]:
         issues.append(f"{cfg.stage.name}: evaluation_window < MIN_EVALUATION_EPISODES ({MIN_EVALUATION_EPISODES})")
     if c.min_episodes < MIN_EVALUATION_EPISODES:
         issues.append(f"{cfg.stage.name}: min_episodes < MIN_EVALUATION_EPISODES ({MIN_EVALUATION_EPISODES})")
+    if c.min_avg_bars_between_trades < 0.0:
+        issues.append(f"{cfg.stage.name}: min_avg_bars_between_trades must be >= 0")
+    if c.min_setup_skipped_per_episode < 0.0:
+        issues.append(f"{cfg.stage.name}: min_setup_skipped_per_episode must be >= 0")
+    if not (0.0 <= c.min_entry_certainty_avg <= 1.0):
+        issues.append(f"{cfg.stage.name}: min_entry_certainty_avg out of [0,1]: {c.min_entry_certainty_avg}")
+    if not (0.0 <= c.min_avg_setup_quality <= 1.0):
+        issues.append(f"{cfg.stage.name}: min_avg_setup_quality out of [0,1]: {c.min_avg_setup_quality}")
+    if not (0.0 <= c.max_fomo_trade_rate <= 1.0):
+        issues.append(f"{cfg.stage.name}: max_fomo_trade_rate out of [0,1]: {c.max_fomo_trade_rate}")
+    if not (0.0 <= c.max_revenge_trade_rate <= 1.0):
+        issues.append(f"{cfg.stage.name}: max_revenge_trade_rate out of [0,1]: {c.max_revenge_trade_rate}")
+    if c.consistency_streak_required < 0:
+        issues.append(f"{cfg.stage.name}: consistency_streak_required must be >= 0")
+    if getattr(c, "consistency_streak_criteria", None):
+        for k, v in (c.consistency_streak_criteria or {}).items():
+            try:
+                if float(v) < 0:
+                    issues.append(f"{cfg.stage.name}: consistency_streak_criteria[{k}] must be >= 0")
+            except Exception:
+                issues.append(f"{cfg.stage.name}: consistency_streak_criteria[{k}] must be numeric")
     
     # Validate entropy targets
     e = cfg.entropy_targets
@@ -2827,11 +3282,20 @@ def validate_stage_config(cfg: CurriculumStageConfig) -> List[str]:
     if not (0.0 <= tc.entry_quality_threshold <= 1.0):
         issues.append(f"{cfg.stage.name}: entry_quality_threshold out of [0,1]: {tc.entry_quality_threshold}")
 
+    # Setup quality entry gate should be in [0, 1]
+    min_setup_q = float(getattr(tc, "min_setup_quality_for_entry", 0.0) or 0.0)
+    if not (0.0 <= min_setup_q <= 1.0):
+        issues.append(f"{cfg.stage.name}: min_setup_quality_for_entry out of [0,1]: {min_setup_q}")
+
     # Time decay hours should be positive
     if tc.time_decay_hours <= 0.0:
         issues.append(f"{cfg.stage.name}: time_decay_hours must be > 0: {tc.time_decay_hours}")
 
     # Timing constraints should be non-negative
+    if getattr(tc, "min_bars_between_entries", 0) < 0:
+        issues.append(f"{cfg.stage.name}: min_bars_between_entries must be >= 0")
+    if getattr(tc, "min_bars_after_loss", 0) < 0:
+        issues.append(f"{cfg.stage.name}: min_bars_after_loss must be >= 0")
     if tc.min_minutes_between_entries < 0:
         issues.append(f"{cfg.stage.name}: min_minutes_between_entries must be >= 0")
     if tc.min_minutes_after_loss < 0:
@@ -3008,6 +3472,38 @@ def validate_curriculum_monotonicity() -> List[str]:
         if curr.execution.commission_per_lot < prev.execution.commission_per_lot:
             issues.append(f"{curr_name}: commission_per_lot ({curr.execution.commission_per_lot}) < {prev_name} ({prev.execution.commission_per_lot})")
 
+        # Patience/discipline thresholds should be non-decreasing (or non-increasing for max rates)
+        if curr.competence.min_avg_bars_between_trades < prev.competence.min_avg_bars_between_trades - 1e-6:
+            issues.append(
+                f"{curr_name}: min_avg_bars_between_trades ({curr.competence.min_avg_bars_between_trades}) < "
+                f"{prev_name} ({prev.competence.min_avg_bars_between_trades})"
+            )
+        if curr.competence.min_setup_skipped_per_episode < prev.competence.min_setup_skipped_per_episode - 1e-6:
+            issues.append(
+                f"{curr_name}: min_setup_skipped_per_episode ({curr.competence.min_setup_skipped_per_episode}) < "
+                f"{prev_name} ({prev.competence.min_setup_skipped_per_episode})"
+            )
+        if curr.competence.min_entry_certainty_avg < prev.competence.min_entry_certainty_avg - 1e-6:
+            issues.append(
+                f"{curr_name}: min_entry_certainty_avg ({curr.competence.min_entry_certainty_avg}) < "
+                f"{prev_name} ({prev.competence.min_entry_certainty_avg})"
+            )
+        if curr.competence.min_avg_setup_quality < prev.competence.min_avg_setup_quality - 1e-6:
+            issues.append(
+                f"{curr_name}: min_avg_setup_quality ({curr.competence.min_avg_setup_quality}) < "
+                f"{prev_name} ({prev.competence.min_avg_setup_quality})"
+            )
+        if curr.competence.max_fomo_trade_rate > prev.competence.max_fomo_trade_rate + 1e-9:
+            issues.append(
+                f"{curr_name}: max_fomo_trade_rate ({curr.competence.max_fomo_trade_rate}) > "
+                f"{prev_name} ({prev.competence.max_fomo_trade_rate})"
+            )
+        if curr.competence.max_revenge_trade_rate > prev.competence.max_revenge_trade_rate + 1e-9:
+            issues.append(
+                f"{curr_name}: max_revenge_trade_rate ({curr.competence.max_revenge_trade_rate}) > "
+                f"{prev_name} ({prev.competence.max_revenge_trade_rate})"
+            )
+
         # -------------------------------------------------------------
         # NEW: Constraint monotonicity (risk + DD tightening over stages)
         # -------------------------------------------------------------
@@ -3028,6 +3524,11 @@ def validate_curriculum_monotonicity() -> List[str]:
             )
 
         # New: pacing should generally tighten (prevents late-stage churn)
+        if getattr(curr.constraints, "min_bars_between_entries", 0) < getattr(prev.constraints, "min_bars_between_entries", 0):
+            issues.append(
+                f"{curr_name}: min_bars_between_entries ({getattr(curr.constraints, 'min_bars_between_entries', 0)}) < "
+                f"{prev_name} ({getattr(prev.constraints, 'min_bars_between_entries', 0)})"
+            )
         if curr.constraints.min_minutes_between_entries < prev.constraints.min_minutes_between_entries:
             issues.append(
                 f"{curr_name}: min_minutes_between_entries ({curr.constraints.min_minutes_between_entries}) < "
@@ -3035,6 +3536,11 @@ def validate_curriculum_monotonicity() -> List[str]:
             )
 
         # Post-loss cooldown should be non-decreasing (more discipline at higher stages)
+        if getattr(curr.constraints, "min_bars_after_loss", 0) < getattr(prev.constraints, "min_bars_after_loss", 0):
+            issues.append(
+                f"{curr_name}: min_bars_after_loss ({getattr(curr.constraints, 'min_bars_after_loss', 0)}) < "
+                f"{prev_name} ({getattr(prev.constraints, 'min_bars_after_loss', 0)})"
+            )
         if curr.constraints.min_minutes_after_loss < prev.constraints.min_minutes_after_loss:
             issues.append(
                 f"{curr_name}: min_minutes_after_loss ({curr.constraints.min_minutes_after_loss}) < "
@@ -3046,6 +3552,15 @@ def validate_curriculum_monotonicity() -> List[str]:
             issues.append(
                 f"{curr_name}: entry_quality_threshold ({curr.constraints.entry_quality_threshold}) < "
                 f"{prev_name} ({prev.constraints.entry_quality_threshold})"
+            )
+
+        # Setup quality threshold should be non-decreasing (stricter confluence gates)
+        curr_setup_q = float(getattr(curr.constraints, "min_setup_quality_for_entry", 0.0) or 0.0)
+        prev_setup_q = float(getattr(prev.constraints, "min_setup_quality_for_entry", 0.0) or 0.0)
+        if curr_setup_q < prev_setup_q - 0.01:
+            issues.append(
+                f"{curr_name}: min_setup_quality_for_entry ({curr_setup_q}) < "
+                f"{prev_name} ({prev_setup_q})"
             )
 
         # -------------------------------------------------------------

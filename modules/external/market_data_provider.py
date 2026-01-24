@@ -8,6 +8,12 @@
 #   - One rotating log file: logs/external/market_data_provider.log
 #   - debug=True: logs full inputs/outputs (sanitized) per cycle
 #   - debug=False: logs important info + periodic summaries
+#
+# MT5 TIME SYNC FIX (CRITICAL):
+#   Many MT5 brokers expose "server time" as epoch seconds shifted by a whole-hour offset.
+#   This module compensates by estimating an hourly-rounded server->UTC offset from ticks,
+#   then applying it consistently to both ticks and OHLCV rates timestamps.
+#   Result: bus "timestamp" and downstream feature engine logs stay time-consistent.
 # ─────────────────────────────────────────────────────────────
 
 from __future__ import annotations
@@ -19,7 +25,7 @@ import math
 import time
 import datetime
 import threading
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, asdict, fields
 from collections import deque
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Set, cast
@@ -224,8 +230,16 @@ class MarketDataConfig:
     # NEW: throttle heavy MT5 history refresh to avoid churn
     live_history_refresh_s: float = 10.0
 
+    # NEW: MT5 server-time compensation refresh cadence
+    mt5_time_offset_refresh_s: float = 300.0  # refresh estimate every 5 minutes
+
     # Indicators
     enable_technical_indicators: bool = True
+
+    # Live forming-bar behavior (primary timeframe only)
+    # When True (default): overlay current forming bar into the last OHLCV slot and set current_bar to the forming bar.
+    # When False: keep OHLCV windows strictly CLOSED bars (training-parity); forming bar remains available via market_data/bid_ask_data.
+    include_forming_bar_in_primary_tf: bool = True
 
     # Logging
     debug: bool = True
@@ -254,7 +268,10 @@ class MarketDataConfig:
 class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
 
     def __init__(self, config: Optional[Dict[str, Any]] = None) -> None:
-        self.cfg = MarketDataConfig(**(config or {}))
+        # Accept config dicts that may contain orchestrator keys (timeout_ms, circuit_breaker_threshold, etc.).
+        cfg_in: Dict[str, Any] = dict(config) if isinstance(config, dict) else {}
+        cfg_fields = {f.name for f in fields(MarketDataConfig)}
+        self.cfg = MarketDataConfig(**{k: v for k, v in cfg_in.items() if k in cfg_fields})
 
         # HARD GATE: XAUUSD only, always.
         self.cfg.supported_symbols = ["XAUUSD"]
@@ -311,6 +328,10 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         self._mt5_connection_failures: int = 0
         self._last_history_refresh_ts: float = 0.0
 
+        # MT5 time sync (server time compensation)
+        self._mt5_server_utc_offset_s: int = 0
+        self._mt5_server_utc_offset_last_ts: float = 0.0
+
         # Session labels
         self.current_timestamp: Optional[datetime.datetime] = None
         self.trading_session: str = "closed"
@@ -347,6 +368,71 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             result="Provider ready",
             context="system_startup",
         ))
+
+    # ─────────────────────────────────────────────────────────
+    # MT5 time sync helpers
+    # ─────────────────────────────────────────────────────────
+    def _compute_mt5_server_offset_s(self, tick_epoch_s: int) -> int:
+        """
+        MT5 may provide epoch seconds that reflect server-local time encoded as epoch.
+        We estimate offset = mt5_epoch - real_epoch, rounded to nearest hour for stability.
+        """
+        try:
+            now_epoch = int(time.time())
+            raw = int(tick_epoch_s) - now_epoch  # e.g. +7200 for UTC+2
+            raw = max(-14 * 3600, min(raw, 14 * 3600))
+            rounded = int(round(raw / 3600.0) * 3600)
+            if abs(rounded) < 300:  # ignore tiny noise
+                return 0
+            return rounded
+        except Exception:
+            return 0
+
+    def _maybe_update_mt5_time_offset(self, tick_epoch_s: int, *, force: bool = False) -> None:
+        """
+        Update offset estimate using an observed MT5 tick epoch. Cheap and avoids extra MT5 calls.
+        """
+        now = time.time()
+        refresh_s = float(getattr(self.cfg, "mt5_time_offset_refresh_s", 300.0))
+        if (not force) and self._mt5_server_utc_offset_last_ts > 0 and (now - self._mt5_server_utc_offset_last_ts) < max(1.0, refresh_s):
+            return
+        if tick_epoch_s <= 0:
+            return
+
+        off = self._compute_mt5_server_offset_s(int(tick_epoch_s))
+        if off != self._mt5_server_utc_offset_s:
+            self.audit.info(f"[MT5_TIME_OFFSET] updated offset_s={off} (prev={self._mt5_server_utc_offset_s})")
+            self._mt5_server_utc_offset_s = off
+        self._mt5_server_utc_offset_last_ts = now
+
+    def _maybe_refresh_mt5_time_offset_via_tick(self, symbol: str, *, force: bool = False) -> None:
+        """
+        Refresh offset estimate by calling MT5 tick (only when needed).
+        Use this in paths where we don't already have a tick epoch in hand.
+        """
+        if not self._mt5_connected or mt5 is None:
+            return
+        now = time.time()
+        refresh_s = float(getattr(self.cfg, "mt5_time_offset_refresh_s", 300.0))
+        if (not force) and self._mt5_server_utc_offset_last_ts > 0 and (now - self._mt5_server_utc_offset_last_ts) < max(1.0, refresh_s):
+            return
+
+        mt5_symbol = self._get_mt5_symbol(symbol)
+        try:
+            tick = mt5.symbol_info_tick(mt5_symbol)
+            if tick is None:
+                return
+            t_epoch = _to_int(getattr(tick, "time", None), 0)
+            self._maybe_update_mt5_time_offset(t_epoch, force=True)
+        except Exception:
+            return
+
+    def _mt5_epoch_to_utc_naive(self, epoch_s: int) -> datetime.datetime:
+        """
+        Convert MT5 epoch seconds to UTC-naive datetime, compensating server offset.
+        """
+        adj = int(epoch_s) - int(self._mt5_server_utc_offset_s)
+        return datetime.datetime.fromtimestamp(adj, tz=datetime.timezone.utc).replace(tzinfo=None)
 
     # ─────────────────────────────────────────────────────────
     # Initialization
@@ -467,6 +553,10 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
 
                 self._mt5_connected = True
                 self._mt5_connection_failures = 0
+
+                # Force a time-offset refresh on connect to prevent 2h drift in first snapshots.
+                self._maybe_refresh_mt5_time_offset_via_tick("XAUUSD", force=True)
+
                 self.audit.info(f"[MT5] connected login={getattr(acc,'login',None)} balance={getattr(acc,'balance',None)}")
                 return True
 
@@ -531,13 +621,18 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         """
         Returns CLOSED bars only (most recent MT5 rate dropped).
 
-        FIX: do NOT tz_convert(None) (that shifts to local time).
-             Use tz_localize(None) to drop tz while preserving UTC clock time.
+        FIX:
+        - MT5 timestamps can be "server time" encoded as epoch seconds with a whole-hour shift.
+          We compensate by subtracting an estimated server->UTC offset.
+        - Do NOT tz_convert(None) (that shifts). Use tz_localize(None) to drop tz while preserving UTC clock time.
         """
         if not self._mt5_connected:
             self._connect_mt5()
         if mt5 is None:
             return None
+
+        # Refresh offset occasionally (tick-based) before converting rates times
+        self._maybe_refresh_mt5_time_offset_via_tick(symbol)
 
         mt5_symbol = self._get_mt5_symbol(symbol)
         tf_constant = self._tf_map.get(timeframe)
@@ -553,8 +648,10 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
 
             df = pd.DataFrame(rates)
 
-            # Keep timestamps as UTC-naive without shifting
-            df["timestamp"] = pd.to_datetime(df["time"], unit="s", utc=True).dt.tz_localize(None)
+            # Apply server->UTC offset
+            off = int(self._mt5_server_utc_offset_s)
+            # Keep timestamps as UTC-naive without shifting (after offset adjustment)
+            df["timestamp"] = pd.to_datetime(df["time"].astype("int64") - off, unit="s", utc=True).dt.tz_localize(None)
 
             df = df.rename(columns={"tick_volume": "volume"})
             df = df[["timestamp", "open", "high", "low", "close", "volume"]]
@@ -628,6 +725,9 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         Key fix:
         - MT5 often reports tick.last == 0.0 for CFDs/metals; treat that as "missing"
           and derive last from mid=(bid+ask)/2 when bid/ask are valid.
+
+        Time sync fix:
+        - Compensate MT5 server-time epoch shift (whole-hour offset) using tick epoch.
         """
         if not self._mt5_connected:
             self._connect_mt5()
@@ -653,7 +753,9 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
 
             t_epoch = _to_int(getattr(tick, "time", None), 0)
             if t_epoch > 0:
-                time_dt = datetime.datetime.fromtimestamp(t_epoch, tz=datetime.timezone.utc).replace(tzinfo=None)
+                # Update offset estimate (no extra MT5 call)
+                self._maybe_update_mt5_time_offset(t_epoch)
+                time_dt = self._mt5_epoch_to_utc_naive(t_epoch)
             else:
                 time_dt = _now_utc_naive()
 
@@ -712,7 +814,7 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
 
         if self.cfg.debug:
             self.audit.debug(
-                f"[TICK] {symbol} t={_iso_ts(tick.get('time'))} bid={tick.get('bid')} ask={tick.get('ask')} last={tick.get('last')} vol={tick.get('volume')}"
+                f"[TICK] {symbol} t={_iso_ts(tick.get('time'))} bid={tick.get('bid')} ask={tick.get('ask')} last={tick.get('last')} vol={tick.get('volume')} offset_s={self._mt5_server_utc_offset_s}"
             )
 
         ptf = self.primary_tf.get(symbol, self.cfg.primary_timeframe)
@@ -745,6 +847,7 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             "last": _to_float(tick["last"]),
             "mid": float(mid),
             "last_update_ts": float(time.time()),
+            "mt5_time_offset_s": int(self._mt5_server_utc_offset_s),
         }
 
         idx = self.ptr_primary.get(symbol, store.n - 1)
@@ -780,16 +883,19 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
 
         self.current_bars[symbol] = dict(self.current_forming_bars[symbol])
 
-        pb = self.price_buffers.get(symbol)
-        if pb and len(pb["close"]) > 0:
-            fb2 = self.current_forming_bars[symbol]
-            pb["close"][-1] = _to_float(fb2.get("close"))
-            pb["high"][-1] = _to_float(fb2.get("high"))
-            pb["low"][-1] = _to_float(fb2.get("low"))
-            pb["volume"][-1] = _to_int(fb2.get("volume"), 0)
+        # Only allow forming-bar writes into rolling buffers/indicators when enabled.
+        # If disabled, indicators remain strictly closed-bar based (training parity).
+        if bool(getattr(self.cfg, "include_forming_bar_in_primary_tf", True)):
+            pb = self.price_buffers.get(symbol)
+            if pb and len(pb["close"]) > 0:
+                fb2 = self.current_forming_bars[symbol]
+                pb["close"][-1] = _to_float(fb2.get("close"))
+                pb["high"][-1] = _to_float(fb2.get("high"))
+                pb["low"][-1] = _to_float(fb2.get("low"))
+                pb["volume"][-1] = _to_int(fb2.get("volume"), 0)
 
-        if self.cfg.enable_technical_indicators:
-            self._update_technical_indicators(symbol)
+            if self.cfg.enable_technical_indicators:
+                self._update_technical_indicators(symbol)
 
         return bool(meaningful)
 
@@ -1099,7 +1205,9 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             "ask": None,
         }
 
-    def _window_from_store(self, store: _TFStore, end_idx: int) -> Tuple[List[float], List[float], List[float], List[float], List[int]]:
+    def _window_from_store(
+        self, store: _TFStore, end_idx: int
+    ) -> Tuple[List[float], List[float], List[float], List[float], List[int]]:
         win = min(int(self.cfg.window_max), end_idx + 1, store.n)
         start = max(0, end_idx - (win - 1))
         sl = slice(start, end_idx + 1)
@@ -1330,10 +1438,13 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             ms_since_last = (time.time() - self._last_update_ts) * 1000.0 if self._last_update_ts else None
             market_open = self._is_market_hours()
 
+            wallclock_iso = _iso_ts(_now_utc_naive())
+
             snapshot["provider_status"] = {
                 "mode": self.cfg.mode,
                 "update_count": int(self._update_count),
                 "last_update_ts": float(self._last_update_ts),
+                "last_update_iso": wallclock_iso,
                 "ms_since_last": ms_since_last,
                 "symbol_errors": errors,
                 "fail_count": int(self._fail),
@@ -1342,6 +1453,7 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 "market_open": market_open,
                 "price_changed": bool(any_price_changed) if self.cfg.mode == "live" else True,
                 "ema_ms": float(self._ema_ms),
+                "mt5_time_offset_s": int(self._mt5_server_utc_offset_s) if self.cfg.mode == "live" else None,
             }
             if self.last_tick_prices:
                 snapshot["tick_prices"] = dict(self.last_tick_prices)
@@ -1359,6 +1471,8 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 "ema_ms": float(self._ema_ms),
                 "mt5_connected": self._mt5_connected if self.cfg.mode == "live" else None,
                 "symbol_errors": errors,
+                "mt5_time_offset_s": int(self._mt5_server_utc_offset_s) if self.cfg.mode == "live" else None,
+                "last_update_iso": wallclock_iso,
             }
 
             self._publish_snapshot(snapshot, pid)
@@ -1379,6 +1493,7 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 "mode": self.cfg.mode,
                 "ema_ms": round(float(self._ema_ms), 3),
                 "errors": errors,
+                "mt5_time_offset_s": int(self._mt5_server_utc_offset_s) if self.cfg.mode == "live" else None,
             })
 
             self._success += 1
@@ -1397,6 +1512,7 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 "fail_count": int(self._fail),
                 "success_count": int(self._success),
                 "mt5_connected": self._mt5_connected if self.cfg.mode == "live" else None,
+                "mt5_time_offset_s": int(self._mt5_server_utc_offset_s) if self.cfg.mode == "live" else None,
             }
             return empty
 
@@ -1415,7 +1531,11 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 o, h, l, c, v = self._window_from_store(store, end_idx)
                 cur = self._bar_from_store(store, end_idx)
 
-                if self.cfg.mode == "live" and tf == self.primary_tf.get(sym, self.cfg.primary_timeframe):
+                if (
+                    self.cfg.mode == "live"
+                    and tf == self.primary_tf.get(sym, self.cfg.primary_timeframe)
+                    and bool(getattr(self.cfg, "include_forming_bar_in_primary_tf", True))
+                ):
                     fb = self.current_forming_bars.get(sym)
                     if isinstance(fb, dict) and len(c) > 0:
                         c = list(c); h = list(h); l = list(l); v = list(v)
@@ -1607,15 +1727,44 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         try:
             tf_secs = float(self._timeframe_to_seconds(timeframe))
             ts = out.get("timestamp")
-            ts_dt = ts if isinstance(ts, datetime.datetime) else _now_utc_naive()
+            if isinstance(ts, datetime.datetime):
+                ts_dt = ts
+            elif isinstance(ts, str) and ts:
+                try:
+                    ts_dt = datetime.datetime.fromisoformat(ts)
+                except Exception:
+                    ts_dt = _now_utc_naive()
+            else:
+                ts_dt = _now_utc_naive()
 
-            # FIX: training/offline must not use wall-clock (otherwise progress_in_bar saturates to 2.0).
+            # Determine bar state first: only the primary timeframe can be "forming" in live.
+            # IMPORTANT: only mark "forming" when the decorated bar timestamp belongs to the current forming bar.
+            # This allows "closed-bar mode" snapshots (no forming overlay) to stay correctly labeled as "closed".
+            bar_state = "closed"
+            if self.cfg.mode == "live" and self._is_market_hours():
+                if timeframe == self.primary_tf.get(symbol, self.cfg.primary_timeframe):
+                    fb = self.current_forming_bars.get(symbol)
+                    fb_ts = fb.get("timestamp") if isinstance(fb, dict) else None
+                    if isinstance(fb_ts, datetime.datetime):
+                        try:
+                            fb_open = self._floor_time_to_tf(fb_ts, timeframe)
+                            bar_open = self._floor_time_to_tf(ts_dt, timeframe)
+                            if bar_open == fb_open:
+                                bar_state = "forming"
+                        except Exception:
+                            # If anything goes wrong, fail safe: treat as closed.
+                            bar_state = "closed"
+
+            # FIX: progress_in_bar must be in [0,1] for forming bars, and exactly 1.0 for closed bars.
+            # Training/offline must not use wall-clock.
             if self.cfg.mode != "live":
+                progress = 1.0
+            elif bar_state == "closed":
                 progress = 1.0
             else:
                 now = _now_utc_naive()
                 elapsed = max(0.0, (now - ts_dt).total_seconds())
-                progress = float(np.clip(elapsed / max(tf_secs, 1.0), 0.0, 2.0))
+                progress = float(np.clip(elapsed / max(tf_secs, 1.0), 0.0, 1.0))
 
             low = _to_float(out.get("low"), 0.0)
             high = _to_float(out.get("high"), 0.0)
@@ -1626,14 +1775,7 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             out["progress_in_bar"] = progress
             out["position_in_range"] = float(np.clip((close - low) / rng, 0.0, 1.0))
             out["body_relative"] = float(np.clip(abs(close - open_) / rng, 0.0, 1.0))
-
-            if self.cfg.mode == "live" and self._is_market_hours():
-                if timeframe == self.primary_tf.get(symbol, self.cfg.primary_timeframe) and symbol in self.current_forming_bars:
-                    out["bar_state"] = "forming"
-                else:
-                    out["bar_state"] = "closed"
-            else:
-                out["bar_state"] = "closed"
+            out["bar_state"] = bar_state
         except Exception as e:
             self.audit.warning(f"[INTRABAR_DECOR_FAIL] {type(e).__name__}: {e}")
         return out
@@ -1727,6 +1869,7 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 "timeframes": list(self.cfg.supported_timeframes),
                 "update_count": int(self._update_count),
                 "last_error": error,
+                "mt5_time_offset_s": int(self._mt5_server_utc_offset_s) if self.cfg.mode == "live" else None,
             },
             "multi_timeframe_data": {},
             "ohlcv_data": {},
@@ -1813,10 +1956,13 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
 
     def _sanitize_outputs(self, snapshot: Dict[str, Any]) -> Dict[str, Any]:
         md = snapshot.get("market_data", {}).get("XAUUSD", {}) if isinstance(snapshot.get("market_data"), dict) else {}
+        ps = snapshot.get("provider_status", {}) if isinstance(snapshot.get("provider_status"), dict) else {}
         out = {
             "step_idx": snapshot.get("step_idx"),
             "timestamp": snapshot.get("timestamp"),
-            "mode": snapshot.get("provider_status", {}).get("mode") if isinstance(snapshot.get("provider_status"), dict) else None,
+            "mode": ps.get("mode"),
+            "mt5_time_offset_s": ps.get("mt5_time_offset_s"),
+            "last_update_iso": ps.get("last_update_iso"),
             "xauusd": {
                 "open": _to_float(md.get("open"), 0.0),
                 "high": _to_float(md.get("high"), 0.0),
@@ -1824,7 +1970,7 @@ class MarketDataProvider(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 "close": _to_float(md.get("close"), 0.0),
                 "bar_state": md.get("bar_state"),
             },
-            "errors": snapshot.get("provider_status", {}).get("symbol_errors") if isinstance(snapshot.get("provider_status"), dict) else None,
+            "errors": ps.get("symbol_errors"),
         }
         return out
 

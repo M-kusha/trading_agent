@@ -246,7 +246,49 @@ class TradeRewardMixin:
             elif net_pnl < 0 and qdev < 0:
                 add("entry_quality_penalty", -(abs(qdev) * cfg.entry_quality_weight * base_mag))
 
-        # 7b) Session timing reward/penalty
+        # 7a) Setup quality (confluence) shaping
+        if bool(getattr(cfg, "setup_quality_enabled", False)):
+            setup_q = float(getattr(result, "setup_quality", 0.5))
+            setup_thr = float(getattr(cfg, "setup_quality_threshold", 0.7))
+            ss = shape_scale
+            if setup_q >= setup_thr:
+                bonus = (setup_q - setup_thr) * float(getattr(cfg, "setup_quality_bonus_scale", 0.0)) * ss
+                if bonus != 0.0:
+                    add("setup_quality_bonus", bonus)
+            else:
+                penalty = (setup_thr - setup_q) * float(getattr(cfg, "hasty_entry_penalty", 0.0)) * ss
+                if penalty != 0.0:
+                    add("hasty_entry_penalty", -penalty)
+
+        # 7b) Entry certainty shaping
+        certainty = float(getattr(result, "entry_certainty", 0.5))
+        certainty_thr = float(getattr(cfg, "certainty_threshold", 0.7))
+        if certainty >= certainty_thr:
+            bonus_map = getattr(cfg, "entry_certainty_bonus", {}) or {}
+            bonus_val = 0.0
+            for k, v in bonus_map.items():
+                try:
+                    if isinstance(k, str) and "-" in k:
+                        lo_s, hi_s = k.split("-", 1)
+                        lo = float(lo_s.strip())
+                        hi = float(hi_s.strip())
+                    elif isinstance(k, (tuple, list)) and len(k) == 2:
+                        lo, hi = float(k[0]), float(k[1])
+                    else:
+                        continue
+                    if lo <= certainty < hi:
+                        bonus_val = max(bonus_val, float(v))
+                except Exception:
+                    continue
+            if bonus_val:
+                add("entry_certainty_bonus", bonus_val * shape_scale)
+        else:
+            low_pen = float(getattr(cfg, "low_certainty_penalty", 0.0))
+            if low_pen > 0.0 and certainty_thr > 0:
+                frac = (certainty_thr - certainty) / certainty_thr
+                add("low_certainty_penalty", -(low_pen * self._clamp(frac, 0.0, 1.0)))
+
+        # 7c) Session timing reward/penalty (supports granular time-of-day quality)
         if cfg.session_timing_enabled:
             entry_dt = getattr(result, "entry_dt", None)
             if entry_dt is None:
@@ -257,12 +299,50 @@ class TradeRewardMixin:
                 entry_dt = self._get_bar_dt(inst) if inst is not None else None
 
             if entry_dt is not None:
-                if self._in_no_new_trades_window(entry_dt):
-                    add("off_hours_penalty", -cfg.off_hours_trade_penalty)
-                elif self._in_prime_window(entry_dt):
-                    add("prime_hours_bonus", cfg.prime_hours_trade_bonus)
+                tod_quality = None
+                tod_map = getattr(cfg, "time_of_day_quality", {}) or {}
+                if tod_map:
+                    t = entry_dt.timetz().replace(tzinfo=None)
+                    for k, v in tod_map.items():
+                        try:
+                            if not isinstance(k, str) or "-" not in k:
+                                continue
+                            s_raw, e_raw = k.split("-", 1)
+                            sh, sm = s_raw.strip().split(":")
+                            eh, em = e_raw.strip().split(":")
+                            start = (int(sh), int(sm))
+                            end = (int(eh), int(em))
+                            # Cross-midnight aware
+                            in_range = False
+                            if start == end:
+                                in_range = False
+                            elif start < end:
+                                in_range = (t.hour, t.minute) >= start and (t.hour, t.minute) < end
+                            else:
+                                in_range = (t.hour, t.minute) >= start or (t.hour, t.minute) < end
+                            if in_range:
+                                tod_quality = float(v)
+                                break
+                        except Exception:
+                            continue
 
-        # 7c) Market structure rewards (teach WHERE to trade)
+                if tod_quality is not None:
+                    # Convert quality [0,1] to bonus/penalty with smooth scaling
+                    if tod_quality >= 0.5:
+                        bonus = ((tod_quality - 0.5) / 0.5) * cfg.prime_hours_trade_bonus
+                        if bonus > 0.0:
+                            add("time_of_day_bonus", bonus)
+                    else:
+                        penalty = ((0.5 - tod_quality) / 0.5) * cfg.off_hours_trade_penalty
+                        if penalty > 0.0:
+                            add("time_of_day_penalty", -penalty)
+                else:
+                    if self._in_no_new_trades_window(entry_dt):
+                        add("off_hours_penalty", -cfg.off_hours_trade_penalty)
+                    elif self._in_prime_window(entry_dt):
+                        add("prime_hours_bonus", cfg.prime_hours_trade_bonus)
+
+        # 7d) Market structure rewards (teach WHERE to trade)
         if cfg.market_structure_enabled:
             entry_context = getattr(result, "entry_context", {}) or {}
             trade_direction = getattr(result, "direction", None)
@@ -313,7 +393,7 @@ class TradeRewardMixin:
                 elif trade_direction == "short" and ob_bear > 0.5:
                     add("order_block_bonus", ob_bear * cfg.order_block_entry_bonus * ss)
 
-        # 7d) Divergence awareness rewards
+        # 7e) Divergence awareness rewards
         if cfg.divergence_awareness_enabled:
             entry_context = getattr(result, "entry_context", {}) or {}
             trade_direction = getattr(result, "direction", None)
@@ -339,7 +419,7 @@ class TradeRewardMixin:
             if oversold > 0.3 and trade_direction == "short":
                 add("oversold_short_penalty", -(oversold * cfg.oversold_short_penalty * ss))
 
-        # 7e) Regime awareness rewards
+        # 7f) Regime awareness rewards
         if cfg.regime_awareness_enabled:
             entry_context = getattr(result, "entry_context", {}) or {}
             risk_regime = entry_context.get("risk_regime", "neutral")
@@ -378,6 +458,42 @@ class TradeRewardMixin:
                 streak_pen = min(streak_pen, streak_pen_cap)
                 if streak_pen > 0:
                     add("loss_streak_penalty", -streak_pen)
+
+        # 8b) Deliberation quality bonus (only for winning trades)
+        if bool(getattr(cfg, "deliberation_time_tracking", False)) and net_pnl > 0:
+            opt_range = getattr(cfg, "optimal_deliberation_range", (0, 0))
+            try:
+                lo = int(opt_range[0])
+                hi = int(opt_range[1])
+            except Exception:
+                lo, hi = 0, 0
+            if hi > 0:
+                delib = int(getattr(result, "deliberation_bars", 0))
+                if lo <= delib <= hi:
+                    add("deliberation_bonus", float(getattr(cfg, "deliberation_quality_bonus", 0.0)))
+
+        # 8c) Compounding success bonus (quality trade streaks)
+        if bool(getattr(cfg, "compounding_success_enabled", False)):
+            quality_r = float(getattr(cfg, "quality_trade_r_multiple", 1.0))
+            quality_eq = float(getattr(cfg, "quality_trade_entry_quality", 0.6))
+            quality_exit = str(getattr(cfg, "quality_trade_exit_type", "trailing_stop"))
+            is_quality_trade = (
+                r_multiple >= quality_r
+                and float(getattr(result, "entry_quality", 0.0)) >= quality_eq
+                and str(result.close_reason.value) == quality_exit
+            )
+            streak = int(getattr(self, "_quality_trade_streak", 0))
+            if is_quality_trade:
+                streak += 1
+            else:
+                streak = 0
+            setattr(self, "_quality_trade_streak", streak)
+            bonus_list = list(getattr(cfg, "consecutive_quality_trades_bonus", []) or [])
+            if is_quality_trade and bonus_list:
+                idx = min(streak, len(bonus_list) - 1)
+                bonus = float(bonus_list[idx])
+                if bonus:
+                    add("compounding_success_bonus", bonus)
 
         # 9) Anti-churn penalty (trade count based)
         if cfg.anti_churn_enabled and self.daily_trades > cfg.daily_trade_soft_limit:

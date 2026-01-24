@@ -134,6 +134,170 @@ class EntryQualityMixin:
         cache[cache_key] = quality
         return quality
 
+    def _get_step_entry_certainty(self, inst: str, target: str) -> float:
+        """
+        Get entry certainty with per-step caching.
+
+        Certainty is a lighter-weight confidence signal (0..1) intended for
+        patience/selectivity shaping. It is not the same as entry quality.
+        """
+        cache = getattr(self, "_step_entry_certainty_cache", None)
+        cache_step = getattr(self, "_step_entry_certainty_cache_step", None)
+
+        if cache is None or cache_step != self.current_step:
+            cache = {}
+            self._step_entry_certainty_cache = cache
+            self._step_entry_certainty_cache_step = self.current_step
+
+        cache_key = f"{inst}_{target}"
+        if cache_key in cache:
+            return cache[cache_key]
+
+        certainty = self._compute_entry_certainty(inst, target)
+        cache[cache_key] = certainty
+        return certainty
+
+    def _get_step_setup_quality(self, inst: str, target: str) -> Tuple[float, int]:
+        """
+        Get setup quality (0..1) + confluence count with per-step caching.
+
+        Setup quality emphasizes confluence (multiple aligned signals) rather
+        than just directional bias.
+        """
+        cache = getattr(self, "_step_setup_quality_cache", None)
+        cache_step = getattr(self, "_step_setup_quality_cache_step", None)
+
+        if cache is None or cache_step != self.current_step:
+            cache = {}
+            self._step_setup_quality_cache = cache
+            self._step_setup_quality_cache_step = self.current_step
+
+        cache_key = f"{inst}_{target}"
+        if cache_key in cache:
+            return cache[cache_key]
+
+        setup_q, confluence = self._compute_setup_quality(inst, target)
+        cache[cache_key] = (setup_q, confluence)
+        return setup_q, confluence
+
+    def _compute_entry_certainty(self, inst: str, target: str) -> float:
+        """
+        Compute a 0..1 entry certainty score.
+
+        Certainty is based on consensus/confidence rather than directional
+        alignment strength, so it can be used to reward selectivity without
+        duplicating entry quality.
+        """
+        if target not in ("long", "short"):
+            return 0.5
+
+        direction_mult = 1.0 if target == "long" else -1.0
+
+        expert_signals_raw = self._prepare_expert_signals(inst)
+        committee = self._as_dict(self._prepare_committee_state(expert_signals_raw))
+
+        consensus = self._safe_float(committee.get("consensus_score"), 0.5)
+        conf = self._safe_float(committee.get("confidence"), 0.5)
+        agreement = self._safe_float(committee.get("agreement"), 0.5)
+        action_value = self._safe_float(committee.get("action_value"), 0.0)
+        action_alignment = self._clamp01((action_value * direction_mult + 1.0) / 2.0)
+
+        # Expert confidence (direction-agnostic)
+        experts = self._as_dict(self._as_dict(expert_signals_raw).get("experts"))
+        expert_conf = 0.5
+        if experts:
+            confs: List[float] = []
+            for sig in experts.values():
+                if not isinstance(sig, dict):
+                    continue
+                confs.append(self._safe_float(sig.get("confidence"), 0.5))
+            if confs:
+                expert_conf = float(np.clip(np.mean(confs), 0.0, 1.0))
+
+        # Weighted blend (favor consensus/confidence)
+        certainty = (
+            0.38 * consensus
+            + 0.24 * conf
+            + 0.18 * agreement
+            + 0.10 * action_alignment
+            + 0.10 * expert_conf
+        )
+
+        return self._clamp01(certainty)
+
+    def _compute_setup_quality(self, inst: str, target: str) -> Tuple[float, int]:
+        """
+        Compute setup quality (0..1) and confluence count.
+
+        Uses entry-quality components + structure context to quantify
+        how many independent signals align.
+        """
+        if target not in ("long", "short"):
+            return 0.5, 0
+
+        entry_quality = self._compute_smart_entry_quality(inst, target)
+
+        # Pull component diagnostics from entry quality (if available)
+        confluence_count = 0
+        total_components = 0
+        dbg = getattr(self, "_last_entry_quality_debug", {}) or {}
+        comp = dbg.get(f"{inst}_{target}", {}).get("components", []) if isinstance(dbg, dict) else []
+        if isinstance(comp, list):
+            for _, v, _w in comp:
+                total_components += 1
+                if float(v) >= 0.65:
+                    confluence_count += 1
+
+        # Add structure confluence from entry context
+        try:
+            ctx = self._capture_entry_context(inst)
+        except Exception:
+            ctx = {}
+        try:
+            # Cache for other mixins (dynamic patience, time-of-day granularity)
+            setattr(self, "_last_step_entry_context", ctx)
+        except Exception:
+            pass
+
+        structure_trend = self._safe_float(ctx.get("structure_trend"), 0.0)
+        near_support = self._safe_float(ctx.get("near_support"), 0.0)
+        near_resistance = self._safe_float(ctx.get("near_resistance"), 0.0)
+
+        total_components += 1
+        if target == "long" and structure_trend > 0.25:
+            confluence_count += 1
+        elif target == "short" and structure_trend < -0.25:
+            confluence_count += 1
+
+        total_components += 1
+        if target == "long" and near_support > 0.5:
+            confluence_count += 1
+        elif target == "short" and near_resistance > 0.5:
+            confluence_count += 1
+
+        if total_components <= 0:
+            total_components = 1
+        confluence_ratio = confluence_count / float(total_components)
+
+        setup_quality = self._clamp01(0.55 * entry_quality + 0.45 * confluence_ratio)
+
+        # Optional debug capture
+        try:
+            dbg_setup = getattr(self, "_last_setup_quality_debug", None)
+            if not isinstance(dbg_setup, dict):
+                dbg_setup = {}
+                self._last_setup_quality_debug = dbg_setup
+            dbg_setup[f"{inst}_{target}"] = {
+                "entry_quality": float(entry_quality),
+                "confluence_count": int(confluence_count),
+                "confluence_ratio": float(confluence_ratio),
+                "setup_quality": float(setup_quality),
+            }
+        except Exception:
+            pass
+
+        return float(setup_quality), int(confluence_count)
+
     def _compute_smart_entry_quality(self, inst: str, target: str) -> float:
         """
         Compute a 0..1 entry quality score with multiple components:

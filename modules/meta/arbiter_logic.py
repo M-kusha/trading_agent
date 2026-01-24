@@ -817,11 +817,16 @@ class WorldModelInfo:
             regime_conf = 0.5
 
         # Confidence
-        pred_conf = _safe_float(latest.get("confidence"), model_confidence)
-        if prediction_confidence is not None:
+        # IMPORTANT: 'model_confidence' is an overall model quality metric (training/quality/stability),
+        # not the per-step predictive confidence. Prefer latest_predictions.confidence.
+        pred_conf = _safe_float(latest.get("confidence"), 0.0)
+        if pred_conf <= 0.0 and prediction_confidence is not None:
             if isinstance(prediction_confidence, dict):
                 pred_conf = _safe_float(
-                    prediction_confidence.get("current_confidence", pred_conf),
+                    prediction_confidence.get(
+                        "predictive_confidence",
+                        prediction_confidence.get("confidence", pred_conf),
+                    ),
                     pred_conf,
                 )
             else:

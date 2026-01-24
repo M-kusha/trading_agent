@@ -14,8 +14,8 @@ Upgrades (Jan 2026):
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Tuple
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Tuple
 
 
 @dataclass
@@ -88,6 +88,17 @@ class DataDifficulty:
 
     prefer_recent_data: bool = False
     recent_data_weight: float = 1.0
+
+    # Regime-aware sampling (optional)
+    allowed_regimes: Optional[List[str]] = None
+    regime_sampling_weights: Dict[str, float] = field(default_factory=dict)
+    trend_clarity_threshold: float = 0.40
+    high_volatility_threshold: float = 0.70
+    low_volatility_threshold: float = 0.30
+    news_volatility_threshold: float = 0.90
+
+    # Setup maturity metrics (Stage 4+)
+    include_setup_maturity_metrics: bool = False
 
 
 @dataclass

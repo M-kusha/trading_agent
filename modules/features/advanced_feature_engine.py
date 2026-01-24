@@ -11,6 +11,8 @@
 # - Bus write serialization via lock (single-writer invariant even under concurrent calls)
 # - Added shutdown() to stop background loop and close audit handlers (hot-reload safe)
 # - Removed silent exception swallowing in non-last-resort paths (all meaningful failures audited)
+# - Log sync: cycle_id/step_idx/bus_timestamp/session_id/correlation_id propagated into audit
+# - Robust float matching tolerance for float32↔float64 feeds (prevents duplicate ingestion)
 # ─────────────────────────────────────────────────────────────
 
 from __future__ import annotations
@@ -55,8 +57,11 @@ class FeatureEngineConfig:
     primary_timeframe: str = "M15"
     timeframes: Optional[List[str]] = None  # for TF mirrors
 
+    # Robustness / sync
+    ingest_match_tol: float = 1e-3  # tolerates float32 rounding vs float64 feeds
+
     # Monitoring knobs
-    enable_neural_processing: bool = False  # placeholder hook
+    enable_neural_processing: bool = True  # placeholder hook
     enable_health_monitoring: bool = True
     enable_performance_tracking: bool = True
     enable_error_pinpointing: bool = True
@@ -128,6 +133,9 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         self._full_prices = bool(self._cfg.debug_full_prices) if self.debug else False
         self._full_features = bool(self._cfg.debug_full_features) if self.debug else False
 
+        # Sync context (filled per-cycle)
+        self._sync_ctx: Dict[str, Any] = {}
+
         super().__init__(config=asdict(self._cfg), **kwargs)
 
     def _initialize(self):
@@ -138,6 +146,9 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         self.symbol = str(self._cfg.symbol or "XAUUSD").upper()
         self.primary_timeframe = str(self._cfg.primary_timeframe or "M15").upper()
         self.timeframes = [str(x).upper() for x in (self._cfg.timeframes or ["M15", "H1", "H4", "D1"])]
+
+        # Robustness
+        self._ingest_tol = float(getattr(self._cfg, "ingest_match_tol", 1e-3) or 1e-3)
 
         # Feature geometry
         self.window_sizes = sorted(self._cfg.window_sizes or [7, 14, 28, 56])
@@ -196,8 +207,11 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         self.logger.info(
             format_operator_message(
                 "[INIT]", "ADVANCED_FEATURE_ENGINE_READY",
-                details=f"Symbol={self.symbol}, PrimaryTF={self.primary_timeframe}, TFs={self.timeframes}, "
-                        f"Windows={self.window_sizes}, OutDim={self.out_dim}, Buffer={self.max_buffer_size}, Debug={self.debug}",
+                details=(
+                    f"Symbol={self.symbol}, PrimaryTF={self.primary_timeframe}, TFs={self.timeframes}, "
+                    f"Windows={self.window_sizes}, OutDim={self.out_dim}, Buffer={self.max_buffer_size}, "
+                    f"Debug={self.debug}, IngestTol={self._ingest_tol}"
+                ),
                 result="ready",
                 context="feature_engine_startup"
             )
@@ -208,13 +222,23 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             baseline_feats = self._get_fallback_features()
             thesis = "Baseline features published at init to avoid BUS MISS."
             adv_payload = self._make_adv_payload(baseline_feats, quality=0.0, extraction_ms=0.0)
+            adv_payload.update({"instrument": self.symbol, "timeframe": self.primary_timeframe, "source": "init_baseline"})
+
             self._bus_set("advanced_features", adv_payload, thesis=thesis)
-            self._bus_set("features", {"raw_features": adv_payload["raw_features"], "quality_score": 0.0}, thesis="Features alias (baseline)")
+            self._bus_set(
+                "features",
+                {"raw_features": adv_payload["raw_features"], "quality_score": 0.0, "instrument": self.symbol, "timeframe": self.primary_timeframe},
+                thesis="Features alias (baseline)"
+            )
             self._bus_set("feature_engine_capabilities", self._capabilities_snapshot(), thesis="Capabilities snapshot (baseline)")
             self._bus_set("feature_health", self._health_snapshot(), thesis="Feature engine health (baseline)")
             self._bus_set("feature_error", None, thesis="No errors (baseline)")
             for tf in self.timeframes:
-                self._bus_set(f"advanced_features_{tf}", {**adv_payload, "timeframe": tf, "alias_of": "advanced_features"}, thesis=f"Baseline mirror ({tf})")
+                self._bus_set(
+                    f"advanced_features_{tf}",
+                    {**adv_payload, "timeframe": tf, "alias_of": "advanced_features", "mtf_available": (tf != self.primary_timeframe)},
+                    thesis=f"Baseline mirror ({tf})"
+                )
         except Exception as e:
             self._audit_event(
                 level="ERROR",
@@ -322,24 +346,34 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
     # ─────────────────────────────────────────────────────────
     async def process(self, **inputs) -> Dict[str, Any]:
         start_ts = time.time()
-        self._cycle_idx += 1
-        cycle_id = self._cycle_idx
 
-        # Capture step_idx/timestamp if present (non-fatal)
-        step_idx = self._bus_get("step_idx", default=None, soft=True)
-        bus_ts = self._bus_get("timestamp", default=None, soft=True)
+        # Capture sync context first (used in *all* audit events this cycle)
+        self._sync_ctx = self._capture_sync_context(inputs)
+
+        # Prefer external step_idx as cycle_id to keep MarketDataProvider / AFE / MultiScale aligned
+        self._cycle_idx += 1
+        internal_cycle = int(self._cycle_idx)
+        step_idx = self._sync_ctx.get("step_idx")
+        cycle_id = int(step_idx) if isinstance(step_idx, int) else internal_cycle
+
+        bus_ts = self._sync_ctx.get("bus_timestamp")
 
         # Circuit breaker gating
         if not self._check_circuit_breaker():
             payload = self._make_adv_payload(self._get_fallback_features(), quality=0.0, extraction_ms=0.0)
+            payload.update({
+                "instrument": self.symbol,
+                "timeframe": self.primary_timeframe,
+                "source": "circuit_breaker_fallback",
+                "bus_timestamp": bus_ts,
+                "step_idx": step_idx,
+            })
             tf_outputs = {tf: {**payload, "timeframe": tf, "alias_of": "advanced_features", "mtf_available": False} for tf in self.timeframes}
             thesis = "Circuit breaker OPEN: returning fallback features."
             self._audit_event(
                 level="WARN",
                 event_type="circuit_breaker_open",
                 cycle_id=cycle_id,
-                step_idx=step_idx,
-                bus_timestamp=bus_ts,
                 breaker=dict(self.circuit_breaker),
             )
             return self._format_declared_outputs(
@@ -391,12 +425,21 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 success=True
             )
 
+            adv_out = self._make_adv_payload(
+                features_payload["raw_features"],
+                quality=float(features_payload["quality_score"]),
+                extraction_ms=float(features_payload["extraction_time_ms"])
+            )
+            adv_out.update({
+                "instrument": self.symbol,
+                "timeframe": self.primary_timeframe,
+                "source": features_payload.get("source", "unknown"),
+                "bus_timestamp": bus_ts,
+                "step_idx": step_idx,
+            })
+
             return self._format_declared_outputs(
-                features_payload=self._make_adv_payload(
-                    features_payload["raw_features"],
-                    quality=float(features_payload["quality_score"]),
-                    extraction_ms=float(features_payload["extraction_time_ms"])
-                ),
+                features_payload=adv_out,
                 thesis=thesis,
                 analysis={
                     "explanation": features_payload.get("explanation"),
@@ -431,8 +474,8 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             self._audit_cycle(
                 level="ERROR",
                 cycle_id=cycle_id,
-                step_idx=step_idx,
-                bus_timestamp=bus_ts,
+                step_idx=self._sync_ctx.get("step_idx"),
+                bus_timestamp=self._sync_ctx.get("bus_timestamp"),
                 start_ts=start_ts,
                 market_data=market_data,
                 features_payload=features_payload,
@@ -447,6 +490,13 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
 
             fallback = self._get_fallback_features()
             payload = self._make_adv_payload(fallback, quality=0.0, extraction_ms=float(elapsed_ms))
+            payload.update({
+                "instrument": self.symbol,
+                "timeframe": self.primary_timeframe,
+                "source": "exception_fallback",
+                "bus_timestamp": self._sync_ctx.get("bus_timestamp"),
+                "step_idx": self._sync_ctx.get("step_idx"),
+            })
             tf_fallback = {tf: {**payload, "timeframe": tf, "alias_of": "advanced_features"} for tf in self.timeframes}
 
             # Publish error/health only; do NOT publish advanced_features on failure.
@@ -470,6 +520,40 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 extra={"success": False, "error": str(e), "processing_time_ms": float(elapsed_ms), "feature_error": err_obj},
                 timeframe_outputs=tf_fallback
             )
+
+    def _capture_sync_context(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Keeps logs from MarketDataProvider / AdvancedFeatureEngine / MultiScaleFeatureEngine aligned.
+        We do *not* hard-require any of these keys; missing data is fine.
+        """
+        ctx: Dict[str, Any] = {}
+        # Prefer bus step_idx/timestamp (pipeline-owned)
+        try:
+            step_idx = self._bus_get("step_idx", default=None, soft=True)
+            if isinstance(step_idx, (int, np.integer)):
+                ctx["step_idx"] = int(step_idx)
+        except Exception:
+            pass
+
+        try:
+            ts = self._bus_get("timestamp", default=None, soft=True)
+            if ts is not None:
+                ctx["bus_timestamp"] = ts
+        except Exception:
+            pass
+
+        # Optional run identifiers (from inputs or bus)
+        for k in ("session_id", "correlation_id", "execution_id"):
+            v = inputs.get(k)
+            if v is None:
+                try:
+                    v = self._bus_get(k, default=None, soft=True)
+                except Exception:
+                    v = None
+            if v is not None:
+                ctx[k] = v
+
+        return ctx
 
     # ─────────────────────────────────────────────────────────
     # Inputs (XAUUSD-only, strict + audited)
@@ -508,8 +592,13 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             prices = self._validate_prices(prices)
             if prices:
                 _attempt("bus.historical_prices", True, self._summarize_prices(prices))
-                return {"instrument": self.symbol, "timeframe": self.primary_timeframe, "prices": prices,
-                        "source": f"bus.historical_prices[{self.symbol}][{self.primary_timeframe}]", "audit": audit}
+                return {
+                    "instrument": self.symbol,
+                    "timeframe": self.primary_timeframe,
+                    "prices": prices,
+                    "source": f"bus.historical_prices[{self.symbol}][{self.primary_timeframe}]",
+                    "audit": audit
+                }
             _attempt("bus.historical_prices", False, {"reason": "all_prices_invalid_after_validate"})
         else:
             _attempt("bus.historical_prices", False, {"reason": "no_prices_for_symbol_tf"})
@@ -521,8 +610,13 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             prices = self._validate_prices(prices)
             if prices:
                 _attempt("bus.multi_timeframe_data", True, self._summarize_prices(prices))
-                return {"instrument": self.symbol, "timeframe": self.primary_timeframe, "prices": prices,
-                        "source": f"bus.multi_timeframe_data[{self.symbol}][{self.primary_timeframe}]", "audit": audit}
+                return {
+                    "instrument": self.symbol,
+                    "timeframe": self.primary_timeframe,
+                    "prices": prices,
+                    "source": f"bus.multi_timeframe_data[{self.symbol}][{self.primary_timeframe}]",
+                    "audit": audit
+                }
             _attempt("bus.multi_timeframe_data", False, {"reason": "all_prices_invalid_after_validate"})
         else:
             _attempt("bus.multi_timeframe_data", False, {"reason": "no_prices_for_symbol_tf"})
@@ -553,7 +647,10 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         else:
             _attempt("bus.market_data", False, {"reason": "no_close_for_symbol"})
 
-        raise ValueError(f"No valid price data found for {self.symbol} (primary TF={self.primary_timeframe}). Attempts={len(audit['attempts'])}")
+        raise ValueError(
+            f"No valid price data found for {self.symbol} (primary TF={self.primary_timeframe}). "
+            f"Attempts={len(audit['attempts'])}"
+        )
 
     # ---- Extractors (XAUUSD-only) ----
     def _extract_from_price_data(self, pd_map: Any, symbol: str) -> List[float]:
@@ -583,10 +680,10 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                         out.append(float(close))
 
                 # If both scalar and series exist, avoid duplication by only appending scalar
-                # when it differs from series tail.
+                # when it differs from series tail (tolerant for float32 rounding).
                 close = entry.get("close")
                 if isinstance(close, (int, float, np.floating)) and out:
-                    if abs(float(close) - float(out[-1])) > 1e-9:
+                    if abs(float(close) - float(out[-1])) > self._ingest_tol:
                         out.append(float(close))
 
             elif isinstance(entry, (list, tuple, np.ndarray)):
@@ -662,6 +759,7 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                     candidate = v
                     break
         else:
+            # Some producers store TF at top-level
             for k, v in mtd.items():
                 if str(k).upper() == timeframe.upper():
                     candidate = v
@@ -704,10 +802,36 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
 
         return out
 
+    def _looks_like_quote(self, d: Dict[str, Any]) -> bool:
+        # Heuristic: OHLC or at least close plus some structure
+        if not isinstance(d, dict):
+            return False
+        if "close" not in d:
+            return False
+        c = d.get("close")
+        if not isinstance(c, (int, float, np.floating)):
+            return False
+        # If it's a quote dict, it often has OHLC fields
+        ohlc = {"open", "high", "low", "close"}
+        if len(ohlc.intersection(set(d.keys()))) >= 2:
+            return True
+        # Or bar_state/time fields
+        if "bar_state" in d or "timestamp" in d or "time" in d:
+            return True
+        return True
+
     def _extract_latest_close(self, blob: Any, symbol: str) -> Optional[float]:
+        if blob is None:
+            return None
+
+        # Case A: direct quote dict (no symbol key)
+        if isinstance(blob, dict) and self._looks_like_quote(blob):
+            return float(blob["close"])
+
+        # Case B: mapping keyed by symbol
         if not isinstance(blob, dict):
             return None
-        # direct key hit
+
         for k, v in blob.items():
             if str(k).upper() == symbol.upper():
                 if isinstance(v, dict) and isinstance(v.get("close"), (int, float, np.floating)):
@@ -715,10 +839,15 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 if isinstance(v, (int, float, np.floating)):
                     return float(v)
 
-        # nested search (shallow) — still dangerous, so only accept if the dict looks like a quote.
+        # Case C: shallow nested: accept only if nested dict explicitly declares symbol/instrument
         for _, v in blob.items():
             if isinstance(v, dict):
-                if "close" in v and isinstance(v.get("close"), (int, float, np.floating)):
+                declared = v.get("symbol") or v.get("instrument")
+                if declared is not None and str(declared).upper() == symbol.upper():
+                    if isinstance(v.get("close"), (int, float, np.floating)):
+                        return float(v["close"])
+                # Last-resort heuristic: if dict looks like quote and blob size is small (avoid random dicts)
+                if len(blob) <= 3 and self._looks_like_quote(v):
                     return float(v["close"])
         return None
 
@@ -814,11 +943,9 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 return int(len(prices_in))
 
             last = float(self.price_buffer[-1])
-            # Find last occurrence (within tolerance) of current buffer tail in incoming list.
-            idx = self._find_last_match(prices_in, last, tol=1e-9)
+            idx = self._find_last_match(prices_in, last, tol=self._ingest_tol)
             if idx is None:
-                # If first equals last, skip it to avoid trivial duplication.
-                start = 1 if abs(float(prices_in[0]) - last) <= 1e-9 else 0
+                start = 1 if abs(float(prices_in[0]) - last) <= self._ingest_tol else 0
                 new = prices_in[start:]
             else:
                 new = prices_in[idx + 1:]
@@ -833,11 +960,10 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             # Fail closed: do not mutate buffer further.
             return 0
 
-    def _find_last_match(self, arr: List[float], target: float, tol: float = 1e-9) -> Optional[int]:
+    def _find_last_match(self, arr: List[float], target: float, tol: float = 1e-3) -> Optional[int]:
         try:
-            # Search backwards; O(n) but lists are typically manageable.
             for i in range(len(arr) - 1, -1, -1):
-                if abs(float(arr[i]) - float(target)) <= tol:
+                if abs(float(arr[i]) - float(target)) <= float(tol):
                     return i
             return None
         except Exception as e:
@@ -899,6 +1025,7 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 perwin_ret = [float(features[i * 6 + 2]) for i in range(L)]
                 perwin_rng = [float(features[i * 6 + 3]) for i in range(L)]
                 g_idx = L * 6
+                # global layout: [last, mean, std, range, pos_step, len]
                 g_std = float(features[g_idx + 2])
                 g_rng = float(features[g_idx + 3])
                 pos_step = float(features[g_idx + 4])
@@ -961,7 +1088,6 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
 
     async def _generate_feature_thesis(self, features: Dict[str, Any], market_data: Dict[str, Any]) -> str:
         try:
-            # Prefer internal buffer for coherent change metrics.
             series = list(self.price_buffer)
             prices = series[-max(self.window_sizes):] if len(series) >= 2 else market_data.get("prices", [])
 
@@ -1002,11 +1128,12 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         mtd = self._bus_get("multi_timeframe_data", default=None, soft=True)
 
         base_payload = self._make_adv_payload(base_feats, quality=float(self.feature_quality_score), extraction_ms=0.0)
+        base_payload.update({"instrument": self.symbol, "source": market_data.get("source", "unknown")})
 
         for tf in self.timeframes:
             if tf == self.primary_timeframe:
                 out[tf] = {
-                    **self._make_adv_payload(base_feats, quality=float(self.feature_quality_score), extraction_ms=0.0),
+                    **self._make_adv_payload(base_feats, quality=float(self.feature_quality_score), extraction_ms=float(0.0)),
                     "instrument": self.symbol,
                     "timeframe": tf,
                     "mtf_available": True
@@ -1033,7 +1160,6 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 else:
                     out[tf] = {
                         **base_payload,
-                        "instrument": self.symbol,
                         "timeframe": tf,
                         "alias_of": "advanced_features",
                         "mtf_available": True,
@@ -1042,7 +1168,6 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             else:
                 out[tf] = {
                     **base_payload,
-                    "instrument": self.symbol,
                     "timeframe": tf,
                     "alias_of": "advanced_features",
                     "mtf_available": False,
@@ -1065,12 +1190,19 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         adv_payload["instrument"] = self.symbol
         adv_payload["timeframe"] = self.primary_timeframe
         adv_payload["source"] = features.get("source", "unknown")
+        adv_payload["bus_timestamp"] = self._sync_ctx.get("bus_timestamp")
+        adv_payload["step_idx"] = self._sync_ctx.get("step_idx")
 
         self._bus_set("advanced_features", adv_payload, thesis=thesis)
 
         self._bus_set(
             "features",
-            {"raw_features": adv_payload["raw_features"], "quality_score": float(features["quality_score"]), "instrument": self.symbol, "timeframe": self.primary_timeframe},
+            {
+                "raw_features": adv_payload["raw_features"],
+                "quality_score": float(features["quality_score"]),
+                "instrument": self.symbol,
+                "timeframe": self.primary_timeframe
+            },
             thesis="Features alias for backward compatibility."
         )
 
@@ -1083,6 +1215,8 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 "explanation": features.get("explanation"),
                 "buffer_status": self._buffer_status(),
                 "statistics": dict(self.feature_stats),
+                "bus_timestamp": self._sync_ctx.get("bus_timestamp"),
+                "step_idx": self._sync_ctx.get("step_idx"),
             },
             thesis=f"Feature analysis: {float(features['quality_score']):.1f}% quality"
         )
@@ -1097,6 +1231,13 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
 
         for tf, payload in timeframe_outputs.items():
             key = f"advanced_features_{tf}"
+            # Ensure sync fields exist in TF payload as well
+            if isinstance(payload, dict):
+                payload = dict(payload)
+                payload.setdefault("instrument", self.symbol)
+                payload.setdefault("timeframe", tf)
+                payload.setdefault("bus_timestamp", self._sync_ctx.get("bus_timestamp"))
+                payload.setdefault("step_idx", self._sync_ctx.get("step_idx"))
             self._bus_set(key, payload, thesis=f"Advanced features mirror ({self.symbol} {tf})")
 
     # ─────────────────────────────────────────────────────────
@@ -1196,6 +1337,13 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             "timeframe": self.primary_timeframe,
             "source": fp.get("source", "unknown"),
         }
+
+        # Sync fields are optional but improve cross-module timeline alignment
+        if "bus_timestamp" in fp:
+            adv["bus_timestamp"] = fp.get("bus_timestamp")
+        if "step_idx" in fp:
+            adv["step_idx"] = fp.get("step_idx")
+
         out["advanced_features"] = adv
         out["features"] = {"raw_features": adv["raw_features"], "quality_score": adv["quality_score"], "instrument": self.symbol, "timeframe": self.primary_timeframe}
 
@@ -1301,6 +1449,7 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 "max_buffer_size": int(self.max_buffer_size),
                 "out_dim": int(self.out_dim),
                 "debug": bool(self.debug),
+                "ingest_match_tol": float(self._ingest_tol),
             },
             "buffers": {
                 "price_buffer_size": len(self.price_buffer),
@@ -1452,6 +1601,8 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
 
     def _audit_event(self, level: str, event_type: str, **fields: Any) -> None:
         try:
+            # Merge sync context into every event for cross-module alignment
+            sync = dict(getattr(self, "_sync_ctx", {}) or {})
             evt = {
                 "ts": time.time(),
                 "level": str(level).upper(),
@@ -1460,6 +1611,7 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 "instrument": getattr(self, "symbol", "XAUUSD"),
                 "primary_timeframe": getattr(self, "primary_timeframe", "M15"),
                 "debug": bool(getattr(self, "debug", False)),
+                **sync,
                 **fields,
             }
             line = json.dumps(evt, ensure_ascii=False, separators=(",", ":"))

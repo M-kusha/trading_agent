@@ -67,6 +67,10 @@ class TradingSkill(Enum):
     DRAWDOWN_CONTROL = "drawdown_control"
     POSITION_SIZING = "position_sizing"
     PATIENCE = "patience"
+    SELECTIVITY = "selectivity"
+    CERTAINTY = "certainty"
+    DISCIPLINE = "discipline"
+    SETUP_QUALITY = "setup_quality"
     TREND_ALIGNMENT = "trend_alignment"
     RISK_REWARD = "risk_reward"
     CONSISTENCY = "consistency"
@@ -161,6 +165,8 @@ class CurriculumStageConfig:
             "enforce_no_new_trades_window",
             "enforce_weekend_block",
             "enforce_hard_close",
+            "min_bars_between_entries",
+            "min_bars_after_loss",
             "min_minutes_between_entries",
             "min_minutes_after_loss",
             "daily_drawdown_limit",
@@ -235,8 +241,11 @@ class CurriculumStageConfig:
             "truncation_winner_discount", "truncation_loser_extra_penalty",
             # Entry quality
             "entry_quality_integration", "entry_quality_weight",
+            # Setup quality / certainty
+            "setup_quality_enabled", "setup_quality_threshold", "setup_quality_bonus_scale", "hasty_entry_penalty",
+            "certainty_threshold", "entry_certainty_bonus", "low_certainty_penalty",
             # Session timing
-            "session_timing_enabled", "off_hours_trade_penalty", "prime_hours_trade_bonus",
+            "session_timing_enabled", "off_hours_trade_penalty", "prime_hours_trade_bonus", "time_of_day_quality",
             # v5.3 features
             "market_structure_enabled", "sr_proximity_bonus", "sr_proximity_penalty", "structure_alignment_bonus",
             "bos_alignment_bonus", "order_block_entry_bonus",
@@ -254,6 +263,18 @@ class CurriculumStageConfig:
             "hard_block_penalty", "soft_block_penalty",
             "per_step_shaping_enabled", "holding_cost_per_bar", "opportunity_bonus_scale",
             "patience_shaping_enabled", "patience_bonus_per_bar", "patience_quality_threshold",
+            "dynamic_patience_enabled", "patience_bonus_base", "patience_bonus_multiplier",
+            "observation_period_required", "min_bars_observation_before_entry",
+            "observation_completion_bonus", "premature_entry_penalty",
+            "strategic_patience_enabled", "setup_rejection_bonus", "max_setup_rejections_for_bonus",
+            "deliberation_time_tracking", "min_deliberation_bars", "optimal_deliberation_range",
+            "too_fast_penalty", "deliberation_quality_bonus",
+            "win_rate_preservation_enabled", "current_win_rate_threshold",
+            "selectivity_bonus", "win_rate_decay_penalty",
+            "psychological_factors_enabled", "fear_of_missing_out_penalty",
+            "revenge_trading_penalty", "overconfidence_penalty", "overconfidence_streak_threshold",
+            "compounding_success_enabled", "consecutive_quality_trades_bonus",
+            "quality_trade_r_multiple", "quality_trade_entry_quality", "quality_trade_exit_type",
             "per_step_min", "per_step_max",
             # Clipping
             "min_reward", "max_reward",

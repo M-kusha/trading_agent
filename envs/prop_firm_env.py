@@ -66,6 +66,7 @@ JAN 2026 UPGRADE (this patch):
 from __future__ import annotations
 
 import copy
+from collections import deque
 import warnings
 from datetime import datetime, date
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
@@ -101,8 +102,8 @@ try:
     OBS_BUILDER_AVAILABLE = True
 except Exception:
     PPOObservationBuilder = None  # type: ignore
-    PPO_OBS_SIZE = 84  # Updated for v5.5 Governor expansion
-    PPO_OBS_VERSION = "5.5"
+    PPO_OBS_SIZE = 90  # Updated for v5.7 setup/certainty expansion
+    PPO_OBS_VERSION = "5.7"
     OBS_BUILDER_AVAILABLE = False
 
 
@@ -438,7 +439,14 @@ class PropFirmTradingEnv(
             return
 
         try:
-            stage_cfg = getattr(self.curriculum, "stage_config", None)
+            # Prefer effective stage config (reward blending/recovery/selectivity)
+            if hasattr(self.curriculum, "get_effective_stage_config"):
+                try:
+                    stage_cfg = self.curriculum.get_effective_stage_config()
+                except Exception:
+                    stage_cfg = getattr(self.curriculum, "stage_config", None)
+            else:
+                stage_cfg = getattr(self.curriculum, "stage_config", None)
             if stage_cfg is None:
                 return
 
@@ -461,6 +469,7 @@ class PropFirmTradingEnv(
                     "max_positions": "max_positions",
                     "max_trades_per_day": "max_trades_per_day",
                     "max_trades_per_session": "max_trades_per_session",
+                    "max_trades_per_episode": "max_trades_per_episode",
                     "max_consecutive_losses": "max_consecutive_losses",
                     "loss_layer_stop": "loss_layer_stop",
                     # Session budget constraints (v5.5)
@@ -470,6 +479,10 @@ class PropFirmTradingEnv(
                     "enforce_no_new_trades_window": "enforce_no_new_trades_window",
                     "enforce_weekend_block": "enforce_weekend_block",
                     "enforce_hard_close": "enforce_hard_close",
+                    "observation_period_required": "observation_period_required",
+                    "min_bars_observation_before_entry": "min_bars_observation_before_entry",
+                    "min_bars_between_entries": "min_bars_between_entries",
+                    "min_bars_after_loss": "min_bars_after_loss",
                     "min_minutes_between_entries": "min_minutes_between_entries",
                     "min_minutes_after_loss": "min_minutes_after_loss",
                     "daily_drawdown_limit": "daily_drawdown_limit",
@@ -479,6 +492,7 @@ class PropFirmTradingEnv(
                     "emergency_close_threshold": "emergency_close_threshold",
                     "entry_quality_gate_enabled": "entry_quality_gate_enabled",
                     "entry_quality_threshold": "entry_quality_threshold",
+                    "min_setup_quality_for_entry": "min_setup_quality_for_entry",
                     "hard_stop_loss_eur": "hard_stop_loss_eur",
                     "soft_stop_loss_eur": "soft_stop_loss_eur",
                     "trailing_activation_eur": "trailing_activation_eur",
@@ -1161,6 +1175,13 @@ class PropFirmTradingEnv(
         mfe = max(0.0, float(pos.peak_pnl))
         bars_held = self.episode_bars - pos.entry_bar
         entry_quality = float(pos.entry_quality)
+        entry_certainty = float(getattr(pos, "entry_certainty", 0.5))
+        setup_quality = float(getattr(pos, "setup_quality", 0.5))
+        confluence_count = int(getattr(pos, "confluence_count", 0))
+        bars_since_setup = int(getattr(pos, "bars_since_setup", 0))
+        deliberation_bars = int(getattr(pos, "deliberation_bars", 0))
+        is_fomo_entry = bool(getattr(pos, "is_fomo_entry", False))
+        is_revenge_entry = bool(getattr(pos, "is_revenge_entry", False))
         
         data_spread = self._get_effective_data_spread(pos.instrument)
         exit_fill, exit_fee, _ = self._exec.fill_exit(mid, pos.direction, pos.lot_size, vol_proxy, data_spread=data_spread)
@@ -1212,6 +1233,14 @@ class PropFirmTradingEnv(
             entry_quality=entry_quality,
             direction=pos.direction,
             lot_size=pos.lot_size,
+            entry_bar=int(pos.entry_bar),
+            entry_certainty=entry_certainty,
+            setup_quality=setup_quality,
+            confluence_count=confluence_count,
+            bars_since_setup=bars_since_setup,
+            deliberation_bars=deliberation_bars,
+            is_fomo_entry=is_fomo_entry,
+            is_revenge_entry=is_revenge_entry,
             total_fees=total_fees,
             entry_dt=pos.entry_dt if hasattr(pos, "entry_dt") else None,
             entry_context=pos.entry_context if hasattr(pos, "entry_context") else None,  # v5.3
@@ -1304,6 +1333,12 @@ class PropFirmTradingEnv(
                 if self._at_or_after_hard_close(dt):
                     return False, "hard_close"
 
+        # Observation period gating (foundation discipline)
+        if getattr(self.config, "observation_period_required", False):
+            min_obs_bars = int(getattr(self.config, "min_bars_observation_before_entry", 0) or 0)
+            if min_obs_bars > 0 and int(getattr(self, "episode_bars", 0)) < min_obs_bars:
+                return False, "observation_period"
+
         if self.consecutive_losses >= self.config.max_consecutive_losses:
             return False, "max_consecutive_losses"
 
@@ -1320,22 +1355,35 @@ class PropFirmTradingEnv(
         if dt is not None:
             if self._last_entry_dt is not None:
                 mins = (dt - self._last_entry_dt).total_seconds() / 60.0
-                if mins < self.config.min_minutes_between_entries:
+                tfm = max(1, self._tf_minutes())
+                min_bars = int(getattr(self.config, "min_bars_between_entries", 0) or 0)
+                min_mins = float(getattr(self.config, "min_minutes_between_entries", 0) or 0.0)
+                effective_min_minutes = max(min_mins, min_bars * tfm)
+                if mins < effective_min_minutes:
                     return False, "min_entry_spacing"
 
             if self._last_loss_dt is not None:
                 mins = (dt - self._last_loss_dt).total_seconds() / 60.0
                 # Use governor-escalated cooldown
-                dynamic_after_loss = self._loss_layer_cooldown_minutes(self.config.min_minutes_after_loss)
+                tfm = max(1, self._tf_minutes())
+                min_bars_after = int(getattr(self.config, "min_bars_after_loss", 0) or 0)
+                min_mins_after = float(getattr(self.config, "min_minutes_after_loss", 0) or 0.0)
+                base_after_loss = max(min_mins_after, min_bars_after * tfm)
+                dynamic_after_loss = self._loss_layer_cooldown_minutes(base_after_loss)
                 if mins < dynamic_after_loss:
                     return False, "post_loss_cooldown"
         else:
             si = int(step_idx) if step_idx is not None else int(self.current_step)
             tfm = max(1, self._tf_minutes())
-            min_entry_bars = int(np.ceil(self.config.min_minutes_between_entries / tfm))
+            min_bars = int(getattr(self.config, "min_bars_between_entries", 0) or 0)
+            min_mins = float(getattr(self.config, "min_minutes_between_entries", 0) or 0.0)
+            min_entry_bars = max(1, min_bars, int(np.ceil(min_mins / tfm)))
             # Use governor-escalated cooldown
-            dynamic_after_loss = self._loss_layer_cooldown_minutes(self.config.min_minutes_after_loss)
-            post_loss_bars = int(np.ceil(dynamic_after_loss / tfm))
+            min_bars_after = int(getattr(self.config, "min_bars_after_loss", 0) or 0)
+            min_mins_after = float(getattr(self.config, "min_minutes_after_loss", 0) or 0.0)
+            base_after_loss = max(min_mins_after, min_bars_after * tfm)
+            dynamic_after_loss = self._loss_layer_cooldown_minutes(base_after_loss)
+            post_loss_bars = max(1, min_bars_after, int(np.ceil(dynamic_after_loss / tfm)))
 
             if self._last_entry_step is not None:
                 if (si - int(self._last_entry_step)) < max(1, min_entry_bars):
@@ -1449,6 +1497,25 @@ class PropFirmTradingEnv(
         self._episode_gross_profit = 0.0
         self._episode_total_costs = 0.0
 
+        # Setup/discipline tracking (patience/selectivity)
+        self._setup_active = False
+        self._setup_active_start_bar = None
+        self._setup_taken_during_active = False
+        self._setup_skipped_count = 0
+        self._setup_rejections_since_last_trade = 0
+        self._bars_since_last_setup = 0
+        self._last_setup_quality = 0.0
+        self._setup_quality_history = deque(maxlen=20)
+        self._setup_quality_trend = 0.0
+        self._confluence_increasing = False
+        self._last_trade_entry_bar = None
+        self._bars_between_trades = []
+        self._max_patience_bars = 0
+        self._fomo_trade_count = 0
+        self._revenge_trade_count = 0
+        self._observation_bonus_given = False
+        self._quality_trade_streak = 0
+
         self._ohlcv_cache_key = None
         self._ohlcv_cache = {}
 
@@ -1460,6 +1527,8 @@ class PropFirmTradingEnv(
         self._quote_cache_ask = 0.0
 
         self._step_entry_quality_cache = {}
+        self._step_entry_certainty_cache = {}
+        self._step_setup_quality_cache = {}
         self._step_expert_signals_cache = None
 
         self._apply_domain_randomization()
@@ -1541,6 +1610,8 @@ class PropFirmTradingEnv(
 
         # Step caches
         self._step_entry_quality_cache = {}
+        self._step_entry_certainty_cache = {}
+        self._step_setup_quality_cache = {}
         self._step_expert_signals_cache = None
 
         intent, size_mult = self._decode_action(int(action))
@@ -1669,6 +1740,48 @@ class PropFirmTradingEnv(
         current_dd, current_daily_dd = self._calc_dds()
         hard_ok, hard_block = self._hard_entry_allowed(dt)
 
+        # Compute qualities once per step (cached in mixins)
+        q_long = self._get_step_entry_quality(inst, "long")
+        q_short = self._get_step_entry_quality(inst, "short")
+        cert_long = self._get_step_entry_certainty(inst, "long")
+        cert_short = self._get_step_entry_certainty(inst, "short")
+        setup_long, confluence_long = self._get_step_setup_quality(inst, "long")
+        setup_short, confluence_short = self._get_step_setup_quality(inst, "short")
+
+        # Setup tracking (patience/selectivity)
+        setup_threshold = float(getattr(self.config.reward, "setup_quality_threshold", 0.70))
+        best_setup_quality = setup_long if setup_long >= setup_short else setup_short
+        best_confluence = confluence_long if setup_long >= setup_short else confluence_short
+
+        if best_setup_quality >= setup_threshold:
+            if not self._setup_active:
+                self._setup_active = True
+                self._setup_active_start_bar = int(self.episode_bars)
+                self._setup_taken_during_active = False
+            self._bars_since_last_setup = 0
+        else:
+            if self._setup_active and not self._setup_taken_during_active:
+                self._setup_skipped_count += 1
+                self._setup_rejections_since_last_trade += 1
+            self._setup_active = False
+            self._setup_active_start_bar = None
+            self._bars_since_last_setup += 1
+
+        # Track setup quality trend for maturity metrics
+        try:
+            self._setup_quality_history.append(float(best_setup_quality))
+            if len(self._setup_quality_history) >= 2:
+                prev_mean = float(np.mean(list(self._setup_quality_history)[:-1]))
+                self._setup_quality_trend = float(best_setup_quality - prev_mean)
+                self._confluence_increasing = bool(best_setup_quality > self._last_setup_quality)
+            else:
+                self._setup_quality_trend = 0.0
+                self._confluence_increasing = False
+            self._last_setup_quality = float(best_setup_quality)
+        except Exception:
+            self._setup_quality_trend = 0.0
+            self._confluence_increasing = False
+
         # Execute pending entry (fill)
         if self.position is None and self.pending_entry is not None:
             if self.current_step >= int(self.pending_entry["fill_step"]):
@@ -1678,6 +1791,13 @@ class PropFirmTradingEnv(
                     lot = float(self.pending_entry["lot"])
                     initial_risk = float(self.pending_entry["initial_risk"])
                     entry_quality = float(self.pending_entry.get("entry_quality", 0.5))
+                    entry_certainty = float(self.pending_entry.get("entry_certainty", 0.5))
+                    setup_quality = float(self.pending_entry.get("setup_quality", 0.5))
+                    confluence_count = int(self.pending_entry.get("confluence_count", 0))
+                    bars_since_setup = int(self.pending_entry.get("bars_since_setup", 0))
+                    deliberation_bars = int(self.pending_entry.get("deliberation_bars", 0))
+                    is_fomo_entry = bool(self.pending_entry.get("is_fomo_entry", False))
+                    is_revenge_entry = bool(self.pending_entry.get("is_revenge_entry", False))
                     
                     data_spread = self._get_effective_data_spread(inst)
                     entry_fill, entry_fee, _ = self._exec.fill_entry(mid, direction, lot, vol_proxy, data_spread=data_spread)
@@ -1699,6 +1819,13 @@ class PropFirmTradingEnv(
                         initial_risk_eur=initial_risk,
                         entry_fee_eur=float(entry_fee),
                         entry_quality=entry_quality,
+                        entry_certainty=entry_certainty,
+                        setup_quality=setup_quality,
+                        confluence_count=confluence_count,
+                        bars_since_setup=bars_since_setup,
+                        deliberation_bars=deliberation_bars,
+                        is_fomo_entry=is_fomo_entry,
+                        is_revenge_entry=is_revenge_entry,
                         entry_context=self._capture_entry_context(inst),
                     )
                     self.position = pos
@@ -1716,12 +1843,46 @@ class PropFirmTradingEnv(
                     if dt is not None:
                         self._last_entry_dt = dt
                     self._last_entry_step = int(self.current_step)
+                    if self._setup_active:
+                        self._setup_taken_during_active = True
+                    self._setup_rejections_since_last_trade = 0
+
+                    # Bars between trades for patience metrics
+                    if self._last_trade_entry_bar is not None:
+                        bars_between = int(self.episode_bars - int(self._last_trade_entry_bar))
+                        self._bars_between_trades.append(bars_between)
+                        self._max_patience_bars = max(self._max_patience_bars, bars_between)
+                    self._last_trade_entry_bar = int(self.episode_bars)
+
+                    # Psychological trade counters
+                    if is_fomo_entry:
+                        self._fomo_trade_count += 1
+                    if is_revenge_entry:
+                        self._revenge_trade_count += 1
+                else:
+                    # Pending entry was accepted but could not fill; allow setup to be skipped
+                    if self._setup_active:
+                        self._setup_taken_during_active = False
 
                 self.pending_entry = None
 
         # Attempt new entry
         attempted_entry = (self.position is None and self.pending_entry is None and intent in ("long", "short"))
-        entry_quality = self._get_step_entry_quality(inst, intent) if intent in ("long", "short") else 0.5
+        if intent == "long":
+            entry_quality = float(q_long)
+            entry_certainty = float(cert_long)
+            setup_quality = float(setup_long)
+            confluence_count = int(confluence_long)
+        elif intent == "short":
+            entry_quality = float(q_short)
+            entry_certainty = float(cert_short)
+            setup_quality = float(setup_short)
+            confluence_count = int(confluence_short)
+        else:
+            entry_quality = 0.5
+            entry_certainty = 0.5
+            setup_quality = 0.5
+            confluence_count = 0
 
         entry_allowed = hard_ok
         block_reason = hard_block
@@ -1731,6 +1892,12 @@ class PropFirmTradingEnv(
             block_reason = "insufficient_bars_for_fill"
 
         if attempted_entry:
+            # Episode trade cap (selectivity phase or explicit config)
+            max_trades_ep = int(getattr(self.config, "max_trades_per_episode", 0) or 0)
+            if max_trades_ep > 0 and int(self.total_trades) >= max_trades_ep:
+                entry_allowed = False
+                block_reason = "max_trades_per_episode"
+
             # Loss-layer governor: dynamic entry quality threshold
             # Stricter after consecutive losses using configurable schedule
             base_threshold = float(self.config.entry_quality_threshold)
@@ -1740,15 +1907,35 @@ class PropFirmTradingEnv(
                 entry_allowed = False
                 block_reason = "entry_quality_gate"
 
+            # Setup quality gate (optional)
+            min_setup_quality = float(getattr(self.config, "min_setup_quality_for_entry", 0.0) or 0.0)
+            if min_setup_quality > 0.0 and float(setup_quality) < min_setup_quality:
+                entry_allowed = False
+                block_reason = "setup_quality_gate"
+
             if entry_allowed:
                 lot, initial_risk = self._calculate_lot_size(size_mult)
+                deliberation_bars = 0
+                if self._setup_active and self._setup_active_start_bar is not None:
+                    deliberation_bars = int(self.episode_bars - int(self._setup_active_start_bar))
+                is_fomo_entry = bool(setup_quality < float(getattr(self.config.reward, "setup_quality_threshold", 0.70)))
+                is_revenge_entry = bool(self.consecutive_losses >= 2)
                 self.pending_entry = {
                     "direction": intent,
                     "lot": lot,
                     "initial_risk": initial_risk,
                     "fill_step": self.current_step + latency,
                     "entry_quality": entry_quality,
+                    "entry_certainty": entry_certainty,
+                    "setup_quality": setup_quality,
+                    "confluence_count": confluence_count,
+                    "bars_since_setup": int(self._bars_since_last_setup),
+                    "deliberation_bars": deliberation_bars,
+                    "is_fomo_entry": is_fomo_entry,
+                    "is_revenge_entry": is_revenge_entry,
                 }
+                if self._setup_active:
+                    self._setup_taken_during_active = True
 
         # Blocked entry penalty
         if attempted_entry and not entry_allowed:
@@ -1757,6 +1944,7 @@ class PropFirmTradingEnv(
                 "drawdown_headroom",
                 "max_trades_per_day",
                 "max_trades_per_session",
+                "max_trades_per_episode",
                 "post_loss_cooldown",
                 "max_consecutive_losses",
                 "weekend_block",
@@ -1876,20 +2064,29 @@ class PropFirmTradingEnv(
                         self._episode_reward_component_counts.get("activity_consistency_penalty", 0) + 1
                     )
 
-        # Compute qualities using step cache (computed once per step, reused)
-        q_long = self._get_step_entry_quality(inst, "long")
-        q_short = self._get_step_entry_quality(inst, "short")
-
         # Per-step shaping (if enabled)
         bars_in_pos = (self.episode_bars - self.position.entry_bar) if self.position else 0
         # entry_accepted: True ONLY when a pending_entry was created this step
         # This prevents exploration bonus farming by spamming blocked entries
         entry_accepted = (attempted_entry and entry_allowed and self.pending_entry is not None)
+        if self._setup_active and self._setup_active_start_bar is not None:
+            self._current_deliberation_bars = int(self.episode_bars - int(self._setup_active_start_bar))
+        else:
+            self._current_deliberation_bars = 0
         shaping = self._compute_per_step_shaping(
             has_position=self.position is not None,
             bars_in_position=bars_in_pos,
             entry_quality_long=q_long,
             entry_quality_short=q_short,
+            entry_certainty_long=cert_long,
+            entry_certainty_short=cert_short,
+            setup_quality_long=setup_long,
+            setup_quality_short=setup_short,
+            confluence_long=confluence_long,
+            confluence_short=confluence_short,
+            bars_since_setup=int(self._bars_since_last_setup),
+            setup_rejections_since_last_trade=int(self._setup_rejections_since_last_trade),
+            entry_direction=str(intent),
             entry_accepted=entry_accepted,
         )
         reward += shaping
@@ -1932,6 +2129,21 @@ class PropFirmTradingEnv(
             "entry_quality": float(entry_quality),
             "entry_quality_long": float(q_long),
             "entry_quality_short": float(q_short),
+            "entry_certainty": float(entry_certainty),
+            "entry_certainty_long": float(cert_long),
+            "entry_certainty_short": float(cert_short),
+            "setup_quality": float(setup_quality),
+            "setup_quality_long": float(setup_long),
+            "setup_quality_short": float(setup_short),
+            "confluence_count": int(confluence_count),
+            "confluence_long": int(confluence_long),
+            "confluence_short": int(confluence_short),
+            "bars_since_last_setup": int(self._bars_since_last_setup),
+            "setup_quality_trend": float(self._setup_quality_trend),
+            "confluence_increasing": bool(self._confluence_increasing),
+            "setup_skipped_count": int(self._setup_skipped_count),
+            "fomo_trade_count": int(self._fomo_trade_count),
+            "revenge_trade_count": int(self._revenge_trade_count),
             "consecutive_losses": int(self.consecutive_losses),
             "consecutive_wins": int(self.consecutive_wins),
             "last_net_trade_pnl": float(close_result.net_pnl) if close_result else 0.0,
@@ -2134,6 +2346,14 @@ class PropFirmTradingEnv(
                 "avg_r_multiple": 0.0,
                 "avg_mae": 0.0,
                 "avg_bars_held": 0.0,
+                "avg_setup_quality": 0.0,
+                "avg_entry_certainty": 0.0,
+                "min_setup_quality_for_entry": 0.0,
+                "avg_bars_between_trades": 0.0,
+                "setup_skipped_count": int(self._setup_skipped_count),
+                "fomo_trade_count": int(self._fomo_trade_count),
+                "revenge_trade_count": int(self._revenge_trade_count),
+                "max_patience_bars": int(self._max_patience_bars),
                 "exit_quality_distribution": {},
                 "consecutive_losses": int(self.consecutive_losses),
                 "consecutive_wins": int(self.consecutive_wins),
@@ -2192,6 +2412,18 @@ class PropFirmTradingEnv(
             "short_avg_pnl": float(sum(r.net_pnl for r in short_trades) / len(short_trades)) if short_trades else 0.0,
         }
 
+        # Patience/selectivity metrics
+        setup_qualities = [float(getattr(r, "setup_quality", 0.0)) for r in results]
+        entry_certainties = [float(getattr(r, "entry_certainty", 0.0)) for r in results]
+        min_setup_quality_for_entry = min(setup_qualities) if setup_qualities else 0.0
+        avg_setup_quality = float(sum(setup_qualities) / len(setup_qualities)) if setup_qualities else 0.0
+        avg_entry_certainty = float(sum(entry_certainties) / len(entry_certainties)) if entry_certainties else 0.0
+        avg_bars_between = (
+            float(sum(self._bars_between_trades) / len(self._bars_between_trades))
+            if self._bars_between_trades
+            else 0.0
+        )
+
         return {
             "trade_count": len(results),
             "max_drawdown": float(self._episode_max_drawdown),
@@ -2207,6 +2439,14 @@ class PropFirmTradingEnv(
             "avg_mfe": float(sum(r.mfe for r in results) / len(results)) if results else 0.0,
             "avg_bars_held": float(sum(r.bars_held for r in results) / len(results)) if results else 0.0,
             "avg_entry_quality": float(sum(r.entry_quality for r in results) / len(results)) if results else 0.5,
+            "avg_setup_quality": avg_setup_quality,
+            "avg_entry_certainty": avg_entry_certainty,
+            "min_setup_quality_for_entry": float(min_setup_quality_for_entry),
+            "avg_bars_between_trades": avg_bars_between,
+            "setup_skipped_count": int(self._setup_skipped_count),
+            "fomo_trade_count": int(self._fomo_trade_count),
+            "revenge_trade_count": int(self._revenge_trade_count),
+            "max_patience_bars": int(self._max_patience_bars),
             "exit_quality_distribution": exit_dist,
             "direction_stats": direction_stats,  # NEW: Buy/Sell breakdown
             "profit_factor": float(pf),

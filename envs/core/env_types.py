@@ -187,11 +187,27 @@ class RewardConfig:
     entry_quality_weight: float = 0.2
 
     # --------------------
+    # Setup quality (confluence)
+    # --------------------
+    setup_quality_enabled: bool = False
+    setup_quality_threshold: float = 0.70
+    setup_quality_bonus_scale: float = 0.15
+    hasty_entry_penalty: float = 0.08
+
+    # --------------------
+    # Entry certainty shaping
+    # --------------------
+    certainty_threshold: float = 0.70
+    entry_certainty_bonus: Dict[str, float] = field(default_factory=dict)
+    low_certainty_penalty: float = 0.15
+
+    # --------------------
     # Session timing rewards
     # --------------------
     session_timing_enabled: bool = True
     off_hours_trade_penalty: float = 0.15
     prime_hours_trade_bonus: float = 0.05
+    time_of_day_quality: Dict[str, float] = field(default_factory=dict)
 
     # --------------------
     # Market structure rewards (v5.3)
@@ -285,6 +301,47 @@ class RewardConfig:
     patience_shaping_enabled: bool = False
     patience_bonus_per_bar: float = 0.0          # recommended 0.0005–0.002 when enabled
     patience_quality_threshold: float = 0.35     # if best(q_long,q_short) < threshold, reward waiting    
+    dynamic_patience_enabled: bool = False
+    patience_bonus_base: float = 0.001
+    patience_bonus_multiplier: Dict[str, float] = field(default_factory=dict)
+
+    # Observation period (foundation discipline)
+    observation_period_required: bool = False
+    min_bars_observation_before_entry: int = 0
+    observation_completion_bonus: float = 0.0
+    premature_entry_penalty: float = 0.0
+
+    # Strategic patience (reward skipping setups before entering)
+    strategic_patience_enabled: bool = False
+    setup_rejection_bonus: float = 0.0
+    max_setup_rejections_for_bonus: int = 0
+
+    # Deliberation time (thinking before acting)
+    deliberation_time_tracking: bool = False
+    min_deliberation_bars: int = 0
+    optimal_deliberation_range: Tuple[int, int] = (0, 0)
+    too_fast_penalty: float = 0.0
+    deliberation_quality_bonus: float = 0.0
+
+    # Win-rate preservation (avoid quality decay)
+    win_rate_preservation_enabled: bool = False
+    current_win_rate_threshold: float = 0.45
+    selectivity_bonus: float = 0.0
+    win_rate_decay_penalty: float = 0.0
+
+    # Psychological factors (FOMO / revenge / overconfidence)
+    psychological_factors_enabled: bool = False
+    fear_of_missing_out_penalty: float = 0.0
+    revenge_trading_penalty: float = 0.0
+    overconfidence_penalty: float = 0.0
+    overconfidence_streak_threshold: int = 3
+
+    # Compounding success (streaks of high-quality trades)
+    compounding_success_enabled: bool = False
+    consecutive_quality_trades_bonus: List[float] = field(default_factory=list)
+    quality_trade_r_multiple: float = 1.0
+    quality_trade_entry_quality: float = 0.6
+    quality_trade_exit_type: str = "trailing_stop"
     # C4 FIX: exploration_bonus must be in RewardConfig for shaping to read it
     # Used in early curriculum stages to encourage trade attempts
     exploration_bonus: float = 0.0
@@ -295,8 +352,8 @@ class RewardConfig:
     # --------------------
     # Reward clipping (global)
     # --------------------
-    min_reward: float = -5.0
-    max_reward: float = 5.0
+    min_reward: float = -50.0
+    max_reward: float = 50.0
 
 
 def load_risk_policy() -> Dict[str, Any]:
@@ -364,6 +421,7 @@ class PropFirmConfig:
     # --------------------
     max_trades_per_day: int = 20
     max_trades_per_session: int = 10
+    max_trades_per_episode: int = 0
     max_consecutive_losses: int = 3
     loss_layer_stop: int = 5  # Hard stop-trading layer after N consecutive losses
     
@@ -376,6 +434,12 @@ class PropFirmConfig:
     # --------------------
     # Timing policy
     # --------------------
+    # Bar-based timing (preferred). If set > 0, env will honor bars and
+    # fall back to minutes only when bars are unset.
+    observation_period_required: bool = False
+    min_bars_observation_before_entry: int = 0
+    min_bars_between_entries: int = 0
+    min_bars_after_loss: int = 0
     min_minutes_between_entries: int = 5
     min_minutes_after_loss: int = 15
 
@@ -400,11 +464,12 @@ class PropFirmConfig:
     # --------------------
     entry_quality_gate_enabled: bool = True
     entry_quality_threshold: float = 0.35
+    min_setup_quality_for_entry: float = 0.0
 
     # --------------------
     # PPO env
     # --------------------
-    observation_size: int = 76  # Updated for v5.4 HTF expansion
+    observation_size: int = 90  # Updated for v5.7 setup/certainty expansion
     max_steps_per_episode: int = 2000
     gamma: float = 0.95
 
@@ -499,6 +564,8 @@ class PropFirmConfig:
             self.max_consecutive_losses = pm.get("max_consecutive_losses", self.max_consecutive_losses)
 
             timing = policy.get("timing_policy", {})
+            self.min_bars_between_entries = timing.get("min_bars_between_entries", self.min_bars_between_entries)
+            self.min_bars_after_loss = timing.get("min_bars_after_loss", self.min_bars_after_loss)
             self.min_minutes_between_entries = timing.get("min_minutes_between_entries", self.min_minutes_between_entries)
             self.min_minutes_after_loss = timing.get("min_minutes_after_loss", self.min_minutes_after_loss)
             self.max_trades_per_session = timing.get("max_trades_per_session", self.max_trades_per_session)
@@ -531,6 +598,13 @@ class PropPosition:
     lowest_pnl: float = 0.0
     entry_fee_eur: float = 0.0
     entry_quality: float = 0.5
+    entry_certainty: float = 0.5
+    setup_quality: float = 0.5
+    confluence_count: int = 0
+    bars_since_setup: int = 0
+    deliberation_bars: int = 0
+    is_fomo_entry: bool = False
+    is_revenge_entry: bool = False
     entry_context: Optional[Dict[str, Any]] = None  # Market structure context at entry (v5.3)
 
 
@@ -546,6 +620,14 @@ class TradeResult:
     entry_quality: float
     direction: str
     lot_size: float
+    entry_bar: int = 0
+    entry_certainty: float = 0.5
+    setup_quality: float = 0.5
+    confluence_count: int = 0
+    bars_since_setup: int = 0
+    deliberation_bars: int = 0
+    is_fomo_entry: bool = False
+    is_revenge_entry: bool = False
     total_fees: float = 0.0
     entry_dt: Optional[datetime] = None
     entry_context: Optional[Dict[str, Any]] = None  # v5.3

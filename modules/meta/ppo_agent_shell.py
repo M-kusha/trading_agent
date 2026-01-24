@@ -53,6 +53,7 @@ from modules.meta.ppo_observation_builder import (
     PPOObservationBuilder,
     get_ppo_observation_builder,
     FEATURE_GROUPS,
+    PRIMARY_TIMEFRAME,
 )
 
 from modules.meta.arbiter_logic import StrategyInfo, TradingModeInfo, WorldModelInfo
@@ -103,6 +104,11 @@ class PPOShellConfig:
     # When False, only physical impossibilities are masked (matches training when soft rules were
     # learned via penalties).
     live_mask_enforce_hard_rules: bool = False
+
+    # Entry cadence (training parity)
+    # When True, NEW entries are only allowed once per new PRIMARY_TIMEFRAME bar (first cycle that sees a new bar timestamp).
+    # This reduces mid-bar "machine-gunner" behavior and more closely matches training's step-per-bar cadence.
+    entries_require_new_primary_bar: bool = False
 
     # ═══════════════════════════════════════════════════════════════════
     # WARMUP SETTINGS (v3.2.0)
@@ -160,6 +166,11 @@ class PPOAgentShell(
                 if hasattr(self._cfg.core_config, key):
                     setattr(self._cfg.core_config, key, val)
 
+        # Hard gate: the strict PPO observation builder supports only PRIMARY_INSTRUMENT.
+        # This prevents EURUSD (or any other symbol) from being processed/log-spammed here.
+        self._cfg.primary_instrument = PRIMARY_INSTRUMENT
+        self._cfg.instruments = [PRIMARY_INSTRUMENT]
+
         # Debug flag (core_config.debug can also enable it)
         self.debug: bool = self._cfg.debug or self._cfg.core_config.debug
 
@@ -177,6 +188,10 @@ class PPOAgentShell(
         self._last_observations: Dict[str, np.ndarray] = {}
         self._last_decisions: Dict[str, InstrumentDecision] = {}
         self._last_multi_decision: Optional[ArbiterMultiDecision] = None
+        self._trade_open_allowed: bool = True
+        self._trade_open_gate: Dict[str, Any] = {}
+        self._in_warmup: bool = False
+        self._last_seen_primary_bar_ts: Dict[str, str] = {}
 
         self._health_status: str = "healthy"
         self.circuit_breaker: Dict[str, Any] = {}
@@ -449,6 +464,7 @@ class PPOAgentShell(
                 and not self._warmup_complete 
                 and self._session_cycle_count <= self._cfg.warmup_cycles
             )
+            self._in_warmup = bool(in_warmup)
             
             if in_warmup:
                 remaining = self._cfg.warmup_cycles - self._session_cycle_count
@@ -521,6 +537,14 @@ class PPOAgentShell(
             # Derive a quick "positions exist" flag for warmup/focus blocking logic
             positions_exist = any(bool(v.get("has", False)) for v in positions_by_instrument.values() if isinstance(v, dict))
 
+            # 2.5) Compute a single global gate for NEW entries (used by action mask + final safety check)
+            self._update_trade_open_gate(
+                in_warmup=in_warmup,
+                memory_info=memory_info,
+                risk_info=risk_info,
+                positions_by_instrument=positions_by_instrument,
+            )
+
             # 3) Make multi-instrument decision (with full integration)
             multi_decision = self.arbiter.make_multi_instrument_decision(
                 observations=observations,
@@ -543,6 +567,13 @@ class PPOAgentShell(
                     multi_decision,
                     position_ctx_raw or {},
                 )
+
+            # Final safety: never allow NEW entries when trade_open_allowed is false.
+            # Position management (close/hold) remains allowed.
+            multi_decision = self._apply_trade_open_gate_to_decision(
+                multi_decision=multi_decision,
+                positions_by_instrument=positions_by_instrument,
+            )
 
             # ═══════════════════════════════════════════════════════════════════
             # 3.6) WARMUP GATE BLOCK (v3.2.0)
@@ -930,13 +961,13 @@ class PPOAgentShell(
         This is called by PPOCore.select_action() when using a MaskablePPO model.
         Implements the same masking logic as prop_firm_env.action_masks() for parity.
         """
+        has_position = False
         try:
             # Get current position state from SmartInfoBus
             position_ctx = self._read_position_context_raw() or {}
             positions = position_ctx.get("positions", {})
             
             # Check if any position exists (any instrument)
-            has_position = False
             for inst_data in positions.values():
                 if isinstance(inst_data, dict) and int(inst_data.get("side", 0)) != 0:
                     has_position = True
@@ -1096,6 +1127,7 @@ class PPOAgentShell(
             # Build mask
             mask = self._live_mask_builder.get_action_mask(
                 has_position=has_position,
+                trade_open_allowed=bool(getattr(self, "_trade_open_allowed", True)),
                 has_pending_entry=False,  # Not tracked in live (fill is instant)
                 has_pending_exit=False,
                 current_dd=current_dd,
@@ -1111,10 +1143,13 @@ class PPOAgentShell(
             return mask
             
         except Exception as e:
-            # On error, return all-allowed mask (safe fallback)
-            self.logger.warning(f"[PPO] Action mask error: {e}, allowing all actions")
-            n_actions = self._live_mask_builder.config.n_actions
-            return np.ones(n_actions, dtype=np.bool_)
+            # On error, FAIL CLOSED: allow HOLD always; allow CLOSE only if a position exists.
+            self.logger.warning(f"[PPO] Action mask error: {e}, failing closed")
+            n_actions = int(self._live_mask_builder.config.n_actions)
+            safe_mask = np.zeros(n_actions, dtype=np.bool_)
+            safe_mask[0] = True  # HOLD is always allowed
+            safe_mask[-1] = bool(has_position)  # CLOSE (n_actions-1) only if in a position
+            return safe_mask
 
     def _gather_memory_info(self, expert_signals: Dict[str, Any]) -> MemoryGateInfo:
         """Extract normalized MemoryGateInfo from aggregated signals."""
@@ -1384,6 +1419,243 @@ class PPOAgentShell(
             else:
                 result[inst] = {"has": False, "side": 0, "lots": 0.0, "age_hours": 0.0, "unrealized_pnl": 0.0}
         return result
+
+    def _update_trade_open_gate(
+        self,
+        *,
+        in_warmup: bool,
+        memory_info: MemoryGateInfo,
+        risk_info: RiskInfo,
+        positions_by_instrument: Dict[str, Dict[str, Any]],
+    ) -> None:
+        """
+        Compute and cache a single "trade_open_allowed" gate for NEW entries.
+
+        This gate is consumed by:
+        - MaskablePPO action masking (prevents PPO loopholes)
+        - A final post-decision safety pass (prevents accidental entry)
+        """
+        # Determine whether we should fail-closed (live/paper) vs fail-open (training/backtest).
+        exec_mode = None
+        try:
+            exec_mode = self.smart_bus.get("execution_mode", "PPOAgentShell", default=None)
+        except Exception:
+            exec_mode = None
+        exec_mode_str = str(exec_mode or "").lower()
+        is_live_exec = exec_mode_str in ("live", "paper")
+
+        # EntryTimingController output (per instrument)
+        try:
+            entry_timing_all = self.smart_bus.get("entry_timing", "PPOAgentShell", default={}) or {}
+        except Exception:
+            entry_timing_all = {}
+        if not isinstance(entry_timing_all, dict):
+            entry_timing_all = {}
+
+        # Instrument cooldown state (per instrument)
+        try:
+            cooldown_state = self.smart_bus.get(
+                "instrument_cooldown_state",
+                "PPOAgentShell",
+                default={},
+            ) or {}
+        except Exception:
+            cooldown_state = {}
+        if not isinstance(cooldown_state, dict):
+            cooldown_state = {}
+
+        # Seasonality gate (authoritative for time windows)
+        seasonality_allowed = True
+        seasonality_reason = "unknown"
+        try:
+            seasonality_allowed, seasonality_reason = self.arbiter._check_seasonality_time_gate()
+        except Exception as e:  # noqa: BLE001
+            seasonality_allowed = False if is_live_exec else True
+            seasonality_reason = f"error:{type(e).__name__}"
+
+        # Optional entry cadence gate: only allow NEW entries once per new PRIMARY_TIMEFRAME bar.
+        # This is a live-only safety knob (training already advances per bar).
+        require_new_primary_bar = bool(getattr(self._cfg, "entries_require_new_primary_bar", False)) and bool(is_live_exec)
+        primary_bar_ts_by_inst: Dict[str, Optional[str]] = {}
+        if require_new_primary_bar:
+            for inst in self._cfg.instruments:
+                alias_key = f"market_data_{inst.replace('/', '_')}_{PRIMARY_TIMEFRAME}"
+                try:
+                    bar_blob = self.smart_bus.get(alias_key, "PPOAgentShell", default=None)
+                except Exception:
+                    bar_blob = None
+                ts_raw = bar_blob.get("timestamp") if isinstance(bar_blob, dict) else None
+                if isinstance(ts_raw, datetime):
+                    ts_key = ts_raw.isoformat()
+                elif isinstance(ts_raw, str) and ts_raw:
+                    ts_key = ts_raw
+                else:
+                    ts_key = None
+                primary_bar_ts_by_inst[inst] = ts_key
+
+        def _lookup_inst(d: Dict[str, Any], inst: str) -> Any:
+            if inst in d:
+                return d.get(inst)
+            inst_norm = _norm_symbol(inst)
+            for k, v in d.items():
+                if isinstance(k, str) and _norm_symbol(k) == inst_norm:
+                    return v
+            return None
+
+        per_inst: Dict[str, Dict[str, Any]] = {}
+        any_allowed = False
+
+        for inst in self._cfg.instruments:
+            has_pos = bool(positions_by_instrument.get(inst, {}).get("has", False))
+            reasons: List[str] = []
+
+            # This gate controls NEW entries only; position management is allowed.
+            if not has_pos:
+                if in_warmup:
+                    reasons.append("WARMUP_BLOCKED")
+
+                if not seasonality_allowed:
+                    reasons.append(f"SEASONALITY_BLOCKED({seasonality_reason})")
+
+                if bool(getattr(memory_info, "veto", False)):
+                    reasons.append("MEMORY_VETO")
+
+                if bool(getattr(risk_info, "hard_block", False)):
+                    reasons.append("RISK_HARD_BLOCK")
+                if bool(getattr(risk_info, "emergency_mode", False)):
+                    reasons.append("RISK_EMERGENCY_MODE")
+
+                cd = _lookup_inst(cooldown_state, inst)
+                if isinstance(cd, dict) and bool(cd.get("on_cooldown", False)):
+                    rem = float(cd.get("cooldown_remaining", 0.0) or 0.0)
+                    reasons.append(f"COOLDOWN({rem:.0f}s)")
+
+                timing = _lookup_inst(entry_timing_all, inst)
+                if not isinstance(timing, dict):
+                    if is_live_exec:
+                        reasons.append("ENTRY_TIMING_MISSING")
+                else:
+                    if not bool(timing.get("entry_allowed", True)):
+                        block_reasons = timing.get("block_reasons") or timing.get("reasons") or []
+                        if isinstance(block_reasons, list) and block_reasons:
+                            br = ",".join(str(x) for x in block_reasons[:4])
+                            reasons.append(f"ENTRY_TIMING_BLOCKED({br})")
+                        else:
+                            reasons.append("ENTRY_TIMING_BLOCKED")
+
+                if require_new_primary_bar:
+                    ts_key = primary_bar_ts_by_inst.get(inst)
+                    if not ts_key:
+                        reasons.append(f"PRIMARY_BAR_TS_MISSING({PRIMARY_TIMEFRAME})")
+                    else:
+                        last_seen = self._last_seen_primary_bar_ts.get(inst)
+                        if last_seen == ts_key:
+                            reasons.append(f"SAME_PRIMARY_BAR({PRIMARY_TIMEFRAME})")
+
+            allowed = len(reasons) == 0
+            per_inst[inst] = {
+                "trade_open_allowed": bool(allowed),
+                "reasons": reasons,
+                "has_position": bool(has_pos),
+            }
+            if allowed:
+                any_allowed = True
+
+        # Update "last seen" bar timestamps after evaluation so the first cycle that sees a new bar is eligible.
+        if require_new_primary_bar:
+            for inst in self._cfg.instruments:
+                ts_key = primary_bar_ts_by_inst.get(inst)
+                if ts_key:
+                    self._last_seen_primary_bar_ts[inst] = ts_key
+
+        # Global view: single-instrument pipeline uses the primary instrument gate.
+        primary_gate = per_inst.get(self._cfg.primary_instrument, {})
+        trade_open_allowed = bool(primary_gate.get("trade_open_allowed", any_allowed))
+
+        gate: Dict[str, Any] = {
+            "trade_open_allowed": trade_open_allowed,
+            "primary_instrument": self._cfg.primary_instrument,
+            "per_instrument": per_inst,
+            "seasonality_allowed": bool(seasonality_allowed),
+            "seasonality_reason": seasonality_reason,
+            "in_warmup": bool(in_warmup),
+            "ts": datetime.utcnow().isoformat() + "Z",
+        }
+
+        self._trade_open_allowed = trade_open_allowed
+        self._trade_open_gate = gate
+
+        # Publish for transparency/debugging (best-effort; never blocks trading)
+        try:
+            self.smart_bus.set(
+                "trade_open_allowed",
+                trade_open_allowed,
+                module="PPOAgent",
+                thesis="Global gate for NEW entries",
+            )
+            self.smart_bus.set(
+                "trade_open_gate",
+                gate,
+                module="PPOAgent",
+                thesis="Trade-open gate details (NEW entries only)",
+            )
+        except Exception:
+            pass
+
+    def _apply_trade_open_gate_to_decision(
+        self,
+        *,
+        multi_decision: ArbiterMultiDecision,
+        positions_by_instrument: Dict[str, Dict[str, Any]],
+    ) -> ArbiterMultiDecision:
+        """Force-flat any NEW entry when trade_open_allowed is false (fail-safe)."""
+        gate = self._trade_open_gate or {}
+        per_inst = gate.get("per_instrument", {}) if isinstance(gate, dict) else {}
+
+        # Attach to global meta for traceability
+        try:
+            if isinstance(multi_decision.global_meta, dict):
+                multi_decision.global_meta["trade_open_gate"] = gate
+        except Exception:
+            pass
+
+        for inst, decision in multi_decision.instruments.items():
+            has_pos = bool(positions_by_instrument.get(inst, {}).get("has", False))
+            if has_pos:
+                continue
+            if decision.direction not in ("long", "short"):
+                continue
+
+            inst_gate = per_inst.get(inst) if isinstance(per_inst, dict) else None
+            if isinstance(inst_gate, dict) and "trade_open_allowed" in inst_gate:
+                inst_allowed = bool(inst_gate.get("trade_open_allowed", True))
+            else:
+                inst_allowed = bool(self._trade_open_allowed)
+
+            if inst_allowed:
+                continue
+
+            # Block NEW entries, keep position management semantics intact.
+            decision.direction = "flat"
+            decision.gate_passed = False
+            decision.position_size = 0.0
+
+            if decision.meta is None:
+                decision.meta = {}
+            decision.meta["trade_open_gate_blocked"] = True
+            decision.meta["trade_open_gate"] = inst_gate if isinstance(inst_gate, dict) else {}
+
+            if hasattr(decision, "gate_reasons") and isinstance(decision.gate_reasons, list):
+                decision.gate_reasons.append("TRADE_OPEN_GATE_BLOCKED")
+                gate_reasons = inst_gate.get("reasons") if isinstance(inst_gate, dict) else None
+                if isinstance(gate_reasons, list):
+                    for r in gate_reasons[:6]:
+                        decision.gate_reasons.append(str(r))
+
+            original_reasoning = decision.reasoning or ""
+            decision.reasoning = f"[TRADE_OPEN_GATE_BLOCKED] {original_reasoning}"
+
+        return multi_decision
 
     def _log_instrument_cooldowns(self) -> None:
         """

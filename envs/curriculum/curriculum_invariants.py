@@ -667,6 +667,56 @@ class AntiGamingChecker:
             },
             recommendation="Trade across more market conditions" if gaming_score > 0.3 else "",
         )
+
+    def check_patience_gaming(self, stats: Dict[str, Any]) -> AntiGamingCheckResult:
+        """
+        Check for patience/discipline gaming strategies.
+
+        Examples:
+        - Burst trading: trades clustered in short windows
+        - Certainty gaming: always extreme certainty values
+        """
+        gaming_score = 0.0
+        explanations: List[str] = []
+        counter: Dict[str, Any] = {}
+
+        trades_by_hour = stats.get("trades_by_hour")
+        if isinstance(trades_by_hour, dict) and trades_by_hour:
+            try:
+                vals = list(trades_by_hour.values())
+                variance = float(np.var(vals)) if vals else 0.0
+                counter["trades_by_hour_variance"] = variance
+                if variance > 5.0:
+                    gaming_score = max(gaming_score, min(1.0, variance / 10.0))
+                    explanations.append("Burst trading detected - trades clustered in time")
+            except Exception:
+                pass
+
+        certainty_dist = stats.get("entry_certainty_distribution")
+        if isinstance(certainty_dist, (list, tuple)) and len(certainty_dist) > 10:
+            try:
+                vals = [float(x) for x in certainty_dist if _is_finite(x)]
+                if vals:
+                    mid_range = sum(1 for c in vals if 0.3 <= c <= 0.7) / len(vals)
+                    counter["entry_certainty_mid_range_ratio"] = float(mid_range)
+                    if mid_range < 0.2:
+                        gaming_score = max(gaming_score, 0.7)
+                        explanations.append("Suspicious certainty distribution - possibly gaming")
+            except Exception:
+                pass
+
+        explanation = "; ".join(explanations) if explanations else "No patience gaming detected"
+        return AntiGamingCheckResult(
+            metric_name="patience_gaming",
+            gaming_detected=gaming_score > 0.5,
+            gaming_score=gaming_score,
+            explanation=explanation,
+            counter_metrics=counter,
+            recommendation=(
+                "Distribute trades more evenly and avoid extreme certainty signaling"
+                if gaming_score > 0.3 else ""
+            ),
+        )
     
     def run_all_checks(
         self,
@@ -759,6 +809,9 @@ class AntiGamingChecker:
             regime_coverage=regime_coverage if isinstance(regime_coverage, dict) else {},
             performance_by_regime=perf_by_regime if isinstance(perf_by_regime, dict) else {},
         )
+
+        # Patience/discipline gaming check (uses optional stats)
+        results["patience_gaming"] = self.check_patience_gaming(stats)
         
         return results
     

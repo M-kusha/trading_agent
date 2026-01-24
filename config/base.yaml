@@ -21,7 +21,7 @@ paths:
   data: data/processed
 
 environment:
-  instruments: ["EURUSD", "XAUUSD"]
+  instruments: ["XAUUSD"]
   timeframes: ["M15", "H1", "H4", "D1"]
   data_source: "auto"
   initial_balance: 100000.0

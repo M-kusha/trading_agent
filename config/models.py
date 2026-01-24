@@ -46,7 +46,7 @@ class PathsConfig:
 class EnvironmentConfig:
     """Environment defaults shared between training and live runs."""
 
-    instruments: List[str] = field(default_factory=lambda: ["EURUSD", "XAUUSD"])
+    instruments: List[str] = field(default_factory=lambda: ["XAUUSD"])
     timeframes: List[str] = field(default_factory=lambda: ["M15", "H1", "H4", "D1"])
     data_source: str = "local"
     initial_balance: float = 100_000.0

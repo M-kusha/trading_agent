@@ -697,7 +697,7 @@ class SlimVotingKernel(VotingModuleBase):
         Priority:
         1) VotingBusKeys.ACTIVE_INSTRUMENTS on SmartInfoBus
         2) Kernel config: config['instruments']
-        3) Fallback: ['EURUSD', 'XAUUSD']
+        3) Fallback: ['XAUUSD']
         """
         instruments = self.bus_get(
             VotingBusKeys.ACTIVE_INSTRUMENTS, default=None
@@ -710,7 +710,7 @@ class SlimVotingKernel(VotingModuleBase):
             if cfg_instruments:
                 return cfg_instruments
 
-        return ["EURUSD", "XAUUSD"]
+        return ["XAUUSD"]
 
     def _make_empty_result(self, decision_id: str, reason: str) -> Dict[str, Any]:
         """Create empty result when no instruments are available."""
