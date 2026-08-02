@@ -14,6 +14,25 @@ class ModuleContract:
 
 
 CONTRACTS: Dict[str, ModuleContract] = {
+    'LivePPOAgent': ModuleContract(
+        name='LivePPOAgent',
+        file='meta/live_ppo_agent.py',
+        provides=[
+            'ppo_final_decision',
+            'ppo_gate_passed',
+            'ppo_position_size',
+            'action_mask',
+        ],
+        requires=[
+            'market_data',
+            'expert_signals',
+            'risk_data',
+            'account_state',
+            'trading_mode_state',
+            'governor_state',
+        ],
+        meta={'category': 'meta', 'version': '1.0.0'},
+    ),
 
     'ActiveTradeMonitor': ModuleContract(
         name='ActiveTradeMonitor',
