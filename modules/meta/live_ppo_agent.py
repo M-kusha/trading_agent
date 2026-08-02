@@ -36,14 +36,21 @@ from modules.meta.ppo_observation_builder import (
     ObservationContractError,
     PPOObservationBuilder,
 )
+from modules.utils.info_bus import InfoBusManager, SmartInfoBus
 from modules.utils import simulation_time as simclock
 
 
 @module(**module_args("LivePPOAgent"))
 class LivePPOAgent(BaseModule):
 
+    # BaseModule alone does not provide `smart_bus` - it is installed by the
+    # SmartInfoBus* mixins. Declaring and acquiring it explicitly means a
+    # missing bus fails at construction rather than on the first decision.
+    smart_bus: SmartInfoBus
+
     def _initialize(self) -> None:
         self.logger = logging.getLogger("LivePPOAgent")
+        self.smart_bus = getattr(self, "smart_bus", None) or InfoBusManager.get_instance()
         self.obs_builder = PPOObservationBuilder()
         self.mask_builder = LiveActionMaskBuilder(LiveMaskConfig())
         self.core: Optional[Any] = None
@@ -80,7 +87,14 @@ class LivePPOAgent(BaseModule):
 
         state = self._collect_state()
         try:
-            obs = self.obs_builder.build(**state)
+            obs = self.obs_builder.build(
+                market_data=state["market_data"],
+                expert_signals=state["expert_signals"],
+                risk_state=state["risk_state"],
+                account_state=state["account_state"],
+                trading_mode_state=state["trading_mode_state"],
+                governor_state=state["governor_state"],
+            )
         except ObservationContractError:
             # A malformed observation is never tradeable. Surfacing it stops the
             # loop rather than letting a padded or partial vector reach the

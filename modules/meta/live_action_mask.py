@@ -97,10 +97,6 @@ class LiveActionMaskBuilder:
 
 
         if self.config.enforce_hard_rules and can_enter:
-            # Read the shared clock rather than the wall clock. In live these are
-            # identical; under simulation the wall clock would make the
-            # minutes-between-entries and minutes-after-loss rules meaningless,
-            # because thousands of bars replay inside one real second.
             now = current_time or simclock.now()
             hard_allowed, _ = self._hard_entry_allowed(
                 current_dd=current_dd,

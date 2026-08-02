@@ -84,3 +84,27 @@ def test_registry_and_contract_agree():
 
     assert set(entry["provides"]) == set(contract["provides"])
     assert set(entry["requires"]) == set(contract["requires"])
+
+
+def test_bus_is_actually_reachable():
+    """Regression: BaseModule alone does not provide `smart_bus` - it comes from
+    the SmartInfoBus* mixins. The first version of this module inherited only
+    BaseModule, so every bus call would have raised AttributeError at the first
+    live decision. The existing tests missed it because the no-policy guard
+    raises earlier, so nothing ever reached the bus."""
+    from modules.meta.live_ppo_agent import LivePPOAgent
+
+    agent = LivePPOAgent()
+    assert hasattr(agent, "smart_bus"), "agent has no bus - it cannot publish decisions"
+
+    agent.smart_bus.set("live_agent_probe", {"ok": True}, module="test")
+    assert agent.smart_bus.get("live_agent_probe", "LivePPOAgent") == {"ok": True}
+
+
+def test_missing_bus_inputs_raise_and_name_the_keys():
+    """An absent market feed must stop the loop, not produce a default decision."""
+    from modules.meta.live_ppo_agent import LivePPOAgent
+
+    agent = LivePPOAgent()
+    with pytest.raises(RuntimeError, match="bus keys absent or empty"):
+        agent._collect_state()
