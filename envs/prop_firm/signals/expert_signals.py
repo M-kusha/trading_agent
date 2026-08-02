@@ -227,7 +227,20 @@ class ExpertSignalsMixin(MarketStructureMixin):
                         "composite_score": theme_result["composite_score"],
                     },
                 },
-                "seasonality": {"direction": "neutral", "score": 0.0, "confidence": 0.5},
+                # NOTE: this is an explicit stub, not a computed signal.
+                # Measured over 1,600 bars it emits a non-neutral direction 0.0% of
+                # the time, so its four expert_raw dims are constant and carry no
+                # information. The real implementation lives in
+                # modules/voting/experts/seasonality.py but costs ~192 ms/step,
+                # far over the training budget. Left as a stub deliberately until
+                # the seasonality ablation decides whether to port a cheap version.
+                # The 'proposal' key is required by the observation contract.
+                "seasonality": {
+                    "direction": "neutral",
+                    "score": 0.0,
+                    "confidence": 0.5,
+                    "proposal": {},
+                },
             },
             "htf_experts": htf_experts,  # NEW: HTF signals for each timeframe
             "market": {

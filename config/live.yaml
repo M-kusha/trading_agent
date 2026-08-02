@@ -26,19 +26,28 @@ rl:
   checkpoint_freq: 0
   eval_freq: 0
 
-# mt5:
-#   account: 1512227067
-#   password: "@j853U*BunDEl1"
-#   server: "FTMO-Demo"
-#   # Path to FTMO MT5 terminal executable (required when multiple MT5 installations exist)
-#   path: "C:\\Program Files\\FTMO Global Markets MT5 Terminal\\terminal64.exe"
-
+# ── MT5 connection ───────────────────────────────────────────────────────────
+# Credentials are NOT stored here. Two account/password pairs were previously
+# committed in plaintext (one active, one commented out); both are in git
+# history and must be rotated at the broker.
+#
+# Supply them through the environment instead - config/loader.py already reads
+# these and they override anything in YAML:
+#
+#   setx MT5_ACCOUNT  <login>
+#   setx MT5_PASSWORD <password>
+#   setx MT5_SERVER   <server>
+#
+# `path` is safe to keep in version control: it is a local install location,
+# not a secret. It previously pointed at "C:\Program Files\MetaTrader 5",
+# which does not exist on this machine - the installed terminal is the FTMO
+# build below. The tracked feature CSVs were verified to come from this exact
+# terminal (400/400 bars matched bit-for-bit on OHLC and spread).
 mt5:
-  account: 5044985957
-  password: "U@0uSlXa"
-  server: "MetaQuotes-Demo"
-  # Path to FTMO MT5 terminal executable (required when multiple MT5 installations exist)
-  path: "C:\\Program Files\\MetaTrader 5\\terminal64.exe"
+  account: null
+  password: null
+  server: "FTMO-Demo"
+  path: "C:\\Program Files\\FTMO MetaTrader 5\\terminal64.exe"
 
 risk_overrides:
   emergency_drawdown_trigger: 0.09

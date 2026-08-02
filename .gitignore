@@ -40,17 +40,13 @@ frontend/package-lock.json
 # Ignore runtime state snapshots
 state/
 
-# Ignore test folder
-tests/
-
-# Ignore docs folder
-docs/
+# NOTE: tests/, docs/ and scripts/ were previously ignored. That is why this
+# repo had zero tracked tests and why the feature-generation script was lost.
+# They are tracked again on purpose - the test suite is the control system for
+# everything else, and an untracked data generator makes the CSVs unreproducible.
 
 # Ignore optuna results
 optuna_results/
-
-# Ignore scripts
-scripts/
 
 # Local settings
 settings.local.json

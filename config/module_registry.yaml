@@ -840,20 +840,13 @@ modules:
     - time_risk_analysis
     - trading_data
     - volatility_adjustment
-  NewsSentimentModule:
-    category: external
-    file_path: modules\external\news_sentiment.py
-    module_path: modules.external.news_sentiment
-    provides:
-    - news_sentiment
-    - news_summary
-    - sentiment_confidence
-    - sentiment_trend
-    requires:
-    - market_data
-    - symbols
-    - trading_session
-    
+  # NewsSentimentModule removed 2026-08-02.
+  # modules/external/news_sentiment.py was deleted in commit 71f1136 but this
+  # entry was left behind. ModuleOrchestrator catches the resulting ImportError
+  # and only calls logger.error(), so live trading started with one module
+  # silently absent. tests/test_registry.py now fails if a registry entry has no
+  # source file. Re-add this block if news/event risk is reimplemented.
+
   TradeMapVisualizer:
     category: visualization
     file_path: modules\visualization\trade_map_visualizer.py

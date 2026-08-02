@@ -89,7 +89,11 @@ except Exception:
 # ═══════════════════════════════════════════════════════════════════
 
 PPO_OBS_VERSION = "5.8"
-PPO_OBS_SIZE = 84
+# Must equal len(_build_feature_names()) and max(FEATURE_GROUPS.values())[1].
+# v5.8 added the 16-dim expert_raw block (indices 90..105) but this constant was
+# left at the v5.7 value of 84, which made _build_feature_names() raise at import
+# time. tests/test_obs_schema.py now pins all three to the same number.
+PPO_OBS_SIZE = 106
 
 DEFAULT_INSTRUMENT = "XAUUSD"
 

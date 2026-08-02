@@ -97,14 +97,20 @@ except Exception:
     DataDifficulty = None  # type: ignore
     CURRICULUM_AVAILABLE = False
 
-try:
-    from modules.meta.ppo_observation_builder import PPOObservationBuilder, PPO_OBS_SIZE, PPO_OBS_VERSION
-    OBS_BUILDER_AVAILABLE = True
-except Exception:
-    PPOObservationBuilder = None  # type: ignore
-    PPO_OBS_SIZE = 90  # Updated for v5.7 setup/certainty expansion
-    PPO_OBS_VERSION = "5.7"
-    OBS_BUILDER_AVAILABLE = False
+# FAIL-LOUD: the observation builder is not optional.
+#
+# This import was previously wrapped in `except Exception`, which set
+# PPO_OBS_SIZE = 90, OBS_BUILDER_AVAILABLE = False and let training proceed
+# against `np.zeros(90)` -- a blind agent, announced only by a single log warning.
+# A broken observation must never be a recoverable state, so the import is now
+# unguarded and any failure stops the process at import time.
+from modules.meta.ppo_observation_builder import (  # noqa: E402
+    PPOObservationBuilder,
+    PPO_OBS_SIZE,
+    PPO_OBS_VERSION,
+)
+
+OBS_BUILDER_AVAILABLE = True  # retained for backward compatibility; always True
 
 
 def validate_observation_version(saved_version: str, saved_size: int) -> None:
@@ -258,12 +264,11 @@ class PropFirmTradingEnv(
             low=-np.inf, high=np.inf, shape=(int(self.config.observation_size),), dtype=np.float32
         )
 
-        self.obs_builder: Optional["PPOObservationBuilder"] = None  # type: ignore
-        if OBS_BUILDER_AVAILABLE and PPOObservationBuilder is not None:
-            self.obs_builder = PPOObservationBuilder()
-            logger.info(f"[OBS] Using PPOObservationBuilder v{PPO_OBS_VERSION}")
-        else:
-            logger.warning("[OBS] PPOObservationBuilder not available -> fallback observation")
+        # The builder is mandatory. Constructing it here (rather than behind an
+        # availability flag) means a misconfigured observation fails at env
+        # construction, not silently at the first step.
+        self.obs_builder: "PPOObservationBuilder" = PPOObservationBuilder()
+        logger.info(f"[OBS] Using PPOObservationBuilder v{PPO_OBS_VERSION} ({PPO_OBS_SIZE} dims)")
 
         # Episode boundaries based on primary timeframe only
         self._primary_data_len = self._get_primary_data_length()
@@ -2174,9 +2179,9 @@ class PropFirmTradingEnv(
     # ---------------------------
 
     def _get_observation(self) -> np.ndarray:
-        if self.obs_builder is not None:
-            return self._build_observation_with_builder()
-        return self._fallback_observation()
+        if self.obs_builder is None:
+            return self._fallback_observation()  # raises; kept as a guard, not a path
+        return self._build_observation_with_builder()
 
     def _build_observation_with_builder(self) -> np.ndarray:
         inst = self._episode_instrument
@@ -2286,9 +2291,13 @@ class PropFirmTradingEnv(
             }
 
         # Try to get REAL HTF data first, fall back to aggregation
-        h1_data = _get_real_htf_data("H1", 50) or _agg_fallback("H1", 50)
-        h4_data = _get_real_htf_data("H4", 30) or _agg_fallback("H4", 30)
-        d1_data = _get_real_htf_data("D1", 20) or _agg_fallback("D1", 20)
+        # Lookbacks must clear PPOObservationConfig.min_bars_htf (30) with headroom.
+        # D1 previously requested 20 -> every observation build raised
+        # "D1.close must have >= 30 bars"; H4 requested exactly 30, one bar from
+        # the same failure. Keep these strictly above the contract minimum.
+        h1_data = _get_real_htf_data("H1", 60) or _agg_fallback("H1", 60)
+        h4_data = _get_real_htf_data("H4", 40) or _agg_fallback("H4", 40)
+        d1_data = _get_real_htf_data("D1", 40) or _agg_fallback("D1", 40)
 
         return {
             "M15": base,
@@ -2298,7 +2307,18 @@ class PropFirmTradingEnv(
         }
 
     def _fallback_observation(self) -> np.ndarray:
-        return np.zeros(int(self.config.observation_size), dtype=np.float32)
+        """Removed on purpose -- see the import block at the top of this module.
+
+        This used to return ``np.zeros(observation_size)``. Combined with the
+        swallowed builder import it meant the agent trained on a constant vector
+        while every dashboard metric still looked healthy. There is no safe
+        fallback for a missing observation, so this now raises.
+        """
+        raise RuntimeError(
+            "PropFirmTradingEnv has no observation builder. Training on a "
+            "fallback/zero observation is not permitted -- the agent would be "
+            "blind while appearing to learn. Fix the observation builder instead."
+        )
 
     def render(self, mode: str = "human") -> None:
         pos_str = f"{self.position.direction}@{self.position.entry_price:.2f}" if self.position else "flat"

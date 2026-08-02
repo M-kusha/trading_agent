@@ -106,8 +106,26 @@ class ObservationBuildersMixin:
         }
 
     def _prepare_risk_state(self) -> Dict[str, Any]:
-        """Prepare risk state for observation."""
+        """Prepare risk state for observation.
+
+        `portfolio_risk` and `risk_budget` are required by the observation
+        contract and were previously absent, which made every observation build
+        fail. Both are derived from live account state so they actually vary --
+        four of the seven original keys were static config echoes.
+        """
         current_dd, daily_dd = self._calc_dds()
+
+        # Capital currently at risk if the open position hits its hard stop,
+        # expressed as a fraction of equity. Zero when flat.
+        exposure = 0.0
+        if self.position is not None:
+            risk_eur = float(self.position.lot_size) * float(self.config.hard_stop_loss_eur)
+            exposure = risk_eur / max(float(self.equity), 1.0)
+
+        # Fraction of the daily drawdown allowance still unused.
+        daily_limit = max(float(self.config.daily_drawdown_limit), 1e-9)
+        risk_budget = 1.0 - (float(daily_dd) / daily_limit)
+
         return {
             "current_drawdown": float(current_dd),
             "daily_drawdown": float(daily_dd),
@@ -116,6 +134,10 @@ class ObservationBuildersMixin:
             "trades_today": int(self.daily_trades),
             "max_trades_per_day": int(self.config.max_trades_per_day),
             "risk_per_trade": float(self.config.risk_per_trade_pct),
+            "portfolio_risk": {
+                "total_exposure": float(np.clip(exposure, 0.0, 1.0)),
+            },
+            "risk_budget": float(np.clip(risk_budget, 0.0, 1.0)),
         }
 
     def _prepare_memory_state(self, instrument: str) -> Dict[str, Any]:
@@ -153,13 +175,36 @@ class ObservationBuildersMixin:
         }
 
     def _prepare_account_state(self, instrument: str) -> Dict[str, Any]:
-        """Prepare account state for observation."""
+        """Prepare account state for observation.
+
+        `current_step`, `max_steps`, `pnl_trend` and `episode_return` are all
+        required by the observation contract and were missing (episode_return was
+        not even listed in the builder's own validator, so it surfaced only as a
+        None-coercion error deeper in the build).
+        """
         cur_dd, _ = self._calc_dds()
+
+        # Episode return as a percentage of starting balance.
+        initial = max(float(self.config.initial_balance), 1.0)
+        episode_return = (float(self.equity) - initial) / initial * 100.0
+
+        # Direction of recent realised PnL in [-1, 1]: the sign of the last few
+        # closed trades, so the agent can distinguish a rough patch from a good one.
+        pnl_trend = 0.0
+        if self._episode_trade_results:
+            recent = self._episode_trade_results[-5:]
+            wins = sum(1 for r in recent if float(getattr(r, "net_pnl", 0.0)) > 0)
+            pnl_trend = (2.0 * wins / len(recent)) - 1.0
+
         state: Dict[str, Any] = {
             "balance": float(self.balance),
             "equity": float(self.equity),
             "initial_balance": float(self.config.initial_balance),
             "current_drawdown": float(cur_dd),
+            "current_step": int(self.episode_step),
+            "max_steps": int(getattr(self.config, "max_steps_per_episode", 2000) or 2000),
+            "episode_return": float(episode_return),
+            "pnl_trend": float(np.clip(pnl_trend, -1.0, 1.0)),
             "win_rate": float(self.winning_trades / max(self.total_trades, 1)),
             "trades_today": int(self.daily_trades),
             "has_position": self.position is not None,
@@ -451,7 +496,14 @@ class ObservationBuildersMixin:
             "model_confidence": confidence,
             "is_trained": True,
             "stability_score": stability,
+            # `model_confidence` and `is_trained` must live INSIDE market_predictions:
+            # the builder reads world_model_state["market_predictions"]["model_confidence"],
+            # not the top-level copies. Publishing them only at the top level made
+            # every build fail with "market_predictions.model_confidence ... Got None".
             "market_predictions": {
+                "model_confidence": confidence,
+                "is_trained": True,
+                "stability_score": stability,
                 "latest_predictions": {
                     "price_changes": price_changes,
                     "volatility_predictions": volatility_predictions,
@@ -477,6 +529,9 @@ class ObservationBuildersMixin:
             "is_trained": True,
             "stability_score": 0.5,
             "market_predictions": {
+                "model_confidence": 0.5,
+                "is_trained": True,
+                "stability_score": 0.5,
                 "latest_predictions": {
                     "price_changes": [0.0, 0.0, 0.0, 0.0],
                     "volatility_predictions": [0.5, 0.5, 0.5, 0.5],
