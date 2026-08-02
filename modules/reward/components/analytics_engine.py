@@ -9,13 +9,14 @@ Analytics Engine for Reward System (Hardened & Typed)
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Dict, Any, List, DefaultDict, Deque, Tuple, Optional
-from collections import defaultdict, deque
 import threading
-import numpy as np
 import time
+from collections import defaultdict, deque
+from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any, DefaultDict, Deque, Dict, List, Optional
+
+import numpy as np
 
 
 @dataclass
@@ -266,7 +267,7 @@ class RewardAnalyticsEngine:
             if trades:
                 total_pnl = float(sum(float(t.get('pnl', 0.0)) for t in trades))
                 bucket.pnls.append(total_pnl)
-                bucket.trades.append(int(len(trades)))
+                bucket.trades.append(len(trades))
 
             # Update stats if we have enough samples
             if len(bucket.rewards) >= 5:
@@ -324,7 +325,7 @@ class RewardAnalyticsEngine:
             'timestamp': time.time(),
             'reward': float(reward_result.get('shaped_reward', 0.0) or 0.0),
             'pnl': float(components.get('pnl', 0.0) or 0.0),
-            'trades': int(len(reward_data.get('trades', []) or [])),
+            'trades': len(reward_data.get('trades', []) or []),
             'regime': str(reward_data.get('regime', 'unknown') or 'unknown'),
             'volatility': str(reward_data.get('volatility_level', 'medium') or 'medium'),
         }

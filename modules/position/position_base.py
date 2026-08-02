@@ -16,31 +16,30 @@ import threading
 import time
 import uuid
 from collections import defaultdict, deque
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from enum import Enum
 from typing import Any, Awaitable, Dict, List, Optional, Tuple, TypeVar, Union, cast
 
 import numpy as np
 
+from envs.core.config import TradingConfig
+
 # Core infra
-from modules.contracts import module_args  # kept for parity; decorator is in Part 2
-from modules.core.module_base import BaseModule
+from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
 from modules.core.mixins import (
     SmartInfoBusRiskMixin,
     SmartInfoBusStateMixin,
     SmartInfoBusTradingMixin,
 )
-from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
+from modules.core.module_base import BaseModule
 from modules.monitoring.performance_tracker import PerformanceTracker
+from modules.utils.audit_utils import AuditConfiguration, RotatingLogger, format_operator_message
 from modules.utils.info_bus import InfoBusManager
 from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
-from envs.core.config import TradingConfig
-from modules.utils.audit_utils import RotatingLogger, format_operator_message, AuditConfiguration
 
 # Debug system
-from .position_debug import PositionDebugSystem, DebugLevel
+from .position_debug import DebugLevel, PositionDebugSystem
 from .position_logger import UnifiedPositionLogger
-
 
 # ===============================
 # Debug / decision scaffolding
@@ -1342,7 +1341,7 @@ class PositionManagerBase(
             "portfolio_state": {
                 "health_score": float(self._portfolio_health_score),
                 "exposure_ratio": float(self._total_exposure_ratio),
-                "open_positions": int(len(positions_snapshot)),
+                "open_positions": len(positions_snapshot),
                 "decision_quality": float(self._decision_quality_score),
             },
             "position_health": pos_health,
@@ -1371,7 +1370,7 @@ class PositionManagerBase(
                 "portfolio_state": {
                     "health_score": float(self._portfolio_health_score),
                     "exposure_ratio": float(self._total_exposure_ratio),
-                    "open_positions": int(len(positions_snapshot)),
+                    "open_positions": len(positions_snapshot),
                     "decision_quality": float(self._decision_quality_score),
                 },
                 "positions": copy.deepcopy(positions_snapshot),
@@ -2244,7 +2243,7 @@ class PositionManagerBase(
             {
                 "health_score": float(self._portfolio_health_score),
                 "exposure_ratio": float(self._total_exposure_ratio),
-                "open_positions": int(len(self.open_positions)),
+                "open_positions": len(self.open_positions),
                 "decision_quality": float(self._decision_quality_score),
             },
             module="PositionManager",

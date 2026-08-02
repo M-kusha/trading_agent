@@ -28,22 +28,22 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, List, Tuple, Union
-import os
 import json
-import time
-import socket
+import os
 import platform
+import socket
+import time
 import uuid
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
 # Import canonical timeframe constants
 try:
     from modules.voting.core.constants import (
-        PRIMARY_TIMEFRAME,
         CONTEXT_TIMEFRAMES,
+        PRIMARY_TIMEFRAME,
         SUPPORTED_TIMEFRAMES,
     )
 except Exception:

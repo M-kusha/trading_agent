@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import logging
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -594,7 +594,6 @@ class PPOCore:
             except Exception as e:
                 logging.warning(f"[PPOCore] SB3 predict failed: {e}, falling back to torch network")
                 # Fall back to the internal torch policy if SB3 predict fails.
-                pass
 
         # ═══════════════════════════════════════════════════════════════
         # Native PyTorch network (continuous only)

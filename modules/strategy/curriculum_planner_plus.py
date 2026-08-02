@@ -3,24 +3,25 @@
 Advanced adaptive learning curriculum system for trading strategy optimization with intelligent progression management
 """
 
-import asyncio
-import time
-from modules.contracts import module_args
-import numpy as np
 import datetime
-from typing import Dict, Any, List, Optional, Tuple
-from collections import deque, defaultdict
+import time
+from collections import defaultdict, deque
+from typing import Any, Dict, List, Optional
+
+import numpy as np
+
+from modules.contracts import module_args
+from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
+from modules.core.mixins import SmartInfoBusStateMixin, SmartInfoBusTradingMixin
 
 # ═══════════════════════════════════════════════════════════════════
 # MODERN SMARTINFOBUS IMPORTS
 # ═══════════════════════════════════════════════════════════════════
 from modules.core.module_base import BaseModule, module
-from modules.core.mixins import SmartInfoBusTradingMixin, SmartInfoBusStateMixin
-from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
-from modules.utils.info_bus import InfoBusManager
-from modules.utils.audit_utils import RotatingLogger, format_operator_message
-from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 from modules.monitoring.performance_tracker import PerformanceTracker
+from modules.utils.audit_utils import RotatingLogger, format_operator_message
+from modules.utils.info_bus import InfoBusManager
+from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 
 # Import centralized trade limits
 try:
@@ -575,7 +576,7 @@ class CurriculumPlannerPlus(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             return " | ".join(thesis_parts)
             
         except Exception as e:
-            return f"Action thesis generation failed: {str(e)}"
+            return f"Action thesis generation failed: {e!s}"
 
     async def _get_comprehensive_learning_data(self) -> Dict[str, Any]:
         """Get comprehensive learning data using modern SmartInfoBus patterns"""
@@ -1416,7 +1417,6 @@ class CurriculumPlannerPlus(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
 
     async def _update_performance_metrics_advanced(self, summary: Dict[str, Any]):
         """Update advanced performance metrics"""
-        pass
 
     async def _evaluate_episode_success_comprehensive(self, summary: Dict[str, Any]) -> bool:
         """Evaluate episode success with comprehensive criteria"""
@@ -1452,7 +1452,6 @@ class CurriculumPlannerPlus(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
 
     async def _handle_learning_plateau_advanced(self):
         """Handle learning plateau with advanced intervention"""
-        pass
 
     def _generate_stage_advancement_thesis(self, old_stage: str, new_stage: str, data: Dict) -> str:
         """Generate thesis for stage advancement"""

@@ -16,7 +16,6 @@ from __future__ import annotations
 
 from typing import Dict, Optional, Set
 
-
 # ---- Namespace 1: Observed Metrics ----
 OBSERVED_METRICS: Set[str] = {
     "win_rate",
@@ -179,20 +178,20 @@ def get_threshold_for_metric(metric: str) -> Optional[str]:
 
 
 __all__ = [
-    "OBSERVED_METRICS",
-    "OBSERVED_ALIASES",
-    "THRESHOLD_FIELDS",
-    "THRESHOLD_ALIASES",
-    "METRIC_TO_THRESHOLD",
+    "COMPOSITE_HARD_FLOOR_KEYS",
     "COMPOSITE_KEY_ALIASES",
     "COMPOSITE_WEIGHT_KEYS",
-    "COMPOSITE_HARD_FLOOR_KEYS",
     "METRIC_CANONICAL_NAMES",
+    "METRIC_TO_THRESHOLD",
+    "OBSERVED_ALIASES",
+    "OBSERVED_METRICS",
+    "THRESHOLD_ALIASES",
+    "THRESHOLD_FIELDS",
+    "canonicalize_composite_key",
+    "canonicalize_metric",
     "canonicalize_observed_metric",
     "canonicalize_threshold_field",
-    "canonicalize_metric",
-    "canonicalize_composite_key",
+    "get_threshold_for_metric",
     "is_valid_observed_metric",
     "is_valid_threshold_field",
-    "get_threshold_for_metric",
 ]

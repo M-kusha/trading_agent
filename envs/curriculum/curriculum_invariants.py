@@ -16,23 +16,27 @@ This module provides:
 
 from __future__ import annotations
 
-import math
 import time
 from collections import defaultdict, deque
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, ClassVar, Dict, List, Optional, Set, Tuple
+from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
 import numpy as np
 
 from envs.core.shared_utils import (
-    safe_float as _sf,
-    safe_int as _si,
     clamp as _clamp,
+)
+from envs.core.shared_utils import (
     get_envs_logger,
     iso_timestamp,
 )
-
+from envs.core.shared_utils import (
+    safe_float as _sf,
+)
+from envs.core.shared_utils import (
+    safe_int as _si,
+)
 
 logger = get_envs_logger("curriculum_invariants")
 
@@ -982,7 +986,7 @@ def check_metric_bounds(
                     stage_epoch=stage_epoch,
                     episode_idx=episode_idx,
                 ))
-        except (TypeError, ValueError) as e:
+        except (TypeError, ValueError):
             logger.debug(f"Skipping non-numeric metric {bound.name}: {type(value).__name__}")
     
     return violations

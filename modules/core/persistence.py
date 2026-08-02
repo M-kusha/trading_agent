@@ -9,7 +9,6 @@ import asyncio
 import hashlib
 import importlib
 import json
-import os
 import pickle
 import shutil
 import sys
@@ -18,11 +17,11 @@ import threading
 import time
 import traceback
 import zlib
-from pathlib import Path
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
-from collections import defaultdict, deque
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 try:
     import numpy as np
@@ -34,9 +33,8 @@ except Exception:
 from modules.utils.audit_utils import RotatingLogger, format_operator_message
 
 if TYPE_CHECKING:
-    from modules.core.module_system import ModuleOrchestrator
     from modules.core.module_base import BaseModule
-    from modules.utils.info_bus import SmartInfoBus
+    from modules.core.module_system import ModuleOrchestrator
 
 
 # ═════════════════════════════════════════════════════════════
@@ -764,7 +762,7 @@ class StateManager:
                     self.logger.error(f"Class {module_name} not found after reload")
                     return False
                 if not hasattr(new_class, "__module_metadata__"):
-                    self.logger.error(f"Reloaded class missing @module decorator")
+                    self.logger.error("Reloaded class missing @module decorator")
                     return False
 
                 old_v = self.module_versions.get(module_name, "1.0.0")
@@ -844,9 +842,9 @@ class StateManager:
             cdir.mkdir(exist_ok=True)
             try:
                 system_health = {
-                    "emergency_mode": getattr(orchestrator, "get_emergency_mode_status", lambda: {})(),
-                    "circuit_breakers": getattr(orchestrator, "get_circuit_breaker_status", lambda: {})(),
-                    "execution_metrics": getattr(orchestrator, "get_execution_metrics", lambda: {})(),
+                    "emergency_mode": getattr(orchestrator, "get_emergency_mode_status", dict)(),
+                    "circuit_breakers": getattr(orchestrator, "get_circuit_breaker_status", dict)(),
+                    "execution_metrics": getattr(orchestrator, "get_execution_metrics", dict)(),
                 }
                 data = {
                     "checkpoint_id": cid,

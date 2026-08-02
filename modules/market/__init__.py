@@ -4,13 +4,13 @@ modules.market package exports (modern only)
 
 # Primary orchestrator exports
 from .market_module import (
-    UnifiedMarketModule,
     MarketConfig,
+    UnifiedMarketModule,
 )
 
 __all__ = [
-    'UnifiedMarketModule',
     'MarketConfig',
+    'UnifiedMarketModule',
 ]
 
 # Version info
@@ -20,16 +20,16 @@ __version__ = '1.0.0'
 from .components import (
     FractalRegimeComponent,
     LiquidityHeatmapComponent,
-    ThemeDetectorComponent,
     RegimeMatrixComponent,
+    ThemeDetectorComponent,
     TimeRiskComponent,
 )
 
 __all__ += [
     'FractalRegimeComponent',
     'LiquidityHeatmapComponent',
-    'ThemeDetectorComponent',
     'RegimeMatrixComponent',
+    'ThemeDetectorComponent',
     'TimeRiskComponent',
 ]
 

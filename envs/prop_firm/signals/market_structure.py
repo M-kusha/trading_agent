@@ -29,7 +29,7 @@ class MarketStructureMixin:
 
     def _structure_atr(self, high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int = 14) -> float:
         """Robust ATR proxy for structure scaling."""
-        n = int(len(close))
+        n = len(close)
         if n < period + 2:
             return float(max(np.mean(high - low), 1e-8))
 
@@ -56,7 +56,7 @@ class MarketStructureMixin:
         h = np.asarray(high, dtype=np.float64)
         l = np.asarray(low, dtype=np.float64)
 
-        n = int(len(h))
+        n = len(h)
         if n < left + right + 3:
             return [], []
 
@@ -145,7 +145,7 @@ class MarketStructureMixin:
         l = np.asarray(lows, dtype=np.float64)
         c = np.asarray(closes, dtype=np.float64)
 
-        n = int(len(c))
+        n = len(c)
         if n < fwd + 2:
             return 0
 

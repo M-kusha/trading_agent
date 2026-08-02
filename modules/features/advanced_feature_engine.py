@@ -17,30 +17,31 @@
 
 from __future__ import annotations
 
-import os
-import json
-import threading
-import time
 import asyncio
 import hashlib
+import json
 import logging
+import os
+import threading
+import time
 import traceback
+from collections import deque
+from dataclasses import asdict, dataclass
 from logging.handlers import RotatingFileHandler
+from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
-from typing import Dict, Any, List, Optional, Union
-from collections import deque
-from dataclasses import dataclass, asdict
+
+from modules.contracts import module_args
+from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
+from modules.core.mixins import SmartInfoBusStateMixin, SmartInfoBusTradingMixin
 
 # Core infrastructure
 from modules.core.module_base import BaseModule, module
-from modules.core.mixins import SmartInfoBusTradingMixin, SmartInfoBusStateMixin
-from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
-from modules.utils.info_bus import InfoBusManager
-from modules.utils.audit_utils import format_operator_message
-from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 from modules.monitoring.performance_tracker import PerformanceTracker
-from modules.contracts import module_args
+from modules.utils.audit_utils import format_operator_message
+from modules.utils.info_bus import InfoBusManager
+from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 
 
 # ─────────────────────────────────────────────────────────────
@@ -881,8 +882,8 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 event_type="validate_prices_summary",
                 invalid_n=int(invalid_n),
                 trimmed_outliers=int(trimmed),
-                in_n=int(len(prices)),
-                out_n=int(len(valid)),
+                in_n=len(prices),
+                out_n=len(valid),
             )
 
         return valid
@@ -897,7 +898,7 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         ingest_n = self._ingest_prices(src_prices)
         self.feature_stats["price_points_processed"] += int(ingest_n)
         self.feature_stats["last_ingest_n"] = int(ingest_n)
-        self.feature_stats["last_source_n"] = int(len(src_prices))
+        self.feature_stats["last_source_n"] = len(src_prices)
 
         # Always compute from internal buffer to avoid “append full history every tick” blowups.
         series = list(self.price_buffer)
@@ -920,13 +921,13 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             "quality_score": float(quality),
             "explanation": explanation,
             "extraction_time_ms": float(dur_ms),
-            "buffer_size": int(len(self.price_buffer)),
+            "buffer_size": len(self.price_buffer),
             "feature_count": int(feats.size),
             "instrument": self.symbol,
             "timeframe": self.primary_timeframe,
             "source": market_data.get("source", "unknown"),
             "ingest_n": int(ingest_n),
-            "source_n": int(len(src_prices)),
+            "source_n": len(src_prices),
         }
 
     def _ingest_prices(self, prices_in: List[float]) -> int:
@@ -940,7 +941,7 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         try:
             if len(self.price_buffer) == 0:
                 self.price_buffer.extend(prices_in)
-                return int(len(prices_in))
+                return len(prices_in)
 
             last = float(self.price_buffer[-1])
             idx = self._find_last_match(prices_in, last, tol=self._ingest_tol)
@@ -954,7 +955,7 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 return 0
 
             self.price_buffer.extend(new)
-            return int(len(new))
+            return len(new)
         except Exception as e:
             self._audit_event(level="ERROR", event_type="ingest_prices_failed", error=str(e), trace=traceback.format_exc())
             # Fail closed: do not mutate buffer further.
@@ -1074,7 +1075,7 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 "mean_value": float(np.mean(feats)),
                 "std_value": float(np.std(feats)),
                 "window_sizes": list(self.window_sizes),
-                "buffer_size": int(len(self.price_buffer)),
+                "buffer_size": len(self.price_buffer),
             }
             return self.english_explainer.explain_module_decision(
                 module_name="AdvancedFeatureEngine",
@@ -1501,7 +1502,7 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
 
     def _buffer_status(self) -> Dict[str, Any]:
         return {
-            "current_size": int(len(self.price_buffer)),
+            "current_size": len(self.price_buffer),
             "max_size": int(self.max_buffer_size),
             "utilization": float(len(self.price_buffer) / max(1, self.max_buffer_size)),
         }
@@ -1661,7 +1662,7 @@ class AdvancedFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                         "quality_score": q,
                         "alias_of": p.get("alias_of"),
                         "mtf_available": p.get("mtf_available"),
-                        "feature_count": int(len(rf)) if isinstance(rf, list) else None
+                        "feature_count": len(rf) if isinstance(rf, list) else None
                     }
                     if self.debug and isinstance(rf, list) and self._full_features:
                         tf_summary[tf]["raw_features_full"] = rf

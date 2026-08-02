@@ -12,10 +12,10 @@ Contains:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 if TYPE_CHECKING:
-    from envs.curriculum.config.stages import TradingSkill, MarketRegime, CurriculumStage
+    from envs.curriculum.config.stages import CurriculumStage, MarketRegime, TradingSkill
 
 
 @dataclass
@@ -125,8 +125,8 @@ def _default_required_regimes():
 
 
 __all__ = [
-    "RecoveryProtocolConfig",
     "MixedStageSamplingConfig",
+    "RecoveryProtocolConfig",
     "ReviewSessionConfig",
     "ValidationConfig",
 ]

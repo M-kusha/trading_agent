@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import time
 from collections import defaultdict, deque
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import numpy as np
 
@@ -321,7 +321,7 @@ class BudgetComponent(MemoryComponent):
                 "allocation_method": "efficiency_based",
                 "rebalance_frequency": int(self.rebalance_interval),
                 "efficiency_weight": float(self.efficiency_weight),
-                "recent_changes": int(len(self.allocation_changes)),
+                "recent_changes": len(self.allocation_changes),
             },
             "budget_optimization": {
                 "optimality_score": float(self.optimality_score),

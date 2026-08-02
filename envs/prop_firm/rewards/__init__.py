@@ -7,10 +7,10 @@ Contains:
 - RewardShapingMixin: Per-step shaping and blocked action penalties
 """
 
-from envs.prop_firm.rewards.trade_reward import TradeRewardMixin
 from envs.prop_firm.rewards.shaping import RewardShapingMixin
+from envs.prop_firm.rewards.trade_reward import TradeRewardMixin
 
 __all__ = [
-    "TradeRewardMixin",
     "RewardShapingMixin",
+    "TradeRewardMixin",
 ]

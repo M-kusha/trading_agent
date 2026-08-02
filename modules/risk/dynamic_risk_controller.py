@@ -5,27 +5,28 @@
 # ─────────────────────────────────────────────────────────────
 
 import asyncio
-import time
-import threading
-from modules.contracts import module_args
-import numpy as np
 import datetime
-from typing import Dict, Any, List, Optional, Union, Deque
-from collections import deque, defaultdict
+import threading
+import time
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any, Deque, Dict, List, Optional, Union
 
-from modules.core.module_base import BaseModule, module
+import numpy as np
+
+from modules.contracts import module_args
+from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
 from modules.core.mixins import (
     SmartInfoBusRiskMixin,
     SmartInfoBusStateMixin,
     SmartInfoBusTradingMixin,
 )
-from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
-from modules.utils.info_bus import InfoBusManager
-from modules.utils.audit_utils import RotatingLogger, format_operator_message
-from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
+from modules.core.module_base import BaseModule, module
 from modules.monitoring.performance_tracker import PerformanceTracker
+from modules.utils.audit_utils import RotatingLogger, format_operator_message
+from modules.utils.info_bus import InfoBusManager
+from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 
 
 class RiskControlMode(Enum):
@@ -41,8 +42,9 @@ class RiskControlMode(Enum):
 
 def _load_dynamic_risk_config_from_yaml() -> Dict[str, Any]:
     """Load dynamic risk config values from risk_policy.yaml."""
-    import yaml
     import os
+
+    import yaml
     defaults: Dict[str, Any] = {}
     try:
         config_path = os.path.join(os.path.dirname(__file__), "..", "..", "config", "risk_policy.yaml")
@@ -2052,7 +2054,7 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
             return " | ".join(thesis_parts)
 
         except Exception as e:
-            return f"Risk thesis generation failed: {str(e)} - Core risk scaling functional"
+            return f"Risk thesis generation failed: {e!s} - Core risk scaling functional"
 
     async def _update_risk_smart_bus(self, result: Dict[str, Any], thesis: str):
         """Update SmartInfoBus with risk results"""
@@ -2343,7 +2345,7 @@ class DynamicRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradi
         # Record failure
         self._record_failure(error)
 
-        return self._create_error_fallback_response(f"error: {str(error)}")
+        return self._create_error_fallback_response(f"error: {error!s}")
 
     def _create_error_fallback_response(self, reason: str) -> Dict[str, Any]:
         """Create fallback response for error cases"""

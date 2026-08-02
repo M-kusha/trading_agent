@@ -25,7 +25,6 @@ from modules.voting.core.constants import (
     VotingBusKeys,
 )
 
-
 # Action translation map: semantic actions -> trading actions
 # Long/bullish actions map to BUY, Short/bearish to SELL, neutral/gate to HOLD
 ACTION_TRANSLATION: Dict[str, str] = {

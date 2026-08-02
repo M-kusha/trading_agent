@@ -22,9 +22,9 @@ import logging
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
 from enum import Enum
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 

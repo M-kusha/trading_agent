@@ -24,7 +24,6 @@ from typing import Any, Deque, Dict, List, Optional, Tuple
 
 import numpy as np
 
-
 # =============================================================================
 # ENUMERATIONS & DATA MODELS
 # =============================================================================

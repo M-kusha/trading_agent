@@ -20,14 +20,15 @@ sets veto when intervention=='avoid' && strength > threshold.
 from __future__ import annotations
 
 import time
-from collections import defaultdict, deque
-from dataclasses import dataclass, field, asdict
+from collections import deque
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from .base import MemoryComponent
 from modules.memory.shared.utils import safe_float
+
+from .base import MemoryComponent
 
 
 @dataclass

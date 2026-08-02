@@ -23,8 +23,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .base import MemoryComponent
 from modules.memory.shared.utils import safe_float
+
+from .base import MemoryComponent
 
 
 class LossRiskHead(nn.Module):

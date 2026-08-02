@@ -3,24 +3,25 @@
 Advanced intelligent explanation system for trading decisions and system state with contextual adaptation
 """
 
-import asyncio
-import time
-from modules.contracts import module_args
-import numpy as np
 import datetime
-from typing import Dict, Any, List, Optional, Tuple
-from collections import deque, defaultdict
+import time
+from collections import deque
+from typing import Any, Dict, List, Optional
+
+import numpy as np
+
+from modules.contracts import module_args
+from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
+from modules.core.mixins import SmartInfoBusStateMixin, SmartInfoBusTradingMixin
 
 # ═══════════════════════════════════════════════════════════════════
 # MODERN SMARTINFOBUS IMPORTS
 # ═══════════════════════════════════════════════════════════════════
 from modules.core.module_base import BaseModule, module
-from modules.core.mixins import SmartInfoBusTradingMixin, SmartInfoBusStateMixin
-from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
-from modules.utils.info_bus import InfoBusManager
-from modules.utils.audit_utils import RotatingLogger, format_operator_message
-from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 from modules.monitoring.performance_tracker import PerformanceTracker
+from modules.utils.audit_utils import RotatingLogger, format_operator_message
+from modules.utils.info_bus import InfoBusManager
+from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 
 
 @module(**module_args(
@@ -629,7 +630,7 @@ class ExplanationGenerator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             return " | ".join(thesis_parts)
             
         except Exception as e:
-            return f"Explanation action thesis generation failed: {str(e)}"
+            return f"Explanation action thesis generation failed: {e!s}"
 
     async def _get_comprehensive_explanation_context(self) -> Dict[str, Any]:
         """Get comprehensive context for explanation generation using modern SmartInfoBus"""
@@ -942,16 +943,16 @@ class ExplanationGenerator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
         """Generate explanation for specific trigger"""
         try:
             trigger_explanations = {
-                'time_based_update': f"⏰ Scheduled update: Current session progress and system status",
-                'trade_count_change': f"[STATS] Trade activity update: New trading activity detected",
-                'new_alerts': f"[ALERT] System alerts: New notifications require attention",
-                'regime_change': f"🌊 Market regime change: Trading conditions have shifted",
-                'milestone_25': f"[TARGET] 25% milestone reached: Quarter way to daily target",
-                'milestone_50': f"[TARGET] 50% milestone reached: Halfway to daily target",
-                'milestone_75': f"[TARGET] 75% milestone reached: Three-quarters to daily target",
-                'milestone_100': f"[TARGET] 100% milestone reached: Daily target achieved!",
-                'milestone_125': f"[TARGET] 125% milestone reached: Exceeded daily target!",
-                'error_recovery': f"[TOOL] Error recovery: System recovering from previous issues"
+                'time_based_update': "⏰ Scheduled update: Current session progress and system status",
+                'trade_count_change': "[STATS] Trade activity update: New trading activity detected",
+                'new_alerts': "[ALERT] System alerts: New notifications require attention",
+                'regime_change': "🌊 Market regime change: Trading conditions have shifted",
+                'milestone_25': "[TARGET] 25% milestone reached: Quarter way to daily target",
+                'milestone_50': "[TARGET] 50% milestone reached: Halfway to daily target",
+                'milestone_75': "[TARGET] 75% milestone reached: Three-quarters to daily target",
+                'milestone_100': "[TARGET] 100% milestone reached: Daily target achieved!",
+                'milestone_125': "[TARGET] 125% milestone reached: Exceeded daily target!",
+                'error_recovery': "[TOOL] Error recovery: System recovering from previous issues"
             }
             
             return trigger_explanations.get(trigger, f"System update: {trigger.replace('_', ' ')}")
@@ -1010,27 +1011,27 @@ class ExplanationGenerator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
                 priority = context['priority']
                 
                 if context_type == 'high_profit_trade':
-                    rationales.append(f"[OK] Trade Success Rationale: High-profit trade validates current strategy effectiveness and market timing accuracy.")
+                    rationales.append("[OK] Trade Success Rationale: High-profit trade validates current strategy effectiveness and market timing accuracy.")
                 elif context_type == 'high_loss_trade':
-                    rationales.append(f"[WARN] Loss Analysis Rationale: Significant loss triggers risk management review and strategy adjustment protocols.")
+                    rationales.append("[WARN] Loss Analysis Rationale: Significant loss triggers risk management review and strategy adjustment protocols.")
                 elif context_type == 'target_achieved':
-                    rationales.append(f"[TARGET] Target Achievement Rationale: Daily target reached through systematic execution and risk-controlled trading approach.")
+                    rationales.append("[TARGET] Target Achievement Rationale: Daily target reached through systematic execution and risk-controlled trading approach.")
                 elif context_type == 'system_critical_error':
-                    rationales.append(f"[ALERT] Critical Response Rationale: System error requires immediate attention to maintain trading operation integrity.")
+                    rationales.append("[ALERT] Critical Response Rationale: System error requires immediate attention to maintain trading operation integrity.")
                 elif context_type == 'drawdown_alert':
-                    rationales.append(f"[SAFE] Risk Protection Rationale: Drawdown threshold breach activates protective measures to preserve capital.")
+                    rationales.append("[SAFE] Risk Protection Rationale: Drawdown threshold breach activates protective measures to preserve capital.")
             
             # Context change rationales
             context_changes = analysis.get('context_changes', [])
             for change in context_changes:
                 if change == 'market_regime_change':
-                    rationales.append(f"[RELOAD] Adaptation Rationale: Market regime shift requires strategy recalibration for optimal performance.")
+                    rationales.append("[RELOAD] Adaptation Rationale: Market regime shift requires strategy recalibration for optimal performance.")
                 elif change == 'risk_level_change':
-                    rationales.append(f"[BALANCE] Risk Adjustment Rationale: Risk level change triggers position sizing and exposure adjustments.")
+                    rationales.append("[BALANCE] Risk Adjustment Rationale: Risk level change triggers position sizing and exposure adjustments.")
             
             # Default rationale if none specific
             if not rationales:
-                rationales.append(f"[STATS] Routine Rationale: Standard monitoring and status updates maintain operational transparency.")
+                rationales.append("[STATS] Routine Rationale: Standard monitoring and status updates maintain operational transparency.")
             
             return rationales
             
@@ -1065,7 +1066,7 @@ class ExplanationGenerator(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
                     market_evolution=f"Market conditions became unfavorable during {duration} step position",
                     lessons_learned="Validate entry criteria and market timing for future improvements",
                     strategy_validation="Risk management working correctly - review entry signals",
-                    session_impact=f"Controlled loss - capital preserved for future opportunities"
+                    session_impact="Controlled loss - capital preserved for future opportunities"
                 )
             elif self.explanation_depth == 'detailed':
                 return template.format(

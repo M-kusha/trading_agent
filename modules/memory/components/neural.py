@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import time
 from collections import deque
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import torch
@@ -746,7 +746,7 @@ class NeuralComponent(MemoryComponent):
 
         return {
             "attention_retrieval": {
-                "retrieved_count": int(len(result.get("retrieved_memories", []))),
+                "retrieved_count": len(result.get("retrieved_memories", [])),
                 "similarity_scores": result.get("similarity_scores", []),
                 "top_k": self._DEFAULT_TOPK,
                 "attention_heads": int(self.num_heads),

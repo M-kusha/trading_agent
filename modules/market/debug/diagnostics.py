@@ -5,13 +5,12 @@
 
 from __future__ import annotations
 
-import time
-from typing import Dict, Any, Optional, List, Deque, Tuple, Callable
-from collections import defaultdict, deque
-import threading
 import json
 import os
-import math
+import threading
+import time
+from collections import defaultdict, deque
+from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
 # Optional deps
 try:

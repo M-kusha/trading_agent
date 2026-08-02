@@ -6,15 +6,15 @@ Provides detailed debugging, bus inspection, and clear English reporting
 
 from __future__ import annotations
 
-from typing import Dict, Any, List, Optional, Set, Tuple, Iterable, Callable
-from datetime import datetime
-from collections import deque, defaultdict
-from contextlib import contextmanager
-import time
-import json
-import traceback
 import threading
+import time
+import traceback
 import tracemalloc
+from collections import defaultdict, deque
+from contextlib import contextmanager
+from datetime import datetime
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
 import numpy as np
 
 
@@ -478,7 +478,7 @@ class RewardDebugManager:
 
     def log_error(self, context: str, error: Exception, inputs: Optional[Dict] = None) -> None:
         """Log detailed error information"""
-        self._log("ERROR", f"ERROR in {context}: {str(error)}", "ERROR")
+        self._log("ERROR", f"ERROR in {context}: {error!s}", "ERROR")
 
         # Track error
         error_entry = {
@@ -546,7 +546,7 @@ class RewardDebugManager:
                 else:
                     self._log("WARNING", f"  ✗ {key}: Not available (from {info['source']})", "BUS_KEY")
             except Exception as e:
-                self._log("ERROR", f"  ✗ {key}: Error reading ({str(e)})", "BUS_ERROR")
+                self._log("ERROR", f"  ✗ {key}: Error reading ({e!s})", "BUS_ERROR")
 
     def log_health_status(self, health: Dict[str, Any]) -> None:
         """Log health status update"""

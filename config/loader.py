@@ -12,11 +12,10 @@ from .models import (
     ModeConfig,
     MT5Config,
     PathsConfig,
-    RLConfig,
     RiskConfig,
+    RLConfig,
     TradingAgentConfig,
 )
-
 
 CONFIG_DIR = Path(__file__).resolve().parent
 BASE_CONFIG_PATH = CONFIG_DIR / "base.yaml"

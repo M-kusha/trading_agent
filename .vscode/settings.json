@@ -1,0 +1,45 @@
+{
+  // Point the editor at the project's own lint config (pyproject.toml).
+  //
+  // Without this, VS Code applies its own defaults. `ruff --select ALL` finds
+  // 61,468 problems in this repo, ~38k of which are pure formatting opinion
+  // (quote style, line length, PEP585 annotation syntax, trailing whitespace).
+  // The curated rule set in pyproject.toml reports ~3,900, and those are real.
+
+  "python.analysis.typeCheckingMode": "basic",
+  "python.analysis.diagnosticMode": "openFilesOnly",
+  "python.analysis.autoImportCompletions": true,
+
+  // Missing torch / stable_baselines3 on a machine without the GPU stack is an
+  // environment gap, not a code defect. The observation and data layers are
+  // deliberately independent of them.
+  "python.analysis.diagnosticSeverityOverrides": {
+    "reportMissingImports": "warning",
+    "reportMissingModuleSource": "none"
+  },
+
+  "ruff.enable": true,
+  "ruff.lint.enable": true,
+  "ruff.importStrategy": "fromEnvironment",
+
+  "[python]": {
+    "editor.defaultFormatter": "charliermarsh.ruff",
+    "editor.codeActionsOnSave": {
+      "source.organizeImports.ruff": "explicit"
+    }
+  },
+
+  "python.testing.pytestEnabled": true,
+  "python.testing.pytestArgs": ["tests"],
+
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/*.pyc": true
+  },
+  "search.exclude": {
+    "data/**": true,
+    "logs/**": true,
+    "runs/**": true,
+    "checkpoints/**": true
+  }
+}

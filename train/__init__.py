@@ -9,8 +9,8 @@ Subpackages:
 """
 
 # Re-export commonly used items for convenience
+from .callbacks import CurriculumCheckpointCallback, CurriculumTrainingCallback, VecEpisodeTradingCallback
 from .controllers import PIDController, SmartEntropyController, TrainingHealthWatchdog
-from .callbacks import VecEpisodeTradingCallback, CurriculumCheckpointCallback, CurriculumTrainingCallback
 
 __all__ = [
     # Controllers

@@ -21,7 +21,7 @@ from __future__ import annotations
 import datetime
 import time
 from collections import deque
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import numpy as np
 

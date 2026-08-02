@@ -22,13 +22,14 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-from datetime import datetime, timedelta, time as dtime
+from datetime import datetime, timedelta
+from datetime import time as dtime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
-
-import pandas as pd
-import numpy as np
 from zoneinfo import ZoneInfo
+
+import numpy as np
+import pandas as pd
 
 from envs.core.env_types import PropFirmConfig, load_risk_policy
 from envs.prop_firm_env import PropFirmTradingEnv
@@ -36,10 +37,10 @@ from modules.meta.ppo_observation_builder import PPOObservationBuilder
 
 # Optional: SmartInfoBus + real voting/world-model modules
 try:
-    from modules.utils.info_bus import InfoBusManager
-    from modules.voting.experts import TrendExpert, MomentumExpert, ThemeExpert, SeasonalityRiskExpert
-    from modules.voting.stages.committee import CommitteeCoordinator
     from modules.models.world_model import EnhancedWorldModel
+    from modules.utils.info_bus import InfoBusManager
+    from modules.voting.experts import MomentumExpert, SeasonalityRiskExpert, ThemeExpert, TrendExpert
+    from modules.voting.stages.committee import CommitteeCoordinator
     SMART_MODULES_AVAILABLE = True
 except Exception:
     InfoBusManager = None  # type: ignore
@@ -145,7 +146,7 @@ def _timeval_to_minutes(tv: object) -> int:
     Returns 0 on any failure to keep behavior conservative for Pylance typing.
     """
     try:
-        return int(getattr(tv, "hour")) * 60 + int(getattr(tv, "minute"))
+        return int(tv.hour) * 60 + int(tv.minute)
     except Exception:
         return 0
 
@@ -607,7 +608,7 @@ def _build_historical_prices_asof(
             "low": _col("low"),
             "close": _col("close"),
             "volume": _col("volume") if "volume" in df_slice.columns else [1.0] * len(df_slice),
-            "bars_available": int(len(df_slice)),
+            "bars_available": len(df_slice),
 
             # explicit
             "closed_bar": closed_bar,
@@ -731,7 +732,7 @@ def _run_real_modules_asof(
         def _call_process(mod: Any, name: str) -> Optional[Any]:
             if mod is None or not hasattr(mod, "process"):
                 return None
-            fn = getattr(mod, "process")
+            fn = mod.process
             if not callable(fn):
                 return None
             try:
@@ -1011,7 +1012,7 @@ def main() -> int:
         env.daily_trades = 0
         env.consecutive_losses = 0
         env.consecutive_wins = 0
-        env._session_trades = 0  # noqa: SLF001
+        env._session_trades = 0
         env.session_start_balance = float(initial_balance)
         env.session_pnl = 0.0
     except Exception:
@@ -1032,7 +1033,7 @@ def main() -> int:
                 continue
 
             try:
-                env._episode_instrument = instrument  # noqa: SLF001
+                env._episode_instrument = instrument
             except Exception:
                 pass
             env.current_step = int(ii)

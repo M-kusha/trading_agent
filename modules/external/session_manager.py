@@ -11,21 +11,20 @@
 
 from __future__ import annotations
 
-import time
-import math
 import datetime
-from dataclasses import dataclass, asdict, field
-from typing import Dict, Any, Optional, Deque, List, Tuple
+import time
 from collections import deque
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import Any, Deque, Dict, List, Optional, Tuple
 
 import numpy as np
 
 from modules.contracts import module_args
+from modules.core.mixins import SmartInfoBusStateMixin, SmartInfoBusTradingMixin
 from modules.core.module_base import BaseModule, module
-from modules.core.mixins import SmartInfoBusTradingMixin, SmartInfoBusStateMixin
 from modules.utils.audit_utils import RotatingLogger
-from modules.utils.session_utils import infer_market_session, normalize_session_name, classify_session
+from modules.utils.session_utils import classify_session
 
 # Optional: use the real InfoBus if available (guarded to keep startup robust)
 try:  # pragma: no cover
@@ -560,8 +559,9 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
             "timestamp": self._to_iso_ts(self.time_helper.get_utcnow()),
         }
         try:
-            import yaml
             from pathlib import Path
+
+            import yaml
             risk_policy_path = Path("config/risk_policy.yaml")
             if risk_policy_path.exists():
                 with open(risk_policy_path, "r", encoding="utf-8") as f:
@@ -601,8 +601,9 @@ class SessionManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixi
                     pass
         # Try to get from risk_policy.yaml
         try:
-            import yaml
             from pathlib import Path
+
+            import yaml
             risk_policy_path = Path("config/risk_policy.yaml")
             if risk_policy_path.exists():
                 with open(risk_policy_path, "r", encoding="utf-8") as f:

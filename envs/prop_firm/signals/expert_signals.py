@@ -22,15 +22,14 @@ Expected attributes from PropFirmTradingEnv:
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
 from envs.prop_firm.signals.market_structure import MarketStructureMixin
 
 if TYPE_CHECKING:
-    from envs.core.env_types import PropFirmConfig
-    import pandas as pd
+    pass
 
 
 class ExpertSignalsMixin(MarketStructureMixin):

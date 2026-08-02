@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import numpy as np
 
@@ -26,21 +26,18 @@ from modules.core.error_pinpointer import create_error_handler
 from modules.core.module_base import module
 from modules.utils.audit_utils import format_operator_message
 
-from .position_base import (
-    PositionManagerBase,
-    PositionDecision,
-    PositionDecisionResult,
-    SignalContext,
-)
-from .position_logger import UnifiedPositionLogger, PositionLogEntry
 from .exit_engine import (
-    ExitStrategyEngine,
     ExitDecision,
-    ExitReason,
     PositionContext,
     get_exit_engine,
 )
-
+from .position_base import (
+    PositionDecision,
+    PositionDecisionResult,
+    PositionManagerBase,
+    SignalContext,
+)
+from .position_logger import PositionLogEntry
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # PPO-MASTER ARCHITECTURE NOTE
@@ -135,7 +132,7 @@ class PositionManager(PositionManagerBase):
                     "check_interval_sec": 3.0,
                     "max_exposure_pct": float(default),
                 }
-                setattr(self, "_risk_policy_cache", cache)
+                self._risk_policy_cache = cache
 
             now = time.time()
             if (now - float(cache.get("last_check_ts", 0.0))) < float(

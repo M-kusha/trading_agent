@@ -6,25 +6,24 @@
 
 from __future__ import annotations
 
-import time
-import threading
+import hashlib
 import json
 import os
-import sys
-import traceback
-import hashlib
-import tempfile
 import shutil
-from typing import Dict, List, Any, Optional, Callable, Set, Tuple, Deque, Iterable, cast, Protocol
-from collections import deque, defaultdict
-from datetime import datetime, timedelta
-from dataclasses import dataclass, field, asdict
-from enum import Enum
-from contextlib import contextmanager
+import sys
+import tempfile
+import threading
+import time
+import traceback
+import uuid
 import warnings
 import weakref
-import uuid
+from collections import defaultdict, deque
+from dataclasses import asdict, dataclass, field
+from datetime import datetime
+from enum import Enum
 from functools import wraps
+from typing import Any, Callable, Deque, Dict, Iterable, List, Optional, Protocol, Set, Tuple, cast
 
 # Suppress psutil warnings
 warnings.filterwarnings('ignore', module='psutil')
@@ -62,7 +61,6 @@ except Exception:
 
 from modules.utils.audit_utils import RotatingLogger, format_operator_message
 from modules.utils.info_bus import InfoBusManager
-
 
 # ─────────────────────────────────────────────────────────────
 # Health data models
@@ -750,7 +748,7 @@ class HealthMonitor:
         with self._module_health_lock:
             if self.orchestrator and hasattr(self.orchestrator, 'modules'):
                 try:
-                    modules_items = list(getattr(self.orchestrator, 'modules').items())
+                    modules_items = list(self.orchestrator.modules.items())
                 except Exception:
                     modules_items = []
                 for name, module in modules_items:
@@ -877,7 +875,7 @@ class HealthMonitor:
             cache_hit_rate = _to_float(perf.get('cache_hit_rate', 0.0), 0.0) if isinstance(perf, dict) else 0.0
             active_modules = int(perf.get('active_modules', 0)) if isinstance(perf, dict) else 0
             disabled_list = perf.get('disabled_modules', []) if isinstance(perf, dict) else []
-            disabled = int(len(disabled_list)) if isinstance(disabled_list, (list, tuple, set)) else 0
+            disabled = len(disabled_list) if isinstance(disabled_list, (list, tuple, set)) else 0
             data_keys = len(getattr(self.smart_bus, "_data_store", {}))
             event_log_size = int(perf.get('total_events', 0)) if isinstance(perf, dict) else 0
             status = self._assess_infobus_status(perf if isinstance(perf, dict) else {})
@@ -898,7 +896,7 @@ class HealthMonitor:
             latencies: List[float] = []
             recent_errors = 0
             if self.orchestrator and hasattr(self.orchestrator, 'modules'):
-                for name in list(getattr(self.orchestrator, 'modules').keys()):
+                for name in list(self.orchestrator.modules.keys()):
                     try:
                         raw = getattr(self.smart_bus, "_latency_history", {}).get(name, [])
                         # last 10; coerce to float and filter
@@ -1309,7 +1307,7 @@ class HealthMonitor:
 
     def get_status(self) -> Dict[str, Any]:
         with self._metrics_lock:
-            tracked = int(len(self.metrics))
+            tracked = len(self.metrics)
         uptime = (time.time() - self._start_time) if self._start_time else 0.0
         return {
             'initialized': self._initialized,

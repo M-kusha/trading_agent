@@ -6,5 +6,5 @@ Older code (and some tests/tools) import the curriculum manager from
 prefer importing from `envs.curriculum.curriculum_manager`.
 """
 
-from envs.curriculum.curriculum_manager import *  # noqa: F401,F403
+from envs.curriculum.curriculum_manager import *  # noqa: F403
 

@@ -20,19 +20,22 @@ Promotion requires:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
 from envs.core.shared_utils import (
-    safe_float as _sf,
     clamp as _clamp,
+)
+from envs.core.shared_utils import (
     get_envs_logger,
     iso_timestamp,
 )
-
+from envs.core.shared_utils import (
+    safe_float as _sf,
+)
 
 logger = get_envs_logger("validation_gates")
 
@@ -618,7 +621,7 @@ class ValidationGateChecker:
                 behavior_ok = False
         else:
             # Training trade count unavailable - log warning but don't fail
-            logger.debug(f"Skipping trade ratio check: training trade count unavailable")
+            logger.debug("Skipping trade ratio check: training trade count unavailable")
         
         result.behavior_score = 1.0 if behavior_ok else 0.5
         

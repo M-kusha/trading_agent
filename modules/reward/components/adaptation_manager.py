@@ -10,10 +10,11 @@ Adaptation Manager for Reward System (Hardened)
 
 from __future__ import annotations
 
-from typing import Dict, Any, Optional
-from collections import deque
 import threading
 import time
+from collections import deque
+from typing import Any, Dict
+
 import numpy as np
 
 

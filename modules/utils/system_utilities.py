@@ -12,10 +12,10 @@ import json
 import threading
 import time
 import uuid
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
-from collections import defaultdict
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from modules.utils.audit_utils import RotatingLogger, format_operator_message
 

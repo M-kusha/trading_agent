@@ -6,26 +6,27 @@ Intelligent drawdown monitoring and rescue mechanisms
 
 from __future__ import annotations
 
-from modules.contracts import module_args
-import numpy as np
 import datetime
-import time
 import threading
+import time
+from collections import defaultdict, deque
 from dataclasses import dataclass
-from typing import Dict, Any, List, Optional
-from collections import deque, defaultdict
+from typing import Any, Dict, List, Optional
 
-from modules.core.module_base import BaseModule, module
+import numpy as np
+
+from modules.contracts import module_args
+from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
 from modules.core.mixins import (
     SmartInfoBusRiskMixin,
     SmartInfoBusStateMixin,
     SmartInfoBusTradingMixin,
 )
-from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
-from modules.utils.info_bus import InfoBusManager
-from modules.utils.audit_utils import RotatingLogger, format_operator_message
-from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
+from modules.core.module_base import BaseModule, module
 from modules.monitoring.performance_tracker import PerformanceTracker
+from modules.utils.audit_utils import RotatingLogger, format_operator_message
+from modules.utils.info_bus import InfoBusManager
+from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 
 
 # ─────────────────────────────────────────────────────────────
@@ -33,8 +34,9 @@ from modules.monitoring.performance_tracker import PerformanceTracker
 # ─────────────────────────────────────────────────────────────
 def _load_drawdown_rescue_config_from_yaml() -> Dict[str, Any]:
     """Load drawdown rescue config values from risk_policy.yaml."""
-    import yaml
     import os
+
+    import yaml
 
     defaults: Dict[str, Any] = {}
     try:
@@ -987,7 +989,7 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
                         "avg_drawdown": float(np.mean(values)),
                         "max_drawdown": float(np.max(values)),
                         "drawdown_volatility": float(np.std(values)),
-                        "sample_count": int(len(values)),
+                        "sample_count": len(values),
                     }
 
             assessment = "normal"
@@ -1373,7 +1375,7 @@ class DrawdownRescue(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, 
         )
         self.severity_level = "error"
         self.risk_adjustment_factor = max(0.5, float(self.risk_adjustment_factor))
-        return self._fallback_payload(thesis=f"Drawdown error fallback: {str(error)}")
+        return self._fallback_payload(thesis=f"Drawdown error fallback: {error!s}")
 
     # ── bookkeeping ──────────────────────────────────────────
     def _record_success(self, processing_time_sec: float) -> None:

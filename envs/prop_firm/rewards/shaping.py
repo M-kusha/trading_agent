@@ -247,7 +247,7 @@ class RewardShapingMixin:
                     bonus = float(getattr(cfg, "observation_completion_bonus", 0.0))
                     if bonus > 0.0:
                         shaping += bonus
-                    setattr(self, "_observation_bonus_given", True)
+                    self._observation_bonus_given = True
 
         # 3a.1) Win-rate preservation bonus for skipping marginal setups
         # (Rewards selectivity once win rate is already strong.)

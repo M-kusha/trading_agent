@@ -24,7 +24,7 @@ from __future__ import annotations
 import datetime
 import time
 from collections import deque
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 
@@ -34,17 +34,15 @@ from modules.voting.core.base import VotingModuleBase
 from modules.voting.core.constants import (
     CONFIDENCE_THRESHOLD_F,
     CONSENSUS_THRESHOLD_F,
-    VotingAction,
-    is_training_mode,
-    is_live_mode,
-    get_voting_mode,
+    _threshold_manager,  # For feedback recording
     get_instrument_threshold,  # Adaptive per-instrument thresholds
-    _threshold_manager,        # For feedback recording
+    get_voting_mode,
+    is_live_mode,
 )
 from modules.voting.core.per_instrument import (
     DEFAULT_INSTRUMENTS,
-    normalize_instrument,
     extract_instrument_data,
+    normalize_instrument,
 )
 
 

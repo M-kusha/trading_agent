@@ -7,16 +7,16 @@ Import controllers from this package:
     from train.controllers import SmartLRController, SmartClipController
 """
 
-from .pid_controller import PIDController
-from .entropy_controller import SmartEntropyController
-from .lr_controller import SmartLRController
 from .clip_controller import SmartClipController
+from .entropy_controller import SmartEntropyController
 from .health_watchdog import TrainingHealthWatchdog
+from .lr_controller import SmartLRController
+from .pid_controller import PIDController
 
 __all__ = [
     "PIDController",
+    "SmartClipController",
     "SmartEntropyController",
     "SmartLRController",
-    "SmartClipController",
     "TrainingHealthWatchdog",
 ]

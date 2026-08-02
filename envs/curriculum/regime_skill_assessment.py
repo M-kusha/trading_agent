@@ -19,16 +19,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import numpy as np
 
 from envs.core.shared_utils import (
-    safe_float as _sf,
     clamp as _clamp,
+)
+from envs.core.shared_utils import (
     get_envs_logger,
 )
-
+from envs.core.shared_utils import (
+    safe_float as _sf,
+)
 
 logger = get_envs_logger("regime_skill_assessment")
 

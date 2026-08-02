@@ -36,15 +36,15 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Mapping, Tuple, cast
-import numpy as np
+from typing import Any, Dict, List, Mapping, Optional, cast
 
+import numpy as np
 
 logger = logging.getLogger("LiveTrainingPipeline")
 running = True
 
 
-def _signal_handler(signum, frame):  # noqa: ANN001
+def _signal_handler(signum, frame):
     global running
     logger.info("Received signal %s, shutting down...", signum)
     running = False
@@ -144,7 +144,7 @@ def _hash_obj(obj: Any) -> str:
         payload = json.dumps(_to_jsonable(obj), sort_keys=True, separators=(",", ":")).encode("utf-8")
     except Exception:
         payload = str(obj).encode("utf-8")
-    return hashlib.sha1(payload).hexdigest()  # noqa: S324 (non-crypto use: diagnostics only)
+    return hashlib.sha1(payload).hexdigest()
 
 
 

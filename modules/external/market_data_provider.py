@@ -18,25 +18,25 @@
 
 from __future__ import annotations
 
-import os
+import datetime
 import glob
 import json
 import math
-import time
-import datetime
+import os
 import threading
-from dataclasses import dataclass, field, asdict, fields
+import time
 from collections import deque
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Set, cast
+from typing import Any, Dict, List, Optional, Set, Tuple, cast
 
 import numpy as np
 import pandas as pd
 
 # Contracts & infra
-from modules.contracts import module_args, CONTRACTS
+from modules.contracts import CONTRACTS, module_args
+from modules.core.mixins import SmartInfoBusStateMixin, SmartInfoBusTradingMixin
 from modules.core.module_base import BaseModule, module
-from modules.core.mixins import SmartInfoBusTradingMixin, SmartInfoBusStateMixin
 from modules.utils.audit_utils import RotatingLogger, format_operator_message
 from modules.utils.info_bus import SmartInfoBus
 
@@ -175,7 +175,7 @@ class AuditLogger:
 # ─────────────────────────────────────────────────────────────
 
 class _TFStore:
-    __slots__ = ("ts", "open", "high", "low", "close", "volume", "n")
+    __slots__ = ("close", "high", "low", "n", "open", "ts", "volume")
 
     def __init__(self, df: pd.DataFrame) -> None:
         # df must be sorted asc and contain CLOSED bars only.

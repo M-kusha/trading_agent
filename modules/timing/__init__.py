@@ -10,17 +10,17 @@ Usage:
 """
 
 from .timing_features import (
-    TimingFeatures,
+    TIMING_FEATURE_DIM,
     TimingConfig,
+    TimingFeatures,
     compute_timing_features,
     timing_features_to_array,
-    TIMING_FEATURE_DIM,
 )
 
 __all__ = [
-    "TimingFeatures",
+    "TIMING_FEATURE_DIM",
     "TimingConfig",
+    "TimingFeatures",
     "compute_timing_features",
     "timing_features_to_array",
-    "TIMING_FEATURE_DIM",
 ]

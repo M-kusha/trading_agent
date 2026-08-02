@@ -4,14 +4,14 @@ Shared State Management for Reward System
 Centralized state tracking and management
 """
 
-from typing import Dict, Any, List, Optional, Deque
-from collections import deque, defaultdict
-from dataclasses import dataclass
-import numpy as np
 import time
+from collections import defaultdict, deque
 from datetime import datetime
+from typing import Any, Deque, Dict, List, Optional
 
-from .reward_config import RewardMode, RewardConfig
+import numpy as np
+
+from .reward_config import RewardConfig, RewardMode
 
 
 class RewardState:
@@ -323,7 +323,6 @@ class RewardState:
     def mutate_genome(self, mutation_rate: float = 0.2) -> None:
         """Mutate genome for evolution"""
         # Implementation would go here
-        pass
 
     def get_genome(self) -> Dict[str, Any]:
         """Get current genome"""

@@ -16,9 +16,9 @@
 from __future__ import annotations
 
 import datetime as dt
-from typing import Any, Dict, List, Optional
-from dataclasses import dataclass
 from collections import defaultdict
+from dataclasses import dataclass
+from typing import Any, Dict, List
 
 
 @dataclass
@@ -404,8 +404,8 @@ class UnifiedExecutorLogger:
         lines.append(f"│ Rejected:         {len(rejected)} orders")
 
         if accepted:
-            lines.append(f"│")
-            lines.append(f"│ Accepted Preview:")
+            lines.append("│")
+            lines.append("│ Accepted Preview:")
             for order in accepted[:5]:
                 inst = order.get('instrument', 'N/A')
                 action = order.get('action', 'N/A')
@@ -413,8 +413,8 @@ class UnifiedExecutorLogger:
                 lines.append(f"│   • {inst:10s} {action:15s} €{size:8.2f}")
 
         if rejected:
-            lines.append(f"│")
-            lines.append(f"│ Rejected Preview:")
+            lines.append("│")
+            lines.append("│ Rejected Preview:")
             for rej in rejected[:3]:
                 reason = rej.get('reason', 'unknown')
                 intent = rej.get('intent', {})

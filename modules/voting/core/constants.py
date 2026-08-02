@@ -11,7 +11,7 @@ MODE-AWARE:
 from __future__ import annotations
 
 from enum import Enum
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Optional
 
 # ═══════════════════════════════════════════════════════════════════
 # Canonical Normalization (Single Source of Truth)

@@ -3,25 +3,26 @@
 Advanced thesis development and evolution system with intelligent learning and adaptation
 """
 
-import asyncio
-import time
-from modules.contracts import module_args
-import numpy as np
 import datetime
 import random
-from typing import Dict, Any, List, Optional, Tuple
-from collections import deque, defaultdict
+import time
+from collections import defaultdict, deque
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
+
+from modules.contracts import module_args
+from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
+from modules.core.mixins import SmartInfoBusStateMixin, SmartInfoBusTradingMixin
 
 # ═══════════════════════════════════════════════════════════════════
 # MODERN SMARTINFOBUS IMPORTS
 # ═══════════════════════════════════════════════════════════════════
 from modules.core.module_base import BaseModule, module
-from modules.core.mixins import SmartInfoBusTradingMixin, SmartInfoBusStateMixin
-from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
-from modules.utils.info_bus import InfoBusManager
-from modules.utils.audit_utils import RotatingLogger, format_operator_message
-from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 from modules.monitoring.performance_tracker import PerformanceTracker
+from modules.utils.audit_utils import RotatingLogger, format_operator_message
+from modules.utils.info_bus import InfoBusManager
+from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 
 
 @module(**module_args(
@@ -1650,7 +1651,6 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
 
     async def _update_thesis_performance_comprehensive(self, market_data: Dict[str, Any], evolution_context: Dict[str, Any]):
         """Placeholder for comprehensive performance update"""
-        pass
 
     async def _cleanup_underperforming_theses_comprehensive(self) -> Dict[str, Any]:
         """Placeholder for comprehensive cleanup"""
@@ -1961,7 +1961,7 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                     'crossover_focus': True
                 }
                 confidence = 0.70
-                reasoning = f"Diversity gap indicates need for portfolio diversification"
+                reasoning = "Diversity gap indicates need for portfolio diversification"
                 
             elif len(recent_trades) > 0 and self._calculate_recent_win_rate(recent_trades) < 0.4:
                 action_type = 'performance_improvement'
@@ -1972,7 +1972,7 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                     'focus_on_losses': True
                 }
                 confidence = 0.80
-                reasoning = f"Poor recent performance indicates need for thesis refinement"
+                reasoning = "Poor recent performance indicates need for thesis refinement"
                 
             else:
                 action_type = 'maintenance'

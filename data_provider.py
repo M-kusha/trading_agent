@@ -4,13 +4,15 @@ Clean abstraction for both CSV and live data sources
 """
 
 from __future__ import annotations
+
+import logging
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Tuple, Any, cast
 from dataclasses import dataclass, field
 from datetime import datetime
-import pandas as pd
 from pathlib import Path
-import logging
+from typing import Any, Dict, List, Optional, Tuple, cast
+
+import pandas as pd
 
 
 @dataclass
@@ -73,32 +75,26 @@ class DataProviderInterface(ABC):
     @abstractmethod
     def connect(self) -> bool:
         """Connect to data source"""
-        pass
 
     @abstractmethod
     def disconnect(self) -> None:
         """Disconnect from data source"""
-        pass
 
     @abstractmethod
     def is_connected(self) -> bool:
         """Check if connected to data source"""
-        pass
 
     @abstractmethod
     def get_status(self) -> DataProviderStatus:
         """Get current provider status"""
-        pass
 
     @abstractmethod
     def get_available_instruments(self) -> List[str]:
         """Get list of available instruments"""
-        pass
 
     @abstractmethod
     def get_available_timeframes(self) -> List[str]:
         """Get list of available timeframes"""
-        pass
 
     @abstractmethod
     def get_historical_data(
@@ -110,22 +106,18 @@ class DataProviderInterface(ABC):
         count: Optional[int] = None
     ) -> pd.DataFrame:
         """Get historical data for instrument and timeframe"""
-        pass
 
     @abstractmethod
     def get_latest_data(self, instrument: str, timeframe: str, count: int = 1) -> pd.DataFrame:
         """Get latest data points"""
-        pass
 
     @abstractmethod
     def get_current_price(self, instrument: str) -> Optional[MarketData]:
         """Get current price for instrument"""
-        pass
 
     @abstractmethod
     def validate_data_integrity(self, data: pd.DataFrame) -> Tuple[bool, List[str]]:
         """Validate data integrity and return issues"""
-        pass
 
 
 class CSVDataProvider(DataProviderInterface):

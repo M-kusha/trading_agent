@@ -8,8 +8,8 @@ and TRAINING (exploratory) modes. Call set_reward_mode() at startup.
 """
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Any
 from enum import Enum
+from typing import Any, Dict, List, Optional
 
 
 class RewardMode(Enum):
@@ -23,8 +23,9 @@ class RewardMode(Enum):
 
 def _load_reward_config_from_yaml() -> Dict[str, Any]:
     """Load reward config values from risk_policy.yaml."""
-    import yaml
     import os
+
+    import yaml
     defaults = {}
     try:
         config_path = os.path.join(os.path.dirname(__file__), "..", "..", "..", "config", "risk_policy.yaml")

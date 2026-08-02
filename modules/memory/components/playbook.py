@@ -8,14 +8,15 @@ from __future__ import annotations
 
 import time
 from collections import defaultdict, deque
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import StandardScaler
 
-from .base import MemoryComponent
 from modules.memory.shared.utils import safe_float
+
+from .base import MemoryComponent
 
 
 class PlaybookComponent(MemoryComponent):
@@ -774,7 +775,7 @@ class PlaybookComponent(MemoryComponent):
     def _update_analytics(self) -> None:
         """Update memory analytics metrics."""
         # Diversity: #patterns normalized to 0..1 (cap at 20)
-        unique_patterns = int(len(self.pattern_effectiveness))
+        unique_patterns = len(self.pattern_effectiveness)
         self.pattern_diversity = min(1.0, unique_patterns / 20.0)
 
         # Recall efficiency: average confidence on last 10 recalls
@@ -823,8 +824,8 @@ class PlaybookComponent(MemoryComponent):
                 "adaptive_k": int(min(self.k_neighbors, max(1, len(self.features)))),
             },
             "playbook_recall": {
-                "memory_entries": int(len(self.features)),
-                "patterns_identified": int(len(self.pattern_effectiveness)),
+                "memory_entries": len(self.features),
+                "patterns_identified": len(self.pattern_effectiveness),
                 "recall_efficiency": float(self.recall_efficiency),
                 "prediction_accuracy": float(self.prediction_accuracy),
                 "last_recall": last_recall,

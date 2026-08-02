@@ -6,27 +6,28 @@ Comprehensive trade validation and regulatory compliance monitoring
 
 from __future__ import annotations
 
-from modules.contracts import module_args
-import numpy as np
 import datetime
-import time
 import os
 import threading
-from dataclasses import dataclass, asdict
-from typing import Dict, Any, List, Optional, Union, Tuple, Set
-from collections import deque, defaultdict
+import time
+from collections import defaultdict, deque
+from dataclasses import asdict, dataclass
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
-from modules.core.module_base import BaseModule, module
+import numpy as np
+
+from modules.contracts import module_args
+from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
 from modules.core.mixins import (
     SmartInfoBusRiskMixin,
     SmartInfoBusStateMixin,
     SmartInfoBusTradingMixin,
 )
-from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
-from modules.utils.info_bus import InfoBusManager
-from modules.utils.audit_utils import RotatingLogger, format_operator_message
-from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
+from modules.core.module_base import BaseModule, module
 from modules.monitoring.performance_tracker import PerformanceTracker
+from modules.utils.audit_utils import RotatingLogger, format_operator_message
+from modules.utils.info_bus import InfoBusManager
+from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 
 
 # ─────────────────────────────────────────────────────────────
@@ -780,7 +781,7 @@ class ComplianceModule(
         start_time = datetime.datetime.now()
 
         validation_results: Dict[str, Any] = {
-            "total_orders": int(len(pending_orders)),
+            "total_orders": len(pending_orders),
             "approved": [],
             "rejected": [],
             "violations": [],
@@ -836,7 +837,7 @@ class ComplianceModule(
             # Return a contract-complete but empty result on error
             return {
                 "error": error_context,
-                "total_orders": int(len(pending_orders)),
+                "total_orders": len(pending_orders),
                 "approved": [],
                 "rejected": [],
                 "violations": [],
@@ -1295,7 +1296,7 @@ class ComplianceModule(
                 str(k): float(v) for k, v in exposure_by_instrument.items()
             }
 
-            total_positions = int(len(positions))
+            total_positions = len(positions)
             current_exposure = float(self.total_exposure)
             current_leverage = (
                 current_exposure / max(float(balance), 1.0)
@@ -1370,8 +1371,8 @@ class ComplianceModule(
         try:
             # Validation metrics
             total_orders = int(validation_results.get("total_orders", 0))
-            approved_orders = int(len(validation_results.get("approved", [])))
-            rejected_orders = int(len(validation_results.get("rejected", [])))
+            approved_orders = len(validation_results.get("approved", []))
+            rejected_orders = len(validation_results.get("rejected", []))
 
             approval_rate = float(approved_orders / max(total_orders, 1))
             rejection_rate = float(rejected_orders / max(total_orders, 1))
@@ -1434,8 +1435,8 @@ class ComplianceModule(
 
             # Validation overview
             total_orders = int(validation_results.get("total_orders", 0))
-            approved = int(len(validation_results.get("approved", [])))
-            rejected = int(len(validation_results.get("rejected", [])))
+            approved = len(validation_results.get("approved", []))
+            rejected = len(validation_results.get("rejected", []))
 
             if total_orders > 0:
                 thesis_parts.append(
@@ -1848,7 +1849,7 @@ class ComplianceModule(
         # Keep state minimally pessimistic
         self.compliance_score = float(max(0.5, float(self.compliance_score)))
         return self._fallback_payload(
-            thesis=f"Compliance error fallback: {str(error)}"
+            thesis=f"Compliance error fallback: {error!s}"
         )
 
     # ── bookkeeping ──────────────────────────────────────────

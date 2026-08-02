@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 
 from modules.voting.core.constants import VotingAction
 

@@ -66,17 +66,17 @@ JAN 2026 UPGRADE (this patch):
 from __future__ import annotations
 
 import copy
-from collections import deque
 import warnings
-from datetime import datetime, date
+from collections import deque
+from datetime import date, datetime
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
-from pandas.api.types import is_numeric_dtype
-from typing import Optional
+from zoneinfo import ZoneInfo
+
+import gymnasium as gym
 import numpy as np
 import pandas as pd
-import gymnasium as gym
 from gymnasium import spaces
-from zoneinfo import ZoneInfo
+from pandas.api.types import is_numeric_dtype
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
@@ -104,10 +104,10 @@ except Exception:
 # against `np.zeros(90)` -- a blind agent, announced only by a single log warning.
 # A broken observation must never be a recoverable state, so the import is now
 # unguarded and any failure stops the process at import time.
-from modules.meta.ppo_observation_builder import (  # noqa: E402
-    PPOObservationBuilder,
+from modules.meta.ppo_observation_builder import (
     PPO_OBS_SIZE,
     PPO_OBS_VERSION,
+    PPOObservationBuilder,
 )
 
 OBS_BUILDER_AVAILABLE = True  # retained for backward compatibility; always True
@@ -152,37 +152,35 @@ def validate_observation_version(saved_version: str, saved_size: int) -> None:
 
 
 from envs.core.shared_utils import (
+    DEFAULT_PRIMARY_TIMEFRAME,
     get_envs_logger,
     timeframe_to_minutes,
-    DEFAULT_PRIMARY_TIMEFRAME,
 )
 
 logger = get_envs_logger("prop_firm_env")
 
-from envs.core.execution_model import (
-    ExecutionConfig,
-    ExecutionModel,
-    CommissionMode,
-    CommissionSpec,
-)
-
 from envs.core.env_types import (
     CloseReason,
-    RewardConfig,
     PropFirmConfig,
     PropPosition,
     TradeResult,
 )
+from envs.core.execution_model import (
+    CommissionMode,
+    CommissionSpec,
+    ExecutionConfig,
+    ExecutionModel,
+)
 
 # Import mixins for modular functionality
 from envs.prop_firm import (
-    ExpertSignalsMixin,
-    EntryQualityMixin,
-    TradeRewardMixin,
-    RewardShapingMixin,
-    ObservationBuildersMixin,
-    SessionTimingMixin,
     DataDifficultyMixin,
+    EntryQualityMixin,
+    ExpertSignalsMixin,
+    ObservationBuildersMixin,
+    RewardShapingMixin,
+    SessionTimingMixin,
+    TradeRewardMixin,
 )
 
 
@@ -252,7 +250,7 @@ class PropFirmTradingEnv(
         except Exception as e:
             logger.debug(f"Could not sync observation_size: {e}")
 
-        self._K = int(len(self.config.size_buckets))
+        self._K = len(self.config.size_buckets)
         self._ACTION_HOLD = 0
         self._ACTION_LONG_START = 1
         self._ACTION_SHORT_START = 1 + self._K

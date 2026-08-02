@@ -6,14 +6,14 @@
 
 from __future__ import annotations
 
-import time
-import threading
-import json
-from typing import Dict, List, Any, Optional, TYPE_CHECKING, Callable, Deque, Tuple
-from collections import defaultdict, deque
-from datetime import datetime, timedelta
-from dataclasses import dataclass, asdict
 import contextlib
+import json
+import threading
+import time
+from collections import defaultdict, deque
+from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta
+from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
 # numpy is optional — degrade gracefully
 try:
@@ -27,13 +27,11 @@ try:
 except Exception:  # pragma: no cover
     psutil = None  # type: ignore
 
-from modules.utils.info_bus import InfoBusManager
-from modules.utils.audit_utils import format_operator_message, RotatingLogger
-from modules.utils.system_utilities import EnglishExplainer
-
 from modules.core.configuration_manager import ConfigurationManager
 from modules.core.module_system import ModuleOrchestrator
-
+from modules.utils.audit_utils import RotatingLogger, format_operator_message
+from modules.utils.info_bus import InfoBusManager
+from modules.utils.system_utilities import EnglishExplainer
 
 # ─────────────────────────────────────────────────────────────
 # Data models

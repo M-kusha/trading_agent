@@ -20,7 +20,7 @@ Features extracted (8-12 dims):
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Tuple, Union
 
 import numpy as np
 

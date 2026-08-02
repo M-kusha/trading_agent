@@ -25,18 +25,19 @@ import traceback
 from abc import abstractmethod
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, Optional, List, TYPE_CHECKING, cast, Iterable, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, cast
 
 import numpy as np
 
+from modules.core.mixins import SmartInfoBusStateMixin, SmartInfoBusTradingMixin
+
 # Core module system
 from modules.core.module_base import BaseModule, module  # noqa: F401
-from modules.core.mixins import SmartInfoBusTradingMixin, SmartInfoBusStateMixin
 
 # Utilities (optional, degrade gracefully if missing)
 try:
-    from modules.utils.info_bus import InfoBusManager
     from modules.utils.audit_utils import RotatingLogger, format_operator_message
+    from modules.utils.info_bus import InfoBusManager
     SMARTINFOBUS_AVAILABLE = True
 except ImportError:
     InfoBusManager = None  # type: ignore[assignment]
@@ -63,10 +64,10 @@ except ImportError:
     PERFORMANCE_TRACKING_AVAILABLE = False
 
 from .constants import (
+    CIRCUIT_BREAKER_THRESHOLD,
+    MAX_PROCESSING_TIME_MS,
     VOTING_DEFAULTS,
     VotingBusKeys,
-    MAX_PROCESSING_TIME_MS,
-    CIRCUIT_BREAKER_THRESHOLD,
     get_adaptive_thresholds_for_instrument,
     get_instrument_threshold,
     normalize_instrument,
@@ -74,7 +75,6 @@ from .constants import (
 
 if TYPE_CHECKING:  # pragma: no cover
     from modules.utils.info_bus import SmartInfoBus
-    from modules.utils.audit_utils import RotatingLogger as RotLoggerType
 
 
 class VotingModuleBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):

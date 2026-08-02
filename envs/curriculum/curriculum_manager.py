@@ -31,26 +31,45 @@ from __future__ import annotations
 
 import copy
 import json
-import logging
 import math
 from collections import deque
-from dataclasses import dataclass, field, asdict, fields
+from dataclasses import asdict, fields
 from datetime import datetime
-from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, ClassVar, Deque, Dict, List, Optional, Tuple, Set
+from typing import Any, Callable, Deque, Dict, List, Optional, Set, Tuple
 from zoneinfo import ZoneInfo
 
 import numpy as np
 
+from envs.core.shared_utils import (
+    clamp as _cl,
+)
+from envs.core.shared_utils import (
+    get_envs_logger,
+    iso_timestamp,
+)
+from envs.core.shared_utils import (
+    mean_ci_normal as _mci,
+)
+
+# DUP-2 FIX: Use shared utilities for common functions
+from envs.core.shared_utils import (
+    safe_float as _sf,
+)
+from envs.core.shared_utils import (
+    safe_int as _si,
+)
+from envs.core.shared_utils import (
+    wilson_interval as _wi,
+)
 from envs.curriculum.curriculum_config import (
+    MIN_EVALUATION_EPISODES,
+    CompetenceThresholds,
     CurriculumStage,
     CurriculumStageConfig,
-    CompetenceThresholds,
-    MIN_EVALUATION_EPISODES,
-    get_stage_config,
     get_next_stage,
     get_previous_stage,
+    get_stage_config,
     get_stage_progression,
     # NOTE: TradingSkill, SkillRequirements, CompositeScoringConfig,
     # AdaptiveThresholdConfig, RecoveryProtocolConfig, DataDifficulty,
@@ -60,50 +79,39 @@ from envs.curriculum.curriculum_config import (
     # annotations, so they're not imported here.
 )
 
-# DUP-2 FIX: Use shared utilities for common functions
-from envs.core.shared_utils import (
-    safe_float as _sf,
-    safe_int as _si,
-    clamp as _cl,
-    wilson_interval as _wi,
-    mean_ci_normal as _mci,
-    get_envs_logger,
-    iso_timestamp,
+# Phase 1-4 hardening modules
+from envs.curriculum.curriculum_invariants import (
+    AntiGamingChecker,
+    # reconcile_trade_accounting, InvariantViolation not used directly
+    CurriculumInvariantChecker,
 )
 
 # Import from curriculum subpackage
 from envs.curriculum.metrics import (
-    EpisodeMetrics,
-    RollingStats,
-    LearningVelocity,
     CompositeScore,
-    compute_composite_score,
+    EpisodeMetrics,
+    LearningVelocity,
+    RollingStats,
     compute_adjusted_thresholds,
-)
-from envs.curriculum.skills import (
-    SkillAssessment,
-    DemotionAnalyzer,
-    # DemotionRecord accessed via DemotionAnalyzer, not used directly
+    compute_composite_score,
 )
 from envs.curriculum.protocols import (
     RecoveryProtocolState,
     ReviewSessionState,
 )
-
-# Phase 1-4 hardening modules
-from envs.curriculum.curriculum_invariants import (
-    CurriculumInvariantChecker,
-    AntiGamingChecker,
-    # reconcile_trade_accounting, InvariantViolation not used directly
-)
-from envs.curriculum.validation_gates import (
-    ValidationGateChecker,
-    StressTestRunner,
-    # ValidationGateConfig, StressTestConfig accessed via stage_config
-)
 from envs.curriculum.regime_skill_assessment import (
     RegimeSkillAssessment,
     TradeWithRegime,
+)
+from envs.curriculum.skills import (
+    DemotionAnalyzer,
+    # DemotionRecord accessed via DemotionAnalyzer, not used directly
+    SkillAssessment,
+)
+from envs.curriculum.validation_gates import (
+    StressTestRunner,
+    # ValidationGateConfig, StressTestConfig accessed via stage_config
+    ValidationGateChecker,
 )
 
 logger = get_envs_logger("curriculum_manager")
@@ -1373,9 +1381,7 @@ class CurriculumManager:
             return
         
         # Map string regime names to enums
-        from envs.curriculum.regime_skill_assessment import (
-            VolatilityRegime, TrendRegime, SessionRegime, SpreadRegime
-        )
+        from envs.curriculum.regime_skill_assessment import SessionRegime, SpreadRegime, TrendRegime, VolatilityRegime
         
         vol_map = {
             "low": VolatilityRegime.LOW,

@@ -13,20 +13,20 @@ PropFirm PPO Training Script (10/10) with:
 
 from __future__ import annotations
 
-import os
-import sys
-import json
-import copy
 import argparse
-import platform
-import time
-import logging
-import random
+import copy
 import gc
-from dataclasses import asdict, fields
+import json
+import logging
+import os
+import platform
+import random
+import sys
+import time
+from dataclasses import fields
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Callable
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -39,24 +39,24 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecEnv, VecFrameStack
+from stable_baselines3.common.base_class import BaseAlgorithm
 from stable_baselines3.common.callbacks import BaseCallback, CallbackList, CheckpointCallback, EvalCallback
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.utils import set_random_seed
-from stable_baselines3.common.base_class import BaseAlgorithm
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecEnv, VecFrameStack
 
 # Environment
-from envs.prop_firm_env import PropFirmTradingEnv, PropFirmConfig
+from envs.prop_firm_env import PropFirmConfig, PropFirmTradingEnv
 
 # Curriculum system (optional)
 try:
     from envs.curriculum import (
+        CurriculumManager,
         CurriculumStage,
         CurriculumStageConfig,
         get_stage_config,
         get_stage_progression,
     )
-    from envs.curriculum import CurriculumManager
     CURRICULUM_AVAILABLE = True
 except ImportError:
     CURRICULUM_AVAILABLE = False
@@ -69,9 +69,9 @@ except ImportError:
 # Optuna
 try:
     import optuna
+    from optuna.exceptions import TrialPruned
     from optuna.pruners import MedianPruner
     from optuna.samplers import TPESampler
-    from optuna.exceptions import TrialPruned
     OPTUNA_AVAILABLE = True
 except Exception:
     optuna = None  # type: ignore
@@ -108,15 +108,14 @@ except Exception:
 
 # Dashboard server (optional)
 try:
-    from dashboard.server import start_dashboard_server, WEB_AVAILABLE as DASHBOARD_AVAILABLE
+    from dashboard.server import WEB_AVAILABLE as DASHBOARD_AVAILABLE
+    from dashboard.server import start_dashboard_server
 except ImportError:
     DASHBOARD_AVAILABLE = False
     start_dashboard_server = None  # type: ignore
 
 # Extracted controllers and callbacks (Phase 1 modularization)
-from train.controllers import PIDController, SmartEntropyController, TrainingHealthWatchdog
-from train.callbacks import VecEpisodeTradingCallback, CurriculumCheckpointCallback, CurriculumTrainingCallback
-
+from train.callbacks import CurriculumCheckpointCallback, CurriculumTrainingCallback, VecEpisodeTradingCallback
 
 # =============================================================================
 # LOGGING
@@ -512,11 +511,11 @@ def _mask_fn(env: Any) -> np.ndarray:
     # Unwrap to find the env that has action_masks()
     current = env
     while hasattr(current, 'env'):
-        if hasattr(current, 'action_masks') and callable(getattr(current, 'action_masks')):
+        if hasattr(current, 'action_masks') and callable(current.action_masks):
             return current.action_masks()
         current = current.env
     # Final unwrapped env should have action_masks
-    if hasattr(current, 'action_masks') and callable(getattr(current, 'action_masks')):
+    if hasattr(current, 'action_masks') and callable(current.action_masks):
         return current.action_masks()
     raise AttributeError(f"Could not find action_masks() on env or wrapped envs: {type(env)}")
 
@@ -634,16 +633,16 @@ def evaluate_agent_trading(
         try:
             current: Any = venv
             while hasattr(current, 'venv'):
-                current = getattr(current, 'venv')
+                current = current.venv
             if hasattr(current, 'envs'):
-                envs_list = getattr(current, 'envs')
+                envs_list = current.envs
                 if envs_list and len(envs_list) > 0:
                     base_env: Any = envs_list[0]
                     while hasattr(base_env, 'env'):
-                        if hasattr(base_env, 'action_masks') and callable(getattr(base_env, 'action_masks')):
+                        if hasattr(base_env, 'action_masks') and callable(base_env.action_masks):
                             return np.array([base_env.action_masks()])
                         base_env = base_env.env
-                    if hasattr(base_env, 'action_masks') and callable(getattr(base_env, 'action_masks')):
+                    if hasattr(base_env, 'action_masks') and callable(base_env.action_masks):
                         return np.array([base_env.action_masks()])
         except Exception as e:
             logger.debug(f"Could not extract action_masks from vec env: {e}")
@@ -1192,7 +1191,7 @@ def train_prop_firm_agent(
 
         # AUDIT FIX (CRIT-4): Validate observation version before continuing training
         try:
-            from envs.prop_firm_env import validate_observation_version, PPO_OBS_VERSION
+            from envs.prop_firm_env import PPO_OBS_VERSION, validate_observation_version
             model_obs_size: int = model.observation_space.shape[0]  # type: ignore[union-attr]
             saved_version = getattr(model, '_obs_version', PPO_OBS_VERSION)
             validate_observation_version(saved_version, model_obs_size)
@@ -1651,7 +1650,7 @@ def train_curriculum_agent(
         )
 
         try:
-            from envs.prop_firm_env import validate_observation_version, PPO_OBS_VERSION
+            from envs.prop_firm_env import PPO_OBS_VERSION, validate_observation_version
             model_obs_size: int = model.observation_space.shape[0]  # type: ignore[union-attr]
             saved_version = getattr(model, '_obs_version', PPO_OBS_VERSION)
             validate_observation_version(saved_version, model_obs_size)

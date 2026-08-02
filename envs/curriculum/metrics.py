@@ -17,23 +17,28 @@ import copy
 from collections import deque
 from dataclasses import dataclass, field, fields
 from datetime import datetime
-from typing import Any, ClassVar, Deque, Dict, List, Optional, TYPE_CHECKING
-
-import numpy as np
+from typing import Any, ClassVar, Deque, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
-from envs.curriculum.config.thresholds import (
-    CompetenceThresholds,
-    CompositeScoringConfig,
-    AdaptiveThresholdConfig,
-)
+import numpy as np
 
 from envs.core.shared_utils import (
-    safe_float as _sf,
-    safe_int as _si,
     clamp as _clamp,
+)
+from envs.core.shared_utils import (
     get_envs_logger,
     iso_timestamp,
+)
+from envs.core.shared_utils import (
+    safe_float as _sf,
+)
+from envs.core.shared_utils import (
+    safe_int as _si,
+)
+from envs.curriculum.config.thresholds import (
+    AdaptiveThresholdConfig,
+    CompetenceThresholds,
+    CompositeScoringConfig,
 )
 
 logger = get_envs_logger("curriculum.metrics")
@@ -588,8 +593,8 @@ def compute_adjusted_thresholds(
         # Otherwise you can relax mean win-rate but still be blocked by an unrelaxed Wilson gate.
         if hasattr(adjusted, "min_win_rate_wilson_low") and hasattr(base, "min_win_rate_wilson_low"):
             try:
-                base_w = float(getattr(base, "min_win_rate_wilson_low"))
-                setattr(adjusted, "min_win_rate_wilson_low", base_w * (1 - relax_factor * 0.5))
+                base_w = float(base.min_win_rate_wilson_low)
+                adjusted.min_win_rate_wilson_low = base_w * (1 - relax_factor * 0.5)
             except Exception:
                 pass
     
@@ -622,7 +627,7 @@ def compute_adjusted_thresholds(
     adjusted.min_win_rate = _clamp(adjusted.min_win_rate, 0.0, 1.0)
     if hasattr(adjusted, "min_win_rate_wilson_low"):
         try:
-            setattr(adjusted, "min_win_rate_wilson_low", _clamp(float(getattr(adjusted, "min_win_rate_wilson_low")), 0.0, 1.0))
+            adjusted.min_win_rate_wilson_low = _clamp(float(adjusted.min_win_rate_wilson_low), 0.0, 1.0)
         except Exception:
             pass
     adjusted.min_profit_factor = max(0.0, adjusted.min_profit_factor)
@@ -637,10 +642,10 @@ def compute_adjusted_thresholds(
 
 # Re-export for backward compatibility
 __all__ = [
-    "EpisodeMetrics",
-    "RollingStats",
-    "LearningVelocity",
     "CompositeScore",
-    "compute_composite_score",
+    "EpisodeMetrics",
+    "LearningVelocity",
+    "RollingStats",
     "compute_adjusted_thresholds",
+    "compute_composite_score",
 ]

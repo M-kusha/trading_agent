@@ -26,8 +26,9 @@ Usage:
             raise
 """
 
+from typing import Any, Dict
+
 from modules.market.shared.circuit_breaker import CircuitBreaker, CircuitState
-from typing import Optional, Dict, Any
 
 __all__ = [
     'CircuitBreaker',

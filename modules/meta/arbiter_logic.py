@@ -36,26 +36,26 @@ Version: 5.2.0 (PPO Master, Explicit Close Intent Meta, Position-Aware Hysteresi
 
 from __future__ import annotations
 
+import logging
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-import logging
 import numpy as np
 
+from modules.meta.numeric_utils import _clip, _safe_float
+from modules.meta.ppo_core import PPOCore
 from modules.meta.ppo_types import (
-    InstrumentDecision,
-    ArbiterMultiDecision,
-    MemoryGateInfo,
-    RiskInfo,
-    GatingResult,
-    InstrumentStatsTracker,
     DEFAULT_INSTRUMENTS,
     PRIMARY_INSTRUMENT,
+    ArbiterMultiDecision,
+    GatingResult,
+    InstrumentDecision,
+    InstrumentStatsTracker,
+    MemoryGateInfo,
+    RiskInfo,
 )
-from modules.meta.ppo_core import PPOCore
-from modules.meta.numeric_utils import _safe_float, _clip
 
 # Training mode check - bypasses time-based gates during training
 try:

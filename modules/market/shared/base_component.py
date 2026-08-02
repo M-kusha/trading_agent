@@ -8,10 +8,11 @@ from __future__ import annotations
 import asyncio
 import time
 from abc import ABC, abstractmethod
+from collections import OrderedDict
 from dataclasses import dataclass
 from enum import Enum
-from typing import Dict, Any, Optional, Tuple
-from collections import OrderedDict
+from typing import Any, Dict, Optional, Tuple
+
 import numpy as np
 
 
@@ -147,7 +148,7 @@ class BaseMarketComponent(ABC):
 
         # Circuit breaker gate
         if self.config.get('cb_enabled', True) and not self._breaker_allows_call():
-            self.trace(f"Circuit open: short-circuiting call", level="WARNING")
+            self.trace("Circuit open: short-circuiting call", level="WARNING")
             return self._decorate_fallback(
                 self.get_fallback_result("Circuit open"),
                 status=ComponentStatus.CIRCUIT_OPEN,

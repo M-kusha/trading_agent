@@ -22,8 +22,8 @@ import time
 from abc import ABC, abstractmethod
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, cast
 from functools import wraps
+from typing import Any, Callable, Dict, List, Optional, cast
 
 try:
     import numpy as _np
@@ -34,14 +34,14 @@ except Exception:
     _np = None  # type: ignore
 
 __all__ = [
+    "BaseModule",
     "ModuleMetadata",
     "module",
-    "BaseModule",
-    "requires",
     "provides",
-    "with_timeout",
-    "with_retry",
+    "requires",
     "with_confidence_threshold",
+    "with_retry",
+    "with_timeout",
 ]
 
 # Module-level cache for rotating loggers (keyed by name:pid)
@@ -238,15 +238,15 @@ def module(**kwargs: Any):
             raise ValueError("@module requires 'provides' and 'requires' lists")
 
         metadata = ModuleMetadata(name=name, **meta_kwargs)
-        setattr(cls, "__module_metadata__", metadata)
-        setattr(cls, "__is_smartinfobus_module__", True)
+        cls.__module_metadata__ = metadata
+        cls.__is_smartinfobus_module__ = True
 
         # attach integrity signature (source hash)
         try:
             src = inspect.getsource(cls)
-            setattr(cls, "__module_signature__", hashlib.sha256(src.encode("utf-8")).hexdigest())
+            cls.__module_signature__ = hashlib.sha256(src.encode("utf-8")).hexdigest()
         except Exception:
-            setattr(cls, "__module_signature__", None)
+            cls.__module_signature__ = None
 
         _validate_module_implementation(cls)
 
@@ -529,7 +529,7 @@ class BaseModule(ABC):
         if not hasattr(self.__class__, "__module_metadata__"):
             raise TypeError(f"{self.__class__.__name__} must be decorated with @module")
 
-        self.metadata: ModuleMetadata = getattr(self.__class__, "__module_metadata__")
+        self.metadata: ModuleMetadata = self.__class__.__module_metadata__
         self.config: Dict[str, Any] = dict(config or {})
         self.dependencies: Dict[str, Any] = dict(dependencies or {})
 

@@ -6,9 +6,10 @@ Handles core reward calculation logic with all penalties and bonuses
 
 from __future__ import annotations
 
-from typing import Dict, Any, List, Optional, Sequence
-import numpy as np
 from datetime import datetime
+from typing import Any, Dict, List, Optional, Sequence
+
+import numpy as np
 
 
 class RewardCalculator:
@@ -169,7 +170,7 @@ class RewardCalculator:
             'baseline_balance': float(baseline_balance) if baseline_balance else 0.0,
             'drawdown': self._extract_drawdown(reward_data),
             'consensus': consensus_val,
-            'trades_count': int(len(reward_data.get('trades', []) or [])),
+            'trades_count': len(reward_data.get('trades', []) or []),
             'timestamp': reward_data.get('timestamp', datetime.now().isoformat()),
             'step_idx': int(reward_data.get('step_idx', 0) or 0),
             'market_regime': str(reward_data.get('regime', 'unknown') or 'unknown'),

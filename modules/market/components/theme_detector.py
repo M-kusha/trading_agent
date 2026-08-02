@@ -3,16 +3,16 @@
 # Market Theme Detection Component — Production-Ready Upgrade
 # ─────────────────────────────────────────────────────────────
 
-from typing import Dict, Any, Optional, List, Tuple
-from collections import deque
-import numpy as np
-from sklearn.preprocessing import StandardScaler
-from sklearn.cluster import MiniBatchKMeans
-from sklearn.metrics import silhouette_score, davies_bouldin_score
-import pywt
 import math
 import random
-import time
+from collections import deque
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
+import pywt
+from sklearn.cluster import MiniBatchKMeans
+from sklearn.metrics import davies_bouldin_score, silhouette_score
+from sklearn.preprocessing import StandardScaler
 
 from ..shared.base_component import BaseMarketComponent
 
@@ -589,7 +589,6 @@ class ThemeDetectorComponent(BaseMarketComponent):
         """
         # Nothing to do until we have a scaler fit at least once. We'll compute
         # stability in _update_feature_stability_from_scaled_buffer after fits.
-        pass
 
     def _update_feature_stability_from_scaled_buffer(self):
         """

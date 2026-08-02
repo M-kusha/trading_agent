@@ -13,7 +13,7 @@ CRITICAL: Import from envs.core.env_types (NOT prop_firm_env) to avoid circular 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 # FIXED: Import from env_types directly to avoid circular import
 # (prop_firm_env tries to import curriculum which eventually imports this file)
@@ -21,7 +21,7 @@ from envs.core.env_types import PropFirmConfig as TradingConfig
 
 # Lazy import for EpisodeMetrics to avoid curriculum circular import
 if TYPE_CHECKING:
-    from envs.curriculum.metrics import EpisodeMetrics as _EpisodeMetrics
+    pass
 
 def get_episode_metrics_class():
     """Lazy getter for EpisodeMetrics to avoid circular imports."""
@@ -30,7 +30,7 @@ def get_episode_metrics_class():
 
 # Re-export for backwards compatibility - use lazy import for runtime access
 # Note: Direct import would cause: curriculum -> shared_utils -> config -> curriculum (CIRCULAR)
-__all__ = ["TradingConfig", "MarketState", "EpisodeMetrics"]
+__all__ = ["EpisodeMetrics", "MarketState", "TradingConfig"]
 
 # Create a lazy accessor for EpisodeMetrics
 class _EpisodeMetricsLazyLoader:

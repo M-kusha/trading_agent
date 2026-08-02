@@ -10,17 +10,16 @@ Upgrades:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from .constants import (
+    FRAGILITY_THRESHOLD,
     VotingAction,
     VotingQuality,
     get_thresholds,
-    FRAGILITY_THRESHOLD,
 )
-
 
 # ═══════════════════════════════════════════════════════════════════
 # Helpers

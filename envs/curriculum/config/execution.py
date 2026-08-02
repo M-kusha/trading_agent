@@ -120,7 +120,7 @@ class TransitionSettings:
 
 
 __all__ = [
-    "ExecutionDifficulty",
     "DataDifficulty",
+    "ExecutionDifficulty",
     "TransitionSettings",
 ]

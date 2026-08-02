@@ -4,8 +4,9 @@ Shared Utilities for Reward System
 Common helper functions and utilities
 """
 
-from typing import Dict, Any, List, Optional, Iterable
 from datetime import datetime, timezone
+from typing import Any, Dict, Iterable, List
+
 import numpy as np
 
 

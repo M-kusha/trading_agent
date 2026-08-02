@@ -15,15 +15,16 @@ Fixes / upgrades:
 
 from __future__ import annotations
 
-from datetime import datetime, date, time, timedelta
-from typing import Any, Dict, Optional, Tuple, TYPE_CHECKING
+from datetime import date, datetime, time, timedelta
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 
 if TYPE_CHECKING:
-    from envs.core.env_types import PropFirmConfig
     from zoneinfo import ZoneInfo
+
+    from envs.core.env_types import PropFirmConfig
 
 
 class SessionTimingMixin:
@@ -61,7 +62,7 @@ class SessionTimingMixin:
 
     def _tf_minutes(self) -> int:
         """Get minutes per bar for primary timeframe."""
-        from envs.core.shared_utils import timeframe_to_minutes, DEFAULT_PRIMARY_TIMEFRAME
+        from envs.core.shared_utils import DEFAULT_PRIMARY_TIMEFRAME, timeframe_to_minutes
 
         tf = (self.config.primary_timeframe or DEFAULT_PRIMARY_TIMEFRAME)
         tf = str(tf).upper().strip()
@@ -231,7 +232,7 @@ class SessionTimingMixin:
 
     def _bars_per_day(self) -> int:
         """Get bars per trading day for primary timeframe."""
-        from envs.core.shared_utils import bars_per_day_for_timeframe, DEFAULT_PRIMARY_TIMEFRAME
+        from envs.core.shared_utils import DEFAULT_PRIMARY_TIMEFRAME, bars_per_day_for_timeframe
 
         tf = str(self.config.primary_timeframe or DEFAULT_PRIMARY_TIMEFRAME).upper().strip()
         return bars_per_day_for_timeframe(tf)

@@ -11,7 +11,6 @@ from collections import deque
 from typing import Any, Dict, List, Optional
 
 import numpy as np
-import torch
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 
@@ -692,8 +691,8 @@ class CompressionComponent(MemoryComponent):
             },
             "memory_compression": {
                 "total_memories": int(len(self.profit_memory) + len(self.loss_memory)),
-                "profit_memories": int(len(self.profit_memory)),
-                "loss_memories": int(len(self.loss_memory)),
+                "profit_memories": len(self.profit_memory),
+                "loss_memories": len(self.loss_memory),
                 "compression_efficiency": float(self.compression_efficiency),
                 "last_compression": int(self.compression_count),
                 "per_instrument_stats": per_instrument_stats,

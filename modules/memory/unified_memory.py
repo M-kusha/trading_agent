@@ -7,49 +7,50 @@ Orchestrates all memory subsystems with optimal performance and debugging
 from __future__ import annotations
 
 import asyncio
-import time
 import threading
-from dataclasses import dataclass, asdict
-from datetime import datetime
-from typing import Any, Dict, List, Optional
+import time
 from collections import defaultdict, deque
-from typing import Awaitable, Sequence, cast, Tuple
-import numpy as np
-from sklearn.preprocessing import StandardScaler
-from modules.utils.metrics_utils import sanitize_metrics
+from dataclasses import asdict, dataclass
+from datetime import datetime
+from typing import Any, Awaitable, Dict, List, Optional, Sequence, Tuple, cast
 
-from modules.core.module_base import BaseModule, module
+import numpy as np
+import torch
+from sklearn.preprocessing import StandardScaler
+
 from modules.contracts import module_args
+from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
 from modules.core.mixins import (
-    SmartInfoBusTradingMixin,
     SmartInfoBusRiskMixin,
     SmartInfoBusStateMixin,
+    SmartInfoBusTradingMixin,
 )
-from modules.utils.info_bus import InfoBusManager
-from modules.utils.audit_utils import RotatingLogger, format_operator_message
-from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
-from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
+from modules.core.module_base import BaseModule, module
 from modules.monitoring.performance_tracker import PerformanceTracker
-import torch
+from modules.utils.audit_utils import RotatingLogger, format_operator_message
+from modules.utils.info_bus import InfoBusManager
+from modules.utils.metrics_utils import sanitize_metrics
+from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 
-# Import components
-from .components.replay import ReplayComponent
+from .components.budget import BudgetComponent
 from .components.compression import CompressionComponent
+from .components.interventions import InterventionsComponent
+from .components.loss_risk_head import LossRiskHeadComponent
 from .components.mistakes import MistakeComponent
 from .components.neural import NeuralComponent
 from .components.playbook import PlaybookComponent
-from .components.budget import BudgetComponent
-from .components.loss_risk_head import LossRiskHeadComponent
-from .components.interventions import InterventionsComponent
 
-# Import shared resources
-from .shared.memory_store import UnifiedMemoryStore
-from .shared.feature_extractor import UnifiedFeatureExtractor
-from .shared.pattern_detector import UnifiedPatternDetector
-from .shared.utils import MemoryUtils, LRUCache, safe_float
+# Import components
+from .components.replay import ReplayComponent
 
 # Import debug logger
 from .debug.memory_logger import MemoryDebugLogger
+from .shared.feature_extractor import UnifiedFeatureExtractor
+
+# Import shared resources
+from .shared.memory_store import UnifiedMemoryStore
+from .shared.pattern_detector import UnifiedPatternDetector
+from .shared.utils import LRUCache, MemoryUtils, safe_float
 
 
 @dataclass
@@ -1349,12 +1350,12 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
             
             if intervention_type == "avoid" and intervention_strength > 0.8:
                 veto = True
-                reasons.append(f"Intervention: avoid pattern")
+                reasons.append("Intervention: avoid pattern")
             
             # Also check if interventions component directly recommends veto
             if intervention_veto:
                 veto = True
-                reasons.append(f"Intervention veto recommended")
+                reasons.append("Intervention veto recommended")
             
             # Risk multiplier (reduce size if risky but not vetoing)
             if not veto:
@@ -1642,7 +1643,7 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
                 health[name] = "critical"
             elif state.get("errors", 0) > 2:
                 health[name] = "warning"
-            elif name in results and results[name]:
+            elif results.get(name):
                 health[name] = "healthy"
             else:
                 health[name] = "unknown"
@@ -1861,7 +1862,7 @@ class UnifiedMemory(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin,
         if self.unified_config.debug:
             self.debug_logger.log_error("PROCESS_ERROR", error)
 
-        fallback = self._create_fallback_response(f"Error: {str(error)}")
+        fallback = self._create_fallback_response(f"Error: {error!s}")
         fallback = self._ensure_required_outputs(fallback, reason=str(error))
         return fallback
 

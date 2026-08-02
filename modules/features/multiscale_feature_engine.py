@@ -16,19 +16,18 @@
 
 from __future__ import annotations
 
-import os
-import json
-import time
 import asyncio
-import threading
-import traceback
-import logging
 import hashlib
-from logging.handlers import RotatingFileHandler
-
-from dataclasses import dataclass, asdict
-from typing import Dict, Any, List, Optional, Union, Tuple, TYPE_CHECKING
+import json
+import logging
+import os
+import threading
+import time
+import traceback
 from collections import deque
+from dataclasses import asdict, dataclass
+from logging.handlers import RotatingFileHandler
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -36,17 +35,17 @@ import torch.nn as nn
 
 # Core infrastructure
 from modules.contracts import module_args
-from modules.core.module_base import BaseModule, module
-from modules.core.mixins import SmartInfoBusTradingMixin, SmartInfoBusStateMixin
 from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
-from modules.utils.info_bus import InfoBusManager
-from modules.utils.audit_utils import format_operator_message
-from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
+from modules.core.mixins import SmartInfoBusStateMixin, SmartInfoBusTradingMixin
+from modules.core.module_base import BaseModule, module
 from modules.monitoring.performance_tracker import PerformanceTracker
+from modules.utils.audit_utils import format_operator_message
+from modules.utils.info_bus import InfoBusManager
+from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 
 # Optional dependency (do NOT instantiate by default to avoid duplicate writers)
 try:
-    from modules.features.advanced_feature_engine import AdvancedFeatureEngine  # noqa: F401
+    from modules.features.advanced_feature_engine import AdvancedFeatureEngine
 except Exception:
     AdvancedFeatureEngine = None  # type: ignore
 
@@ -677,7 +676,7 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
         # 1) injected AFE
         if self._afe is not None and hasattr(self._afe, "out_dim"):
             try:
-                od = int(getattr(self._afe, "out_dim"))
+                od = int(self._afe.out_dim)
                 if od > 0:
                     return od
             except Exception:
@@ -689,7 +688,7 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
             if isinstance(adv, dict):
                 rf = adv.get("raw_features")
                 if isinstance(rf, (list, tuple)) and len(rf) > 0:
-                    return int(len(rf))
+                    return len(rf)
         except Exception:
             pass
 
@@ -701,7 +700,7 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
                 if isinstance(adv_tf, dict):
                     rf = adv_tf.get("raw_features")
                     if isinstance(rf, (list, tuple)) and len(rf) > 0:
-                        return int(len(rf))
+                        return len(rf)
             except Exception:
                 continue
 
@@ -1411,7 +1410,7 @@ class MultiScaleFeatureEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBus
                 fields["ms"] = {
                     "processing_time_ms": float(ms_result.get("processing_time_ms", 0.0)),
                     "market_fields_seen": int(ms_result.get("market_fields_seen", 0)),
-                    "corr_n": int(len(ms_result.get("correlations", {}) or {})),
+                    "corr_n": len(ms_result.get("correlations", {}) or {}),
                     "tfs_used": list(ms_result.get("timeframes_used", [])),
                 }
 

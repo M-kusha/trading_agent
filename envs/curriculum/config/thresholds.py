@@ -18,7 +18,7 @@ Upgrades (Jan 2026):
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, Set, TYPE_CHECKING
+from typing import TYPE_CHECKING, Dict, Set
 
 if TYPE_CHECKING:
     from envs.curriculum.config.stages import TradingSkill
@@ -191,10 +191,10 @@ class AdaptiveThresholdConfig:
 
 
 __all__ = [
-    "CompetenceThresholds",
-    "SkillRequirements",
-    "EntropyTargets",
-    "CompositeScoringConfig",
-    "AdaptiveThresholdConfig",
     "MIN_EVALUATION_EPISODES",
+    "AdaptiveThresholdConfig",
+    "CompetenceThresholds",
+    "CompositeScoringConfig",
+    "EntropyTargets",
+    "SkillRequirements",
 ]

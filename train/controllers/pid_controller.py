@@ -8,9 +8,8 @@ and robust numeric guards.
 
 from __future__ import annotations
 
-from typing import Tuple, Optional
-
 import math
+from typing import Optional, Tuple
 
 
 def _is_finite(x: float) -> bool:

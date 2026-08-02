@@ -3,9 +3,9 @@
 Core voting system types, base classes, and constants.
 """
 
-from .types import VotingProposal, VoteBundle, ConsensusResult, CollusionResult
-from .constants import VotingAction, PipelineStage, VOTING_DEFAULTS
 from .base import VotingModuleBase
+from .constants import VOTING_DEFAULTS, PipelineStage, VotingAction
+from .types import CollusionResult, ConsensusResult, VoteBundle, VotingProposal
 
 __all__ = [
     # Types

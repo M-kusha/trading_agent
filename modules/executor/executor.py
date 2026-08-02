@@ -4,15 +4,17 @@
 
 from __future__ import annotations
 
-import time, uuid, math
 import datetime as dt
-from dataclasses import dataclass, asdict
-from typing import Any, Dict, List, Optional, Tuple, Set
+import math
+import time
+import uuid
+from dataclasses import asdict, dataclass
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from modules.contracts import module_args
 from modules.core.module_base import BaseModule, module
-from modules.utils.info_bus import InfoBusManager
 from modules.utils.audit_utils import RotatingLogger, format_operator_message
+from modules.utils.info_bus import InfoBusManager
 from modules.utils.lot_calculator import UnifiedLotCalculator
 
 # Import centralized trade limits
@@ -22,21 +24,21 @@ try:
 except ImportError:
     _TRADE_LIMITS = {"max_trades_per_day": 20, "training_mode_limit": 9999}
 
-from .shared.types import PositionSnap, TradeFill, _parse_timestamp
-from .shared.utils import SafeBus, resolve_symbol
-from .debug.debugger import ExecutorDebugManager
-from .adapters.base_adapter import BaseLiveAdapter, LiveAdapterConfig
-from .adapters.mt5_adapter import MT5Adapter
-from .unified_logger import UnifiedExecutorLogger, ExecutionCycleEntry
-
 # Smart Position Management
 from modules.position.smart_position_manager import (
-    SmartPositionManager,
-    PositionAction,
-    PositionManagementSignal,
     ExpertSignal,
+    PositionAction,
     PositionFocusContext,
+    PositionManagementSignal,
+    SmartPositionManager,
 )
+
+from .adapters.base_adapter import BaseLiveAdapter, LiveAdapterConfig
+from .adapters.mt5_adapter import MT5Adapter
+from .debug.debugger import ExecutorDebugManager
+from .shared.types import PositionSnap, TradeFill, _parse_timestamp
+from .shared.utils import SafeBus, resolve_symbol
+from .unified_logger import ExecutionCycleEntry, UnifiedExecutorLogger
 
 # Exit Engine for peak reset on position close
 try:
@@ -166,8 +168,9 @@ class Executor(BaseModule):
         # Try risk_policy.yaml as source of truth before hardcoded fallback
         if _cfg_ib is None:
             try:
-                import yaml
                 from pathlib import Path
+
+                import yaml
 
                 risk_policy = Path("config/risk_policy.yaml")
                 if risk_policy.exists():
@@ -374,7 +377,7 @@ class Executor(BaseModule):
             "balance": float(self.balance),
             "equity": float(self.equity),
             "positions": pos_snap,
-            "positions_count": int(len(pos_snap or {})),
+            "positions_count": len(pos_snap or {}),
             "step": int(self.step_idx),
             "ts": time.time(),
         }
@@ -924,7 +927,7 @@ class Executor(BaseModule):
             if 0.99 <= trading_mode_position_scale <= 1.01:
                 return intent  # No adjustment needed
 
-            if "size_eur" in intent and intent["size_eur"]:
+            if intent.get("size_eur"):
                 original_size = float(intent["size_eur"])
                 intent["size_eur"] = original_size * trading_mode_position_scale
                 intent["_trading_mode_sizing"] = {
@@ -973,7 +976,7 @@ class Executor(BaseModule):
             if strategy_position_multiplier >= 0.99:
                 return intent
 
-            if "size_eur" in intent and intent["size_eur"]:
+            if intent.get("size_eur"):
                 original_size = float(intent["size_eur"])
                 intent["size_eur"] = original_size * strategy_position_multiplier
                 intent["_strategy_sizing"] = {
@@ -3320,11 +3323,11 @@ class Executor(BaseModule):
                 "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
                 # Orders
                 "orders_received": int(q_count),
-                "orders_accepted": int(len(accepted)),
-                "orders_rejected": int(len(rejected)),
+                "orders_accepted": len(accepted),
+                "orders_rejected": len(rejected),
                 "rejected_reasons": {},  # Could be populated from rejected details
                 # Fills
-                "fills_count": int(len(fills)),
+                "fills_count": len(fills),
                 "fills_by_instrument": {},  # Could be populated from fills
                 "total_notional": 0.0,  # Could be calculated from fills
                 # Positions

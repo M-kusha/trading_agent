@@ -19,47 +19,43 @@ Version: 3.1.0 (Multi-instrument architecture, position-focus aware)
 from __future__ import annotations
 
 import os
-import time
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Mapping
+from typing import Any, Dict, List, Mapping, Optional
 
 import numpy as np
 
 from modules.contracts import module_args
-from modules.core.module_base import BaseModule, module
+from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
 from modules.core.mixins import (
-    SmartInfoBusTradingMixin,
     SmartInfoBusRiskMixin,
     SmartInfoBusStateMixin,
+    SmartInfoBusTradingMixin,
 )
-from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
-from modules.utils.audit_utils import RotatingLogger
-from modules.utils.info_bus import InfoBusManager, SmartInfoBus
-
-from modules.meta.ppo_core import PPOCore, PPOCoreConfig, DiscreteActionDecoded
-from modules.meta.arbiter_logic import ArbiterLogic
-from modules.meta.ppo_types import (
-    InstrumentDecision,
-    ArbiterMultiDecision,
-    MemoryGateInfo,
-    RiskInfo,
-    PRIMARY_INSTRUMENT,
-    DEFAULT_INSTRUMENTS,
-)
-
-from modules.meta.ppo_observation_builder import (
-    PPOObservationBuilder,
-    get_ppo_observation_builder,
-    FEATURE_GROUPS,
-    PRIMARY_TIMEFRAME,
-)
-
-from modules.meta.arbiter_logic import StrategyInfo, TradingModeInfo, WorldModelInfo
+from modules.core.module_base import BaseModule, module
+from modules.meta.arbiter_logic import ArbiterLogic, StrategyInfo, TradingModeInfo, WorldModelInfo
 
 # Live action masking for MaskablePPO parity
 from modules.meta.live_action_mask import LiveActionMaskBuilder, LiveMaskConfig
+from modules.meta.ppo_core import PPOCore, PPOCoreConfig
+from modules.meta.ppo_observation_builder import (
+    FEATURE_GROUPS,
+    PRIMARY_TIMEFRAME,
+    PPOObservationBuilder,
+    get_ppo_observation_builder,
+)
+from modules.meta.ppo_types import (
+    DEFAULT_INSTRUMENTS,
+    PRIMARY_INSTRUMENT,
+    ArbiterMultiDecision,
+    InstrumentDecision,
+    MemoryGateInfo,
+    RiskInfo,
+)
+from modules.utils.audit_utils import RotatingLogger
+from modules.utils.info_bus import InfoBusManager, SmartInfoBus
 
 
 def _norm_symbol(sym: str) -> str:
@@ -731,10 +727,10 @@ class PPOAgentShell(
                         )
                         if in_focus_mode:
                             self.logger.info(
-                                f"[PPO] │  ⚠️ Position focus mode active for this instrument"
+                                "[PPO] │  ⚠️ Position focus mode active for this instrument"
                             )
                         self.logger.info(
-                            f"[PPO] └───────────────────────────────────────────────┘"
+                            "[PPO] └───────────────────────────────────────────────┘"
                         )
                     # else: flat with no position = nothing interesting, skip logging
 
@@ -1700,7 +1696,7 @@ class PPOAgentShell(
             elif not on_cd and prev:
                 self.logger.info(f"[PPO] ═══ {inst} ═══ COOLDOWN CLEARED")
                 self.logger.info(
-                    f"[PPO]   ✅ Trade cooldown finished"
+                    "[PPO]   ✅ Trade cooldown finished"
                 )
 
             self._last_cooldown_state[inst] = on_cd

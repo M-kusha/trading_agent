@@ -5,24 +5,23 @@
 
 from __future__ import annotations
 
-from enum import Enum
-from typing import Optional, Dict, Any, List, Deque
-from datetime import datetime, timezone
-import traceback
-import inspect
-import json
-from collections import deque
-from pathlib import Path
-import threading
-import queue
-import sys
-import os
 import atexit
 import contextvars
-import time
-import itertools
 import copy
-
+import inspect
+import itertools
+import json
+import os
+import queue
+import sys
+import threading
+import time
+import traceback
+from collections import deque
+from datetime import datetime, timezone
+from enum import Enum
+from pathlib import Path
+from typing import Any, Deque, Dict, List, Optional
 
 # Context variables for correlation
 _request_id_var: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(

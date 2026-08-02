@@ -8,10 +8,9 @@ Consensus scoring, diversity indices, and statistical helpers.
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-
 
 # =============================================================================
 # Safe Math Helpers

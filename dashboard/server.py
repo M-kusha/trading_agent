@@ -15,11 +15,11 @@ import logging
 import sys
 import threading
 import time
-from dataclasses import dataclass, asdict, is_dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 
 import numpy as np
 
@@ -30,16 +30,16 @@ if str(PROJECT_ROOT) not in sys.path:
 
 WEB_AVAILABLE = False
 if TYPE_CHECKING:
-    from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-    from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
-    from fastapi.middleware.cors import CORSMiddleware
     import uvicorn
+    from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+    from fastapi.middleware.cors import CORSMiddleware
+    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 try:
-    from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-    from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
-    from fastapi.middleware.cors import CORSMiddleware
     import uvicorn
+    from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+    from fastapi.middleware.cors import CORSMiddleware
+    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
     WEB_AVAILABLE = True
 except ImportError:
     print("[Dashboard] FastAPI/uvicorn not installed. Run: pip install fastapi uvicorn websockets")

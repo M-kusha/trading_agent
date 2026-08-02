@@ -29,7 +29,7 @@ except ImportError:
     sb3_get_action_masks = None  # type: ignore
     SB3_MASK_UTILS_AVAILABLE = False
 
-from ..controllers import SmartEntropyController, SmartLRController, SmartClipController, TrainingHealthWatchdog
+from ..controllers import SmartClipController, SmartEntropyController, SmartLRController, TrainingHealthWatchdog
 
 logger = logging.getLogger(__name__)
 
@@ -445,9 +445,9 @@ class CurriculumTrainingCallback(BaseCallback):
             base = venv
             try:
                 while hasattr(base, "venv"):
-                    base = getattr(base, "venv")
+                    base = base.venv
                 if hasattr(base, "envs"):
-                    envs_list = getattr(base, "envs")
+                    envs_list = base.envs
                     if envs_list and len(envs_list) > 0:
                         base = envs_list[0]
                 while hasattr(base, "env"):
@@ -486,6 +486,7 @@ class CurriculumTrainingCallback(BaseCallback):
                 if base_env is not None and hasattr(base_env, "set_data_difficulty"):
                     try:
                         from dataclasses import replace
+
                         from envs.curriculum.config.execution import DataDifficulty
 
                         stage_diff = getattr(self.curriculum_manager.stage_config, "data_difficulty", None) if self.curriculum_manager is not None else None
@@ -713,13 +714,13 @@ class CurriculumTrainingCallback(BaseCallback):
             base_env = env
             while hasattr(base_env, 'venv'):
                 base_env = base_env.venv
-            if hasattr(base_env, 'envs') and getattr(base_env, 'envs'):
+            if hasattr(base_env, 'envs') and base_env.envs:
                 base_env = base_env.envs[0]
             while hasattr(base_env, 'env'):
                 base_env = base_env.env
 
             # Prefer scenario-level overrides that persist across resets
-            if hasattr(base_env, 'set_scenario_execution_overrides') and callable(getattr(base_env, 'set_scenario_execution_overrides')):
+            if hasattr(base_env, 'set_scenario_execution_overrides') and callable(base_env.set_scenario_execution_overrides):
                 if not hasattr(self, '_original_exec_params'):
                     self._original_exec_params = {}
                 self._original_exec_params['scenario_spread_mult'] = getattr(base_env, '_scenario_spread_mult', 1.0)
@@ -766,13 +767,13 @@ class CurriculumTrainingCallback(BaseCallback):
             base_env = env
             while hasattr(base_env, 'venv'):
                 base_env = base_env.venv
-            if hasattr(base_env, 'envs') and getattr(base_env, 'envs'):
+            if hasattr(base_env, 'envs') and base_env.envs:
                 base_env = base_env.envs[0]
             while hasattr(base_env, 'env'):
                 base_env = base_env.env
 
             # Scenario-level overrides (preferred)
-            if hasattr(base_env, 'set_scenario_execution_overrides') and callable(getattr(base_env, 'set_scenario_execution_overrides')):
+            if hasattr(base_env, 'set_scenario_execution_overrides') and callable(base_env.set_scenario_execution_overrides):
                 base_env.set_scenario_execution_overrides(
                     spread_mult=float(self._original_exec_params.get('scenario_spread_mult', 1.0)),
                     slippage_mult=float(self._original_exec_params.get('scenario_slippage_mult', 1.0)),
@@ -919,13 +920,13 @@ class CurriculumTrainingCallback(BaseCallback):
                 if n_valid_actions is None:
                     current_env: Any = venv
                     while hasattr(current_env, 'venv'):
-                        current_env = getattr(current_env, 'venv')
+                        current_env = current_env.venv
                     if hasattr(current_env, 'envs'):
-                        envs_list = getattr(current_env, 'envs')
+                        envs_list = current_env.envs
                         if envs_list and len(envs_list) > 0:
                             base_env: Any = envs_list[0]
                             while hasattr(base_env, 'env'):
-                                if hasattr(base_env, 'action_masks') and callable(getattr(base_env, 'action_masks')):
+                                if hasattr(base_env, 'action_masks') and callable(base_env.action_masks):
                                     mask = base_env.action_masks()
                                     n_valid_actions = int(np.sum(mask))
                                     break
@@ -957,7 +958,7 @@ class CurriculumTrainingCallback(BaseCallback):
         
         # Apply if recommended
         if should_apply and hasattr(self.model, 'ent_coef'):
-            setattr(self.model, 'ent_coef', new_ent_coef)
+            self.model.ent_coef = new_ent_coef
             if self.verbose >= 1:
                 norm_target = self._smart_entropy_controller.STAGE_TARGETS_NORMALIZED[stage_value]
                 max_h = self._smart_entropy_controller._get_max_entropy(n_valid_actions)
@@ -1039,7 +1040,7 @@ class CurriculumTrainingCallback(BaseCallback):
             def constant_clip_schedule(progress: float, val: float = new_clip) -> float:
                 return val
             
-            setattr(self.model, 'clip_range', constant_clip_schedule)
+            self.model.clip_range = constant_clip_schedule
             if self.verbose >= 1:
                 logger.info(
                     f"🎚️ Clip PID Applied [Stage {stage}]: {reason} | "
@@ -1108,7 +1109,7 @@ class CurriculumTrainingCallback(BaseCallback):
         
         # Apply if significant change
         if hasattr(self.model, 'vf_coef') and abs(current_vf_coef - target_vf_coef) > 0.02:
-            setattr(self.model, 'vf_coef', target_vf_coef)
+            self.model.vf_coef = target_vf_coef
             if self.verbose >= 1:
                 logger.info(
                     f"🎛️ Adaptive vf_coef: {adjustment_reason} | "

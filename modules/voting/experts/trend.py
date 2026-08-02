@@ -30,7 +30,6 @@ Everything remains contract-safe:
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import time
@@ -41,15 +40,14 @@ import numpy as np
 
 from modules.contracts import module_args
 from modules.core.module_base import module
-from modules.voting.experts.base import VotingExpertBase
-from modules.voting.core.per_instrument import normalize_instrument
 from modules.voting.core.constants import (
     CONFIDENCE_THRESHOLD_F,
-    MIN_SIGNAL_STRENGTH_F,
+    CONTEXT_TIMEFRAMES,
     HIGH_CONFIDENCE_THRESHOLD_F,
     PRIMARY_TIMEFRAME,
-    CONTEXT_TIMEFRAMES,
 )
+from modules.voting.core.per_instrument import normalize_instrument
+from modules.voting.experts.base import VotingExpertBase
 
 # ────────────────────────────────────────────────────────────────
 # FILE-LEVEL SWITCHES (requested: NOT config-driven)

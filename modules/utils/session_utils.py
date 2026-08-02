@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import datetime
-from typing import Optional, Iterable, Tuple
+from typing import Iterable, Optional, Tuple
 
 
 def normalize_session_name(name: Optional[str]) -> str:

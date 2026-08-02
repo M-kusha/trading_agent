@@ -7,21 +7,17 @@ PPOAgentShell module loads the model and makes all trading decisions.
 This script just starts the orchestrator and feeds it market data.
 """
 
-import os
-import sys
-import time
-import signal
 import asyncio
 import logging
-from datetime import datetime
+import os
+import signal
+import sys
+import time
 from pathlib import Path
-from typing import Any, Dict, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    import MetaTrader5 as mt5
-    from modules.utils.info_bus import SmartInfoBus
-    from modules.core.module_system import ModuleOrchestrator as OrchestratorType
-    from live.live_connector import LiveDataConnector as ConnectorType
+    pass
 
 # Ensure directories exist BEFORE logging setup
 Path("logs").mkdir(exist_ok=True)
@@ -112,7 +108,7 @@ class LiveTradingOrchestrated:
         
         # 2b. Initialize LiveSessionTracker for governor observation (v5.5)
         try:
-            from modules.monitoring.live_session_tracker import LiveSessionTracker, LiveSessionConfig
+            from modules.monitoring.live_session_tracker import LiveSessionConfig, LiveSessionTracker
             
             # Load session config from live config if available
             session_config = LiveSessionConfig(
@@ -131,8 +127,9 @@ class LiveTradingOrchestrated:
         
         # 3. Load credentials and connect MT5
         try:
-            from live.mt5_credentials import MT5Credentials
             import MetaTrader5 as mt5  # type: ignore[import]
+
+            from live.mt5_credentials import MT5Credentials
             self.mt5 = mt5
             
             if not mt5.initialize():  # type: ignore[attr-defined]  # type: ignore[attr-defined]

@@ -10,7 +10,6 @@ budget exists so a change that kills further dimensions has to say so.
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 # Dims known to be constant, with the reason. Anything outside this set that
 # goes dead is a regression.

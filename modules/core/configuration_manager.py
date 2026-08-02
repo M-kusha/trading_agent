@@ -15,24 +15,24 @@ Improvements over previous version:
 
 from __future__ import annotations
 
-import os
-import io
-import yaml
-import time
-import json
-import glob
 import copy
-import queue
+import glob
 import hashlib
-import threading
 import inspect
-from pathlib import Path
-from typing import Dict, Any, Optional, List, Callable, Union, Tuple
-from dataclasses import dataclass, field
+import json
+import os
+import queue
+import threading
+import time
 from collections import defaultdict
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
 from yaml.loader import SafeLoader
 
 from modules.utils.audit_utils import RotatingLogger, format_operator_message
+
 _INCLUDE_MAX_DEPTH = 32
 _MAX_INCLUDE_BYTES = 5 * 1024 * 1024  # 5 MB guard for includes
 # ─────────────────────────────────────────────────────────────
@@ -92,7 +92,7 @@ def _safe_read_yaml_with_loader(path: Path) -> Any:
         try:
             with open(path, 'r', encoding=enc) as f:
                 loader = _EnvLoader(f)
-                setattr(loader, 'name', str(path))
+                loader.name = str(path)
                 data = loader.get_single_data()
             return data
         except UnicodeDecodeError as e:
@@ -140,7 +140,7 @@ def _yaml_include(loader: _EnvLoader, node):
     stack = getattr(loader, "_include_stack", None)
     if stack is None:
         stack = []
-        setattr(loader, "_include_stack", stack)
+        loader._include_stack = stack
 
     if target in stack:
         raise ValueError(f"Cyclic include detected: {' -> '.join(map(str, stack + [target]))}")

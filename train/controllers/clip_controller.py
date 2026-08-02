@@ -13,9 +13,8 @@ Robustness upgrades:
 
 from __future__ import annotations
 
-from typing import Optional, Tuple, Dict
-
 import math
+from typing import Dict, Optional, Tuple
 
 from .pid_controller import PIDController
 

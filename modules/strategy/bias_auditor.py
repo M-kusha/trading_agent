@@ -3,24 +3,25 @@
 Advanced psychological bias detection and correction system with real-time trading behavior analysis
 """
 
-import asyncio
-import time
-from modules.contracts import module_args
-import numpy as np
 import datetime
-from typing import Dict, Any, List, Optional, Tuple
-from collections import deque, defaultdict
+import time
+from collections import defaultdict, deque
+from typing import Any, Dict, List, Tuple
+
+import numpy as np
+
+from modules.contracts import module_args
+from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
+from modules.core.mixins import SmartInfoBusStateMixin, SmartInfoBusTradingMixin
 
 # ═══════════════════════════════════════════════════════════════════
 # MODERN SMARTINFOBUS IMPORTS
 # ═══════════════════════════════════════════════════════════════════
 from modules.core.module_base import BaseModule, module
-from modules.core.mixins import SmartInfoBusTradingMixin, SmartInfoBusStateMixin
-from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
-from modules.utils.info_bus import InfoBusManager
-from modules.utils.audit_utils import RotatingLogger, format_operator_message
-from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 from modules.monitoring.performance_tracker import PerformanceTracker
+from modules.utils.audit_utils import RotatingLogger, format_operator_message
+from modules.utils.info_bus import InfoBusManager
+from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 
 
 @module(**module_args(
@@ -1836,7 +1837,7 @@ class BiasAuditor(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
                 'action_type': 'error_recovery',
                 'action': 'fallback_monitoring',
                 'confidence': 0.3,
-                'reasoning': f'Error in bias analysis: {str(e)}'
+                'reasoning': f'Error in bias analysis: {e!s}'
             }
 
     def _get_average_correction_success(self) -> float:

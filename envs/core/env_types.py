@@ -14,7 +14,8 @@ Upgrades (Jan 2026):
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, time as dtime
+from datetime import datetime
+from datetime import time as dtime
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -635,9 +636,9 @@ class TradeResult:
 
 __all__ = [
     "CloseReason",
-    "RewardConfig",
     "PropFirmConfig",
     "PropPosition",
+    "RewardConfig",
     "TradeResult",
     "load_risk_policy",
 ]

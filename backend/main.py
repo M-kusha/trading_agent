@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, cast
 
+import MetaTrader5 as _mt5
 import pandas as pd
 import uvicorn
 import yaml
@@ -24,7 +25,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-import MetaTrader5 as _mt5
 
 mt5: Any = cast(Any, _mt5)
 
@@ -577,7 +577,7 @@ async def start_live_trading(config: LiveTradingConfig) -> Dict[str, Any]:
                 module="Backend",
                 thesis="live trading mode enabled",
             )
-            logger.info(f"[LIVE MODE] Set environment config on InfoBus")
+            logger.info("[LIVE MODE] Set environment config on InfoBus")
         except Exception as e:
             logger.error(f"Failed to set environment config on InfoBus: {e}")
             raise HTTPException(
@@ -662,7 +662,7 @@ async def start_live_trading(config: LiveTradingConfig) -> Dict[str, Any]:
         
         if not model_loaded:
             state.model = PPO.load(model_path, device="cpu")
-            logger.info(f"[PPO] Loaded as standard PPO (continuous actions)")
+            logger.info("[PPO] Loaded as standard PPO (continuous actions)")
         
         state.model_loaded = True
         state.trading_config = config

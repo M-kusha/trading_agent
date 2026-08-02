@@ -14,21 +14,20 @@ from __future__ import annotations
 import datetime
 import threading
 import time
-from dataclasses import dataclass, asdict, field
-from typing import Dict, Any, List, Optional, Union, Tuple, Iterable
-from collections import deque, defaultdict
+from collections import defaultdict, deque
+from dataclasses import asdict, dataclass, field
+from typing import Any, Dict, List, Optional, Union
 
-from modules.contracts import module_args
 import numpy as np
 
-from modules.core.module_base import BaseModule, module
-from modules.core.mixins import SmartInfoBusRiskMixin, SmartInfoBusStateMixin
+from modules.contracts import module_args
 from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
-from modules.utils.info_bus import InfoBusManager
-from modules.utils.audit_utils import RotatingLogger, format_operator_message
-from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
+from modules.core.mixins import SmartInfoBusRiskMixin, SmartInfoBusStateMixin
+from modules.core.module_base import BaseModule, module
 from modules.monitoring.performance_tracker import PerformanceTracker
-
+from modules.utils.audit_utils import RotatingLogger, format_operator_message
+from modules.utils.info_bus import InfoBusManager
+from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 
 # ─────────────────────────────────────────────────────────────
 # Typed configuration (lint-safe) + dict bridge for BaseModule
@@ -1146,7 +1145,7 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
             total_closures = max(1, sum(self.closure_analytics.values()))
             avg_dur = np.mean(list(self.position_durations.values())) if self.position_durations else 0.0
             return {
-                'positions_tracked': int(len(self.position_durations)),
+                'positions_tracked': len(self.position_durations),
                 'risk_score': float(self.risk_score),
                 'severity_level': str(self.severity_level),
                 'timeout_rate': float(self.closure_analytics['timeout'] / total_closures),
@@ -1202,7 +1201,7 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
                 'risk_score': float(self.risk_score),
                 'severity_level': str(self.severity_level),
                 'monitoring_results': {
-                    'positions_tracked': int(len(self.position_durations)),
+                    'positions_tracked': len(self.position_durations),
                     'duration_statistics': self._calculate_duration_statistics(),
                     'duration_statistics_by_instrument': self._calculate_duration_statistics_by_instrument(),
                     'closure_info': {'closed_count': 0, 'closure_details': []},
@@ -1227,7 +1226,7 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
             'trade_monitor_status': {
                 'initialized': True,
                 'enabled': bool(self.enabled),
-                'positions_tracked': int(len(self.position_durations)),
+                'positions_tracked': len(self.position_durations),
                 'breaker_state': self._breaker_state,
                 'severity_level': str(self.severity_level),
                 'risk_score': float(self.risk_score),

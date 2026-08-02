@@ -8,9 +8,9 @@ output slew limiting, and better numeric guards.
 
 from __future__ import annotations
 
-from typing import Optional, Tuple, Dict
-
 import math
+from typing import Dict, Optional, Tuple
+
 import numpy as np
 
 from .pid_controller import PIDController

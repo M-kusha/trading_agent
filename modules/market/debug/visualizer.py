@@ -5,13 +5,14 @@
 
 from __future__ import annotations
 
-from typing import Dict, Any, List, Optional, Deque, Tuple
-import numpy as np
-from collections import deque
 import json
-import time
-import threading
 import math
+import threading
+import time
+from collections import deque
+from typing import Any, Deque, Dict, List, Optional, Tuple
+
+import numpy as np
 
 
 class DebugVisualizer:

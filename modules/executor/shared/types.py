@@ -1,10 +1,10 @@
 from __future__ import annotations
-from dataclasses import dataclass
-from typing import Any, Dict, Optional, Union
+
+import datetime as _dt
 import math
 import time
-import datetime as _dt
-
+from dataclasses import dataclass
+from typing import Any, Dict, Optional, Union
 
 DEFAULT_CONTRACT_SIZE = 100_000.0  # default FX contract
 

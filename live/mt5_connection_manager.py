@@ -5,12 +5,11 @@ Provides robust connection handling, automatic retry logic, and health monitorin
 
 from __future__ import annotations
 
-import time
-import threading
-from typing import Any, Dict, Optional, Callable
-from dataclasses import dataclass
-from datetime import datetime
 import logging
+import threading
+import time
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, Optional
 
 from config import get_logger
 
@@ -178,10 +177,10 @@ class MT5ConnectionManager:
                     self.status.last_error = None
 
                     if self.status.total_reconnects > 0:
-                        self.logger.info(f"Reconnected to MT5 successfully")
+                        self.logger.info("Reconnected to MT5 successfully")
                         self._trigger_callback("on_reconnect", account_info)
                     else:
-                        self.logger.info(f"Connected to MT5 successfully")
+                        self.logger.info("Connected to MT5 successfully")
                         self._trigger_callback("on_connect", account_info)
 
                     self.logger.info(
@@ -197,7 +196,7 @@ class MT5ConnectionManager:
                     return True
 
                 except Exception as e:
-                    error_msg = f"Connection error: {str(e)}"
+                    error_msg = f"Connection error: {e!s}"
                     self.logger.error(error_msg)
                     self.status.last_error = error_msg
                     self.status.connection_failures += 1

@@ -15,12 +15,12 @@ Upgrades:
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, TYPE_CHECKING
+from typing import TYPE_CHECKING, Dict, List
 
 import numpy as np
 
 if TYPE_CHECKING:
-    from envs.core.env_types import TradeResult, PropFirmConfig
+    from envs.core.env_types import PropFirmConfig, TradeResult
 
 
 class TradeRewardMixin:
@@ -487,7 +487,7 @@ class TradeRewardMixin:
                 streak += 1
             else:
                 streak = 0
-            setattr(self, "_quality_trade_streak", streak)
+            self._quality_trade_streak = streak
             bonus_list = list(getattr(cfg, "consecutive_quality_trades_bonus", []) or [])
             if is_quality_trade and bonus_list:
                 idx = min(streak, len(bonus_list) - 1)

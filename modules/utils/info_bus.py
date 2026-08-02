@@ -6,31 +6,32 @@
 # ─────────────────────────────────────────────────────────────
 
 from __future__ import annotations
-import os
-import sys
-import time
+
 import asyncio
-import json
-import pickle
-import hashlib
 import copy
-import threading
-import uuid
-import psutil
 import gzip
-import tempfile
+import hashlib
+import json
+import os
+import pickle
 import shutil
-from typing import Dict, Any, List, Optional, Set, Callable, Tuple, TypedDict
+import sys
+import tempfile
+import threading
+import time
+import uuid
 from collections import defaultdict, deque
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from concurrent.futures import Future, ThreadPoolExecutor
-import numpy as np
-from typing import DefaultDict, Deque, cast
+from typing import Any, Callable, DefaultDict, Deque, Dict, List, Optional, Set, Tuple, TypedDict, cast
 
+import numpy as np
+import psutil
 
 # Import core dependencies
-from modules.utils.audit_utils import RotatingLogger, format_operator_message, AuditSystem
+from modules.utils.audit_utils import AuditSystem, RotatingLogger, format_operator_message
+
 
 # Typed structures for quality metrics (module scope for reuse in annotations)
 class QualityTrend(TypedDict):
@@ -440,12 +441,12 @@ class CircuitBreakerState:
             self.state = "CLOSED"
             self.failure_count = 0
             self.consecutive_failures = 0
-            setattr(self, "_half_open_trials", 0)
+            self._half_open_trials = 0
 
     def trip(self):
         self.state = "OPEN"
         self.consecutive_successes = 0
-        setattr(self, "_half_open_trials", 0)
+        self._half_open_trials = 0
 
     def record_failure(self):
         self.failure_count += 1
@@ -488,20 +489,20 @@ class CircuitBreakerState:
         if self.state == "OPEN":
             if now - self.last_failure_time > recovery_time:
                 self.state = "HALF_OPEN"
-                setattr(self, "_half_open_trials", 0)
+                self._half_open_trials = 0
                 return True
             return False
         # HALF_OPEN
         if (now - self.last_failure_time > recovery_time * 2 and self.consecutive_failures == 0):
             self.state = "CLOSED"
-            setattr(self, "_half_open_trials", 0)
+            self._half_open_trials = 0
             return True
         trials = getattr(self, "_half_open_trials", 0)
         if trials >= 3:
             # Hit probe limit without enough successes
             self.last_open_reason = self.last_open_reason or "half_open_probe_limit"
             return False
-        setattr(self, "_half_open_trials", trials + 1)
+        self._half_open_trials = trials + 1
         return True
 
     def get_health_score(self) -> float:
@@ -711,7 +712,7 @@ class SmartInfoBus:
             staleness_enabled = getattr(self.config, 'staleness_check_enabled', True)
             if not staleness_enabled:
                 self.logger.info(
-                    f"[BUS][STARTUP] Staleness checking DISABLED (dashboard/monitoring mode)"
+                    "[BUS][STARTUP] Staleness checking DISABLED (dashboard/monitoring mode)"
                 )
             else:
                 # Note: TradingModeManager is the source of truth, config.live_mode is just a hint
@@ -723,7 +724,7 @@ class SmartInfoBus:
                     )
                 else:
                     self.logger.info(
-                        f"[BUS][STARTUP] Running in TRAINING MODE - staleness threshold extended to 2 hours"
+                        "[BUS][STARTUP] Running in TRAINING MODE - staleness threshold extended to 2 hours"
                     )
 
             # Middleware & validators
@@ -1911,7 +1912,7 @@ class SmartInfoBus:
 
         except Exception as e:
             self.logger.error(f"[CRASH] Failed to get {key} for {module}: {e}")
-            self.record_module_failure(module, f"Data get failed: {str(e)}")
+            self.record_module_failure(module, f"Data get failed: {e!s}")
             if isinstance(e, PermissionError):
                 raise
             return default

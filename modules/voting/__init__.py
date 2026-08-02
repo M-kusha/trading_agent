@@ -38,81 +38,73 @@ Contracts are defined in modules/contracts.py (v5.0.0 entries).
 
 from __future__ import annotations
 
+from .core.base import VotingModuleBase
+from .core.constants import (
+    COLLUSION_THRESHOLDS,
+    CONSENSUS_THRESHOLDS,
+    HORIZON_WEIGHTS,
+    KNOWN_VOTING_MEMBERS,
+    VOTING_DEFAULTS,
+    PipelineStage,
+    VotingAction,
+    VotingBusKeys,
+    VotingQuality,
+)
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # CORE - Always available (base infrastructure)
 # ═══════════════════════════════════════════════════════════════════════════════
-
 from .core.types import (
-    VotingProposal,
-    VoteBundle,
-    ConsensusResult,
     CollusionResult,
-    create_empty_bundle,
+    ConsensusResult,
+    VoteBundle,
+    VotingProposal,
     create_abstain_bundle,
-    make_vote_bundle,
+    create_empty_bundle,
     make_consensus_result,
+    make_vote_bundle,
 )
-
-from .core.constants import (
-    VotingAction,
-    PipelineStage,
-    VotingQuality,
-    VotingBusKeys,
-    VOTING_DEFAULTS,
-    KNOWN_VOTING_MEMBERS,
-    CONSENSUS_THRESHOLDS,
-    COLLUSION_THRESHOLDS,
-    HORIZON_WEIGHTS,
-)
-
-from .core.base import VotingModuleBase
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # EXPERTS - Voting members that generate proposals
 # ═══════════════════════════════════════════════════════════════════════════════
-
 from .experts.base import VotingExpertBase
-from .experts.trend import TrendExpert
 from .experts.momentum import MomentumExpert
-from .experts.theme import ThemeExpert
 from .experts.seasonality import SeasonalityRiskExpert
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# STAGES - Pipeline processing stages
-# ═══════════════════════════════════════════════════════════════════════════════
-
-from .stages.committee import CommitteeCoordinator
-from .stages.consensus import ConsensusAnalyzer
-from .stages.collusion import CollusionDetector
-from .stages.horizon import HorizonAligner
-from .stages.uncertainty import UncertaintySampler
-from .stages.arbiter import FinalArbiter
+from .experts.theme import ThemeExpert
+from .experts.trend import TrendExpert
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # PIPELINE - Orchestration
 # ═══════════════════════════════════════════════════════════════════════════════
-
 from .pipeline.kernel import SlimVotingKernel
+from .stages.arbiter import FinalArbiter
+from .stages.collusion import CollusionDetector
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# STAGES - Pipeline processing stages
+# ═══════════════════════════════════════════════════════════════════════════════
+from .stages.committee import CommitteeCoordinator
+from .stages.consensus import ConsensusAnalyzer
+from .stages.horizon import HorizonAligner
+from .stages.uncertainty import UncertaintySampler
+from .utils.metrics import (
+    calculate_agreement_score,
+    calculate_collusion_score,
+    calculate_diversity_index,
+    calculate_fragility_score,
+    calculate_weighted_consensus,
+)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # UTILS - Shared utilities
 # ═══════════════════════════════════════════════════════════════════════════════
-
 from .utils.validators import (
-    validate_proposal,
-    validate_confidence,
-    validate_voting_action,
     sanitize_bus_key,
+    validate_confidence,
+    validate_proposal,
+    validate_voting_action,
 )
-
-from .utils.metrics import (
-    calculate_agreement_score,
-    calculate_weighted_consensus,
-    calculate_diversity_index,
-    calculate_collusion_score,
-    calculate_fragility_score,
-)
-
 
 __all__ = [
     # Core types

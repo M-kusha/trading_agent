@@ -9,7 +9,6 @@ Extracted from train_prop_firm.py for modularity.
 
 from __future__ import annotations
 
-import gc
 import json
 import logging
 import time

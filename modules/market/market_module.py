@@ -7,40 +7,41 @@
 from __future__ import annotations
 
 import asyncio
-import time
 import datetime
-from typing import Dict, Any, List, Optional, Set, Tuple
-from dataclasses import dataclass, asdict, field
+import time
+from dataclasses import asdict, dataclass, field
+from typing import Any, Dict, List, Optional, Set, Tuple
+
 import numpy as np
-from modules.utils.session_utils import normalize_session_name
 
 from modules.contracts import module_args
-from modules.core.module_base import BaseModule, module
 from modules.core.mixins import (
-    SmartInfoBusTradingMixin,
-    SmartInfoBusVotingMixin,
     SmartInfoBusRiskMixin,
     SmartInfoBusStateMixin,
+    SmartInfoBusTradingMixin,
+    SmartInfoBusVotingMixin,
 )
+from modules.core.module_base import BaseModule, module
+from modules.utils.session_utils import normalize_session_name
 
 # Components
 from .components.fractal_regime import FractalRegimeComponent
 from .components.liquidity_heatmap import LiquidityHeatmapComponent
-from .components.theme_detector import ThemeDetectorComponent
 from .components.regime_matrix import RegimeMatrixComponent
+from .components.theme_detector import ThemeDetectorComponent
 from .components.time_risk import TimeRiskComponent
-
-# Shared utilities
-from .shared.base_component import ComponentResult, ComponentStatus, BaseMarketComponent
-from .shared.data_extractors import UnifiedDataExtractor
-from .shared.state_manager import StateManager
-from .shared.metrics_tracker import MetricsTracker
-from .shared.circuit_breaker import CircuitBreaker
+from .debug.diagnostics import DiagnosticsEngine
 
 # Debug
-from .debug.trace_logger import TraceLogger, TraceLevel
-from .debug.diagnostics import DiagnosticsEngine
+from .debug.trace_logger import TraceLevel, TraceLogger
 from .debug.visualizer import DebugVisualizer
+
+# Shared utilities
+from .shared.base_component import BaseMarketComponent, ComponentResult, ComponentStatus
+from .shared.circuit_breaker import CircuitBreaker
+from .shared.data_extractors import UnifiedDataExtractor
+from .shared.metrics_tracker import MetricsTracker
+from .shared.state_manager import StateManager
 
 
 @dataclass

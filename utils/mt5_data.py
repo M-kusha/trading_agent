@@ -4,18 +4,17 @@ Complete MT5 Data Collection and Cleaning System
 Extracts, cleans, and prepares data for the trading environment
 """
 
-import os
-import sys
 import logging
 import pickle
+import sys
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple, Any, cast
 from pathlib import Path
+from typing import Any, Dict, List, Optional, cast
 
+import MetaTrader5 as _mt5
 import numpy as np
 import pandas as pd
-import MetaTrader5 as _mt5
-from dataclasses import dataclass, field
 
 # Help Pylance by marking the MT5 module as "Any" so attribute access is not flagged.
 mt5: Any = cast(Any, _mt5)

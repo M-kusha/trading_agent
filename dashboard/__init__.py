@@ -5,8 +5,8 @@
 
 # Conditional imports - gracefully handle missing dependencies
 try:
-    from .server import start_dashboard_server, WEB_AVAILABLE
-    __all__ = ['start_dashboard_server', 'WEB_AVAILABLE']
+    from .server import WEB_AVAILABLE, start_dashboard_server
+    __all__ = ['WEB_AVAILABLE', 'start_dashboard_server']
 except ImportError:
     WEB_AVAILABLE = False
     start_dashboard_server = None

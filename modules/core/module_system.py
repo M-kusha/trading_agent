@@ -17,21 +17,32 @@ from __future__ import annotations
 import asyncio
 import importlib
 import inspect
-import time
-import threading
-import yaml
-import weakref
 import os
-from pathlib import Path
-from typing import (
-    Dict, Any, Optional, List, Tuple, DefaultDict, Set, Deque,
-    Callable, Iterable, Protocol, runtime_checkable, Type, get_type_hints
-)
-from typing import get_origin, get_args
+import threading
+import time
+import traceback
+import weakref
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field, is_dataclass, fields
-import traceback
+from dataclasses import dataclass, field, fields, is_dataclass
+from pathlib import Path
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Protocol,
+    Set,
+    Tuple,
+    Type,
+    get_args,
+    get_origin,
+    get_type_hints,
+    runtime_checkable,
+)
+
+import yaml
 
 # Optional deps (graceful fallback)
 try:
@@ -48,11 +59,11 @@ except Exception:
     _HAVE_PS = False
     _ps = None  # type: ignore
 
-from modules.core.module_base import BaseModule, ModuleMetadata
-from modules.utils.info_bus import SmartInfoBus, InfoBusManager
-from modules.utils.system_utilities import EnglishExplainer
-from modules.utils.audit_utils import RotatingLogger, format_operator_message
 from modules.core.error_pinpointer import ErrorPinpointer
+from modules.core.module_base import BaseModule, ModuleMetadata
+from modules.utils.audit_utils import RotatingLogger, format_operator_message
+from modules.utils.info_bus import InfoBusManager, SmartInfoBus
+from modules.utils.system_utilities import EnglishExplainer
 
 
 # ---- Added protocol for system integrity suite (static typing support) ----
@@ -1552,8 +1563,11 @@ class ModuleOrchestrator:
         metadata: ModuleMetadata,
         execution_id: str
     ) -> Optional[Dict[str, Any]]:
+        from typing import Any as _Any
+        from typing import Awaitable
+        from typing import cast as _cast
+
         from modules.core.exceptions import ModuleTimeout
-        from typing import Awaitable, Any as _Any, cast as _cast
 
         with self._circuit_breaker_lock:
             cb = self.circuit_breakers.setdefault(module_name, CircuitBreakerState())
@@ -1915,7 +1929,7 @@ class ModuleOrchestrator:
             for name, mod in self.modules.items():
                 info: Dict[str, Any] = details["modules"].setdefault(name, {"warmup_calls": 0})
                 try:
-                    if hasattr(mod, "warmup") and callable(getattr(mod, "warmup")):
+                    if hasattr(mod, "warmup") and callable(mod.warmup):
                         maybe = mod.warmup()
                         if inspect.iscoroutine(maybe):
                             await asyncio.wait_for(maybe, timeout=1.0)
@@ -1967,7 +1981,7 @@ class ModuleOrchestrator:
                 samples.extend([float(x) for x in recent])
 
             # Try probe() if available
-            if hasattr(mod, "probe") and callable(getattr(mod, "probe")):
+            if hasattr(mod, "probe") and callable(mod.probe):
                 for _ in range(reps):
                     t0 = time.perf_counter()
                     try:
@@ -2018,7 +2032,7 @@ class ModuleOrchestrator:
 
         for name, mod in self.modules.items():
             try:
-                if hasattr(mod, "self_test") and callable(getattr(mod, "self_test")):
+                if hasattr(mod, "self_test") and callable(mod.self_test):
                     coro = mod.self_test()
                     if inspect.iscoroutine(coro):
                         await asyncio.wait_for(coro, timeout=timeout_s)
@@ -2027,7 +2041,7 @@ class ModuleOrchestrator:
                         await asyncio.wait_for(loop.run_in_executor(None, lambda: coro), timeout=timeout_s)
                     out["passed"].append(name)
                     continue
-                if hasattr(mod, "run_self_test") and callable(getattr(mod, "run_self_test")):
+                if hasattr(mod, "run_self_test") and callable(mod.run_self_test):
                     coro = mod.run_self_test()
                     if inspect.iscoroutine(coro):
                         await asyncio.wait_for(coro, timeout=timeout_s)
@@ -2273,7 +2287,7 @@ class ModuleOrchestrator:
                         if isinstance(ann, type) and is_dataclass(ann):
                             return ann
                     else:
-                        args = [a for a in get_args(ann) if a is not type(None)]  # noqa: E721
+                        args = [a for a in get_args(ann) if a is not type(None)]
                         if args:
                             t = args[0]
                             if isinstance(t, type) and is_dataclass(t):
@@ -2292,7 +2306,7 @@ class ModuleOrchestrator:
                 if isinstance(ann, type) and is_dataclass(ann):
                     return ann
                 return None
-            args = [a for a in get_args(ann) if a is not type(None)]  # noqa: E721
+            args = [a for a in get_args(ann) if a is not type(None)]
             if not args:
                 return None
             t = args[0]
@@ -2623,7 +2637,7 @@ class ModuleOrchestrator:
             execution_id: str,
             preview_missing: Optional[Dict[str, List[str]]] = None
         ) -> Dict[str, Any]:
-        from modules.core.exceptions import InputsNotReady, ExecutionSkipped
+        from modules.core.exceptions import ExecutionSkipped, InputsNotReady
 
         self.logger.debug(f"[SEARCH] Debug: Executing stage {stage_idx}: {module_names}")
         if not module_names:
@@ -3350,7 +3364,7 @@ class ModuleOrchestrator:
         """
         Queue-based scheduler: as soon as a module's deps resolve, schedule it.
         """
-        from modules.core.exceptions import InputsNotReady, ExecutionSkipped, ModuleTimeout
+        from modules.core.exceptions import ExecutionSkipped, InputsNotReady, ModuleTimeout
 
         # Keep same semantics as stage path (cached after first pass)
         await self._wait_for_configuration_readiness()

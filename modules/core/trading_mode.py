@@ -23,10 +23,10 @@ Usage:
     info = TradingModeManager.get_mode_info()
 """
 
-from typing import Dict, Any, Optional
+import logging
 from dataclasses import dataclass
 from enum import Enum
-import logging
+from typing import Any, Dict
 
 logger = logging.getLogger(__name__)
 
@@ -210,7 +210,7 @@ class TradingModeManager:
         
         # Collect reward parameters
         try:
-            from modules.reward.shared.reward_config import get_reward_params, get_reward_mode
+            from modules.reward.shared.reward_config import get_reward_mode, get_reward_params
             result["reward"] = {
                 "mode": get_reward_mode(),
                 "params": get_reward_params(),

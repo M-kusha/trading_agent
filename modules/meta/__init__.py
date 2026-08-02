@@ -63,29 +63,29 @@ _EXPORTS: dict[str, str] = {
 # Spelled out literally rather than `list(_EXPORTS)` so static analysers can
 # verify the export list (pyright reportUnsupportedDunderAll).
 __all__ = [
-    "InstrumentDecision",
-    "ArbiterMultiDecision",
-    "MemoryGateInfo",
-    "RiskInfo",
-    "GatingResult",
-    "InstrumentStats",
-    "InstrumentStatsTracker",
     "DEFAULT_INSTRUMENTS",
-    "PRIMARY_INSTRUMENT",
-    "PPOCore",
-    "PPOCoreConfig",
-    "EnhancedPPONetwork",
-    "ArbiterLogic",
-    "PPOAgentShell",
-    "PPOShellConfig",
-    "PPOObservationBuilder",
-    "PPOObservationConfig",
+    "FEATURE_GROUPS",
     "PPO_OBS_SIZE",
     "PPO_OBS_VERSION",
-    "FEATURE_GROUPS",
-    "get_ppo_observation_builder",
+    "PRIMARY_INSTRUMENT",
+    "ArbiterLogic",
+    "ArbiterMultiDecision",
+    "EnhancedPPONetwork",
+    "GatingResult",
+    "InstrumentDecision",
+    "InstrumentStats",
+    "InstrumentStatsTracker",
+    "MemoryGateInfo",
+    "PPOAgentShell",
+    "PPOCore",
+    "PPOCoreConfig",
+    "PPOObservationBuilder",
+    "PPOObservationConfig",
+    "PPOShellConfig",
+    "RiskInfo",
     "build_ppo_observation",
     "build_ppo_observation_for_instrument",
+    "get_ppo_observation_builder",
 ]
 
 assert set(__all__) == set(_EXPORTS), "__all__ and _EXPORTS have drifted apart"
@@ -109,27 +109,27 @@ def __dir__() -> list[str]:
 
 
 if TYPE_CHECKING:  # static analysers still see the real symbols
-    from modules.meta.ppo_types import (
-        InstrumentDecision,
-        ArbiterMultiDecision,
-        MemoryGateInfo,
-        RiskInfo,
-        GatingResult,
-        InstrumentStats,
-        InstrumentStatsTracker,
-        DEFAULT_INSTRUMENTS,
-        PRIMARY_INSTRUMENT,
-    )
-    from modules.meta.ppo_core import PPOCore, PPOCoreConfig, EnhancedPPONetwork
     from modules.meta.arbiter_logic import ArbiterLogic
     from modules.meta.ppo_agent_shell import PPOAgentShell, PPOShellConfig
+    from modules.meta.ppo_core import EnhancedPPONetwork, PPOCore, PPOCoreConfig
     from modules.meta.ppo_observation_builder import (
-        PPOObservationBuilder,
-        PPOObservationConfig,
+        FEATURE_GROUPS,
         PPO_OBS_SIZE,
         PPO_OBS_VERSION,
-        FEATURE_GROUPS,
-        get_ppo_observation_builder,
+        PPOObservationBuilder,
+        PPOObservationConfig,
         build_ppo_observation,
         build_ppo_observation_for_instrument,
+        get_ppo_observation_builder,
+    )
+    from modules.meta.ppo_types import (
+        DEFAULT_INSTRUMENTS,
+        PRIMARY_INSTRUMENT,
+        ArbiterMultiDecision,
+        GatingResult,
+        InstrumentDecision,
+        InstrumentStats,
+        InstrumentStatsTracker,
+        MemoryGateInfo,
+        RiskInfo,
     )

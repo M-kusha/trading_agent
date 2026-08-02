@@ -14,7 +14,6 @@ from typing import Any, Dict, List, Optional
 
 from modules.utils.info_bus import InfoBusManager
 
-
 # =====================================================================
 # DATA MODEL
 # =====================================================================

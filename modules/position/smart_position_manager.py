@@ -24,12 +24,11 @@
 from __future__ import annotations
 
 import time
-import os
-from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
 from enum import Enum
 from functools import lru_cache
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
@@ -37,9 +36,6 @@ from modules.utils.audit_utils import RotatingLogger, format_operator_message
 
 # UNIFIED EXIT LOGIC - Single source of truth for all exit decisions
 from .exit_engine import (
-    ExitStrategyEngine,
-    ExitDecision,
-    ExitReason,
     PositionContext,
     get_exit_engine,
 )

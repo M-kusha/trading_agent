@@ -15,8 +15,9 @@ from sklearn.cluster import DBSCAN
 from sklearn.metrics import silhouette_score
 from sklearn.preprocessing import StandardScaler
 
-from .base import MemoryComponent
 from modules.memory.shared.utils import safe_float
+
+from .base import MemoryComponent
 
 
 class MistakeComponent(MemoryComponent):
@@ -372,7 +373,7 @@ class MistakeComponent(MemoryComponent):
                 "loss_clustering": {
                     "clusters_found": len(self.danger_zones),
                     "quality_score": float(quality),
-                    "total_losses": int(len(feats)),
+                    "total_losses": len(feats),
                 }
             }
         except Exception as e:
@@ -417,7 +418,7 @@ class MistakeComponent(MemoryComponent):
             return {
                 "win_clustering": {
                     "clusters_found": len(self.profit_zones),
-                    "total_wins": int(len(feats)),
+                    "total_wins": len(feats),
                 }
             }
         except Exception as e:
@@ -722,7 +723,7 @@ class MistakeComponent(MemoryComponent):
         return {
             "danger_zones": {
                 "zones": self.danger_zones,
-                "zone_count": int(len(self.danger_zones)),
+                "zone_count": len(self.danger_zones),
                 "avoidance_sensitivity": float(self.avoidance_sensitivity),
                 "last_updated": time.time(),
             },
@@ -736,10 +737,10 @@ class MistakeComponent(MemoryComponent):
             "mistake_avoidance": {
                 "avoidance_signal": float(self.avoidance_signal),
                 "consecutive_losses": int(self.consecutive_losses),
-                "danger_zones_count": int(len(self.danger_zones)),
-                "profit_zones_count": int(len(self.profit_zones)),
-                "total_loss_memories": int(len(self.loss_buffer)),
-                "total_win_memories": int(len(self.win_buffer)),
+                "danger_zones_count": len(self.danger_zones),
+                "profit_zones_count": len(self.profit_zones),
+                "total_loss_memories": len(self.loss_buffer),
+                "total_win_memories": len(self.win_buffer),
             },
             "mistake_memory": {
                 "current_score": float(np.clip(self.avoidance_signal, 0.0, 1.0)),
@@ -750,8 +751,8 @@ class MistakeComponent(MemoryComponent):
             "pattern_recognition": {
                 "loss_patterns": dict(list(self.loss_patterns.items())[:10]),
                 "win_patterns": dict(list(self.win_patterns.items())[:10]),
-                "total_loss_patterns": int(len(self.loss_patterns)),
-                "total_win_patterns": int(len(self.win_patterns)),
+                "total_loss_patterns": len(self.loss_patterns),
+                "total_win_patterns": len(self.win_patterns),
             },
             # Gate snippet for UnifiedMemory to compose memory_gate
             "gate_snippet": {

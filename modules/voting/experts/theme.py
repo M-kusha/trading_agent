@@ -49,8 +49,8 @@ import numpy as np
 
 from modules.contracts import module_args
 from modules.core.module_base import module
+from modules.voting.core.constants import CONTEXT_TIMEFRAMES, PRIMARY_TIMEFRAME, normalize_instrument
 from modules.voting.experts.base import VotingExpertBase
-from modules.voting.core.constants import PRIMARY_TIMEFRAME, CONTEXT_TIMEFRAMES, normalize_instrument
 
 
 def _safe_float(x: Any, default: float = 0.0) -> float:

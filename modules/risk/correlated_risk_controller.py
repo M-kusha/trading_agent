@@ -6,23 +6,24 @@ Monitors correlation risk between positions and instruments
 
 from __future__ import annotations
 
-from modules.contracts import module_args
-import numpy as np
-import datetime
-import time
-import threading
 import ast
-from dataclasses import dataclass, asdict
-from typing import Dict, Any, List, Optional, Tuple
-from collections import deque, defaultdict
+import datetime
+import threading
+import time
+from collections import defaultdict, deque
+from dataclasses import asdict, dataclass
+from typing import Any, Dict, List, Optional, Tuple
 
-from modules.core.module_base import BaseModule, module
-from modules.core.mixins import SmartInfoBusRiskMixin, SmartInfoBusStateMixin
+import numpy as np
+
+from modules.contracts import module_args
 from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
-from modules.utils.info_bus import InfoBusManager
-from modules.utils.audit_utils import RotatingLogger, format_operator_message
-from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
+from modules.core.mixins import SmartInfoBusRiskMixin, SmartInfoBusStateMixin
+from modules.core.module_base import BaseModule, module
 from modules.monitoring.performance_tracker import PerformanceTracker
+from modules.utils.audit_utils import RotatingLogger, format_operator_message
+from modules.utils.info_bus import InfoBusManager
+from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 
 
 # ─────────────────────────────────────────────────────────────
@@ -516,7 +517,7 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
         out: Dict[str, float] = {}
         for (a, b), v in corr.items():
             try:
-                key = f"({repr(a)},{repr(b)})"
+                key = f"({a!r},{b!r})"
             except Exception:
                 key = f"({a},{b})"
             out[key] = float(v)
@@ -538,12 +539,8 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
                 "cluster_risk_score": float(self.cluster_risk_score),
             },
             "summary": {
-                "pairs_analyzed": int(
-                    len(correlation_results.get("correlation_matrix", {}))
-                ),
-                "instruments_analyzed": int(
-                    len(correlation_results.get("instruments_analyzed", []))
-                ),
+                "pairs_analyzed": len(correlation_results.get("correlation_matrix", {})),
+                "instruments_analyzed": len(correlation_results.get("instruments_analyzed", [])),
                 "processing_time_ms": float(
                     correlation_results.get("processing_time_ms", 0.0)
                 ),
@@ -814,7 +811,7 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
 
         return {
             "clusters": dict(mapped_clusters),
-            "cluster_count": int(len(mapped_clusters)),
+            "cluster_count": len(mapped_clusters),
             "cluster_risks": cluster_risks,
             "max_cluster_risk": float(max(cluster_risks.values())) if cluster_risks else 0.0,
             "link_threshold": t,
@@ -870,9 +867,9 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
                 "diversification_score": float(self.diversification_score),
                 "avg_correlation": avg_abs_corr,
                 "effective_positions": float(effective_positions),
-                "position_count": int(len(positions)),
+                "position_count": len(positions),
                 "concentration_index": float(np.clip(1.0 - pos_diversification, 0.0, 1.0)),
-                "correlation_pairs": int(len(corr)),
+                "correlation_pairs": len(corr),
             }
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "diversification_metrics")
@@ -909,8 +906,8 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
                     "info": [],
                 },
                 "total_violations": int(len(critical) + len(warning)),
-                "critical_pairs": int(len(critical)),
-                "warning_pairs": int(len(warning)),
+                "critical_pairs": len(critical),
+                "warning_pairs": len(warning),
                 "max_correlation": max_corr,
             }
         except Exception as e:
@@ -942,7 +939,7 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
                             "avg_correlation": float(np.mean(abs_vals)),
                             "max_correlation": float(np.max(abs_vals)),
                             "correlation_volatility": float(np.std(abs_vals)),
-                            "sample_count": int(len(abs_vals)),
+                            "sample_count": len(abs_vals),
                         }
 
             impact = self._assess_regime_shift_impact(stats, regime) if stats else "insufficient_data"
@@ -1153,7 +1150,7 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
         self._record_failure(error)
         self.severity_level = "error"
         self.correlation_risk_score = max(0.3, float(self.correlation_risk_score))
-        return self._fallback_payload(thesis=f"Correlation error fallback: {str(error)}")
+        return self._fallback_payload(thesis=f"Correlation error fallback: {error!s}")
 
     # ── bookkeeping ──────────────────────────────────────────
     def _record_success(self, processing_time_sec: float) -> None:
@@ -1271,9 +1268,9 @@ class CorrelatedRiskController(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSt
             "correlation_risk_score": float(self.correlation_risk_score),
             "diversification_score": float(self.diversification_score),
             "severity_level": str(self.severity_level),
-            "instruments_tracked": int(len(self.price_history)),
+            "instruments_tracked": len(self.price_history),
             "correlation_violations": int(self.correlation_violations),
             "diversification_violations": int(self.diversification_violations),
-            "cluster_count": int(len(self.correlation_clusters)),
+            "cluster_count": len(self.correlation_clusters),
             "enabled": bool(self.enabled),
         }

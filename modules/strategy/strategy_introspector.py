@@ -4,31 +4,32 @@ Advanced strategy analysis system with intelligent pattern recognition and adapt
 """
 
 from __future__ import annotations
-import asyncio
-import time
-from modules.contracts import module_args
-import numpy as np
+
 import datetime
-from typing import Dict, Any, List, Optional, Tuple, TYPE_CHECKING
-from collections import deque, defaultdict
+import time
+from collections import defaultdict, deque
+from typing import TYPE_CHECKING, Any, Dict, List
+
+import numpy as np
+
+from modules.contracts import module_args
+from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
+from modules.core.mixins import SmartInfoBusStateMixin, SmartInfoBusTradingMixin
 
 # ═══════════════════════════════════════════════════════════════════
 # MODERN SMARTINFOBUS IMPORTS
 # ═══════════════════════════════════════════════════════════════════
-
 from modules.core.module_base import BaseModule, module
-from modules.core.mixins import SmartInfoBusTradingMixin, SmartInfoBusStateMixin
-from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
+from modules.monitoring.performance_tracker import PerformanceTracker
 from modules.utils.audit_utils import RotatingLogger, format_operator_message
 from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
-from modules.monitoring.performance_tracker import PerformanceTracker
 
 # Handle SmartInfoBus imports with proper type checking
 if TYPE_CHECKING:
-    from modules.utils.info_bus import SmartInfoBus, InfoBusManager
+    from modules.utils.info_bus import InfoBusManager, SmartInfoBus
 else:
     try:
-        from modules.utils.info_bus import SmartInfoBus, InfoBusManager
+        from modules.utils.info_bus import InfoBusManager, SmartInfoBus
     except ImportError:
         # Fallback for when imports fail during static analysis
         SmartInfoBus = None  # type: ignore
@@ -1670,7 +1671,7 @@ class StrategyIntrospector(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSta
             market_adaptation = adaptation_insights.get('market_adaptation', [])
             if market_adaptation:
                 thesis_parts.append(
-                    f"MARKET ADAPTATION: Context-specific adjustments recommended for current market conditions"
+                    "MARKET ADAPTATION: Context-specific adjustments recommended for current market conditions"
                 )
             
             # Confidence Assessment

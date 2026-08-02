@@ -4,18 +4,17 @@ import ast
 import json
 import os
 import re
-import sys
 import threading
 import time
-from dataclasses import dataclass, field, asdict
+from collections import defaultdict, deque
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import (
     Any,
     Callable,
-    Deque,
     DefaultDict,
+    Deque,
     Dict,
-    Iterable,
     List,
     Optional,
     Protocol,
@@ -23,7 +22,6 @@ from typing import (
     Tuple,
     runtime_checkable,
 )
-from collections import defaultdict, deque
 
 # Optional libs (visualization)
 try:
@@ -68,7 +66,8 @@ class _FallbackLogger:
 
 # Prefer project logger if available
 try:
-    from modules.utils.audit_utils import RotatingLogger as _RealLogger, format_operator_message as _real_fmt  # type: ignore
+    from modules.utils.audit_utils import RotatingLogger as _RealLogger  # type: ignore
+    from modules.utils.audit_utils import format_operator_message as _real_fmt
     def _fmt(icon: str, message: str, **ctx: Any) -> str:
         try:
             return _real_fmt(icon, message, **ctx)

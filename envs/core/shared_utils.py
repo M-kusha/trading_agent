@@ -10,12 +10,9 @@ Audit Reference: DUP-2 - Consolidated from Week 3-4 fixes.
 
 from __future__ import annotations
 
-import math
 import logging
-from typing import Any, Tuple, Optional
-
-import numpy as np
-
+import math
+from typing import Any, Tuple
 
 # -----------------------------------------------------------------------------
 # Safe Type Conversions

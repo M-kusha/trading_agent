@@ -13,14 +13,13 @@ from __future__ import annotations
 import datetime
 import time
 from collections import defaultdict, deque
-from typing import Any, Dict, List, Set, Tuple, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
 from modules.contracts import module_args
 from modules.core.module_base import module
 from modules.voting.core.base import VotingModuleBase
-from modules.voting.core.types import CollusionResult  # kept for type hints / future use
 from modules.voting.core.constants import VotingBusKeys
 
 

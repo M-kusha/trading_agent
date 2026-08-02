@@ -10,10 +10,9 @@ Refactored from consensus_detector.py (~2150 lines).
 
 from __future__ import annotations
 
-import datetime
 import time
 from collections import defaultdict, deque
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import numpy as np
 

@@ -23,7 +23,7 @@ Version: 1.1.0 (robust ATR, session open/close logic, configurable gating)
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -528,8 +528,9 @@ def load_timing_config(
 
     This avoids duplication - trading hours are defined ONLY in risk_policy.yaml.
     """
-    import yaml
     from pathlib import Path
+
+    import yaml
 
     merged_data = {}
 

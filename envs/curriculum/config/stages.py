@@ -25,20 +25,20 @@ from enum import Enum, IntEnum
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 if TYPE_CHECKING:
-    from envs.curriculum.config.execution import ExecutionDifficulty, DataDifficulty, TransitionSettings
     from envs.curriculum.config.constraints import RewardShaping, TradingConstraints
-    from envs.curriculum.config.thresholds import (
-        CompetenceThresholds,
-        SkillRequirements,
-        EntropyTargets,
-        CompositeScoringConfig,
-        AdaptiveThresholdConfig,
-    )
+    from envs.curriculum.config.execution import DataDifficulty, ExecutionDifficulty, TransitionSettings
     from envs.curriculum.config.protocols import (
-        RecoveryProtocolConfig,
         MixedStageSamplingConfig,
+        RecoveryProtocolConfig,
         ReviewSessionConfig,
         ValidationConfig,
+    )
+    from envs.curriculum.config.thresholds import (
+        AdaptiveThresholdConfig,
+        CompetenceThresholds,
+        CompositeScoringConfig,
+        EntropyTargets,
+        SkillRequirements,
     )
 
 
@@ -194,17 +194,17 @@ class CurriculumStageConfig:
 
         # ExecutionDifficulty -> PropFirmConfig domain randomization fields
         if hasattr(e, "enable_randomization"):
-            out["domain_randomization_enabled"] = bool(getattr(e, "enable_randomization"))
+            out["domain_randomization_enabled"] = bool(e.enable_randomization)
 
         # These names match PropFirmConfig in env_types.py
         if hasattr(e, "spread_mult_range"):
-            out["spread_mult_range"] = tuple(getattr(e, "spread_mult_range"))
+            out["spread_mult_range"] = tuple(e.spread_mult_range)
         if hasattr(e, "slippage_mult_range"):
-            out["slippage_mult_range"] = tuple(getattr(e, "slippage_mult_range"))
+            out["slippage_mult_range"] = tuple(e.slippage_mult_range)
         if hasattr(e, "latency_randomization_range"):
-            out["latency_bars_range"] = tuple(getattr(e, "latency_randomization_range"))
+            out["latency_bars_range"] = tuple(e.latency_randomization_range)
         if hasattr(e, "volatility_scale_range"):
-            out["volatility_scale_range"] = tuple(getattr(e, "volatility_scale_range"))
+            out["volatility_scale_range"] = tuple(e.volatility_scale_range)
 
         return out
 
@@ -355,7 +355,7 @@ def _default_validation():
 
 __all__ = [
     "CurriculumStage",
-    "TradingSkill",
-    "MarketRegime",
     "CurriculumStageConfig",
+    "MarketRegime",
+    "TradingSkill",
 ]

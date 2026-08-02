@@ -7,33 +7,35 @@ Production-ready with comprehensive debugging and bus-first architecture
 from __future__ import annotations
 
 import asyncio
-import time
-import threading
-import json
 import hashlib
-from typing import Dict, Any, List, Optional
-from dataclasses import asdict
+import json
+import threading
+import time
 from contextlib import contextmanager, nullcontext
+from dataclasses import asdict
+from typing import Any, Dict, List, Optional
+
 import numpy as np
 
-from modules.core.module_base import BaseModule, module
 from modules.contracts import module_args
+from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
 from modules.core.mixins import (
-    SmartInfoBusTradingMixin,
     SmartInfoBusRiskMixin,
     SmartInfoBusStateMixin,
+    SmartInfoBusTradingMixin,
 )
-from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
-from modules.utils.info_bus import InfoBusManager
-from modules.utils.audit_utils import RotatingLogger, format_operator_message
-from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
+from modules.core.module_base import BaseModule, module
 from modules.monitoring.performance_tracker import PerformanceTracker
+from modules.utils.audit_utils import RotatingLogger, format_operator_message
+from modules.utils.info_bus import InfoBusManager
+from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
+
+from .components.adaptation_manager import AdaptationManager
+from .components.analytics_engine import RewardAnalyticsEngine
 
 # Import separated components
 from .components.data_extractor import RewardDataExtractor
 from .components.reward_calculator import RewardCalculator
-from .components.analytics_engine import RewardAnalyticsEngine
-from .components.adaptation_manager import AdaptationManager
 from .debug.reward_debug_manager import RewardDebugManager
 from .shared.reward_config import RewardConfig, RewardMode
 from .shared.reward_state import RewardState
@@ -738,7 +740,7 @@ class RiskAdjustedReward(
 
     def get_weights(self) -> Dict[str, Any]:
         # Safe fallback if RewardConfig lacks get_weights()
-        if hasattr(self.cfg, "get_weights") and callable(getattr(self.cfg, "get_weights")):
+        if hasattr(self.cfg, "get_weights") and callable(self.cfg.get_weights):
             return self.cfg.get_weights()
         return {
             "regime_weights": getattr(self.cfg, "regime_weights", [0.3, 0.4, 0.3]),

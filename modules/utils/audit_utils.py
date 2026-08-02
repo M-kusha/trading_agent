@@ -12,21 +12,19 @@
 
 from __future__ import annotations
 
-import sys
-import os
-import time
-import json
 import hashlib
-import threading
-from typing import Dict, Any, Optional, Union, TYPE_CHECKING, Tuple, Iterable, Callable, Protocol
-from datetime import datetime, timezone, timedelta
-from pathlib import Path
-from collections import deque, defaultdict
-from dataclasses import dataclass, field
 import inspect
+import json
+import sys
+import threading
+import time
 import traceback
 import uuid
-import io
+from collections import defaultdict, deque
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Dict, Iterable, Optional, Protocol, Tuple, Union
 
 try:
     import numpy as np
@@ -34,7 +32,7 @@ except Exception:  # numpy is optional; degrade gracefully
     np = None  # type: ignore
 
 if TYPE_CHECKING:
-    from modules.utils.info_bus import SmartInfoBus  # for type hints only
+    pass  # for type hints only
 
 # Narrow interface for SmartInfoBus used here to avoid circular typing issues
 class InfoBusLike(Protocol):
@@ -843,7 +841,7 @@ class RotatingLogger:
             message = payload.get("operator_message") or payload.get("message") or payload.get("event_type") or "audit_event"
             # Ensure redaction of sensitive data in payload
             redacted = _redact(payload, self.config.secret_keys)
-            self._log(level, f"AUDIT: {message}", **{"audit": redacted})
+            self._log(level, f"AUDIT: {message}", audit=redacted)
 
             # Optionally publish to bus regardless of severity for audit events
             if self.config.publish_to_bus and self.smart_bus:
@@ -1374,9 +1372,9 @@ class AuditSystem:
 
 def format_operator_message(icon: str, message: str, **context) -> str:
     parts = [f"{icon} {message}"]
-    if "instrument" in context and context["instrument"]:
+    if context.get("instrument"):
         parts.append(f"[{context['instrument']}]")
-    if "details" in context and context["details"]:
+    if context.get("details"):
         parts.append(f"- {context['details']}")
 
     other = []
@@ -1388,7 +1386,7 @@ def format_operator_message(icon: str, message: str, **context) -> str:
                 other.append(f"{k}={v}")
     if other:
         parts.append("(" + ", ".join(other) + ")")
-    if "context" in context and context["context"]:
+    if context.get("context"):
         parts.append(f"[{context['context']}]")
     return " ".join(parts)
 

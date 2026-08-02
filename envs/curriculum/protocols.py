@@ -12,12 +12,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
+from envs.core.shared_utils import get_envs_logger
 from envs.curriculum.config.stages import (
     CurriculumStage,
     TradingSkill,
 )
-
-from envs.core.shared_utils import get_envs_logger
 
 logger = get_envs_logger("curriculum.protocols")
 

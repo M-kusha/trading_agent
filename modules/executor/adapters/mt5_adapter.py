@@ -1,14 +1,16 @@
 # modules/executor/adapters/mt5_adapter.py
 from __future__ import annotations
 
-import time
 import math
-import yaml
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, cast
 
-from .base_adapter import BaseLiveAdapter, LiveAdapterConfig
+import yaml
+
 from modules.utils.audit_utils import RotatingLogger
+
+from .base_adapter import BaseLiveAdapter, LiveAdapterConfig
 
 # Treat MetaTrader5 as `Any` so Pylance/pyright doesn't complain about attrs.
 try:

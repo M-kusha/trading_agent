@@ -5,27 +5,27 @@ Intelligent trading mode switching based on comprehensive market analysis and pe
 
 from __future__ import annotations
 
-import asyncio
-import time
-from modules.contracts import module_args
-import numpy as np
 import datetime
-from dataclasses import dataclass, asdict, field
-from typing import Dict, Any, List, Optional, Tuple
-from collections import deque, defaultdict
+import time
+from collections import defaultdict, deque
+from dataclasses import asdict, dataclass
+from typing import Any, Dict, List, Optional
+
+import numpy as np
+
+from modules.contracts import module_args
+from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
+from modules.core.mixins import SmartInfoBusStateMixin, SmartInfoBusTradingMixin
 
 # ═══════════════════════════════════════════════════════════════════
 # MODERN SMARTINFOBUS IMPORTS
 # ═══════════════════════════════════════════════════════════════════
 from modules.core.module_base import BaseModule, module
-from modules.core.mixins import SmartInfoBusTradingMixin, SmartInfoBusStateMixin
-from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
-from modules.utils.info_bus import InfoBusManager
-from modules.utils.audit_utils import RotatingLogger, format_operator_message
-from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 from modules.monitoring.performance_tracker import PerformanceTracker
-from modules.utils.circuit_breaker_utils import CircuitBreaker, create_standard_breaker
-
+from modules.utils.audit_utils import RotatingLogger, format_operator_message
+from modules.utils.circuit_breaker_utils import create_standard_breaker
+from modules.utils.info_bus import InfoBusManager
+from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 
 # ─────────────────────────────────────────────────────────────
 # Typed configuration (lint-safe) + dict bridge for BaseModule
@@ -933,7 +933,7 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             if confidences:
                 performance_data['consensus'] = float(np.mean(confidences))
                 performance_data['vote_agreement'] = float(1.0 - (np.std(confidences) if len(confidences) > 1 else 0.0))
-                performance_data['vote_count'] = int(len(confidences))
+                performance_data['vote_count'] = len(confidences)
                 performance_data['consensus_strength'] = float(min(performance_data['consensus'], performance_data['vote_agreement']))
             else:
                 performance_data.update({'consensus': 0.5, 'vote_agreement': 0.5, 'vote_count': 0, 'consensus_strength': 0.5})
@@ -1006,7 +1006,7 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
 
             total_exposure = float(sum(abs(_pos_exposure_value(pos)) for pos in pos_list))
             performance_data['exposure'] = total_exposure
-            performance_data['position_count'] = int(len(pos_list))
+            performance_data['position_count'] = len(pos_list)
             performance_data['exposure_ratio'] = float(min(1.0, total_exposure / max(performance_data['current_balance'], 1)))
 
             # Strategy performance
@@ -2175,7 +2175,7 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 summary[mode] = {
                     'avg_win_rate': float(np.mean(analytics['win_rates'])),
                     'avg_pnl': float(np.mean(analytics['pnl_values'])) if analytics.get('pnl_values') else 0.0,
-                    'total_periods': int(len(analytics['win_rates'])),
+                    'total_periods': len(analytics['win_rates']),
                     'best_sharpe': float(max(analytics.get('sharpe_ratios', [0.0]))),
                     'best_profit_factor': float(max(analytics.get('profit_factors', [1.0])))
                 }

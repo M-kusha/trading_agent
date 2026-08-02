@@ -32,19 +32,18 @@ from abc import abstractmethod
 from collections import deque
 from dataclasses import asdict, is_dataclass
 from logging.handlers import RotatingFileHandler
-from typing import Any, Dict, Optional, Tuple, Callable, cast
-
+from typing import Any, Dict, Optional, Tuple, cast
 
 from modules.voting.core.base import VotingModuleBase
-from modules.voting.core.types import VotingProposal
 from modules.voting.core.constants import (
-    VotingBusKeys,
-    VotingAction,
     CONFIDENCE_THRESHOLD_F,
-    MIN_SIGNAL_STRENGTH_F,
     HIGH_CONFIDENCE_THRESHOLD_F,
+    MIN_SIGNAL_STRENGTH_F,
     PRIMARY_TIMEFRAME,
+    VotingAction,
+    VotingBusKeys,
 )
+from modules.voting.core.types import VotingProposal
 
 # Developer-level fallback if per-instance config lacks debug fields.
 # Recommend leaving False for production; enable via config when needed.
@@ -156,7 +155,6 @@ class VotingExpertBase(VotingModuleBase):
     # Optional subclass hooks
     def _expert_specific_init(self) -> None:
         """Override for expert-specific initialization."""
-        pass
 
     def _expert_specific_position_evaluation(self, proposal: Dict[str, Any], position_context: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -486,7 +484,7 @@ class VotingExpertBase(VotingModuleBase):
                 if is_dataclass(obj) and not isinstance(obj, type):
                     d = asdict(obj)
                     return dict(d) if isinstance(d, dict) else {"action": "abstain", "reason": "proposal_asdict_invalid"}
-                if hasattr(obj, "to_dict") and callable(getattr(obj, "to_dict")):
+                if hasattr(obj, "to_dict") and callable(obj.to_dict):
                     d = obj.to_dict()
                     return dict(d) if isinstance(d, dict) else {"action": "abstain", "reason": "proposal_to_dict_invalid"}
             except Exception:
@@ -530,7 +528,7 @@ class VotingExpertBase(VotingModuleBase):
                     continue
             return f"{len(prices)}:{last_f:.6f}:{sum_f:.6f}"
         except Exception:
-            return f"{len(prices)}:{str(prices[-1])}"
+            return f"{len(prices)}:{prices[-1]!s}"
 
     def _cache_key(self, instrument: str, timeframe: Optional[str] = None) -> str:
         inst = self._canonicalize_instrument(instrument)
@@ -1494,7 +1492,7 @@ class VotingExpertBase(VotingModuleBase):
                 try:
                     raw_market_data = inputs.get("market_data") or {}
                     md = self._build_market_data(raw_market_data)
-                    fallback = self._fallback_simple_proposal(md, reason=f"{cls}:{str(e)}")
+                    fallback = self._fallback_simple_proposal(md, reason=f"{cls}:{e!s}")
                     fallback = self._coerce_proposal_to_dict(fallback)
                     fallback = self._validate_and_normalize_expert_output(
                         fallback, str(md.get("primary_symbol", self.config.get("primary_symbol", "XAUUSD")))

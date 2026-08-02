@@ -1,7 +1,9 @@
 import os
 from typing import Dict
-import pandas as pd
+
 import numpy as np
+import pandas as pd
+
 
 def load_data(data_dir: str = "data/processed") -> Dict[str, Dict[str, pd.DataFrame]]:
     # FIXED: Include M15 (primary training timeframe) - was missing, causing spread fallback to synthetic

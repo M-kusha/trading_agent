@@ -29,18 +29,16 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from modules.contracts import module_args
 from modules.core.module_base import BaseModule, module
-from modules.utils.info_bus import InfoBusManager
-
 from modules.timing.timing_features import (
+    TIMING_FEATURE_DIM,
     TimingConfig,
     TimingFeatures,
     compute_timing_features,
-    timing_features_to_array,
     load_timing_config,
-    TIMING_FEATURE_DIM,
+    timing_features_to_array,
 )
+from modules.utils.info_bus import InfoBusManager
 
 logger = logging.getLogger(__name__)
 

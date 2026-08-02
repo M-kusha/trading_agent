@@ -5,24 +5,24 @@
 
 from __future__ import annotations
 
-import asyncio
-import time
-import threading
-from modules.contracts import module_args
-import numpy as np
 import datetime
-from typing import Dict, Any, List, Optional, Tuple, Union
-from collections import deque, defaultdict
-from dataclasses import dataclass, asdict
+import threading
+import time
+from collections import defaultdict, deque
+from dataclasses import asdict, dataclass
 from enum import Enum
+from typing import Any, Dict, List, Optional, Union
 
-from modules.core.module_base import BaseModule, module
-from modules.core.mixins import SmartInfoBusRiskMixin, SmartInfoBusStateMixin, SmartInfoBusTradingMixin
+import numpy as np
+
+from modules.contracts import module_args
 from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
-from modules.utils.info_bus import InfoBusManager
-from modules.utils.audit_utils import RotatingLogger, format_operator_message
-from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
+from modules.core.mixins import SmartInfoBusRiskMixin, SmartInfoBusStateMixin, SmartInfoBusTradingMixin
+from modules.core.module_base import BaseModule, module
 from modules.monitoring.performance_tracker import PerformanceTracker
+from modules.utils.audit_utils import RotatingLogger, format_operator_message
+from modules.utils.info_bus import InfoBusManager
+from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 
 
 class AnomalyDetectionMode(Enum):
@@ -53,8 +53,9 @@ class AnomalyVote(Enum):
 # Typed config (lint-safe) + namespaced health keys
 def _load_anomaly_detector_config_from_yaml() -> Dict[str, Any]:
     """Load anomaly detector config values from risk_policy.yaml."""
-    import yaml
     import os
+
+    import yaml
     defaults: Dict[str, Any] = {}
     try:
         config_path = os.path.join(
@@ -666,7 +667,7 @@ class EnhancedAnomalyDetector(
         score_data_payload = {
             'anomaly_score': float(self.anomaly_score),
             'detection_confidence': float(self.detection_confidence),
-            'anomaly_types': {k: int(len(v)) for k, v in self.anomalies.items() if v},
+            'anomaly_types': {k: len(v) for k, v in self.anomalies.items() if v},
             'critical_anomalies': int(
                 sum(
                     1
@@ -731,15 +732,15 @@ class EnhancedAnomalyDetector(
             ]
             if self.detection_effectiveness
             else [],
-            'threshold_adaptation_count': int(len(self.threshold_history)),
+            'threshold_adaptation_count': len(self.threshold_history),
             'current_thresholds': dict(self.current_thresholds),
             'base_thresholds': dict(self.base_thresholds),
             'detection_stats': {k: int(v) for k, v in self.detection_stats.items()},
             'data_sufficiency': {
-                'pnl_history': int(len(self.pnl_history)),
-                'volume_history': int(len(self.volume_history)),
-                'price_history': int(len(self.price_history)),
-                'observation_history': int(len(self.observation_history)),
+                'pnl_history': len(self.pnl_history),
+                'volume_history': len(self.volume_history),
+                'price_history': len(self.price_history),
+                'observation_history': len(self.observation_history),
             },
             'performance_metrics': {
                 'avg_processing_time_ms': float(perf_avg_ms),
@@ -1497,7 +1498,7 @@ class EnhancedAnomalyDetector(
                     self.anomalies["market_structure"].append({
                         "type": "extreme_trade_sizes",
                         "extreme_count": int(extreme_count),
-                        "total_trades": int(len(trade_sizes)),
+                        "total_trades": len(trade_sizes),
                         "max_z_score": float(max(z_list)),
                         "severity": AnomalySeverity.INFO.value,
                         "confidence": min(
@@ -1511,7 +1512,7 @@ class EnhancedAnomalyDetector(
             return {
                 'market_structure_detected': True,
                 'anomalies_count': anomalies_detected,
-                'trades_analyzed': int(len(trades)),
+                'trades_analyzed': len(trades),
             }
         except Exception as e:
             self.logger.warning(f"Market structure anomaly detection failed: {e}")
@@ -1595,7 +1596,7 @@ class EnhancedAnomalyDetector(
                     regime=self.market_regime,
                 ))
 
-            return {'threshold_adaptation': True, 'changes_made': int(len(changes))}
+            return {'threshold_adaptation': True, 'changes_made': len(changes)}
         except Exception as e:
             self.logger.warning(f"Threshold adaptation failed: {e}")
             return {'threshold_adaptation': False, 'error': str(e)}
@@ -1852,7 +1853,7 @@ class EnhancedAnomalyDetector(
 
             return " | ".join(parts)
         except Exception as e:
-            return f"Detection thesis generation failed: {str(e)} - Core anomaly detection functional"
+            return f"Detection thesis generation failed: {e!s} - Core anomaly detection functional"
 
     # fallback & error payloads (contract-safe)
     def _fallback_payload(self, thesis: str) -> Dict[str, Any]:
@@ -1897,7 +1898,7 @@ class EnhancedAnomalyDetector(
         # Keep state minimally pessimistic
         self.anomaly_score = max(0.1, float(self.anomaly_score))
         self.detection_confidence = min(0.5, float(self.detection_confidence))
-        return self._format_provides_output(thesis=f"Anomaly detector error fallback: {str(error)}")
+        return self._format_provides_output(thesis=f"Anomaly detector error fallback: {error!s}")
 
     # calculations & utilities
     async def _generate_synthetic_pnl_async(self, detection_data: Dict[str, Any]) -> float:
@@ -2316,7 +2317,7 @@ class EnhancedAnomalyDetector(
         return float(self.detection_confidence)
 
     def get_anomalies_summary(self) -> Dict[str, int]:
-        return {k: int(len(v)) for k, v in self.anomalies.items() if v}
+        return {k: len(v) for k, v in self.anomalies.items() if v}
 
     def force_emergency_mode(self, reason: str = "manual_override") -> None:
         old = self.current_mode

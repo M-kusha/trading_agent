@@ -3,12 +3,12 @@
 # Circuit breaker pattern for fault tolerance — Production Upgrade
 # ─────────────────────────────────────────────────────────────
 
-import time
 import random
 import threading
-from enum import Enum
+import time
 from collections import deque
-from typing import Dict, Any, Optional, Callable, Awaitable, Tuple
+from enum import Enum
+from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
 
 
 class CircuitState(Enum):

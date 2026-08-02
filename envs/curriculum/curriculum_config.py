@@ -25,45 +25,33 @@ from typing import Callable, Dict, List, Optional
 
 # Import all types from curriculum.config subpackage
 from envs.curriculum.config import (
-    # Stages
-    CurriculumStage,
-    TradingSkill,
-    MarketRegime,
-    CurriculumStageConfig,
-    # Execution
-    ExecutionDifficulty,
-    DataDifficulty,
-    TransitionSettings,
+    COMPOSITE_HARD_FLOOR_KEYS,
+    COMPOSITE_WEIGHT_KEYS,
+    MIN_EVALUATION_EPISODES,
+    AdaptiveThresholdConfig,
     # Thresholds
     CompetenceThresholds,
-    SkillRequirements,
-    EntropyTargets,
     CompositeScoringConfig,
-    AdaptiveThresholdConfig,
-    MIN_EVALUATION_EPISODES,
-    # Constraints
-    TradingConstraints,
-    RewardShaping,
+    # Stages
+    CurriculumStage,
+    CurriculumStageConfig,
+    DataDifficulty,
+    EntropyTargets,
+    # Execution
+    ExecutionDifficulty,
+    MarketRegime,
+    MixedStageSamplingConfig,
     # Protocols
     RecoveryProtocolConfig,
-    MixedStageSamplingConfig,
     ReviewSessionConfig,
+    RewardShaping,
+    SkillRequirements,
+    # Constraints
+    TradingConstraints,
+    TradingSkill,
+    TransitionSettings,
     ValidationConfig,
-    # Registry
-    OBSERVED_METRICS,
-    OBSERVED_ALIASES,
-    THRESHOLD_FIELDS,
-    THRESHOLD_ALIASES,
-    METRIC_TO_THRESHOLD,
-    COMPOSITE_WEIGHT_KEYS,
-    COMPOSITE_HARD_FLOOR_KEYS,
-    METRIC_CANONICAL_NAMES,
-    canonicalize_observed_metric,
-    canonicalize_threshold_field,
-    canonicalize_metric,
-    is_valid_observed_metric,
     is_valid_threshold_field,
-    get_threshold_for_metric,
 )
 
 # =============================================================================

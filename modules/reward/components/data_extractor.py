@@ -10,12 +10,12 @@ Data Extraction Component for Reward System (Hardened & Typed)
 
 from __future__ import annotations
 
-from typing import Dict, Any, Optional, Tuple, List, DefaultDict
-from collections import defaultdict
 import threading
-import numpy as np
+from collections import defaultdict
 from datetime import datetime
+from typing import Any, DefaultDict, Dict, List, Optional
 
+import numpy as np
 
 _Report = Dict[str, Any]
 

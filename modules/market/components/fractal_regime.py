@@ -3,9 +3,10 @@
 # Fractal Regime Analysis Component (Production-Ready)
 # ─────────────────────────────────────────────────────────────
 
-from typing import Dict, Any, Optional, List, Tuple
-from collections import deque
 import math
+from collections import deque
+from typing import Any, Dict, List, Optional, Tuple
+
 import numpy as np
 
 # Make wavelets optional in runtime environments without pywt

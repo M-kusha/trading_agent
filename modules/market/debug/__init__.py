@@ -3,13 +3,13 @@
 # Debug utilities initialization
 # ─────────────────────────────────────────────────────────────
 
-from .trace_logger import TraceLogger, TraceLevel
 from .diagnostics import DiagnosticsEngine
+from .trace_logger import TraceLevel, TraceLogger
 from .visualizer import DebugVisualizer
 
 __all__ = [
-    'TraceLogger',
-    'TraceLevel',
+    'DebugVisualizer',
     'DiagnosticsEngine',
-    'DebugVisualizer'
+    'TraceLevel',
+    'TraceLogger'
 ]

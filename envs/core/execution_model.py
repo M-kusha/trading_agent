@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, Tuple, List
+from typing import TYPE_CHECKING, Any, Callable, Dict, Optional, Tuple
 
 import numpy as np
 
@@ -426,7 +426,6 @@ def create_execution_model_for_stage(
         Configured ExecutionModel
     """
     # Import here to avoid circular dependency
-    from envs.curriculum.curriculum_config import ExecutionDifficulty
 
     # Base config derived from curriculum stage difficulty
     cfg = ExecutionConfig(

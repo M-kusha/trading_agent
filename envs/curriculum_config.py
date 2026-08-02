@@ -6,5 +6,5 @@ Older code (and some tests/tools) import curriculum helpers from
 package; prefer importing from `envs.curriculum.curriculum_config`.
 """
 
-from envs.curriculum.curriculum_config import *  # noqa: F401,F403
+from envs.curriculum.curriculum_config import *  # noqa: F403
 

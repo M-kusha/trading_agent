@@ -3,11 +3,10 @@
 # InfoBus-Integrated Live Data Connector with Comprehensive Health Monitoring
 # ─────────────────────────────────────────────────────────────
 
-import time
 import datetime
-import logging
-from collections import deque, defaultdict
-from typing import Any, Dict, List, Optional, Tuple, cast
+import time
+from collections import defaultdict, deque
+from typing import Any, Dict, List, Optional, cast
 
 import MetaTrader5 as _MT5
 import numpy as np
@@ -21,15 +20,14 @@ from config import get_logger
 mt5: Any = cast(Any, _MT5)
 
 # InfoBus and audit infrastructure
-from modules.utils.info_bus import InfoBus, InfoBusUpdater, InfoBusExtractor
-from modules.utils.audit_utils import (
-    RotatingLogger,
-    AuditTracker,
-    format_operator_message,
-    system_audit,
-)
-from modules.core.module_system import ModuleConfig
 from live.mt5_credentials import MT5Credentials
+from modules.core.module_system import ModuleConfig
+from modules.utils.audit_utils import (
+    AuditTracker,
+    RotatingLogger,
+    format_operator_message,
+)
+from modules.utils.info_bus import InfoBus, InfoBusUpdater
 
 
 class InfoBusLiveDataConnector:
@@ -1404,7 +1402,7 @@ class InfoBusLiveTradingCallback(BaseCallback):
                 self.training_env, "env", None
             )
             if env is not None and hasattr(env, "unwrapped"):
-                env = getattr(env, "unwrapped")
+                env = env.unwrapped
 
             # Create InfoBus for this step
             info_bus = self._create_info_bus_from_env(env)
@@ -1476,7 +1474,7 @@ class InfoBusLiveTradingCallback(BaseCallback):
         try:
             # Use environment's InfoBus if available
             if hasattr(env, "info_bus"):
-                base_info_bus = getattr(env, "info_bus") or {}
+                base_info_bus = env.info_bus or {}
             else:
                 base_info_bus = {}
 
@@ -1512,4 +1510,4 @@ class InfoBusLiveTradingCallback(BaseCallback):
 # Backward compatibility for legacy imports expecting LiveDataConnector
 LiveDataConnector = InfoBusLiveDataConnector
 
-__all__ = ["InfoBusLiveDataConnector", "LiveDataConnector", "InfoBusLiveTradingCallback"]
+__all__ = ["InfoBusLiveDataConnector", "InfoBusLiveTradingCallback", "LiveDataConnector"]

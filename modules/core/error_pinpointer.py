@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from functools import wraps
 from pathlib import Path
-from typing import Any, Callable, Deque, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Callable, Deque, Dict, List, Optional
 
 try:
     import numpy as np  # type: ignore
@@ -744,7 +744,7 @@ class ErrorPinpointer:
             if action_type == 'enter_emergency_mode':
                 orc = self.orchestrator
                 if orc and hasattr(orc, 'trigger_emergency_mode_manually'):
-                    getattr(orc, 'trigger_emergency_mode_manually')(params.get('reason', f"Error in {context.module_name}"))
+                    orc.trigger_emergency_mode_manually(params.get('reason', f"Error in {context.module_name}"))
                     return True
         except Exception as e:
             self.logger.error(f"Sync recovery action {action_type} failed: {e}")

@@ -12,18 +12,18 @@ Executor Debug Manager (reward-level)
 
 from __future__ import annotations
 
-import os
 import json
-import time
+import os
 import threading
+import time
 import traceback
-from dataclasses import dataclass, asdict
-from typing import Any, Dict, List, Optional, Tuple
-from collections import Counter, deque, defaultdict
+import tracemalloc  # optional; toggle in config
+from collections import Counter, defaultdict, deque
 from contextlib import contextmanager
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-import tracemalloc  # optional; toggle in config
 
 from modules.utils.audit_utils import RotatingLogger
 
@@ -339,12 +339,12 @@ class ExecutorDebugManager:
             "io": {
                 "order_queue_in": int(queue_count),
                 "position_decisions_in": int(decisions_count),
-                "accepted": int(len(accepted or [])),
-                "rejected": int(len(rejected or [])),
+                "accepted": len(accepted or []),
+                "rejected": len(rejected or []),
                 "reject_hist": dict(rej_hist),
             },
             "fills": {
-                "count": int(len(fills or [])),
+                "count": len(fills or []),
                 "notional_total": float(sum(abs(float(f.get("notional_eur", f.get("notional", 0.0)) or 0.0)) for f in (fills or []))),
                 "by_instrument_notional": dict(by_inst_notional),
                 "preview": fills_prev,

@@ -40,15 +40,15 @@ from modules.voting.core.constants import (
     VotingBusKeys,
     get_voting_mode,
 )
+
 # Per-instrument voting infrastructure
 from modules.voting.core.per_instrument import (
-    PerInstrumentVote,
-    InstrumentProposal,
     DEFAULT_INSTRUMENTS,
+    InstrumentProposal,
+    PerInstrumentVote,
     aggregate_all_instruments,
     normalize_instrument,
 )
-
 
 # Singleton instance for committee reuse (one committee across all calls)
 _COMMITTEE_INSTANCE: Optional["CommitteeCoordinator"] = None

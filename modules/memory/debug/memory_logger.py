@@ -11,18 +11,17 @@ Unified Debug Logger for Memory System
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Deque, Literal
-from datetime import datetime
-from collections import deque, defaultdict
-import time
 import json
-import threading
-import traceback
 import os
+import threading
+import time
+import traceback
+from collections import defaultdict, deque
+from datetime import datetime
 from pathlib import Path
+from typing import Any, Deque, Dict, List, Literal, Optional, Sequence, Tuple
 
 import numpy as np  # used for simple stats in profiler and logger
-
 
 LevelName = Literal["TRACE", "DEBUG", "INFO", "WARNING", "ERROR"]
 
@@ -372,7 +371,7 @@ class MemoryDebugLogger:
                 "log_counts": dict(self.log_counts),
                 "total_logs": int(sum(self.log_counts.values())),
                 "component_performance": avg_times,
-                "memory_snapshots": int(len(self.memory_snapshots)),
+                "memory_snapshots": len(self.memory_snapshots),
                 "files": file_sizes,
             }
 

@@ -14,14 +14,12 @@ Design goals:
 
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Tuple
 
 import numpy as np
 
 if TYPE_CHECKING:
-    from envs.core.env_types import PropFirmConfig
-    import pandas as pd
+    pass
 
 
 class EntryQualityMixin:
@@ -255,7 +253,7 @@ class EntryQualityMixin:
             ctx = {}
         try:
             # Cache for other mixins (dynamic patience, time-of-day granularity)
-            setattr(self, "_last_step_entry_context", ctx)
+            self._last_step_entry_context = ctx
         except Exception:
             pass
 

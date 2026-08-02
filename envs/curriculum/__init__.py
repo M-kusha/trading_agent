@@ -12,60 +12,54 @@ This package contains:
 """
 
 # Core curriculum components (moved from envs/)
+from envs.curriculum.curriculum_config import (
+    CurriculumStageConfig,
+    DataDifficulty,
+    ExecutionDifficulty,
+    RewardShaping,
+    TradingConstraints,
+    get_stage_config,
+    get_stage_progression,
+)
+from envs.curriculum.curriculum_invariants import (
+    AntiGamingChecker,
+    CurriculumInvariantChecker,
+    InvariantViolation,
+    reconcile_trade_accounting,
+)
 from envs.curriculum.curriculum_manager import (
     CurriculumManager,
     CurriculumStage,
 )
 
-from envs.curriculum.curriculum_config import (
-    DataDifficulty,
-    ExecutionDifficulty,
-    TradingConstraints,
-    RewardShaping,
-    CurriculumStageConfig,
-    get_stage_config,
-    get_stage_progression,
-)
-
-from envs.curriculum.curriculum_invariants import (
-    CurriculumInvariantChecker,
-    InvariantViolation,
-    AntiGamingChecker,
-    reconcile_trade_accounting,
-)
-
-from envs.curriculum.validation_gates import (
-    ValidationGateChecker,
-    ValidationGateConfig,
-    ValidationGateResult,
-    StressTestRunner,
-    StressTestConfig,
-)
-
-from envs.curriculum.regime_skill_assessment import (
-    RegimeSkillAssessment,
-    RegimePerformance,
-)
-
 # Supporting classes (already in curriculum/)
 from envs.curriculum.metrics import (
-    EpisodeMetrics,
-    RollingStats,
-    LearningVelocity,
     CompositeScore,
-    compute_composite_score,
+    EpisodeMetrics,
+    LearningVelocity,
+    RollingStats,
     compute_adjusted_thresholds,
+    compute_composite_score,
 )
-
-from envs.curriculum.skills import (
-    SkillAssessment,
-    DemotionRecord,
-    DemotionAnalyzer,
-)
-
 from envs.curriculum.protocols import (
     RecoveryProtocolState,
     ReviewSessionState,
+)
+from envs.curriculum.regime_skill_assessment import (
+    RegimePerformance,
+    RegimeSkillAssessment,
+)
+from envs.curriculum.skills import (
+    DemotionAnalyzer,
+    DemotionRecord,
+    SkillAssessment,
+)
+from envs.curriculum.validation_gates import (
+    StressTestConfig,
+    StressTestRunner,
+    ValidationGateChecker,
+    ValidationGateConfig,
+    ValidationGateResult,
 )
 
 __all__ = [

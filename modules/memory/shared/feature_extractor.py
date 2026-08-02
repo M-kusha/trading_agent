@@ -7,18 +7,20 @@ Standardized feature extraction for all memory components.
 from __future__ import annotations
 
 from collections import OrderedDict
+from collections.abc import Mapping as AbcMapping
+from collections.abc import Sequence as AbcSequence
 from datetime import datetime
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
-from collections.abc import Mapping as AbcMapping, Sequence as AbcSequence
-from typing import cast
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union, cast
 
 import numpy as np
-from modules.utils.session_utils import normalize_session_name
+
 from modules.memory.shared.utils import safe_float
+from modules.utils.session_utils import normalize_session_name
 
 # Import bar_signature for OHLCV shape features
 try:
-    from modules.memory.shared.bar_signature import extract_bar_signature as _extract_bar_signature, BarSignature
+    from modules.memory.shared.bar_signature import BarSignature
+    from modules.memory.shared.bar_signature import extract_bar_signature as _extract_bar_signature
     _HAS_BAR_SIGNATURE = True
     BAR_SIG_DIM = BarSignature.OUTPUT_DIM
 except ImportError:

@@ -10,31 +10,35 @@ Contains:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
-
-import numpy as np
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
+import numpy as np
+
+from envs.core.shared_utils import (
+    clamp as _clamp,
+)
+from envs.core.shared_utils import (
+    get_envs_logger,
+    iso_timestamp,
+)
+from envs.core.shared_utils import (
+    safe_float as _sf,
+)
+from envs.core.shared_utils import (
+    safe_int as _si,
+)
+from envs.curriculum.config.protocols import RecoveryProtocolConfig
 from envs.curriculum.config.stages import (
     CurriculumStage,
     TradingSkill,
 )
 from envs.curriculum.config.thresholds import SkillRequirements
-from envs.curriculum.config.protocols import RecoveryProtocolConfig
-
-from envs.core.shared_utils import (
-    safe_float as _sf,
-    safe_int as _si,
-    clamp as _clamp,
-    get_envs_logger,
-    iso_timestamp,
-)
 
 if TYPE_CHECKING:
-    from envs.curriculum.metrics import RollingStats, EpisodeMetrics
-    from envs.curriculum.regime_skill_assessment import RegimeSkillAssessment
+    from envs.curriculum.metrics import EpisodeMetrics, RollingStats
     from envs.curriculum.protocols import RecoveryProtocolState
 
 logger = get_envs_logger("curriculum.skills")
@@ -650,7 +654,7 @@ class DemotionAnalyzer:
 
 # Re-export for backward compatibility
 __all__ = [
-    "SkillAssessment",
-    "DemotionRecord",
     "DemotionAnalyzer",
+    "DemotionRecord",
+    "SkillAssessment",
 ]

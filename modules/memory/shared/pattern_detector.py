@@ -6,10 +6,11 @@ Advanced pattern detection and mining for memory components.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Set, Union
-from collections import defaultdict
 import hashlib
+from collections import defaultdict
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
+
 import numpy as np
 
 
@@ -318,7 +319,7 @@ class UnifiedPatternDetector:
             # Inclusive upper bound for length
             for length in range(1, max_len + 1):
                 # Slide window for contiguous subsequences
-                for start in range(0, len(seq) - length + 1):
+                for start in range(len(seq) - length + 1):
                     pat = tuple(seq[start:start + length])
                     if pat not in seen_in_this_seq:
                         patterns[pat] += 1

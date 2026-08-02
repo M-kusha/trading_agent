@@ -10,23 +10,26 @@
 # Native MT5 stop-loss should be the primary protection!
 # -------------------------------------------------------------
 
-import time
 import threading
-from typing import Any, Dict, Optional, Callable
+import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Callable, Dict, Optional
 
 import yaml
 
 # Import MT5 if available
 try:
+    from typing import Any as _Any
+    from typing import cast
+
     import MetaTrader5 as _mt5_mod  # type: ignore
-    from typing import cast, Any as _Any
 
     mt5 = cast(_Any, _mt5_mod)
     _MT5_AVAILABLE = True
 except ImportError:
-    from typing import cast, Any as _Any
+    from typing import Any as _Any
+    from typing import cast
 
     mt5 = cast(_Any, None)
     _MT5_AVAILABLE = False

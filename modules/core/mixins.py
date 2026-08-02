@@ -6,20 +6,19 @@
 # ─────────────────────────────────────────────────────────────
 
 from __future__ import annotations
-from abc import ABC, abstractmethod
-import time
+
 import threading
-from typing import Dict, Any, List, Optional, TYPE_CHECKING, Literal
+import time
+from abc import ABC, abstractmethod
 from collections import deque
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Dict, Literal, Optional
 
-from modules.utils.info_bus import (
-    SmartInfoBus, InfoBusManager
-)
 from modules.utils.audit_utils import RotatingLogger, format_operator_message
+from modules.utils.info_bus import InfoBusManager, SmartInfoBus
 
 if TYPE_CHECKING:
-    from modules.core.module_base import BaseModule
+    pass
 
 # ═══════════════════════════════════════════════════════════════════
 # MIXIN STATE MANAGEMENT
@@ -165,7 +164,6 @@ class SmartInfoBusTradingMixin(ABC):
         Returns:
             Dict with action details or None
         """
-        pass
 
     @abstractmethod
     async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> Optional[float]:
@@ -176,7 +174,6 @@ class SmartInfoBusTradingMixin(ABC):
         Returns:
             Float confidence score (0.0-1.0) or None
         """
-        pass
 
     def _update_trading_metrics(self, trade: Dict[str, Any]):
         """Helper: Update comprehensive trading metrics"""
@@ -313,8 +310,9 @@ class SmartInfoBusRiskMixin(ABC):
     
     def _load_risk_limits_from_yaml(self) -> Dict[str, Any]:
         """Load risk limits from risk_policy.yaml with hardcoded fallbacks."""
-        import yaml
         import os
+
+        import yaml
         
         # Hardcoded fallbacks (prop firm safe)
         defaults = {
@@ -440,7 +438,6 @@ class SmartInfoBusVotingMixin(ABC):
         Returns:
             Dict with 'action', 'confidence', 'reasoning' or None
         """
-        pass
 
     @abstractmethod
     async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> Optional[float]:
@@ -451,7 +448,6 @@ class SmartInfoBusVotingMixin(ABC):
         Returns:
             Float confidence (0.0-1.0) or None
         """
-        pass
 
     def _record_vote(self, vote: Dict[str, Any]):
         """Helper: Record vote with enhanced tracking"""

@@ -6,12 +6,12 @@ Common functions and helper classes
 
 from __future__ import annotations
 
-from typing import Any, Callable, Deque, Dict, List, Optional, Tuple, Union
-from collections import OrderedDict, deque, defaultdict
-from datetime import datetime
 import hashlib
 import threading
 import time
+from collections import OrderedDict, defaultdict
+from datetime import datetime
+from typing import Any, Deque, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 

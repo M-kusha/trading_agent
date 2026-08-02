@@ -2,7 +2,10 @@ __pycache__/
 *.pyc
 *.log
 *.zip
-.vscode/
+.vscode/*
+# Shared editor config IS tracked: without it VS Code applies its own defaults
+# and reports ~18k problems instead of the ~3.9k real ones in pyproject.toml.
+!.vscode/settings.json
 *.egg-info/
 checkpoints/
 logs/
