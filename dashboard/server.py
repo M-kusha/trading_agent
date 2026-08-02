@@ -1,10 +1,4 @@
 #!/usr/bin/env python3
-"""
-PropFirm PPO Training Dashboard Server v2.2
-- Keeps v2.1 behavior
-- Preserves unknown/new promotion check fields (future-proof)
-- Tightens structure, reduces duplication
-"""
 
 from __future__ import annotations
 
@@ -23,7 +17,6 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set
 
 import numpy as np
 
-# Ensure project root is importable (dashboard/ is typically one level below root)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -48,9 +41,6 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("dashboard")
 
 
-# ───────────────────────────────────────────────────────────────────────────────
-# CONFIG
-# ───────────────────────────────────────────────────────────────────────────────
 @dataclass
 class DashboardConfig:
     host: str = "0.0.0.0"
@@ -70,8 +60,8 @@ class MetricThresholds:
     drawdown_ok: float = 6.0
     ev_good: float = 0.5
     ev_ok: float = 0.2
-    entropy_good_min: float = 0.25  # PPO entropy is positive
-    entropy_good_max: float = 0.85  # Typical healthy range 0.3-0.8
+    entropy_good_min: float = 0.25
+    entropy_good_max: float = 0.85
     kl_good: float = 0.015
     kl_ok: float = 0.025
     clip_good_min: float = 0.05
@@ -103,30 +93,21 @@ def get_status_color(value: float, good_threshold: float, ok_threshold: float, h
 
 
 def get_range_status(value: float, good_min: float, good_max: float) -> str:
-    """
-    Determine status for a value that should be within a target range.
-    - good: within [good_min, good_max]
-    - ok: slightly outside (within 50% of range width on either side)
-    - bad: far outside the target range
-    """
     if good_min <= value <= good_max:
         return "good"
-    
+
     range_width = good_max - good_min
-    ok_buffer = range_width * 0.5  # 50% buffer on each side for "ok"
-    
-    # Check if slightly below or above
+    ok_buffer = range_width * 0.5
+
+
     if value < good_min:
         distance_below = good_min - value
         return "ok" if distance_below <= ok_buffer else "bad"
-    else:  # value > good_max
+    else:
         distance_above = value - good_max
         return "ok" if distance_above <= ok_buffer else "bad"
 
 
-# ───────────────────────────────────────────────────────────────────────────────
-# REQUIREMENTS EXPORT (optional)
-# ───────────────────────────────────────────────────────────────────────────────
 def _safe_asdict(obj: Any) -> Any:
     if obj is None or isinstance(obj, (str, int, float, bool)):
         return obj
@@ -213,9 +194,6 @@ def get_requirements_by_stage() -> Dict[str, Any]:
         return payload
 
 
-# ───────────────────────────────────────────────────────────────────────────────
-# METRICS READER
-# ───────────────────────────────────────────────────────────────────────────────
 class MetricsReader:
     def __init__(self, metrics_file: str, max_history: int = 500):
         self.metrics_file = Path(metrics_file)
@@ -261,33 +239,23 @@ class MetricsReader:
         return val if isinstance(val, bool) else default
 
     def _normalize_drawdown_percent(self, raw: Dict[str, Any], trading: Dict[str, Any]) -> float:
-        """Return max drawdown as percent (0-100).
-
-        The metrics writer can emit multiple drawdown fields:
-        - root-level `max_drawdown`: usually a fraction (0..1)
-        - `recent_drawdowns`: usually fractions (0..1)
-        - `trading.max_drawdown`: sometimes mis-scaled (e.g. 0.681 meaning $681 loss, not 68%)
-
-        For prop-firm style constraints, fractional DD above 50% is implausible.
-        Prefer plausible fractional sources when available.
-        """
         root_dd = self._safe_float(raw.get("max_drawdown", 0.0))
         trading_dd = self._safe_float(trading.get("max_drawdown", 0.0))
 
         recent_dds = self._safe_list(raw.get("recent_drawdowns", []))
         recent_last = self._safe_float(recent_dds[-1], 0.0) if recent_dds else 0.0
 
-        # Prefer plausible fraction values first.
+
         for candidate in (root_dd, recent_last, trading_dd):
             if 0.0 < candidate <= 0.5:
                 return candidate * 100.0
 
-        # Next, accept already-percent values (e.g. 6.19 meaning 6.19%).
+
         for candidate in (root_dd, trading_dd):
             if 1.0 < candidate <= 100.0:
                 return candidate
 
-        # Last resort: if a fraction exists (even if large), scale it.
+
         for candidate in (root_dd, recent_last, trading_dd):
             if 0.0 < candidate <= 1.0:
                 return candidate * 100.0
@@ -311,24 +279,24 @@ class MetricsReader:
                 if mtime == self._last_modified and self._last_data:
                     return self._last_data
 
-                # Windows file locking fix: retry with backoff on PermissionError
+
                 raw = None
                 for attempt in range(3):
                     try:
                         with open(self.metrics_file, "r", encoding="utf-8") as f:
                             raw = json.load(f)
-                        break  # Success
+                        break
                     except PermissionError:
                         if attempt < 2:
                             import time
-                            time.sleep(0.05 * (attempt + 1))  # 50ms, 100ms backoff
+                            time.sleep(0.05 * (attempt + 1))
                         else:
-                            # Return cached data on persistent lock
+
                             return self._last_data if self._last_data else self._empty("File locked...")
                     except json.JSONDecodeError:
-                        # Partial write - return cached
+
                         return self._last_data if self._last_data else self._empty("Reading metrics...")
-                
+
                 if raw is None:
                     return self._last_data if self._last_data else self._empty("Reading metrics...")
 
@@ -367,7 +335,7 @@ class MetricsReader:
             "requirements_by_stage": get_requirements_by_stage(),
         }
 
-    # ──────────────── normalization helpers ────────────────
+
     def _normalize_key(self, k: str) -> str:
         k0 = (k or "").strip()
         if not k0:
@@ -395,7 +363,7 @@ class MetricsReader:
                 "original_key": k,
             }
 
-            # preserve all extra fields (future-proof)
+
             for fk, fv in v.items():
                 if fk not in base:
                     base[fk] = fv
@@ -426,9 +394,9 @@ class MetricsReader:
             })
         return out
 
-    # ──────────────── core processing ────────────────
+
     def _process(self, raw: Dict[str, Any]) -> Dict[str, Any]:
-        # Progress
+
         p = self._safe_dict(raw.get("progress", {}))
         timesteps = self._safe_int(p.get("timesteps", raw.get("timesteps", 0)))
         total_timesteps = self._safe_int(p.get("total_timesteps", raw.get("total_timesteps", 1)))
@@ -443,7 +411,7 @@ class MetricsReader:
             "eta_seconds": self._estimate_eta(timesteps, total_timesteps, raw),
         }
 
-        # Learning
+
         l = self._safe_dict(raw.get("learning", {}))
         mean_reward = self._safe_float(l.get("mean_reward", raw.get("mean_reward", 0)))
         total_pnl = self._safe_float(l.get("total_pnl", raw.get("total_pnl", 0)))
@@ -487,7 +455,7 @@ class MetricsReader:
             "clip_range": clip_range,
         }
 
-        # Trading
+
         t = self._safe_dict(raw.get("trading", {}))
         mean_win_rate = self._safe_float(t.get("mean_win_rate", raw.get("mean_win_rate", 0)))
         if 0 < mean_win_rate < 1:
@@ -498,7 +466,7 @@ class MetricsReader:
         mean_trades = self._safe_float(t.get("mean_trades", raw.get("mean_trades", 0)))
         total_trades = self._safe_int(t.get("total_trades", raw.get("total_trades", 0)))
 
-        # Note: win_rates, drawdowns, r_multiples history is populated from recent_* arrays below
+
         self._append_history("trades_per_episode", mean_trades)
 
         trading = {
@@ -511,13 +479,13 @@ class MetricsReader:
             "total_trades": total_trades,
         }
 
-        # Quality
+
         q = self._safe_dict(raw.get("quality", {}))
         mean_r_multiple = self._safe_float(q.get("mean_r_multiple", raw.get("mean_r_multiple", 0)))
         mean_profit_factor = self._safe_float(q.get("mean_profit_factor", raw.get("mean_profit_factor", 0)))
         mean_entry_quality = self._safe_float(q.get("mean_entry_quality", raw.get("mean_entry_quality", 0.5)))
-        
-        # v5.5: Consecutive loss tracking for governor panel
+
+
         max_consecutive_losses = self._safe_int(q.get("max_consecutive_losses", 0))
         avg_consecutive_losses = self._safe_float(q.get("avg_consecutive_losses", 0))
         consecutive_loss_streak_rate = self._safe_float(q.get("consecutive_loss_streak_rate", 0))
@@ -531,38 +499,38 @@ class MetricsReader:
             "mean_profit_factor_status": get_status_color(mean_profit_factor, THRESHOLDS.pf_good, THRESHOLDS.pf_ok, True),
             "mean_entry_quality": mean_entry_quality,
             "mean_entry_quality_status": get_status_color(mean_entry_quality, THRESHOLDS.eq_good, THRESHOLDS.eq_ok, True),
-            # v5.5: Consecutive loss metrics for governor panel
+
             "max_consecutive_losses": max_consecutive_losses,
             "avg_consecutive_losses": avg_consecutive_losses,
             "consecutive_loss_streak_rate": consecutive_loss_streak_rate,
         }
 
-        # Exit distribution
+
         exit_stats = self._safe_dict(raw.get("exit_stats", {}))
         exit_distribution = self._safe_dict(exit_stats.get("distribution", raw.get("exit_reason_distribution", {})))
         exit_stats_out = {"distribution": exit_distribution}
 
-        # Reward component breakdown (new - for market structure signals dashboard)
+
         reward_components_raw = self._safe_dict(raw.get("reward_components", {}))
         reward_components = self._process_reward_components(reward_components_raw)
 
-        # Stage comparison data for Stage Progress tab
+
         stage_comparison_raw = self._safe_dict(raw.get("stage_comparison", {}))
         stage_comparison = self._process_stage_comparison(stage_comparison_raw)
 
-        # Curriculum (pass-through + normalized checks)
+
         curriculum_progress = self._safe_dict(raw.get("curriculum_progress", {}))
         curriculum_detail = self._safe_dict(raw.get("curriculum_detail", {}))
         processed_cp = self._process_curriculum_progress(curriculum_progress)
 
-        # Recent series
+
         recent_rewards = self._safe_list(raw.get("recent_rewards", []))[-100:]
         recent_pnls = self._safe_list(raw.get("recent_pnls", []))[-100:]
         recent_win_rates = self._safe_list(raw.get("recent_win_rates", []))[-100:]
         recent_drawdowns = self._safe_list(raw.get("recent_drawdowns", []))[-100:]
         recent_r_multiples = self._safe_list(raw.get("recent_r_multiples", []))[-100:]
 
-        # Append recent values to history arrays for slope/volatility calculations
+
         for r in recent_rewards[-10:]:
             self._append_history("rewards", self._safe_float(r))
         for p2 in recent_pnls[-10:]:
@@ -576,10 +544,10 @@ class MetricsReader:
 
         stage_history = self._normalize_stage_history(raw.get("stage_history", []))
 
-        # Direction stats (buy/sell breakdown)
+
         direction_stats = self._safe_dict(raw.get("direction_stats", {}))
 
-        # v5.5: Governor state (loss layer & session budget)
+
         governor = self._safe_dict(raw.get("governor", {}))
 
         return {
@@ -597,7 +565,7 @@ class MetricsReader:
             "reward_components": reward_components,
             "stage_comparison": stage_comparison,
             "direction_stats": direction_stats,
-            "governor": governor,  # v5.5: Loss layer & session budget state
+            "governor": governor,
 
             "curriculum_stage": raw.get("curriculum_stage", "N/A"),
             "curriculum_stage_idx": raw.get("curriculum_stage_idx", 0),
@@ -634,11 +602,11 @@ class MetricsReader:
             "rolling_stats": self._safe_dict(cp.get("rolling_stats", {})),
         }
 
-        # Checks
+
         raw_checks = self._safe_dict(cp.get("promotion_checks", {}))
         out["promotion_checks"] = self._normalize_promotion_checks(raw_checks)
 
-        # Prerequisites block (UI friendliness)
+
         prereq_keys = ["min_episodes", "min_timesteps", "data_sufficiency"]
         prereqs = []
         for k in prereq_keys:
@@ -648,7 +616,7 @@ class MetricsReader:
         passed = sum(1 for p in prereqs if p["passed"])
         out["prerequisites"] = {"total": len(prereqs), "passed": passed, "all_passed": (len(prereqs) > 0 and passed == len(prereqs)), "items": prereqs}
 
-        # Pass-through components used by UI
+
         if isinstance(cp.get("skill_assessment"), dict):
             sa = cp["skill_assessment"]
             out["skill_assessment"] = {
@@ -727,7 +695,7 @@ class MetricsReader:
                 "penalty": self._safe_float(es.get("penalty", 0)),
             }
 
-        # Phase 2.2: Regime skill assessment
+
         if isinstance(cp.get("regime_assessment"), dict):
             ra = cp["regime_assessment"]
             out["regime_assessment"] = {
@@ -744,10 +712,10 @@ class MetricsReader:
                 "spread_breakdown": self._safe_dict(ra.get("spread_breakdown", {})),
             }
 
-        # Validation gate history and status
+
         if isinstance(cp.get("validation_gate_history"), list):
             out["validation_gate_history"] = self._safe_list(cp.get("validation_gate_history", []))
-        
+
         if isinstance(cp.get("last_validation_gate"), dict):
             vg = cp["last_validation_gate"]
             out["last_validation_gate"] = {
@@ -763,10 +731,10 @@ class MetricsReader:
                 "blocking_reasons": self._safe_list(vg.get("blocking_reasons", [])),
             }
 
-        # Stress test history and status
+
         if isinstance(cp.get("stress_test_history"), list):
             out["stress_test_history"] = self._safe_list(cp.get("stress_test_history", []))
-        
+
         if isinstance(cp.get("last_stress_test"), dict):
             st = cp["last_stress_test"]
             out["last_stress_test"] = {
@@ -784,15 +752,11 @@ class MetricsReader:
         out["blockers"] = self._safe_list(cp.get("blockers", []))
         out["recommendations"] = self._safe_list(cp.get("recommendations", []))
         out["estimated_episodes_to_promotion"] = cp.get("estimated_episodes_to_promotion")
-        out["phase_info"] = cp.get("phase_info", {})  # UI uses it if available
+        out["phase_info"] = cp.get("phase_info", {})
 
         return out
 
     def _process_reward_components(self, rc: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Process reward components into dashboard-friendly format.
-        Groups components into categories: market_structure, divergence, regime, exit_quality, etc.
-        """
         if not rc:
             return {
                 "market_structure": {},
@@ -805,10 +769,10 @@ class MetricsReader:
                 "summary": {"total_positive": 0, "total_negative": 0, "net": 0},
             }
 
-        # Component category mapping
-        market_structure_keys = ["sr_support_bonus", "sr_resistance_bonus", "sr_bad_entry_penalty", 
+
+        market_structure_keys = ["sr_support_bonus", "sr_resistance_bonus", "sr_bad_entry_penalty",
                                  "structure_alignment_bonus", "bos_alignment_bonus", "order_block_bonus"]
-        divergence_keys = ["divergence_contra_penalty", "divergence_aligned_bonus", 
+        divergence_keys = ["divergence_contra_penalty", "divergence_aligned_bonus",
                           "overbought_long_penalty", "oversold_short_penalty"]
         regime_keys = ["risk_off_penalty", "high_vol_penalty"]
         exit_quality_keys = ["exit_quality", "premature_close_penalty", "trailing_stop_bonus"]
@@ -840,13 +804,13 @@ class MetricsReader:
 
             comp_data = {"total": total, "count": count, "avg": avg}
 
-            # Track totals
+
             if total > 0:
                 total_positive += total
             else:
                 total_negative += total
 
-            # Categorize
+
             if name in market_structure_keys:
                 result["market_structure"][name] = comp_data
             elif name in divergence_keys:
@@ -871,10 +835,6 @@ class MetricsReader:
         return result
 
     def _process_stage_comparison(self, sc: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Process stage comparison data into dashboard-friendly format.
-        Provides per-stage metrics and improvements between stages.
-        """
         if not sc or not sc.get("stages"):
             return {
                 "stages": [],
@@ -889,7 +849,7 @@ class MetricsReader:
         current_stage = sc.get("current_stage", "N/A")
         total_stages_visited = self._safe_int(sc.get("total_stages_visited", 0))
 
-        # Process each stage
+
         processed_stages = []
         for stage in stages:
             if not isinstance(stage, dict):
@@ -915,7 +875,7 @@ class MetricsReader:
                 "last_episode": self._safe_int(stage.get("last_episode", 0)),
             }
 
-            # Process direction stats (buy/sell breakdown per stage)
+
             raw_dir_stats = stage.get("direction_stats")
             if raw_dir_stats and isinstance(raw_dir_stats, dict):
                 processed_stage["direction_stats"] = {
@@ -932,7 +892,7 @@ class MetricsReader:
                     "direction_ratio": self._safe_float(raw_dir_stats.get("direction_ratio", 1.0)),
                 }
 
-            # Process improvement data
+
             improvement = stage.get("improvement")
             if improvement is not None and isinstance(improvement, dict):
                 processed_stage["improvement"] = {
@@ -940,7 +900,7 @@ class MetricsReader:
                     "pnl_delta": self._safe_float(improvement.get("pnl_delta", 0)),
                     "profit_factor_delta": self._safe_float(improvement.get("profit_factor_delta", 0)),
                     "reward_delta": self._safe_float(improvement.get("reward_delta", 0)),
-                    # Status indicators
+
                     "win_rate_status": "good" if improvement.get("win_rate_delta", 0) > 0 else "bad",
                     "pnl_status": "good" if improvement.get("pnl_delta", 0) > 0 else "bad",
                     "profit_factor_status": "good" if improvement.get("profit_factor_delta", 0) > 0 else "bad",
@@ -948,11 +908,11 @@ class MetricsReader:
             else:
                 processed_stage["improvement"] = None
 
-            # Add overall status for the stage
+
             win_rate = processed_stage["win_rate"]
             avg_pnl = processed_stage["avg_pnl"]
             profit_factor = processed_stage["avg_profit_factor"]
-            
+
             processed_stage["status"] = {
                 "win_rate": "good" if win_rate >= 55 else "ok" if win_rate >= 45 else "bad",
                 "pnl": "good" if avg_pnl > 0 else "ok" if avg_pnl > -500 else "bad",
@@ -961,13 +921,13 @@ class MetricsReader:
 
             processed_stages.append(processed_stage)
 
-        # Calculate summary statistics across all stages
+
         summary = {}
         if processed_stages:
             all_win_rates = [s["win_rate"] for s in processed_stages]
             all_pnls = [s["total_pnl"] for s in processed_stages]
             all_pfs = [s["avg_profit_factor"] for s in processed_stages if s["avg_profit_factor"] > 0]
-            
+
             summary = {
                 "best_stage_win_rate": max(processed_stages, key=lambda x: x["win_rate"])["stage_name"] if processed_stages else "N/A",
                 "best_stage_pnl": max(processed_stages, key=lambda x: x["total_pnl"])["stage_name"] if processed_stages else "N/A",
@@ -1001,9 +961,6 @@ class MetricsReader:
         return remaining / fps
 
 
-# ───────────────────────────────────────────────────────────────────────────────
-# FASTAPI
-# ───────────────────────────────────────────────────────────────────────────────
 if WEB_AVAILABLE:
     app = FastAPI(
         title="PropFirm PPO Training Dashboard v2.2",
@@ -1070,30 +1027,27 @@ if WEB_AVAILABLE:
     async def get_requirements():
         return JSONResponse(get_requirements_by_stage())
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # ALERT LOGGING API
-    # ─────────────────────────────────────────────────────────────────────────
+
     from fastapi import Request
 
     @app.post("/api/alerts/log")
     async def log_alert(request: Request):
-        """Log an alert to the audit file for persistence."""
         try:
             alert_data = await request.json()
             alert_log_path = Path(_config.alerts_log_file)
             alert_log_path.parent.mkdir(parents=True, exist_ok=True)
-            
-            # Add server timestamp
+
+
             log_entry = {
                 "timestamp": datetime.now().isoformat(),
                 "logged_at_epoch": time.time(),
                 **alert_data
             }
-            
-            # Append to JSONL file
+
+
             with open(alert_log_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(log_entry) + "\n")
-            
+
             logger.info(f"Alert logged: [{alert_data.get('severity', 'unknown')}] {alert_data.get('title', 'untitled')}")
             return JSONResponse({"status": "ok", "logged": True})
         except Exception as e:
@@ -1102,12 +1056,11 @@ if WEB_AVAILABLE:
 
     @app.get("/api/alerts/history")
     async def get_alert_history(limit: int = 100, severity: Optional[str] = None):
-        """Retrieve recent alerts from the log file."""
         try:
             alert_log_path = Path(_config.alerts_log_file)
             if not alert_log_path.exists():
                 return JSONResponse({"alerts": [], "total": 0})
-            
+
             alerts = []
             with open(alert_log_path, "r", encoding="utf-8") as f:
                 for line in f:
@@ -1121,11 +1074,11 @@ if WEB_AVAILABLE:
                         alerts.append(entry)
                     except json.JSONDecodeError:
                         continue
-            
-            # Return most recent first
+
+
             alerts = alerts[-min(limit, _config.max_alert_history):]
             alerts.reverse()
-            
+
             return JSONResponse({"alerts": alerts, "total": len(alerts)})
         except Exception as e:
             logger.error(f"Failed to read alert history: {e}")
@@ -1133,16 +1086,15 @@ if WEB_AVAILABLE:
 
     @app.get("/api/alerts/stats")
     async def get_alert_stats():
-        """Get alert statistics."""
         try:
             alert_log_path = Path(_config.alerts_log_file)
             if not alert_log_path.exists():
                 return JSONResponse({"total": 0, "by_severity": {}, "by_metric": {}})
-            
+
             total = 0
             by_severity = {"critical": 0, "warning": 0, "info": 0}
             by_metric = {}
-            
+
             with open(alert_log_path, "r", encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
@@ -1157,7 +1109,7 @@ if WEB_AVAILABLE:
                         by_metric[metric] = by_metric.get(metric, 0) + 1
                     except json.JSONDecodeError:
                         continue
-            
+
             return JSONResponse({
                 "total": total,
                 "by_severity": by_severity,

@@ -44,7 +44,6 @@ def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any
 
 
 def load_risk_policy(path: Optional[Path] = None) -> Dict[str, Any]:
-    """Load risk_policy.yaml into a dict."""
     return _load_yaml(path or RISK_POLICY_PATH)
 
 
@@ -68,14 +67,6 @@ def load_app_config(
     preset: Optional[str] = None,
     overrides: Optional[Dict[str, Any]] = None,
 ) -> TradingAgentConfig:
-    """
-    Load and merge the application config.
-
-    Args:
-        mode: "training" or "live"
-        preset: optional preset name from presets.yaml
-        overrides: optional dictionary of explicit overrides (last-write-wins)
-    """
     merged = _load_base_bundle(mode)
     merged = _deep_merge(merged, _load_preset(preset))
     merged = _deep_merge(merged, overrides or {})
@@ -106,7 +97,7 @@ def _apply_mt5_env_overrides(cfg: TradingAgentConfig) -> None:
         try:
             cfg.mt5.account = int(account)
         except ValueError:
-            pass  # Invalid account number, keep existing value
+            pass
     if password:
         cfg.mt5.password = password
     if server:
@@ -114,14 +105,6 @@ def _apply_mt5_env_overrides(cfg: TradingAgentConfig) -> None:
 
 
 def get_trade_limits(path: Optional[Path] = None) -> Dict[str, Any]:
-    """
-    Load trade limits from risk_policy.yaml.
-    
-    Returns dict with:
-        - max_trades_per_day: int (default 20)
-        - curriculum_stage_limits: dict of stage -> limit
-        - training_mode_limit: int (effectively unlimited in training)
-    """
     risk_policy = load_risk_policy(path)
     trade_limits = risk_policy.get("trade_limits", {})
     return {
@@ -142,7 +125,6 @@ def get_config(
     preset: Optional[str] = None,
     overrides: Optional[Dict[str, Any]] = None,
 ) -> TradingAgentConfig:
-    """Primary API to fetch the application configuration."""
     return load_app_config(mode=mode, preset=preset, overrides=overrides)
 
 
@@ -151,7 +133,5 @@ def build_trading_config(
     preset: Optional[str] = None,
     overrides: Optional[Dict[str, Any]] = None,
 ):
-    """Helper to go straight from YAML to envs.config.TradingConfig."""
     app_config = load_app_config(mode=mode, preset=preset, overrides=overrides)
     return app_config.to_trading_config()
-

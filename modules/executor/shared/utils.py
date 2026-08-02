@@ -6,9 +6,7 @@ from typing import Any, Dict, Iterable, Mapping, Optional, Tuple, TypeVar, Union
 
 T = TypeVar("T")
 
-# ─────────────────────────────────────────────────────────
-# Numeric utils
-# ─────────────────────────────────────────────────────────
+
 def _as_decimal(x: Union[int, float, str]) -> Decimal:
     try:
         return Decimal(str(x))
@@ -20,18 +18,10 @@ def round_to_step(
     x: float,
     step: float,
     *,
-    mode: str = "nearest",  # 'nearest' | 'down' | 'up'
+    mode: str = "nearest",
     min_value: Optional[float] = None,
     max_value: Optional[float] = None,
 ) -> float:
-    """
-    Snap x to a multiple of `step` using Decimal (no float drift).
-
-    mode:
-      - 'nearest' : nearest, ties away from zero
-      - 'down'    : toward zero
-      - 'up'      : away from zero
-    """
     try:
         if step <= 0:
             y = float(x)
@@ -55,7 +45,7 @@ def round_to_step(
                         else q.to_integral_value(rounding=ROUND_FLOOR)
                     )
                 else:
-                    # nearest, ties away from zero (works for +/-)
+
                     q_rounded = q.quantize(Decimal(1), rounding=ROUND_HALF_UP)
                 y = float(q_rounded * S)
 
@@ -72,11 +62,8 @@ def round_to_step(
             y = min(y, float(max_value))
         return float(y)
 
-# ─────────────────────────────────────────────────────────
-# Instrument / symbol helpers
-# ─────────────────────────────────────────────────────────
+
 def canonical(inst: str) -> str:
-    """Strict canonical form: strip non-alnum, uppercase."""
     if not inst:
         return ""
     out = "".join(ch for ch in inst if ch.isalnum())
@@ -94,12 +81,6 @@ def resolve_symbol(
     *,
     broker: Optional[str] = None,
 ) -> str:
-    """
-    Resolve the runtime symbol (respect overrides, then broker defaults).
-    mt5/metatrader -> 'EURUSD'
-    oanda/fxcm     -> 'EUR_USD'
-    else           -> canonical
-    """
     if not inst:
         return ""
     if overrides:
@@ -116,14 +97,8 @@ def resolve_symbol(
         return _fx_slash_form(inst)
     return canonical(inst)
 
-# ─────────────────────────────────────────────────────────
-# Safe bus adapter
-# ─────────────────────────────────────────────────────────
+
 class SafeBus:
-    """
-    Tiny adapter so we can call set/get safely from any thread,
-    tolerant to different bus API signatures.
-    """
     def __init__(self, bus: Any, default_module: str = "Executor"):
         self.bus = bus
         self._lock = threading.Lock()
@@ -134,15 +109,15 @@ class SafeBus:
             return default
         m = module or self._module
         try:
-            # Use named argument to avoid binding the default as max_age
-            return self.bus.get(key, m, default=default)  # (key, module, default=...)
+
+            return self.bus.get(key, m, default=default)
         except TypeError:
             try:
-                v = self.bus.get(key, m)         # (key, module)
+                v = self.bus.get(key, m)
                 return v if v is not None else default
             except TypeError:
                 try:
-                    v = self.bus.get(key)        # (key)
+                    v = self.bus.get(key)
                     return v if v is not None else default
                 except Exception:
                     return default
@@ -160,13 +135,13 @@ class SafeBus:
                         value,
                         module=self._module,
                         thesis=thesis or key,
-                    )  # (key, value, module=..., thesis=...)
+                    )
                 except TypeError:
-                    self.bus.set(key, value)  # (key, value)
+                    self.bus.set(key, value)
         except Exception:
             pass
 
-    # list helpers
+
     def append(self, key: str, item: Any, thesis: str = "") -> None:
         with self._lock:
             cur = self.get(key, default=[])
@@ -183,7 +158,7 @@ class SafeBus:
             cur.extend(list(items))
             self.set(key, cur, thesis or f"extend:{key}")
 
-    # dict helper
+
     def merge(self, key: str, patch: Mapping[str, Any], thesis: str = "") -> None:
         with self._lock:
             cur = self.get(key, default={})

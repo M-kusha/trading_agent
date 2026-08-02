@@ -1,8 +1,3 @@
-"""
-Risk-Adjusted Reward System - Refactored with Separation of Concerns
-Production-ready with comprehensive debugging and bus-first architecture
-(Hardened main module, with integrated timing/memory debug blocks)
-"""
 
 from __future__ import annotations
 
@@ -32,8 +27,6 @@ from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 
 from .components.adaptation_manager import AdaptationManager
 from .components.analytics_engine import RewardAnalyticsEngine
-
-# Import separated components
 from .components.data_extractor import RewardDataExtractor
 from .components.reward_calculator import RewardCalculator
 from .debug.reward_debug_manager import RewardDebugManager
@@ -55,28 +48,8 @@ class RiskAdjustedReward(
     SmartInfoBusRiskMixin,
     SmartInfoBusStateMixin
 ):
-    """
-    Risk-Adjusted Reward Module with Separated Concerns
 
-    Production hardening in this main wrapper:
-    - Single-flight async processing (prevents overlapping reward calculations)
-    - Thread-safe state mutations (monitoring vs processing)
-    - Deterministic monitoring shutdown (no 30s hang)
-    - End-to-end timeout enforcement aligned with module timeout_ms
-    - Idempotent, throttled bus writes (reduces bus traffic & GC churn)
-    - Symmetric performance metrics on failure paths
-    - Schema drift warnings (non-fatal)
 
-    Baseline invariants preserved (delegated to components):
-    - Bus-first balance/equity resolution; no hardcoded defaults
-    - Contract-safe outputs on fallback/error
-    - Circuit breaker semantics driven by cfg.circuit_breaker_threshold
-    - Single-writer keys: shaped_reward, reward_components, reward_analytics, reward_performance
-    """
-
-    # ─────────────────────────────────────────────────────────────
-    # Lifecycle / Initialization
-    # ─────────────────────────────────────────────────────────────
     def __init__(
         self,
         config: Optional[RewardConfig | Dict[str, Any]] = None,
@@ -86,7 +59,7 @@ class RiskAdjustedReward(
         debug_level: str = "INFO",
         **kwargs,
     ):
-        # Logging & bus first
+
         self.logger = RotatingLogger(
             name="RiskAdjustedReward",
             log_path="logs/reward/risk_adjusted_reward.log",
@@ -101,7 +74,7 @@ class RiskAdjustedReward(
         self.system_utilities = SystemUtilities()
         self.performance_tracker = PerformanceTracker()
 
-        # Normalize configuration
+
         if isinstance(config, dict):
             self.cfg = RewardConfig(**config)
         elif config is None:
@@ -109,13 +82,13 @@ class RiskAdjustedReward(
         else:
             self.cfg = config
 
-        # Environment
+
         self.env = env
 
-        # Centralized state
+
         self.state = RewardState(config=self.cfg)
 
-        # Debug manager
+
         self.debug_manager = RewardDebugManager(
             enabled=debug,
             level=debug_level,
@@ -123,31 +96,31 @@ class RiskAdjustedReward(
             smart_bus=self.smart_bus
         )
 
-        # Optional: enable memory tracking when very verbose (no-op if unsupported)
+
         try:
             if debug and str(debug_level).upper() == "TRACE":
                 self.debug_manager.enable_memory_tracking()
         except Exception:
             pass
 
-        # Separated components
+
         self._initialize_components()
 
-        # Genome parameters
+
         self._initialize_genome_parameters(genome)
 
-        # Concurrency & monitoring primitives (HARDENED)
-        self._process_lock: asyncio.Lock = asyncio.Lock()       # single-flight process()
-        self._state_lock: threading.RLock = threading.RLock()   # thread safety for state mutations
-        self._stop_event: threading.Event = threading.Event()   # cooperative shutdown
+
+        self._process_lock: asyncio.Lock = asyncio.Lock()
+        self._state_lock: threading.RLock = threading.RLock()
+        self._stop_event: threading.Event = threading.Event()
         self._monitor_thread: Optional[threading.Thread] = None
 
-        # Idempotent bus updates & throttling (HARDENED)
-        self._last_bus_payloads: Dict[str, str] = {}  # sha256(json(payload))
-        self._bus_tick_count: int = 0
-        self._analytics_interval: int = 3  # write analytics/perf every N ticks unless changed
 
-        # Schema guard (non-fatal)
+        self._last_bus_payloads: Dict[str, str] = {}
+        self._bus_tick_count: int = 0
+        self._analytics_interval: int = 3
+
+
         self._schemas = {
             "shaped_reward": {"reward", "components", "calculation_method", "timestamp"},
             "reward_analytics": {"performance_metrics", "component_analysis", "regime_analysis"},
@@ -156,13 +129,13 @@ class RiskAdjustedReward(
                 "avg_reward","reward_volatility","adaptive_params","health_status",
                 "circuit_breaker_state"
             },
-            # reward_components is intentionally free-form
+
         }
 
-        # Initialize BaseModule (calls _initialize)
+
         super().__init__(config=asdict(self.cfg))
 
-        # Log initialization
+
         self.logger.info(
             format_operator_message(
                 "🎯",
@@ -173,11 +146,11 @@ class RiskAdjustedReward(
             )
         )
 
-        # Start monitoring
+
         self._start_monitoring()
 
     def __del__(self):
-        # Best-effort shutdown if GC collects instance
+
         try:
             self.stop_monitoring()
         except Exception:
@@ -209,7 +182,7 @@ class RiskAdjustedReward(
         )
         self.utils = RewardUtils()
 
-    # Called by BaseModule after registration
+
     def _initialize(self) -> None:
         try:
             self._initialize_bus_values()
@@ -255,15 +228,13 @@ class RiskAdjustedReward(
             "Initial reward performance metrics",
         )
 
-    # ─────────────────────────────────────────────────────────────
-    # Monitoring (HARDENED + profiled)
-    # ─────────────────────────────────────────────────────────────
+
     def _start_monitoring(self) -> None:
         def monitoring_loop() -> None:
             while not self._stop_event.is_set():
                 try:
                     with self._state_lock:
-                        # profile the sub-steps
+
                         with self._time_block("monitoring.update_health"):
                             self._update_health_status_locked()
 
@@ -281,7 +252,7 @@ class RiskAdjustedReward(
                     if self.debug_manager.enabled:
                         with self._safe_debug():
                             self.debug_manager.log_error("MONITORING_ERROR", e)
-                # cooperative wait; stops instantly on set()
+
                 self._stop_event.wait(1)
 
         self._stop_event.clear()
@@ -296,9 +267,7 @@ class RiskAdjustedReward(
             with self._safe_debug():
                 self.debug_manager.log_shutdown()
 
-    # ─────────────────────────────────────────────────────────────
-    # Main Processing (HARDENED + profiled)
-    # ─────────────────────────────────────────────────────────────
+
     async def process(self, **inputs) -> Dict[str, Any]:
         async with self._process_lock:
             start_time = time.time()
@@ -309,7 +278,7 @@ class RiskAdjustedReward(
                     with self._safe_debug():
                         self.debug_manager.log_process_start(inputs)
 
-                # Global timeout guard (3.11+: asyncio.timeout; otherwise sequential wait_for)
+
                 if hasattr(asyncio, "timeout"):
                     async with asyncio.timeout(budget_s):
                         self.logger.info("process: before extract_reward_data")
@@ -326,7 +295,7 @@ class RiskAdjustedReward(
                         if not reward_data or reward_data.get("data_quality") == "invalid":
                             return await self._handle_no_data_fallback(reward_data)
 
-                        # calc + memory sample
+
                         self.logger.info("process: before calculate_enhanced_reward")
                         with self._memory_block("calc_enhanced_reward"), self._time_block("calc_enhanced_reward"):
                             start_calc = time.time()
@@ -352,7 +321,7 @@ class RiskAdjustedReward(
                             self.logger.info(f"update_adaptive_learning took {time.time() - start_adapt} seconds")
                         self.logger.info("process: after update_adaptive_learning")
                 else:
-                    # ... (compatibility path)
+
                     self.logger.info("process: before extract_reward_data")
                     with self._time_block("extract_reward_data"):
                         start_extract = time.time()
@@ -367,7 +336,7 @@ class RiskAdjustedReward(
                     if not reward_data or reward_data.get("data_quality") == "invalid":
                         return await self._handle_no_data_fallback(reward_data)
 
-                    # calc + memory sample
+
                     self.logger.info("process: before calculate_enhanced_reward")
                     with self._memory_block("calc_enhanced_reward"), self._time_block("calc_enhanced_reward"):
                         start_calc = time.time()
@@ -436,7 +405,7 @@ class RiskAdjustedReward(
         analytics_payload = result.get("reward_analytics", self.analytics_engine.get_baseline_analytics())
         performance_payload = self.state.get_performance_metrics()
 
-        # Optional schema checks (warn only)
+
         self._validate_schema("shaped_reward", shaped_payload)
         if isinstance(analytics_payload, dict):
             self._validate_schema("reward_analytics", analytics_payload)
@@ -451,20 +420,18 @@ class RiskAdjustedReward(
             "success": True,
         }
 
-    # ─────────────────────────────────────────────────────────────
-    # Action Proposal and Confidence
-    # ─────────────────────────────────────────────────────────────
+
     async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
         try:
             base_confidence = self.state.calculate_base_confidence()
 
-            # Circuit breaker effects
+
             if self.state.circuit_breaker["state"] == "OPEN":
                 base_confidence *= 0.5
             elif self.state.circuit_breaker["failures"] > 0:
                 base_confidence *= 0.8
 
-            # Mode effects
+
             if self.state.current_mode == RewardMode.EMERGENCY:
                 base_confidence *= 0.7
             elif self.state.current_mode == RewardMode.LIVE_TRADING:
@@ -515,9 +482,7 @@ class RiskAdjustedReward(
                 "confidence": 0.1,
             }
 
-    # ─────────────────────────────────────────────────────────────
-    # Error Handling (HARDENED)
-    # ─────────────────────────────────────────────────────────────
+
     async def _handle_no_data_fallback(
         self,
         reward_data: Optional[Dict[str, Any]] = None
@@ -555,7 +520,7 @@ class RiskAdjustedReward(
         processing_time = (time.time() - start_time) * 1000.0
         self.state.record_failure()
 
-        # Symmetric failure metric (parity with baseline)
+
         try:
             self.performance_tracker.record_metric(
                 'RiskAdjustedReward', 'reward_calculation', float(processing_time), False
@@ -604,9 +569,7 @@ class RiskAdjustedReward(
             thesis
         )
 
-    # ─────────────────────────────────────────────────────────────
-    # Bus Updates (idempotent + throttled + profiled)
-    # ─────────────────────────────────────────────────────────────
+
     async def _update_smart_bus(self, result: Dict[str, Any], thesis: str) -> None:
         try:
             self._bus_tick_count += 1
@@ -625,7 +588,7 @@ class RiskAdjustedReward(
                     "reward_components", result.get("reward_components", {}), "Reward components breakdown"
                 )
 
-            # Throttle analytics & performance to reduce bus churn
+
             should_push_analytics = (self._bus_tick_count % self._analytics_interval == 1)
             analytics_payload = result.get("reward_analytics", {})
             perf_payload = self.state.get_performance_metrics()
@@ -647,9 +610,7 @@ class RiskAdjustedReward(
         except Exception as e:
             self.logger.error(f"Failed to update SmartInfoBus: {e}")
 
-    # ─────────────────────────────────────────────────────────────
-    # Supporting Methods (HARDENED)
-    # ─────────────────────────────────────────────────────────────
+
     async def _generate_reward_thesis(
         self,
         reward_data: Dict[str, Any],
@@ -661,7 +622,7 @@ class RiskAdjustedReward(
             return f"Reward calculation completed (thesis generation failed: {e})"
 
     def _update_health_status(self) -> None:
-        # External callers (rare). Use locked variant by default.
+
         with self._state_lock:
             self._update_health_status_locked()
 
@@ -693,15 +654,13 @@ class RiskAdjustedReward(
         else:
             self.genome = self.state.get_genome()
 
-    # ─────────────────────────────────────────────────────────────
-    # Public Interface Methods
-    # ─────────────────────────────────────────────────────────────
+
     def reset(self) -> None:
         with self._state_lock:
             self.state.reset()
             self.analytics_engine.reset()
             self.adaptation_manager.reset()
-            # FIX: Reset calculator's step-by-step tracking for new episode
+
             if hasattr(self, 'calculator') and self.calculator:
                 self.calculator.reset()
         if self.debug_manager.enabled:
@@ -739,7 +698,7 @@ class RiskAdjustedReward(
         return self.state.get_health_status()
 
     def get_weights(self) -> Dict[str, Any]:
-        # Safe fallback if RewardConfig lacks get_weights()
+
         if hasattr(self.cfg, "get_weights") and callable(self.cfg.get_weights):
             return self.cfg.get_weights()
         return {
@@ -783,9 +742,7 @@ class RiskAdjustedReward(
             report += "\n" + self.debug_manager.get_debug_report()
         return report
 
-    # ─────────────────────────────────────────────────────────────
-    # Internal helpers
-    # ─────────────────────────────────────────────────────────────
+
     def _payload_changed(self, key: str, payload: Any) -> bool:
         try:
             blob = json.dumps(payload, sort_keys=True, separators=(",", ":"))
@@ -816,10 +773,10 @@ class RiskAdjustedReward(
             if missing:
                 self.logger.warning(f"{key} missing fields: {missing}")
         except Exception:
-            # Best-effort; never block runtime
+
             pass
 
-    # Debug helpers (no-op safe if debug manager lacks these cm's)
+
     def _time_block(self, name: str):
         cm = getattr(self.debug_manager, "time_block", None)
         if cm and self.debug_manager.enabled:
@@ -837,7 +794,7 @@ class RiskAdjustedReward(
         try:
             yield
         except Exception as e:
-            # Never allow debug hooks to break hot path
+
             try:
                 self.logger.debug(f"Debug hook failure: {e}")
             except Exception:

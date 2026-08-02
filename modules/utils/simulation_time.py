@@ -1,60 +1,3 @@
-"""Unified time source for training and live execution.
-
-THE PROBLEM
------------
-The modules/ subsystems were written as real-time services. Across that tree
-there are 401 `datetime.now()` calls, 610 `time.time()` calls, 36 `time.sleep()`
-calls and 178 threading references. In a training loop that replays years of
-history in minutes this breaks in ways that are silent rather than loud:
-
-  * Session and seasonality logic reads the wall clock, so training at 02:00
-    local time makes every module believe the market is closed - regardless of
-    the timestamp on the bar being replayed.
-  * Cooldowns expressed in seconds never expire, because thousands of simulated
-    bars pass inside one real second.
-  * Bus staleness checks (`max_data_age_seconds`) compare against time.time(),
-    so data is either permanently fresh or permanently stale, never correct.
-
-That is why the training environment ended up with its own parallel, time-pure
-reimplementation of the experts in envs/prop_firm/signals/. The workaround was
-correct; making it permanent was not.
-
-THE APPROACH
-------------
-A single process-wide clock with an explicit mode.
-
-  LIVE mode       now() -> wall clock, unchanged behaviour.
-  SIMULATION mode now() -> the timestamp of the bar currently being replayed,
-                  published by the environment on every step.
-
-Modules do not have to be rewritten to benefit. `install_clock(module)` swaps
-the `datetime` class and `time` module inside a module's own namespace, so every
-existing `datetime.now()` call inside it resolves to simulation time without
-touching a single call site. Editing the 362 inline call sites individually was
-never viable; this is one line per module.
-
-Deliberately NOT bus-coupled: the training path does not use SmartInfoBus at
-all (0 files under envs/ or train/ import it), so a bus-delivered clock could
-never reach the environment. The bus can still mirror the clock for live
-consumers via publish_to_bus().
-
-USAGE
------
-    from modules.utils import simulation_time as simclock
-
-    simclock.set_mode(simclock.TimeMode.SIMULATION)   # training entrypoint
-
-    # environment, once per step:
-    simclock.set_bar_time(bar_timestamp, step=self.current_step)
-
-    # any module:
-    now = simclock.now()
-    session = simclock.get_session_info()
-
-    # step-based cooldowns instead of wall-clock ones:
-    if simclock.cooldown_elapsed("entry", min_steps=10):
-        simclock.record_cooldown_action("entry")
-"""
 
 from __future__ import annotations
 
@@ -92,7 +35,6 @@ SIMULATION_STEP_KEY = "step_idx"
 
 
 class TimeMode(Enum):
-    """Where `now()` gets its answer."""
 
     LIVE = "live"
     SIMULATION = "simulation"
@@ -100,7 +42,6 @@ class TimeMode(Enum):
 
 @dataclass
 class SimulationTime:
-    """Snapshot of simulated time, cheap to copy and to serialise."""
 
     timestamp: datetime
     step: int = 0
@@ -116,7 +57,6 @@ class SimulationTime:
 
     @property
     def weekday(self) -> int:
-        """0 = Monday ... 6 = Sunday."""
         return self.timestamp.weekday()
 
     def to_dict(self) -> Dict[str, Any]:
@@ -138,10 +78,6 @@ class SimulationTime:
         )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Process-wide clock state
-# ─────────────────────────────────────────────────────────────────────────────
-
 _LOCK = threading.RLock()
 _MODE: TimeMode = TimeMode.LIVE
 _BAR_TIME: Optional[datetime] = None
@@ -150,7 +86,6 @@ _EPOCH_DAY: Optional[_datetime_module.date] = None
 
 
 def set_mode(mode: TimeMode) -> None:
-    """Select the time source. Call once, at the process entrypoint."""
     global _MODE
     with _LOCK:
         _MODE = TimeMode(mode)
@@ -166,7 +101,6 @@ def is_simulation_mode() -> bool:
 
 
 def reset() -> None:
-    """Clear simulated time. Used between episodes and by tests."""
     global _BAR_TIME, _STEP, _EPOCH_DAY
     with _LOCK:
         _BAR_TIME = None
@@ -176,11 +110,6 @@ def reset() -> None:
 
 
 def set_bar_time(timestamp: Optional[datetime], step: Optional[int] = None) -> None:
-    """Publish the timestamp of the bar currently being replayed.
-
-    The environment calls this once per step. Naive timestamps are treated as
-    UTC so that comparisons against timezone-aware values do not raise.
-    """
     global _BAR_TIME, _STEP, _EPOCH_DAY
     if timestamp is None:
         return
@@ -195,7 +124,6 @@ def set_bar_time(timestamp: Optional[datetime], step: Optional[int] = None) -> N
 
 
 def now(tz: Optional[_datetime_module.tzinfo] = None) -> datetime:
-    """Current time: the replayed bar in simulation, the wall clock in live."""
     with _LOCK:
         mode, bar = _MODE, _BAR_TIME
 
@@ -205,7 +133,6 @@ def now(tz: Optional[_datetime_module.tzinfo] = None) -> datetime:
 
 
 def utcnow() -> datetime:
-    """Naive UTC, mirroring the semantics of the deprecated datetime.utcnow()."""
     return now(timezone.utc).replace(tzinfo=None)
 
 
@@ -220,7 +147,6 @@ def get_current_step() -> int:
 
 
 def get_session_info() -> Dict[str, Any]:
-    """Session context derived from the active clock, never from `datetime.now()`."""
     current = now(timezone.utc)
     with _LOCK:
         step, epoch_day = _STEP, _EPOCH_DAY
@@ -251,10 +177,6 @@ def snapshot() -> SimulationTime:
 
 
 def publish_to_bus(bus: Any) -> None:
-    """Mirror the clock onto a SmartInfoBus for live consumers.
-
-    Optional: the training path has no bus, so the clock never depends on one.
-    """
     if bus is None:
         return
     try:
@@ -262,24 +184,13 @@ def publish_to_bus(bus: Any) -> None:
         bus.set(SIMULATION_TIME_KEY, snap.to_dict(), module="SimulationClock")
         bus.set(SIMULATION_STEP_KEY, snap.step, module="SimulationClock")
     except AttributeError:
-        # A bus without .set() is a programming error, but publishing time must
-        # never take down a trading loop.
+
+
         pass
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Step-based cooldowns
-# ─────────────────────────────────────────────────────────────────────────────
 
 
 @dataclass
 class StepCooldownTracker:
-    """Cooldowns counted in steps rather than seconds.
-
-    A cooldown of "300 seconds" never expires when 10,000 bars replay inside one
-    real second. Counting steps behaves identically in training and live, given
-    a fixed bar interval.
-    """
 
     _last_action_step: Dict[str, int] = field(default_factory=dict)
 
@@ -295,7 +206,7 @@ class StepCooldownTracker:
     def steps_since_action(self, action_key: str) -> int:
         last = self._last_action_step.get(action_key)
         if last is None:
-            return 1 << 30  # effectively "never"
+            return 1 << 30
         return get_current_step() - last
 
     def reset(self) -> None:
@@ -324,13 +235,7 @@ def _reset_cooldowns() -> None:
             tracker.reset()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Namespace injection
-# ─────────────────────────────────────────────────────────────────────────────
-
-
 class _ClockDateTime(datetime):
-    """`datetime` subclass whose now()/utcnow()/today() follow the clock."""
 
     @classmethod
     def now(cls, tz: Optional[_datetime_module.tzinfo] = None) -> datetime:  # type: ignore[override]
@@ -350,8 +255,6 @@ _ClockDateTime.__qualname__ = "datetime"
 
 
 def _clock_time_module(original: types.ModuleType) -> types.ModuleType:
-    """A stand-in for `time` whose time() follows the clock and whose sleep()
-    is a no-op under simulation."""
     shim = types.ModuleType("time")
     for attr in dir(original):
         try:
@@ -364,7 +267,7 @@ def _clock_time_module(original: types.ModuleType) -> types.ModuleType:
 
     def _sleep(seconds: float) -> None:
         if is_simulation_mode():
-            return  # a sleeping module cannot participate in a replay loop
+            return
         original.sleep(seconds)
 
     shim.time = _time  # type: ignore[attr-defined]
@@ -373,14 +276,6 @@ def _clock_time_module(original: types.ModuleType) -> types.ModuleType:
 
 
 def install_clock(module: types.ModuleType) -> list[str]:
-    """Point a module's time primitives at this clock.
-
-    Returns the names that were patched, for logging and tests.
-
-    Handles both import styles found in this codebase:
-      `from datetime import datetime`  -> module.datetime is the class
-      `import datetime`               -> module.datetime is the module
-    """
     patched: list[str] = []
 
     attr = getattr(module, "datetime", None)
@@ -404,8 +299,6 @@ def install_clock(module: types.ModuleType) -> list[str]:
 
 
 class simulation_mode:
-    """Context manager that enables simulation mode and restores the previous
-    mode and clock afterwards. Primarily for tests."""
 
     def __init__(self, start: Optional[datetime] = None) -> None:
         self._start = start
@@ -434,7 +327,6 @@ class simulation_mode:
 
 
 def advance(delta: timedelta, steps: int = 1) -> None:
-    """Move simulated time forward. Convenience for tests and replay tools."""
     current = get_bar_time()
     if current is None:
         return

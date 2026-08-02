@@ -1,12 +1,4 @@
-# modules/reward/components/data_extractor.py
-"""
-Data Extraction Component for Reward System (Hardened & Typed)
-- Strong typing to satisfy Pylance/mypy
-- Thread-safe counters & tracking (RLock)
-- Defensive SmartInfoBus access (never raises)
-- Category-specific validation & fallbacks
-- Stable, contract-safe output with quality scoring
-"""
+
 
 from __future__ import annotations
 
@@ -21,18 +13,8 @@ _Report = Dict[str, Any]
 
 
 class RewardDataExtractor:
-    """
-    Extracts and validates data from SmartInfoBus
 
-    Features:
-    - Comprehensive bus key extraction
-    - Data validation and quality assessment
-    - Missing key detection with frequency tracking
-    - Robust fallbacks and environment mirrors
-    - Clear debugging output (never throws)
-    """
 
-    # Known keys by category (used for reporting and quality scoring)
     _TRADING_KEYS = ('trade_data', 'trades', 'recent_trades')
     _RISK_KEYS = ('risk_metrics', 'account_state')
     _MARKET_KEYS = ('market_context', 'market_state', 'market_regime', 'regime_prediction')
@@ -46,33 +28,25 @@ class RewardDataExtractor:
         debug_manager: Any,
         env: Any = None
     ):
-        """Initialize data extractor"""
 
         self.smart_bus = smart_bus
         self.logger = logger
         self.debug_manager = debug_manager
         self.env = env
 
-        # Tracking (thread-safe)
+
         self._lock: threading.RLock = threading.RLock()
         self.extraction_count: int = 0
         self.missing_key_frequency: DefaultDict[str, int] = defaultdict(int)
 
-    # ─────────────────────────────────────────────────────────────
-    # Public API
-    # ─────────────────────────────────────────────────────────────
-    async def extract_reward_data(self, **inputs) -> Dict[str, Any]:
-        """
-        Extract all required data from bus with validation and fallbacks.
 
-        Returns a complete data package with a 'data_quality' label and diagnostics.
-        """
+    async def extract_reward_data(self, **inputs) -> Dict[str, Any]:
 
         with self._lock:
             self.extraction_count += 1
             step_idx = inputs.get('step_idx', self.extraction_count)
 
-        # Track extraction process
+
         report: _Report = {
             'successful_keys': [],
             'missing_keys': [],
@@ -81,46 +55,46 @@ class RewardDataExtractor:
             'fallbacks_used': [],
         }
 
-        # Category extracts (each tolerates bad types and returns {})
+
         trade_data = await self._extract_trading_data(report)
         risk_data = await self._extract_risk_data(report)
         market_data = await self._extract_market_data(report)
         performance_data = await self._extract_performance_data(report)
         memory_data = await self._extract_memory_data(report)
 
-        # Resolutions
+
         trades = self._resolve_trades(trade_data)
         regime = self._resolve_regime(market_data)
         volatility_level = self._resolve_volatility(market_data, risk_data)
         consensus = self._resolve_consensus(market_data)
         balance_info = self._resolve_balance_info(risk_data, performance_data, market_data)
 
-        # Quality
+
         data_quality = self._assess_data_quality(report)
 
-        # Build output (stable schema)
+
         reward_data: Dict[str, Any] = {
-            # Core data
+
             'trades': trades,
             'risk_metrics': risk_data.get('risk_metrics', {}) or {},
             'market_context': market_data.get('market_context', {}) or {},
             'performance_data': performance_data.get('performance_data', {}) or {},
             'env_config': performance_data.get('environment_config', {}) or {},
             'market_state': market_data.get('market_state', {}) or {},
-            # Resolved values
+
             'regime': regime,
             'market_regime': regime,
             'volatility_level': volatility_level,
             'consensus': consensus,
-            # Balance info
+
             'balance_now': balance_info['balance_now'],
             'baseline_balance': balance_info['baseline_balance'],
-            # Metadata
+
             'timestamp': datetime.now().isoformat(),
             'step_idx': step_idx,
             'actions': inputs.get('actions'),
             'raw_inputs': inputs.get('reward_inputs', {}) or {},
-            # Quality & diagnostics
+
             'data_quality': data_quality,
             'missing_keys': report['missing_keys'],
             'broken_keys': report['broken_keys'],
@@ -128,7 +102,7 @@ class RewardDataExtractor:
             'fallbacks_used': report['fallbacks_used'],
         }
 
-        # Optional debug trace
+
         self._dbg_note(
             f"Extracted reward_data: regime={regime}, vol={volatility_level}, "
             f"trades={len(trades)}, quality={data_quality}"
@@ -136,11 +110,8 @@ class RewardDataExtractor:
 
         return reward_data
 
-    # ─────────────────────────────────────────────────────────────
-    # Category Extractors (robust & typed)
-    # ─────────────────────────────────────────────────────────────
+
     async def _extract_trading_data(self, report: _Report) -> Dict[str, Any]:
-        """Extract trading-related data with fallbacks and validation."""
         data: Dict[str, Any] = {}
 
         trade_data = self._safe_bus_get('trade_data', report)
@@ -148,7 +119,7 @@ class RewardDataExtractor:
             data['trade_data'] = trade_data
             report['successful_keys'].append('trade_data')
 
-        # Fallback to trades array (PositionManager style)
+
         if not isinstance(trade_data, dict) or not self._validate_trades(trade_data.get('recent_trades', [])):
             trades = self._safe_bus_get('trades', report)
             if isinstance(trades, (list, tuple)) and self._validate_trades(trades):
@@ -156,7 +127,7 @@ class RewardDataExtractor:
                 report['successful_keys'].append('trades')
                 report['fallbacks_used'].append('trades_from_position_manager')
 
-        # Try recent_trades as a top-level bus key
+
         recent_trades = self._safe_bus_get('recent_trades', report)
         if isinstance(recent_trades, (list, tuple)) and self._validate_trades(recent_trades):
             data['recent_trades'] = list(recent_trades)
@@ -165,7 +136,6 @@ class RewardDataExtractor:
         return data
 
     async def _extract_risk_data(self, report: _Report) -> Dict[str, Any]:
-        """Extract risk-related data and provide a compatible fallback."""
         data: Dict[str, Any] = {}
 
         risk_metrics = self._safe_bus_get('risk_metrics', report)
@@ -178,7 +148,7 @@ class RewardDataExtractor:
             data['account_state'] = account_state
             report['successful_keys'].append('account_state')
 
-            # Convert if risk_metrics absent or invalid
+
             if 'risk_metrics' not in data:
                 converted = self._convert_account_to_risk(account_state)
                 data['risk_metrics'] = converted
@@ -187,7 +157,6 @@ class RewardDataExtractor:
         return data
 
     async def _extract_market_data(self, report: _Report) -> Dict[str, Any]:
-        """Extract market-related data safely."""
         data: Dict[str, Any] = {}
 
         market_context = self._safe_bus_get('market_context', report)
@@ -201,7 +170,7 @@ class RewardDataExtractor:
             report['successful_keys'].append('market_state')
 
         market_regime = self._safe_bus_get('market_regime', report)
-        if market_regime is not None:  # str or dict allowed
+        if market_regime is not None:
             data['market_regime'] = market_regime
             report['successful_keys'].append('market_regime')
 
@@ -213,7 +182,6 @@ class RewardDataExtractor:
         return data
 
     async def _extract_performance_data(self, report: _Report) -> Dict[str, Any]:
-        """Extract performance-related data safely."""
         data: Dict[str, Any] = {}
 
         performance_data = self._safe_bus_get('performance_data', report)
@@ -229,7 +197,6 @@ class RewardDataExtractor:
         return data
 
     async def _extract_memory_data(self, report: _Report) -> Dict[str, Any]:
-        """Extract optional memory-related data safely."""
         data: Dict[str, Any] = {}
 
         mistake_memory = self._safe_bus_get('mistake_memory', report)
@@ -239,12 +206,9 @@ class RewardDataExtractor:
 
         return data
 
-    # ─────────────────────────────────────────────────────────────
-    # Resolution Methods (pure, side-effect free)
-    # ─────────────────────────────────────────────────────────────
+
     def _resolve_trades(self, trade_data: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Resolve trades from various sources with clear precedence."""
-        # Priority: trade_data.recent_trades → trades → recent_trades
+
         td = trade_data.get('trade_data', {})
         if isinstance(td, dict):
             rt = td.get('recent_trades', [])
@@ -262,13 +226,6 @@ class RewardDataExtractor:
         return []
 
     def _resolve_regime(self, market_data: Dict[str, Any]) -> str:
-        """
-        Resolve market regime with robust precedence:
-          1) market_regime (str or dict: 'regime'/'label'/'state')
-          2) market_state.regime
-          3) regime_prediction.predicted/label/regime
-          4) market_context.regime
-        """
         market_regime = market_data.get('market_regime')
         if isinstance(market_regime, str):
             val = market_regime.strip().lower()
@@ -302,7 +259,6 @@ class RewardDataExtractor:
         return 'unknown'
 
     def _resolve_volatility(self, market_data: Dict[str, Any], risk_data: Dict[str, Any]) -> str:
-        """Resolve volatility level from multiple sources with sane fallbacks."""
         market_context = market_data.get('market_context', {}) or {}
         if isinstance(market_context, dict):
             val = market_context.get('volatility_level')
@@ -330,48 +286,42 @@ class RewardDataExtractor:
         return 'medium'
 
     def _resolve_consensus(self, market_data: Dict[str, Any]) -> float:
-        """Resolve consensus value from voting system.
-        
-        CRITICAL: Default of 0.5 means NO learning signal from voting alignment.
-        We try multiple sources to find actual consensus data.
-        """
-        # Priority 1: kernel_consensus_score (canonical VotingKernel output)
+
         kernel_consensus = self._safe_bus_get_silent('kernel_consensus_score')
         if kernel_consensus is not None and self._is_valid_number(kernel_consensus):
             return float(np.clip(float(kernel_consensus), 0.0, 1.0))
-        
-        # Priority 2: Direct consensus_score 
+
+
         consensus_score = self._safe_bus_get_silent('consensus_score')
         if consensus_score is not None and self._is_valid_number(consensus_score):
             return float(np.clip(float(consensus_score), 0.0, 1.0))
-        
-        # Priority 3: voting_result.consensus_score
+
+
         voting_result = self._safe_bus_get_silent('voting_result')
         if isinstance(voting_result, dict):
             cs = voting_result.get('consensus_score')
             if cs is not None and self._is_valid_number(cs):
                 return float(np.clip(float(cs), 0.0, 1.0))
-        
-        # Priority 4: arbiter_output.consensus
+
+
         arbiter_output = self._safe_bus_get_silent('arbiter_output')
         if isinstance(arbiter_output, dict):
             cs = arbiter_output.get('consensus')
             if cs is not None and self._is_valid_number(cs):
                 return float(np.clip(float(cs), 0.0, 1.0))
-        
-        # Priority 5: market_context.consensus (legacy fallback)
+
+
         market_context = market_data.get('market_context', {}) or {}
         if isinstance(market_context, dict):
             val = market_context.get('consensus')
             if val is not None and self._is_valid_number(val):
                 return float(np.clip(float(val), 0.0, 1.0))
-        
-        # No consensus found - log warning (important for training quality)
+
+
         self._dbg_note("WARNING: No consensus signal found - reward won't learn voting alignment")
         return 0.5
-    
+
     def _safe_bus_get_silent(self, key: str) -> Optional[Any]:
-        """Get from bus without tracking in report (for secondary lookups)."""
         try:
             return self.smart_bus.get(key, "RiskAdjustedReward")
         except Exception:
@@ -383,28 +333,24 @@ class RewardDataExtractor:
         performance_data: Dict[str, Any],
         market_data: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """
-        Resolve balance information from multiple sources.
-        Never fabricates numbers beyond observed/declared values.
-        """
 
         candidates: List[float] = []
 
-        # 1) Risk metrics (authoritative at runtime)
+
         rm = risk_data.get('risk_metrics', {}) or {}
         if isinstance(rm, dict):
             for key in ('balance', 'equity', 'account_equity', 'cash', 'account_balance'):
                 if key in rm and self._is_valid_number(rm[key]):
                     candidates.append(float(rm[key]))
 
-        # 2) Account state (secondary)
+
         account = risk_data.get('account_state', {}) or {}
         if isinstance(account, dict):
             for key in ('balance', 'equity', 'cash'):
                 if key in account and self._is_valid_number(account[key]):
                     candidates.append(float(account[key]))
 
-        # 3) Performance data / env config (initials/baselines & snapshots)
+
         perf = performance_data.get('performance_data', {}) or {}
         if isinstance(perf, dict):
             for key in ('balance', 'equity', 'initial_balance', 'starting_balance'):
@@ -417,12 +363,12 @@ class RewardDataExtractor:
                 if key in env_cfg and self._is_valid_number(env_cfg[key]):
                     candidates.append(float(env_cfg[key]))
 
-        # 4) Market state (as a last-ditch snapshot)
+
         ms = market_data.get('market_state', {}) or {}
         if isinstance(ms, dict) and 'balance' in ms and self._is_valid_number(ms['balance']):
             candidates.append(float(ms['balance']))
 
-        # 5) Environment attributes (mirror if present)
+
         if self.env is not None:
             for attr in ('balance', 'equity', 'initial_balance'):
                 try:
@@ -435,7 +381,7 @@ class RewardDataExtractor:
 
         balance_now = float(candidates[0]) if candidates else 0.0
 
-        # Baseline discovery (explicit initials preferred)
+
         baseline_candidates: List[float] = []
         for src in (rm, account, perf, env_cfg):
             if isinstance(src, dict):
@@ -454,11 +400,8 @@ class RewardDataExtractor:
             'baseline_balance': baseline_balance,
         }
 
-    # ─────────────────────────────────────────────────────────────
-    # SmartInfoBus helpers & validators
-    # ─────────────────────────────────────────────────────────────
+
     def _safe_bus_get(self, key: str, report: _Report) -> Optional[Any]:
-        """Safely get value from bus with error tracking (never raises)."""
         try:
             value = self.smart_bus.get(key, "RiskAdjustedReward")  # type: ignore[attr-defined]
             if value is None:
@@ -467,7 +410,7 @@ class RewardDataExtractor:
                     self.missing_key_frequency[key] += 1
                 return None
 
-            # Basic sanity check (numerics finite, containers allowed)
+
             if not self._is_valid_data(value):
                 report['broken_keys'].append(key)
                 return None
@@ -480,7 +423,6 @@ class RewardDataExtractor:
             return None
 
     def _is_valid_data(self, value: Any) -> bool:
-        """Check if data is structurally usable."""
         if value is None:
             return False
         if isinstance(value, (int, float)):
@@ -488,21 +430,19 @@ class RewardDataExtractor:
                 return bool(np.isfinite(float(value)))
             except Exception:
                 return False
-        # Accept dict/list/tuple—even if empty—as valid containers
+
         if isinstance(value, (list, tuple, dict)):
             return True
-        # Everything else: accept, caller-specific logic will validate
+
         return True
 
     def _is_valid_number(self, value: Any) -> bool:
-        """Check if value is a valid finite number."""
         try:
             return bool(np.isfinite(float(value)))
         except Exception:
             return False
 
     def _convert_account_to_risk(self, account_state: Dict[str, Any]) -> Dict[str, Any]:
-        """Convert account state to risk metrics format."""
         bal = account_state.get('balance', 0.0)
         eq = account_state.get('equity', bal)
         return {
@@ -513,9 +453,8 @@ class RewardDataExtractor:
             'margin_used': float(account_state.get('margin_used', 0.0) or 0.0),
         }
 
-    # Category validators (lightweight, tolerant)
+
     def _validate_trades(self, trades: Any) -> bool:
-        """Validate trade data structure."""
         if trades is None:
             return False
         if not isinstance(trades, (list, tuple)):
@@ -523,13 +462,12 @@ class RewardDataExtractor:
         for trade in trades:
             if not isinstance(trade, dict):
                 return False
-            # At least one of these commonly-present fields
+
             if not any(k in trade for k in ('pnl', 'side', 'size', 'price')):
                 return False
         return True
 
     def _validate_risk_metrics(self, risk_metrics: Any) -> bool:
-        """Validate risk metrics structure."""
         if not isinstance(risk_metrics, dict):
             return False
         balance_fields = ('balance', 'equity', 'account_equity', 'cash')
@@ -544,11 +482,8 @@ class RewardDataExtractor:
     def _validate_memory_data(self, memory_data: Any) -> bool:
         return isinstance(memory_data, dict)
 
-    # ─────────────────────────────────────────────────────────────
-    # Quality scoring
-    # ─────────────────────────────────────────────────────────────
+
     def _assess_data_quality(self, report: _Report) -> str:
-        """Assess overall data quality from missing/broken stats."""
         missing = len(report['missing_keys'])
         broken = len(report['broken_keys'])
 
@@ -562,13 +497,11 @@ class RewardDataExtractor:
             return 'poor'
         return 'invalid'
 
-    # ─────────────────────────────────────────────────────────────
-    # Debug helpers (never raise)
-    # ─────────────────────────────────────────────────────────────
+
     def _dbg_note(self, msg: str) -> None:
         try:
             if getattr(self.debug_manager, "enabled", False):
-                # Prefer debug_manager hook if available
+
                 if hasattr(self.debug_manager, "_log"):
                     self.debug_manager._log("DEBUG", msg, "DATA_EXTRACTOR")  # type: ignore[attr-defined]
                 else:

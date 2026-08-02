@@ -1,17 +1,4 @@
-# ═══════════════════════════════════════════════════════════════════════════
-# File: modules/executor/unified_logger.py
-# Unified Executor Logging System - Ultra-Detailed Professional Format
-#
-# Creates clean, comprehensive execution logs with:
-# - Order acceptance/rejection details
-# - Fill execution summaries
-# - Position state changes
-# - P&L breakdowns (realized/unrealized)
-# - Balance/equity tracking
-# - Trade history
-# - Execution quality metrics
-# - Issue detection
-# ═══════════════════════════════════════════════════════════════════════════
+
 
 from __future__ import annotations
 
@@ -23,31 +10,30 @@ from typing import Any, Dict, List
 
 @dataclass
 class ExecutionCycleEntry:
-    """Complete execution cycle log entry with all context"""
-    # Step context
+
     step: int
-    mode: str  # 'sim' or 'live'
+    mode: str
     timestamp: str
 
-    # Orders
+
     orders_received: int
     orders_accepted: int
     orders_rejected: int
     rejected_reasons: Dict[str, int]
 
-    # Fills
+
     fills_count: int
     fills_by_instrument: Dict[str, int]
     total_notional: float
 
-    # Positions
+
     positions_before: Dict[str, Dict[str, Any]]
     positions_after: Dict[str, Dict[str, Any]]
     positions_opened: List[str]
     positions_closed: List[str]
     positions_modified: List[str]
 
-    # P&L
+
     balance_before: float
     balance_after: float
     equity_before: float
@@ -56,40 +42,27 @@ class ExecutionCycleEntry:
     unrealized_pnl: float
     step_pnl: float
 
-    # Trades
+
     trades_this_step: List[Dict[str, Any]]
 
-    # Quality
+
     execution_time_ms: float
     issues: List[str]
 
-    # Details
+
     accepted_details: List[Dict[str, Any]]
     rejected_details: List[Dict[str, Any]]
     fill_details: List[Dict[str, Any]]
 
 
 class UnifiedExecutorLogger:
-    """
-    Unified logging system for executor operations.
-
-    Creates ultra-detailed, professional execution logs with:
-    - Execution cycle summaries
-    - Order processing details
-    - Fill execution reports
-    - Position state tracking
-    - P&L breakdowns
-    - Trade ledger updates
-    - Performance metrics
-    - Issue detection
-    """
 
     def __init__(self, logger):
         self.logger = logger
         self.session_start = dt.datetime.utcnow()
         self.cycle_count = 0
 
-        # Cumulative stats
+
         self.cumulative = {
             'total_orders': 0,
             'total_accepted': 0,
@@ -101,14 +74,9 @@ class UnifiedExecutorLogger:
         }
 
     def log_execution_cycle(self, entry: ExecutionCycleEntry) -> None:
-        """
-        Log a complete, ultra-detailed execution cycle summary.
-
-        Format: Multi-section detailed report with all execution context
-        """
         self.cycle_count += 1
 
-        # Update cumulative stats
+
         self.cumulative['total_orders'] += entry.orders_received
         self.cumulative['total_accepted'] += entry.orders_accepted
         self.cumulative['total_rejected'] += entry.orders_rejected
@@ -118,16 +86,14 @@ class UnifiedExecutorLogger:
         for reason, count in entry.rejected_reasons.items():
             self.cumulative['rejection_reasons'][reason] += count
 
-        # Build the detailed log
+
         lines = []
         lines.append("")
         lines.append("╔" + "═" * 98 + "╗")
         lines.append("║" + "EXECUTION CYCLE SUMMARY".center(98) + "║")
         lines.append("╠" + "═" * 98 + "╣")
 
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # Section 1: Cycle Overview
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
         lines.append("║ " + "⏱️  CYCLE OVERVIEW".ljust(97) + "║")
         lines.append("║ " + "─" * 97 + "║")
         lines.append("║ " + f"Step:             {entry.step:,}".ljust(97) + "║")
@@ -136,9 +102,7 @@ class UnifiedExecutorLogger:
         lines.append("║ " + f"Processing Time:  {entry.execution_time_ms:.2f}ms".ljust(97) + "║")
         lines.append("║" + " " * 98 + "║")
 
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # Section 2: Order Processing
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
         lines.append("║ " + "📥 ORDER PROCESSING".ljust(97) + "║")
         lines.append("║ " + "─" * 97 + "║")
         lines.append("║ " + f"Received:         {entry.orders_received} order(s)".ljust(97) + "║")
@@ -157,14 +121,12 @@ class UnifiedExecutorLogger:
 
         lines.append("║" + " " * 98 + "║")
 
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # Section 3: Accepted Orders Details
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
         if entry.accepted_details:
             lines.append("║ " + f"📋 ACCEPTED ORDERS DETAILS ({len(entry.accepted_details)})".ljust(97) + "║")
             lines.append("║ " + "─" * 97 + "║")
 
-            for i, order in enumerate(entry.accepted_details[:10], 1):  # Show first 10
+            for i, order in enumerate(entry.accepted_details[:10], 1):
                 inst = order.get('instrument', 'N/A')
                 action = order.get('action', 'N/A')
                 size_eur = order.get('size_eur', 0.0)
@@ -179,14 +141,12 @@ class UnifiedExecutorLogger:
 
             lines.append("║" + " " * 98 + "║")
 
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # Section 4: Rejected Orders Details
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
         if entry.rejected_details:
             lines.append("║ " + f"⛔ REJECTED ORDERS DETAILS ({len(entry.rejected_details)})".ljust(97) + "║")
             lines.append("║ " + "─" * 97 + "║")
 
-            for i, rej in enumerate(entry.rejected_details[:5], 1):  # Show first 5
+            for i, rej in enumerate(entry.rejected_details[:5], 1):
                 reason = rej.get('reason', 'unknown')
                 intent = rej.get('intent', {})
                 inst = intent.get('instrument', 'N/A')
@@ -199,9 +159,7 @@ class UnifiedExecutorLogger:
 
             lines.append("║" + " " * 98 + "║")
 
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # Section 5: Fill Execution
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
         lines.append("║ " + f"⚡ FILL EXECUTION ({entry.fills_count})".ljust(97) + "║")
         lines.append("║ " + "─" * 97 + "║")
 
@@ -214,7 +172,7 @@ class UnifiedExecutorLogger:
                 for inst, count in list(entry.fills_by_instrument.items())[:10]:
                     lines.append("║ " + f"  • {inst:15s} {count} fill(s)".ljust(97) + "║")
 
-            # Detailed fill list
+
             if entry.fill_details:
                 lines.append("║ " + "Fill Details:".ljust(97) + "║")
                 for i, fill in enumerate(entry.fill_details[:15], 1):
@@ -240,9 +198,7 @@ class UnifiedExecutorLogger:
 
         lines.append("║" + " " * 98 + "║")
 
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # Section 6: Position State Changes
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
         lines.append("║ " + "📊 POSITION STATE CHANGES".ljust(97) + "║")
         lines.append("║ " + "─" * 97 + "║")
 
@@ -258,7 +214,7 @@ class UnifiedExecutorLogger:
 
             lines.append("║" + " " * 98 + "║")
 
-            # Position details before/after
+
             if entry.positions_after:
                 lines.append("║ " + "Current Positions:".ljust(97) + "║")
                 for inst, pos in list(entry.positions_after.items())[:10]:
@@ -284,9 +240,7 @@ class UnifiedExecutorLogger:
 
         lines.append("║" + " " * 98 + "║")
 
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # Section 7: P&L Breakdown
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
         lines.append("║ " + "💰 P&L BREAKDOWN".ljust(97) + "║")
         lines.append("║ " + "─" * 97 + "║")
 
@@ -305,7 +259,7 @@ class UnifiedExecutorLogger:
         lines.append("║ " + f"Step P&L:         {self._format_pnl(entry.step_pnl):>15s}  "
                     f"{self._pnl_indicator(entry.step_pnl)} (Total equity change)".ljust(97) + "║")
 
-        # P&L percentages
+
         if entry.balance_before > 0:
             realized_pct = (entry.realized_pnl / entry.balance_before) * 100
             unrealized_pct = (entry.unrealized_pnl / entry.balance_before) * 100
@@ -318,9 +272,7 @@ class UnifiedExecutorLogger:
 
         lines.append("║" + " " * 98 + "║")
 
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # Section 8: Trades This Step
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
         if entry.trades_this_step:
             lines.append("║ " + f"📝 TRADES EXECUTED ({len(entry.trades_this_step)})".ljust(97) + "║")
             lines.append("║ " + "─" * 97 + "║")
@@ -345,18 +297,16 @@ class UnifiedExecutorLogger:
 
             lines.append("║" + " " * 98 + "║")
 
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # Section 9: Performance & Issues
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
         lines.append("║ " + "⚙️  PERFORMANCE & QUALITY".ljust(97) + "║")
         lines.append("║ " + "─" * 97 + "║")
         lines.append("║ " + f"Processing Time:  {entry.execution_time_ms:.2f}ms".ljust(97) + "║")
 
-        # Calculate fill rate
+
         fill_rate = (entry.fills_count / entry.orders_accepted * 100) if entry.orders_accepted > 0 else 0
         lines.append("║ " + f"Fill Rate:        {fill_rate:.1f}% ({entry.fills_count}/{entry.orders_accepted})".ljust(97) + "║")
 
-        # Issues
+
         if entry.issues:
             lines.append("║ " + f"⚠️  Issues Detected: {len(entry.issues)}".ljust(97) + "║")
             for issue in entry.issues[:5]:
@@ -366,9 +316,7 @@ class UnifiedExecutorLogger:
 
         lines.append("║" + " " * 98 + "║")
 
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        # Section 10: Session Summary
-        # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
         lines.append("║ " + "📊 SESSION CUMULATIVE".ljust(97) + "║")
         lines.append("║ " + "─" * 97 + "║")
         lines.append("║ " + f"Total Cycles:     {self.cycle_count:,}".ljust(97) + "║")
@@ -379,7 +327,7 @@ class UnifiedExecutorLogger:
         lines.append("║ " + f"Total Trades:     {self.cumulative['total_trades']:,}".ljust(97) + "║")
         lines.append("║ " + f"Total Notional:   €{self.cumulative['total_notional']:,.2f}".ljust(97) + "║")
 
-        # Session acceptance rate
+
         total_orders = self.cumulative['total_orders']
         if total_orders > 0:
             session_accept_rate = (self.cumulative['total_accepted'] / total_orders) * 100
@@ -388,13 +336,12 @@ class UnifiedExecutorLogger:
         lines.append("╚" + "═" * 98 + "╝")
         lines.append("")
 
-        # Log the complete summary
+
         summary = "\n".join(lines)
         self.logger.info(summary)
 
     def log_order_collection(self, queue_count: int, decisions_count: int,
                             accepted: List[Dict[str, Any]], rejected: List[Dict[str, Any]]) -> None:
-        """Log order collection summary"""
         lines = []
         lines.append("")
         lines.append("┌─ ORDER COLLECTION " + "─" * 78)
@@ -426,12 +373,8 @@ class UnifiedExecutorLogger:
 
         self.logger.debug("\n".join(lines))
 
-    # ═══════════════════════════════════════════════════════════════════════════
-    # Helper methods for formatting
-    # ═══════════════════════════════════════════════════════════════════════════
 
     def _format_mode(self, mode: str) -> str:
-        """Format execution mode"""
         if mode == "live":
             return "🔴 LIVE TRADING"
         elif mode == "sim":
@@ -439,7 +382,6 @@ class UnifiedExecutorLogger:
         return mode.upper()
 
     def _format_action(self, action: str) -> str:
-        """Format order action"""
         mapping = {
             'open_long': '🟢 OPEN LONG',
             'open_short': '🔴 OPEN SHORT',
@@ -451,7 +393,6 @@ class UnifiedExecutorLogger:
         return mapping.get(action.lower(), action.upper())
 
     def _format_delta(self, delta: float) -> str:
-        """Format delta with sign"""
         if delta > 0:
             return f"+€{delta:,.2f}"
         elif delta < 0:
@@ -459,7 +400,6 @@ class UnifiedExecutorLogger:
         return "€0.00"
 
     def _format_pnl(self, pnl: float) -> str:
-        """Format P&L with sign and color indicator"""
         if pnl > 0:
             return f"+€{pnl:,.2f}"
         elif pnl < 0:
@@ -467,7 +407,6 @@ class UnifiedExecutorLogger:
         return "€0.00"
 
     def _pnl_indicator(self, pnl: float) -> str:
-        """Get P&L indicator"""
         if pnl > 0:
             return "💰 PROFIT"
         elif pnl < 0:
@@ -475,7 +414,6 @@ class UnifiedExecutorLogger:
         return "⚪ NEUTRAL"
 
     def _unrealized_indicator(self, pnl: float) -> str:
-        """Get unrealized P&L indicator"""
         if pnl > 0:
             return "🟢 POSITIVE"
         elif pnl < 0:
@@ -483,6 +421,5 @@ class UnifiedExecutorLogger:
         return "⚪ NEUTRAL"
 
     def _bar(self, value: float, width: int = 20) -> str:
-        """Visual progress bar"""
         filled = int((value / 100) * width)
         return "█" * filled + "░" * (width - filled)

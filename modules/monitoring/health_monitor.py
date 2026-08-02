@@ -1,8 +1,4 @@
-# ─────────────────────────────────────────────────────────────
-# File: modules/monitoring/health_monitor.py
-# [ROCKET] Production-Grade Health Monitor for SmartInfoBus
-# v2.6 — type-hinted net I/O, no direct attr access, robust math
-# ─────────────────────────────────────────────────────────────
+
 
 from __future__ import annotations
 
@@ -25,10 +21,9 @@ from enum import Enum
 from functools import wraps
 from typing import Any, Callable, Deque, Dict, Iterable, List, Optional, Protocol, Set, Tuple, cast
 
-# Suppress psutil warnings
 warnings.filterwarnings('ignore', module='psutil')
 
-# Optional deps: psutil, numpy
+
 try:
     import psutil
     PSUTIL_AVAILABLE = True
@@ -43,9 +38,9 @@ except Exception:
     NUMPY_AVAILABLE = False
     np = None  # type: ignore[assignment]
 
-# Contract registry (optional, contract-first weighting)
+
 try:
-    # try common locations; these imports are optional
+
     from modules.core.contracts_registry import ContractsRegistry  # type: ignore
 except Exception:
     try:
@@ -53,7 +48,7 @@ except Exception:
     except Exception:
         ContractsRegistry = None  # type: ignore
 
-# Configuration manager (optional, with graceful fallback)
+
 try:
     from modules.core.configuration_manager import ConfigurationManager  # type: ignore
 except Exception:
@@ -62,9 +57,6 @@ except Exception:
 from modules.utils.audit_utils import RotatingLogger, format_operator_message
 from modules.utils.info_bus import InfoBusManager
 
-# ─────────────────────────────────────────────────────────────
-# Health data models
-# ─────────────────────────────────────────────────────────────
 
 class HealthStatus(Enum):
     HEALTHY = "healthy"
@@ -104,10 +96,6 @@ class HealthReport:
         return d
 
 
-# ─────────────────────────────────────────────────────────────
-# Utilities: math safety, counters, breaker, rate limiter
-# ─────────────────────────────────────────────────────────────
-
 def _to_float(x: Any, default: float = 0.0) -> float:
     try:
         return float(x)
@@ -126,7 +114,6 @@ def _safe_mean(values: Iterable[Any]) -> float:
     return total / n if n else 0.0
 
 def _safe_percentile(sorted_values: List[float], pct: float) -> float:
-    """pct in [0, 100]; expects pre-sorted list."""
     if not sorted_values:
         return 0.0
     pct = max(0.0, min(100.0, pct))
@@ -161,7 +148,7 @@ class CircuitBreaker:
         self.timeout = float(timeout)
         self.failure_count = 0
         self.last_failure_time: Optional[float] = None
-        self.state = "closed"  # closed, open, half-open
+        self.state = "closed"
         self._lock = threading.Lock()
     def record_success(self) -> None:
         with self._lock:
@@ -218,38 +205,23 @@ def validate_input(func: Callable) -> Callable:
     return wrapper
 
 
-# ─────────────────────────────────────────────────────────────
-# Net I/O typing helper for Pylance
-# ─────────────────────────────────────────────────────────────
-
 class _NetCounters(Protocol):
     bytes_sent: int
     bytes_recv: int
 
 
-# ─────────────────────────────────────────────────────────────
-# Health Monitor
-# ─────────────────────────────────────────────────────────────
-
 class HealthMonitor:
-    """
-    Production-grade health monitor with:
-    • Config-driven thresholds (hot-reload via ConfigurationManager watcher)
-    • Contract-aware module scoring (critical modules weighted higher)
-    • Unified operator logging (RotatingLogger) + SmartInfoBus publishing
-    • Non-blocking psutil snapshots, safe fallbacks when deps missing
-    """
 
-    # Singleton
+
     _instance: Optional['HealthMonitor'] = None
     _instance_lock = threading.Lock()
 
-    # Lightweight cache for expensive calls
+
     _cache: Dict[str, Tuple[Any, float]] = {}
     _cache_lock = threading.Lock()
     CACHE_TTL = 5.0
 
-    # Defaults (overridden by config)
+
     _DEFAULTS: Dict[str, Any] = {
         'thresholds': {
             'cpu_percent': {'warning': 70.0, 'critical': 90.0},
@@ -278,50 +250,50 @@ class HealthMonitor:
         self._shutdown_event = threading.Event()
         self._startup_lock = threading.Lock()
 
-        # SmartInfoBus
+
         self._smart_bus: Optional[Any] = None
 
-        # Operator logger (RotatingLogger)
+
         self._oplog = RotatingLogger(
             name="HealthMonitor",
             log_path="logs/monitoring/health.log",
             max_lines=8000,
             operator_mode=True,
             plain_english=True,
-            info_bus_aware=True  # safely attaches after bus is alive
+            info_bus_aware=True
         )
 
-        # Process handle (optional)
+
         self._process: Optional[Any] = None
 
-        # Thread-safety
+
         self._metrics_lock = threading.RLock()
         self.metrics: Dict[str, Deque[HealthMetric]] = defaultdict(lambda: deque(maxlen=1000))
 
-        # Net I/O trending
+
         self._last_net_io: Optional[Dict[str, float]] = None
         self._last_net_io_time: Optional[float] = None
 
-        # Config & thresholds (merge defaults + runtime config)
+
         self._config = self._load_runtime_config(config or {})
         self.thresholds: Dict[str, Dict[str, float]] = dict(self._config['thresholds'])
         self._bus_ns: str = str(self._config.get('bus_namespace', 'health')).strip('/')
         self._alert_cooldown_s: float = float(self._config.get('alert_cooldown_s', 15))
         self._publish_interval_s: int = max(5, int(self._config.get('publish_interval_s', 15)))
 
-        # Alerts
+
         self._alerts_lock = threading.RLock()
         self.active_alerts: Dict[str, Dict[str, Any]] = {}
         self.alert_history: Deque[Dict[str, Any]] = deque(maxlen=1000)
         self._alert_callbacks: weakref.WeakSet = weakref.WeakSet()
         self._cooldowns: Dict[Tuple[str, str], float] = {}
 
-        # Module health scoring
+
         self._module_health_lock = threading.RLock()
         self.module_health_scores: Dict[str, float] = {}
         self.unhealthy_modules: Set[str] = set()
 
-        # Perf meta
+
         self._check_count = ThreadSafeCounter()
         self._error_count = ThreadSafeCounter()
         self._last_check_duration = 0.0
@@ -331,29 +303,27 @@ class HealthMonitor:
         )
         self._rate_limiter = RateLimiter(max_calls=2, window_seconds=1.0)
 
-        # Meta-monitoring
+
         self._meta_metrics: Dict[str, Deque[float]] = {
             'monitor_cpu_usage': deque(maxlen=100),
             'monitor_memory_usage': deque(maxlen=100),
             'check_durations': deque(maxlen=100)
         }
 
-        # Background publisher
+
         self._publisher_shutdown = False
         self._publisher_thread: Optional[threading.Thread] = None
 
-        # Auto-wire config hot-reloader (if CM exists)
+
         self._attach_config_watcher()
 
         if auto_start:
             self.start()
 
-    # ─────────────────────────────────────────────────────────
-    # Properties
-    # ─────────────────────────────────────────────────────────
+
     @property
     def logger(self) -> RotatingLogger:
-        # for compatibility with your previous code that used `.logger`
+
         return self._oplog
 
     @property
@@ -361,7 +331,7 @@ class HealthMonitor:
         if self._smart_bus is None:
             try:
                 self._smart_bus = InfoBusManager.get_instance()
-                # register provider (best-effort)
+
                 try:
                     if hasattr(self._smart_bus, "register_provider"):
                         self._smart_bus.register_provider(
@@ -376,7 +346,7 @@ class HealthMonitor:
                 except Exception:
                     pass
             except Exception as e:
-                # Fallback: minimal dummy bus
+
                 self._oplog.warning(format_operator_message(
                     "[WARN]", "SmartInfoBus not available",
                     details=str(e), context="health_monitor"
@@ -384,31 +354,29 @@ class HealthMonitor:
                 self._smart_bus = self._create_dummy_bus()
         return self._smart_bus
 
-    # ─────────────────────────────────────────────────────────
-    # Config
-    # ─────────────────────────────────────────────────────────
+
     def _load_runtime_config(self, overrides: Dict[str, Any]) -> Dict[str, Any]:
         cfg: Dict[str, Any] = dict(self._DEFAULTS)
         if ConfigurationManager is not None:
             try:
                 cm = ConfigurationManager.get_instance()
-                # Prefer a dedicated monitoring section if available
+
                 mon: Dict[str, Any] = {}
                 if hasattr(cm, "get_monitoring_config"):
                     mon = cm.get_monitoring_config() or {}
                 else:
                     syscfg = cm.get_system_config() or {}
                     mon = cast(Dict[str, Any], syscfg.get('monitoring', {}))
-                # overlay shallow keys
+
                 for k in ('thresholds', 'bus_namespace', 'publish_interval_s', 'alert_cooldown_s'):
                     if k in mon:
                         cfg[k] = mon[k]
             except Exception:
                 pass
-        # explicit overrides last
+
         for k, v in overrides.items():
             cfg[k] = v
-        # ensure sub-maps exist
+
         cfg.setdefault('thresholds', dict(self._DEFAULTS['thresholds']))
         return cfg
 
@@ -419,7 +387,7 @@ class HealthMonitor:
             cm = ConfigurationManager.get_instance()
             def _on_cfg_change(name: str, old: Dict[str, Any], new: Dict[str, Any]):
                 try:
-                    # rebuild thresholds from new config
+
                     mon: Dict[str, Any] = {}
                     if hasattr(cm, "get_monitoring_config"):
                         mon = cm.get_monitoring_config() or {}
@@ -441,9 +409,7 @@ class HealthMonitor:
         except Exception:
             pass
 
-    # ─────────────────────────────────────────────────────────
-    # Lifecycle
-    # ─────────────────────────────────────────────────────────
+
     @classmethod
     def get_instance(cls, **kwargs) -> 'HealthMonitor':
         if cls._instance is None:
@@ -466,7 +432,7 @@ class HealthMonitor:
                 )
                 self._monitor_thread.start()
 
-                # publisher thread
+
                 self._publisher_shutdown = False
                 self._publisher_thread = threading.Thread(
                     target=self._publisher_loop, name="HealthPublisher", daemon=True
@@ -487,7 +453,7 @@ class HealthMonitor:
         self.logger.info("[STOP] Stopping health monitor...")
         self._shutdown_event.set()
 
-        # stop publisher
+
         self._publisher_shutdown = True
         if self._publisher_thread and self._publisher_thread.is_alive():
             self._publisher_thread.join(timeout=1.0)
@@ -534,7 +500,7 @@ class HealthMonitor:
     def _initialize_components(self) -> None:
         if self._initialized:
             return
-        # psutil process and prime CPU meter for non-blocking snapshots
+
         if PSUTIL_AVAILABLE and psutil is not None:
             try:
                 self._process = psutil.Process()  # type: ignore
@@ -565,9 +531,7 @@ class HealthMonitor:
                 pass
         self.logger.info(f"System info: {json.dumps(info)}")
 
-    # ─────────────────────────────────────────────────────────
-    # Main monitoring loop
-    # ─────────────────────────────────────────────────────────
+
     def _monitoring_loop(self) -> None:
         self.logger.info("Health monitoring loop started")
         time.sleep(2)
@@ -604,9 +568,7 @@ class HealthMonitor:
             except Exception:
                 self._process = None
 
-    # ─────────────────────────────────────────────────────────
-    # Public checks & reports
-    # ─────────────────────────────────────────────────────────
+
     @validate_input
     def check_system_health(self) -> Dict[str, Any]:
         trace_id = str(uuid.uuid4())
@@ -643,9 +605,7 @@ class HealthMonitor:
             trace_id=health.get('trace_id', str(uuid.uuid4()))
         )
 
-    # ─────────────────────────────────────────────────────────
-    # Sub-checks
-    # ─────────────────────────────────────────────────────────
+
     def _get_cached(self, key: str, generator: Callable[[], Any], ttl: Optional[float] = None) -> Any:
         ttl_val = float(ttl if ttl is not None else self.CACHE_TTL)
         with self._cache_lock:
@@ -675,14 +635,14 @@ class HealthMonitor:
                 root_path = os.path.abspath(os.sep)
                 disk = psutil.disk_usage(root_path)  # type: ignore
 
-                # Net may be None or have unexpected structure; treat via safe getattr
+
                 net: Optional[_NetCounters] = None
                 try:
                     net = cast(Optional[_NetCounters], psutil.net_io_counters())  # type: ignore
                 except Exception:
                     net = None
 
-                # pull counters safely into locals
+
                 net_sent = float(getattr(net, 'bytes_sent', 0.0)) if net is not None else 0.0
                 net_recv = float(getattr(net, 'bytes_recv', 0.0)) if net is not None else 0.0
 
@@ -698,11 +658,11 @@ class HealthMonitor:
                             dr = net_recv - prev_recv
                             rates['network_send_rate_mbps'] = round((ds * 8.0) / (dt * 1024.0 * 1024.0), 2)
                             rates['network_recv_rate_mbps'] = round((dr * 8.0) / (dt * 1024.0 * 1024.0), 2)
-                    # update last snapshot
+
                     self._last_net_io = {'bytes_sent': net_sent, 'bytes_recv': net_recv}
                     self._last_net_io_time = now
                 else:
-                    # If no net, clear previous to avoid misleading deltas later
+
                     self._last_net_io = None
                     self._last_net_io_time = None
 
@@ -767,7 +727,7 @@ class HealthMonitor:
         }
 
     def _module_criticality_weight(self, module_name: str) -> float:
-        # contract-first: try to read criticality from registry
+
         try:
             if ContractsRegistry:
                 contract = ContractsRegistry.get(module_name)  # type: ignore
@@ -786,13 +746,13 @@ class HealthMonitor:
             failures = 0
             status: str = 'unknown'
 
-            # enabled?
+
             try:
                 enabled = bool(self.smart_bus.is_module_enabled(module_name))
             except Exception:
                 enabled = True
 
-            # failures?
+
             try:
                 br = getattr(self.smart_bus, "_circuit_breakers", {}).get(module_name)
                 if br and hasattr(br, 'failure_count'):
@@ -800,7 +760,7 @@ class HealthMonitor:
             except Exception:
                 pass
 
-            # ask module
+
             if hasattr(module, 'get_health_status'):
                 try:
                     mod_status = module.get_health_status()
@@ -809,7 +769,7 @@ class HealthMonitor:
                 except Exception:
                     status = 'error'
 
-            # latency
+
             avg_latency: Optional[float] = None
             try:
                 raw = getattr(self.smart_bus, "_latency_history", {}).get(module_name, [])
@@ -825,7 +785,7 @@ class HealthMonitor:
             except Exception:
                 pass
 
-            # compute score
+
             if not enabled:
                 status = 'disabled'
                 score = 0.0
@@ -839,7 +799,7 @@ class HealthMonitor:
                 status = status if status != 'unknown' else 'healthy'
                 score = 1.0
 
-            # apply latency thresholds
+
             if avg_latency is not None:
                 thr = self.thresholds.get(f'module.{module_name}', self.thresholds.get('latency_ms', {'warning':150.0,'critical':300.0}))
                 crit = float(thr.get('critical', 300.0))
@@ -851,11 +811,11 @@ class HealthMonitor:
                     status = 'warning'
                     score = min(score, 0.7)
 
-            # weight by contract criticality
+
             weight = self._module_criticality_weight(module_name)
             if weight <= 0:
                 weight = 1.0
-            score = max(0.0, min(1.0, score / weight))  # heavier modules penalize more quickly
+            score = max(0.0, min(1.0, score / weight))
 
             with self._module_health_lock:
                 self.module_health_scores[module_name] = float(score)
@@ -899,7 +859,7 @@ class HealthMonitor:
                 for name in list(self.orchestrator.modules.keys()):
                     try:
                         raw = getattr(self.smart_bus, "_latency_history", {}).get(name, [])
-                        # last 10; coerce to float and filter
+
                         tail: List[float] = []
                         for v in list(raw)[-10:]:
                             if isinstance(v, (int, float)):
@@ -926,7 +886,7 @@ class HealthMonitor:
             else:
                 avg = mx = p95 = 0.0
 
-            # meta metrics
+
             meta: Dict[str, Any] = {}
             if self._meta_metrics['monitor_cpu_usage']:
                 meta['monitor_cpu_percent'] = round(_safe_mean(self._meta_metrics['monitor_cpu_usage']), 2)
@@ -939,7 +899,7 @@ class HealthMonitor:
                 'max_latency_ms': round(mx, 2),
                 'p95_latency_ms': round(p95, 2),
                 'error_rate': round(float(recent_errors) / float(max(total, 1)), 4),
-                'throughput_per_min': int(total * 2),  # ~ checks per 30s window x2
+                'throughput_per_min': int(total * 2),
                 'monitor_uptime_seconds': round(float(uptime), 2),
                 'checks_performed': self._check_count.get(),
                 'monitor_errors': self._error_count.get(),
@@ -949,9 +909,7 @@ class HealthMonitor:
             self.logger.error(f"Failed to check performance health: {e}")
             return {'error': str(e)}
 
-    # ─────────────────────────────────────────────────────────
-    # Status computation & metrics recording
-    # ─────────────────────────────────────────────────────────
+
     def _calculate_overall_status(self, health: Dict[str, Any]) -> str:
         statuses: List[str] = []
 
@@ -1041,12 +999,9 @@ class HealthMonitor:
         return HealthStatus.HEALTHY.value
 
     def _cleanup_old_metrics(self, max_age_seconds: int = 24 * 3600) -> None:
-        """
-        Prune old in-memory metrics and stale cooldown entries to keep memory bounded.
-        """
         cutoff = time.time() - float(max_age_seconds)
 
-        # Remove old HealthMetric entries and empty metric keys
+
         with self._metrics_lock:
             empty_keys: List[str] = []
             for key, dq in list(self.metrics.items()):
@@ -1060,20 +1015,18 @@ class HealthMonitor:
                 except Exception:
                     pass
 
-        # Clean up stale cooldown entries
+
         with self._alerts_lock:
             try:
                 now = time.time()
-                ttl = max(2 * self._alert_cooldown_s, 3600.0)  # at least 1 hour
+                ttl = max(2 * self._alert_cooldown_s, 3600.0)
                 stale = [k for k, ts in list(self._cooldowns.items()) if (now - ts) > ttl]
                 for k in stale:
                     self._cooldowns.pop(k, None)
             except Exception:
                 pass
 
-    # ─────────────────────────────────────────────────────────
-    # Alerts
-    # ─────────────────────────────────────────────────────────
+
     def _cooldown_allows(self, key: Tuple[str, str]) -> bool:
         now = time.time()
         last = _to_float(self._cooldowns.get(key, 0.0), 0.0)
@@ -1161,16 +1114,16 @@ class HealthMonitor:
         key = ('alert', str(alert.get('type', 'unknown')))
         if not self._cooldown_allows(key):
             return
-        # operator log
+
         msg = f"[ALERT] {alert.get('type')} - {alert.get('metric') or alert.get('module', 'unknown')} - {alert.get('status','unknown')}"
         self.logger.warning(msg)
-        # callbacks
+
         for cb in list(self._alert_callbacks):
             try:
                 cb(alert)
             except Exception as e:
                 self.logger.error(f"Alert callback error: {e}")
-        # publish to bus (best-effort)
+
         try:
             self.smart_bus.set(
                 f"{self._bus_ns}/alerts",
@@ -1190,12 +1143,10 @@ class HealthMonitor:
             raise ValueError("Callback must accept exactly one parameter")
         self._alert_callbacks.add(callback)
 
-    # ─────────────────────────────────────────────────────────
-    # Trends, export, status
-    # ─────────────────────────────────────────────────────────
+
     @validate_input
     def get_health_trends(self, metric_name: str, hours: int = 24) -> Dict[str, Any]:
-        # Defensive coerce to int to satisfy the type checker and callers who send floats/strings
+
         try:
             hours_val = int(hours)
         except Exception:
@@ -1331,9 +1282,7 @@ class HealthMonitor:
         except Exception:
             pass
 
-    # ─────────────────────────────────────────────────────────
-    # Recommendations & bus helpers
-    # ─────────────────────────────────────────────────────────
+
     def _generate_recommendations(self, health: Dict[str, Any]) -> List[str]:
         recs: List[str] = []
         system = health.get('system', {})
@@ -1381,12 +1330,12 @@ class HealthMonitor:
         return DummyBus()
 
     def _publisher_loop(self):
-        # periodic lightweight publish for dashboards
+
         while not self._publisher_shutdown:
             try:
                 snap = self.get_status()
                 health = self.check_system_health()
-                # summary
+
                 self.smart_bus.set(
                     f"{self._bus_ns}/summary",
                     {'timestamp': time.time(), 'overall': health.get('overall_status'),
@@ -1394,14 +1343,14 @@ class HealthMonitor:
                     module="HealthMonitor",
                     thesis="System health summary"
                 )
-                # system
+
                 self.smart_bus.set(
                     f"{self._bus_ns}/system",
                     health.get('system', {}),
                     module="HealthMonitor",
                     thesis="System resource snapshot"
                 )
-                # modules (trim to 100 for safety)
+
                 mods = health.get('modules', {}).get('module_details', {})
                 if isinstance(mods, dict):
                     self.smart_bus.set(
@@ -1410,7 +1359,7 @@ class HealthMonitor:
                         module="HealthMonitor",
                         thesis="Module health snapshot"
                     )
-                # canonical consolidated health surface for consumers
+
                 try:
                     consolidated = {
                         'overall_status': health.get('overall_status'),

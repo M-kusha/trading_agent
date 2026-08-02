@@ -1,19 +1,3 @@
-"""
-Execution Model for Trading Environment (FTMO-aware)
-====================================================
-
-Adds:
-- FTMO-style commission presets (Forex/Exotics, Indices=0, Metals/Commodities CFDs)
-- Optional "Volume Bands" execution (price tier depends on lot size), per FTMO execution update.
-- Commission modes:
-  * PER_LOT_PER_SIDE (ideal for FX)
-  * PER_VOLUME_PER_SIDE (for CFDs where broker defines "volume" differently)
-
-Notes:
-- Spreads on FTMO are not fixed constants; your existing stochastic spread model remains valid.
-- For PER_VOLUME_PER_SIDE you MUST define what "volume" means for the symbol on your platform
-  (MT4/MT5 contract specs vary by broker/symbol).
-"""
 
 from __future__ import annotations
 
@@ -27,10 +11,6 @@ if TYPE_CHECKING:
     from envs.curriculum.curriculum_config import ExecutionDifficulty
 
 
-# =============================================================================
-# Commission modeling
-# =============================================================================
-
 class CommissionMode(str, Enum):
     NONE = "none"
     PER_LOT_PER_SIDE = "per_lot_per_side"
@@ -41,28 +21,15 @@ class CommissionMode(str, Enum):
 class CommissionSpec:
     mode: CommissionMode = CommissionMode.NONE
 
-    # For PER_LOT_PER_SIDE (typical FX): commission_rate is currency per lot per side.
+
     commission_rate: float = 0.0
 
-    # For PER_VOLUME_PER_SIDE (CFDs): commission_rate is currency per "volume unit" per side.
-    # What "volume unit" means is broker/symbol specific.
-    # Provide volume_to_units to convert (mid, lot_size) -> units.
+
     volume_to_units: Optional[Callable[[float, float], float]] = None
 
 
-# =============================================================================
-# FTMO-style Volume Bands (optional)
-# =============================================================================
-
 @dataclass(frozen=True)
 class VolumeBand:
-    """
-    A band defines execution adjustments for a lot-size tier.
-
-    Example logic:
-    - Find first band where lot_size < max_lots
-    - Apply band_spread_mult (tight/loose) and band_slippage_mult to costs
-    """
     max_lots_exclusive: float
     band_spread_mult: float = 1.0
     band_slippage_mult: float = 1.0
@@ -70,99 +37,73 @@ class VolumeBand:
 
 @dataclass
 class ExecutionConfig:
-    """
-    Execution anti-cheat model configuration.
 
-    Controls:
-    - Spread (bid/ask) + commission
-    - Slippage (worse fills) scaled by volatility proxy and order size
-    - Latency (fills occur N bars after decision)
-
-    FTMO-aware additions:
-    - commission_spec: CommissionSpec (mode + rate + optional converter)
-    - volume_bands_enabled + volume_bands: optional banded execution by lot size
-    
-    DATA SPREAD CONTROL (Jan 2026):
-    - use_data_spread: If True, use actual spreads from data file (real FTMO conditions)
-    - data_spread_scale: Discount factor applied to data spread (1.0 = full, 0.5 = half)
-    """
-    # Base spread configuration (fallback when no data spread)
     base_spread_points: float = 0.20
     spread_mult_range: Tuple[float, float] = (0.85, 1.40)
 
-    # Slippage configuration
+
     slippage_points_sigma: float = 0.05
     slippage_mult_range: Tuple[float, float] = (0.60, 1.80)
 
-    # Latency
+
     latency_bars: int = 1
 
-    # Safety caps
+
     max_spread_points: float = 1.50
     max_slippage_points: float = 0.50
-    
-    # DATA SPREAD CONTROL
-    # If True, prefer actual spreads from data file over synthetic calculation
-    use_data_spread: bool = True   # Default True: use real FTMO spreads when available
-    data_spread_scale: float = 1.0  # 1.0 = full spread, 0.5 = half (curriculum discount)
 
-    # Volatility scaling factors
+
+    use_data_spread: bool = True
+    data_spread_scale: float = 1.0
+
+
     spread_vol_factor: float = 1.5
     slippage_vol_factor: float = 2.0
 
-    # Order size impact (larger orders get worse fills)
+
     size_impact_enabled: bool = True
     size_impact_factor: float = 0.08
 
-    # Spread widening during volatility spikes
+
     volatility_spike_enabled: bool = True
     volatility_spike_threshold: float = 0.8
     volatility_spike_multiplier: float = 1.5
 
-    # Rejection simulation
+
     rejection_enabled: bool = False
     rejection_probability: float = 0.0
     rejection_vol_factor: float = 0.0
 
-    # Spread shock simulation (news events, liquidity gaps)
-    # Used for adversarial evaluation to test robustness
-    spread_shock_enabled: bool = False
-    spread_shock_probability: float = 0.02  # 2% of quotes have widened spread
-    spread_shock_multiplier: float = 3.0    # 3x normal spread during shock
 
-    # Commission modeling
+    spread_shock_enabled: bool = False
+    spread_shock_probability: float = 0.02
+    spread_shock_multiplier: float = 3.0
+
+
     commission_spec: CommissionSpec = field(default_factory=CommissionSpec)
 
-    # Optional FTMO-like Volume Bands execution
+
     volume_bands_enabled: bool = False
     volume_bands: Tuple[VolumeBand, ...] = (
-        VolumeBand(1.0, 1.00, 1.00),   # [0,1)
-        VolumeBand(15.0, 1.05, 1.10),  # [1,15)
-        VolumeBand(30.0, 1.10, 1.20),  # [15,30)
-        VolumeBand(50.0, 1.15, 1.30),  # [30,50)
-        VolumeBand(float("inf"), 1.20, 1.40),  # >=50
+        VolumeBand(1.0, 1.00, 1.00),
+        VolumeBand(15.0, 1.05, 1.10),
+        VolumeBand(30.0, 1.10, 1.20),
+        VolumeBand(50.0, 1.15, 1.30),
+        VolumeBand(float("inf"), 1.20, 1.40),
     )
 
 
 class ExecutionModel:
-    """
-    Execution model that simulates broker conditions.
-
-    Guarantees:
-    - Entries fill worse (ask+slip for long, bid-slip for short)
-    - Exits fill worse (bid-slip for long exit, ask+slip for short exit)
-    - Slippage always against trader
-    """
 
     def __init__(self, cfg: ExecutionConfig, rng: np.random.Generator) -> None:
         self.cfg = cfg
         self.rng = rng
 
-        # Per-episode randomization multipliers (domain randomization)
+
         self._spread_mult: float = 1.0
         self._slippage_mult: float = 1.0
 
-        # Stats
+
         self._total_spread_cost: float = 0.0
         self._total_slippage_cost: float = 0.0
         self._total_commission: float = 0.0
@@ -178,9 +119,7 @@ class ExecutionModel:
         self._total_commission = 0.0
         self._fill_count = 0
 
-    # ----------------------------
-    # Helpers: volume band selection
-    # ----------------------------
+
     def _band_multipliers(self, lot_size: float) -> Tuple[float, float]:
         if not self.cfg.volume_bands_enabled:
             return 1.0, 1.0
@@ -233,9 +172,7 @@ class ExecutionModel:
         )
         return float(np.clip(slippage, 0.0, self.cfg.max_slippage_points))
 
-    # ----------------------------
-    # Commission
-    # ----------------------------
+
     def _commission_per_side(self, mid: float, lot_size: float) -> float:
         spec = self.cfg.commission_spec
         if spec.mode == CommissionMode.NONE:
@@ -246,8 +183,8 @@ class ExecutionModel:
 
         if spec.mode == CommissionMode.PER_VOLUME_PER_SIDE:
             if spec.volume_to_units is None:
-                # Safe default: treat lot_size as "volume units" (NOT accurate for many CFDs).
-                # You should override volume_to_units for symbol-accurate behavior.
+
+
                 units = float(lot_size)
             else:
                 units = float(spec.volume_to_units(float(mid), float(lot_size)))
@@ -256,35 +193,24 @@ class ExecutionModel:
         return 0.0
 
     def quote(
-        self, 
-        mid: float, 
-        vol_proxy: float, 
+        self,
+        mid: float,
+        vol_proxy: float,
         lot_size: float = 1.0,
         data_spread: Optional[float] = None,
     ) -> Tuple[float, float, float]:
-        """
-        Get bid/ask quote.
-        
-        Args:
-            mid: Mid price
-            vol_proxy: Volatility proxy [0,1]
-            lot_size: Order size
-            data_spread: OPTIONAL actual spread from data file (in price points).
-                         If provided, uses this instead of synthetic spread.
-                         Critical for realistic training with actual broker spreads.
-        """
         if data_spread is not None and data_spread > 0:
-            # Use actual data spread with optional randomization
+
             spread = float(data_spread) * self._spread_mult
         else:
-            # Fallback to synthetic spread
+
             spread = self._compute_spread_points(vol_proxy, lot_size)
-        
-        # Apply spread shock if enabled (simulates news events, liquidity gaps)
+
+
         if self.cfg.spread_shock_enabled:
             if self.rng.random() < self.cfg.spread_shock_probability:
                 spread = spread * self.cfg.spread_shock_multiplier
-        
+
         half = spread / 2.0
         bid = mid - half
         ask = mid + half
@@ -306,7 +232,7 @@ class ExecutionModel:
             fill = bid - slippage
 
         commission_side = self._commission_per_side(mid, lot_size)
-        # Entry commission is "per side"
+
         commission = commission_side
 
         self._total_spread_cost += spread
@@ -338,7 +264,7 @@ class ExecutionModel:
             fill = ask + slippage
 
         commission_side = self._commission_per_side(mid, lot_size)
-        # Exit commission is "per side"
+
         commission = commission_side
 
         self._total_spread_cost += spread
@@ -373,34 +299,23 @@ class ExecutionModel:
         }
 
 
-# =============================================================================
-# FTMO presets
-# =============================================================================
-
 def ftmo_commission_spec(symbol_group: str) -> CommissionSpec:
-    """
-    FTMO commission presets based on published updates.
-
-    - Indices: zero commission.
-    - Forex/Exotics: $2.50 per lot per side.
-    - Metals/Commodities/Cash III CFDs: 0.0007 per volume per side (needs volume definition).
-    """
     g = symbol_group.lower().strip()
 
     if g in ("indices", "index", "cash_indices"):
-        # FTMO highlights indices are commission-free.
+
         return CommissionSpec(mode=CommissionMode.NONE, commission_rate=0.0)
 
     if g in ("forex", "fx", "exotics"):
-        # FTMO update: $2.50 per lot per side.
+
         return CommissionSpec(mode=CommissionMode.PER_LOT_PER_SIDE, commission_rate=2.50)
 
     if g in ("metals_cfd", "metals", "commodities_cfd", "commodities", "cash_iii_cfd"):
-        # FTMO update: 0.0007 per volume per side.
-        # IMPORTANT: define "volume" via volume_to_units for your platform/symbol.
+
+
         return CommissionSpec(mode=CommissionMode.PER_VOLUME_PER_SIDE, commission_rate=0.0007)
 
-    # Default: no commission (explicit is better than implicit)
+
     return CommissionSpec(mode=CommissionMode.NONE, commission_rate=0.0)
 
 
@@ -412,22 +327,8 @@ def create_execution_model_for_stage(
     enable_volume_bands: Optional[bool] = None,
     volume_to_units: Optional[Callable[[float, float], float]] = None,
 ) -> ExecutionModel:
-    """
-    Create an ExecutionModel configured for a curriculum stage, with optional FTMO commission presets.
 
-    Args:
-        stage_execution: ExecutionDifficulty from curriculum stage config
-        rng: NumPy random generator
-        symbol_group: optional, e.g. "forex", "indices", "metals"
-        enable_volume_bands: optional override for volume-bands execution
-        volume_to_units: optional converter for PER_VOLUME_PER_SIDE commissions
 
-    Returns:
-        Configured ExecutionModel
-    """
-    # Import here to avoid circular dependency
-
-    # Base config derived from curriculum stage difficulty
     cfg = ExecutionConfig(
         base_spread_points=stage_execution.base_spread_points,
         spread_mult_range=stage_execution.spread_mult_range,
@@ -438,27 +339,27 @@ def create_execution_model_for_stage(
         latency_bars=stage_execution.latency_bars,
     )
 
-    # FTMO commission presets (optional)
+
     if symbol_group is not None:
         cs = ftmo_commission_spec(symbol_group)
         if cs.mode == CommissionMode.PER_VOLUME_PER_SIDE and volume_to_units is not None:
             cs.volume_to_units = volume_to_units
         cfg.commission_spec = cs
     else:
-        # Backward-compatibility: map stage_execution.commission_per_lot to PER_LOT_PER_SIDE
+
         if getattr(stage_execution, "commission_per_lot", 0.0) > 0.0:
             cfg.commission_spec = CommissionSpec(
                 mode=CommissionMode.PER_LOT_PER_SIDE,
                 commission_rate=float(stage_execution.commission_per_lot),
             )
 
-    # Optional volume-bands toggle (FTMO-style)
+
     if enable_volume_bands is not None:
         cfg.volume_bands_enabled = bool(enable_volume_bands)
 
     model = ExecutionModel(cfg, rng)
 
-    # Per-episode randomization (domain randomization)
+
     if stage_execution.enable_randomization:
         spread_mult = rng.uniform(
             stage_execution.spread_randomization_range[0],

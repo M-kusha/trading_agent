@@ -1,12 +1,3 @@
-"""
-Voting system data types.
-Immutable dataclasses for vote proposals, bundles, and results.
-
-Upgrades:
-- Preserves position-management semantics at the type level (exit/tighten)
-- Stronger normalization + safer dict conversions
-- Instrument normalization compatibility is handled by callers (base provides canon())
-"""
 
 from __future__ import annotations
 
@@ -21,9 +12,6 @@ from .constants import (
     get_thresholds,
 )
 
-# ═══════════════════════════════════════════════════════════════════
-# Helpers
-# ═══════════════════════════════════════════════════════════════════
 
 def _now_iso() -> str:
     return datetime.now().isoformat()
@@ -34,7 +22,7 @@ def _clamp_01(value: float, default: float = 0.0) -> float:
     except (TypeError, ValueError):
         return default
 
-    if v != v:  # NaN
+    if v != v:
         return default
 
     if v < 0.0:
@@ -44,16 +32,8 @@ def _clamp_01(value: float, default: float = 0.0) -> float:
     return v
 
 
-# ═══════════════════════════════════════════════════════════════════
-# Vote Proposal (from individual experts)
-# ═══════════════════════════════════════════════════════════════════
-
 @dataclass(frozen=True)
 class VotingProposal:
-    """
-    A single vote from an expert.
-    Immutable to ensure vote integrity throughout pipeline.
-    """
     action: str
     confidence: float
     signal_strength: float
@@ -146,10 +126,6 @@ class VotingProposal:
         )
 
 
-# ═══════════════════════════════════════════════════════════════════
-# Consensus Result (from consensus stage)
-# ═══════════════════════════════════════════════════════════════════
-
 @dataclass
 class ConsensusResult:
     consensus_score: float
@@ -169,7 +145,7 @@ class ConsensusResult:
         if not self.timestamp:
             self.timestamp = _now_iso()
 
-        # Normalize to canonical action strings where possible
+
         self.consensus_action = VotingAction.from_string(self.consensus_action).value
 
     @property
@@ -207,10 +183,6 @@ class ConsensusResult:
             timestamp=_now_iso(),
         )
 
-
-# ═══════════════════════════════════════════════════════════════════
-# Collusion Result (from collusion detection stage)
-# ═══════════════════════════════════════════════════════════════════
 
 @dataclass
 class CollusionResult:
@@ -281,10 +253,6 @@ class CollusionResult:
             timestamp=_now_iso(),
         )
 
-
-# ═══════════════════════════════════════════════════════════════════
-# Vote Bundle (complete pipeline result)
-# ═══════════════════════════════════════════════════════════════════
 
 @dataclass
 class VoteBundle:
@@ -396,10 +364,6 @@ class VoteBundle:
         if stage not in self.stages_completed:
             self.stages_completed.append(stage)
 
-
-# ═══════════════════════════════════════════════════════════════════
-# Helper Factory Functions
-# ═══════════════════════════════════════════════════════════════════
 
 def create_empty_bundle(decision_id: str, tick_ts: str) -> VoteBundle:
     return VoteBundle(decision_id=decision_id, tick_ts=tick_ts, timestamp=_now_iso())

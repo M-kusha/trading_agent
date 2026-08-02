@@ -1,7 +1,4 @@
-# ─────────────────────────────────────────────────────────────
-# File: modules/market/shared/state_manager.py
-# Centralized state management for market module — Production Upgrade
-# ─────────────────────────────────────────────────────────────
+
 
 from __future__ import annotations
 
@@ -18,36 +15,15 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-# Notes:
-# - Backward compatible public methods retained.
-# - Default checkpoint format changed to JSON with SHA256 integrity.
-# - Atomic writes via temp file + fsync + replace.
-# - Thread-safe via RLock; best-effort interprocess lock file.
-# - Optional gzip compression to reduce IO.
-# - Transaction context manager for atomic updates with automatic rollback on error.
-
 
 class StateManager:
-    """
-    Centralized state management with persistence and hot-reload support.
-    Handles atomic state updates with rollback capability.
-
-    New (production) capabilities:
-      • Thread-safe operations (RLock)
-      • Atomic, checksummed persistence (JSON default; pickle optional)
-      • Optional gzip compression
-      • Best-effort file locking across processes
-      • Versioned checkpoints; list/prune helpers
-      • Deep-copy isolation to avoid accidental mutation
-      • Transaction context manager for grouped updates
-    """
 
     def __init__(
         self,
         logger: Optional[Any] = None,
         hot_reload_enabled: bool = True,
         checkpoint_dir: Optional[str | Path] = None,
-        checkpoint_format: str = "json",  # "json" | "pickle"
+        checkpoint_format: str = "json",
         compression: bool = True,
         max_history: int = 20,
         interprocess_lock: bool = True,
@@ -55,45 +31,41 @@ class StateManager:
         self.logger = logger
         self.hot_reload_enabled = hot_reload_enabled
 
-        # Thread/process safety
+
         self._lock = threading.RLock()
         self._interprocess_lock_enabled = bool(interprocess_lock)
 
-        # State storage
+
         self._component_states: Dict[str, Dict[str, Any]] = {}
         self._global_state: Dict[str, Any] = {}
         self._state_history: List[Dict[str, Any]] = []
         self._max_history = int(max_history)
 
-        # Checkpoint management
+
         self._checkpoints: Dict[str, Dict[str, Any]] = {}
         base_dir = Path(checkpoint_dir) if checkpoint_dir else Path("state/market/checkpoints")
-        self._checkpoint_dir = base_dir  # Lazy creation on first write
+        self._checkpoint_dir = base_dir
         self._checkpoint_format = checkpoint_format.lower()
         self._compression = bool(compression)
 
-        # Schema/versioning metadata
+
         self._schema_version = 1
-        self._state_version = 0  # increments on every mutating operation
+        self._state_version = 0
 
         self.trace("StateManager initialized", level="DEBUG")
 
-    # ------------- Logging -------------
 
     def trace(self, message: str, level: str = "INFO"):
         if self.logger:
             self.logger.trace(f"[StateManager] {message}", level=level)
 
-    # ------------- Public API (backward compatible) -------------
 
     def get_component_state(self, component: str) -> Dict[str, Any]:
-        """Get state for a specific component (deep-copied for isolation)."""
         with self._lock:
             self.trace(f"Getting state for component: {component}", level="TRACE")
             return copy.deepcopy(self._component_states.get(component, {}))
 
     def set_component_state(self, component: str, state: Dict[str, Any]):
-        """Set state for a specific component (replaces)."""
         with self._lock:
             self.trace(f"Setting state for component: {component}", level="TRACE")
             prev = self._component_states.get(component)
@@ -103,7 +75,6 @@ class StateManager:
             self._bump_version()
 
     def update_component_state(self, component: str, updates: Dict[str, Any]):
-        """Update specific fields in component state (merge)."""
         with self._lock:
             self.trace(f"Updating state for component: {component}", level="TRACE")
             current = self._component_states.get(component, {})
@@ -115,12 +86,10 @@ class StateManager:
             self._bump_version()
 
     def get_global_state(self) -> Dict[str, Any]:
-        """Get global state (deep-copied)."""
         with self._lock:
             return copy.deepcopy(self._global_state)
 
     def set_global_state(self, state: Dict[str, Any]):
-        """Set global state."""
         with self._lock:
             self.trace("Setting global state", level="TRACE")
             if self._global_state:
@@ -129,7 +98,6 @@ class StateManager:
             self._bump_version()
 
     def rollback(self, component: str, steps: int = 1) -> bool:
-        """Rollback component or global state by specified steps (1 = last)."""
         with self._lock:
             self.trace(f"Rolling back {component} by {steps} steps", level="INFO")
             comp_hist = [h for h in reversed(self._state_history) if h['component'] == component]
@@ -146,7 +114,6 @@ class StateManager:
             return True
 
     def create_checkpoint(self, name: str):
-        """Create a named checkpoint of current state (atomic write, checksummed)."""
         with self._lock:
             self.trace(f"Creating checkpoint: {name}", level="INFO")
             checkpoint = self._build_checkpoint()
@@ -155,7 +122,6 @@ class StateManager:
                 self._save_checkpoint_to_disk(name, checkpoint)
 
     def restore_checkpoint(self, name: str) -> bool:
-        """Restore state from a named checkpoint (validates checksum for JSON)."""
         with self._lock:
             self.trace(f"Restoring checkpoint: {name}", level="INFO")
             if name not in self._checkpoints:
@@ -172,7 +138,6 @@ class StateManager:
             return ok
 
     def export_state(self, filepath: str):
-        """Export entire state to a JSON file (atomic)."""
         with self._lock:
             self.trace(f"Exporting state to: {filepath}", level="INFO")
             state = {
@@ -185,7 +150,6 @@ class StateManager:
             self._atomic_json_write(Path(filepath), state)
 
     def import_state(self, filepath: str) -> bool:
-        """Import state from JSON file (validates shape; does not execute code)."""
         with self._lock:
             self.trace(f"Importing state from: {filepath}", level="INFO")
             try:
@@ -201,7 +165,6 @@ class StateManager:
                 return False
 
     def clear_state(self, component: Optional[str] = None):
-        """Clear state for a component or all."""
         with self._lock:
             if component:
                 self.trace(f"Clearing state for component: {component}", level="INFO")
@@ -213,7 +176,6 @@ class StateManager:
             self._bump_version()
 
     def get_state_summary(self) -> Dict[str, Any]:
-        """Get a compact summary of current state."""
         with self._lock:
             return {
                 'components': list(self._component_states.keys()),
@@ -226,18 +188,15 @@ class StateManager:
                 'checkpoint_dir': str(self._checkpoint_dir),
             }
 
-    # ------------- New helpers (non-breaking) -------------
 
     def list_checkpoints_on_disk(self) -> List[str]:
-        """List checkpoint files on disk (without loading)."""
         suffix = self._checkpoint_suffix()
         if self._compression:
             suffix += ".gz"
-        return sorted([p.stem.replace(suffix.replace('.', ''), '')  # display raw name
+        return sorted([p.stem.replace(suffix.replace('.', ''), '')
                        for p in self._checkpoint_dir.glob(f"*{suffix}")])
 
     def prune_checkpoints(self, keep_last: int = 5) -> int:
-        """Prune older on-disk checkpoints (keep N most recent). Returns deleted count."""
         files = self._sorted_checkpoint_files()
         to_delete = files[:-keep_last] if len(files) > keep_last else []
         deleted = 0
@@ -252,22 +211,20 @@ class StateManager:
         return deleted
 
     def transaction(self):
-        """Context manager for atomic multi-update with rollback on exception."""
         return _StateTransaction(self)
 
-    # ------------- Internal mechanics -------------
 
     def _bump_version(self):
         self._state_version += 1
 
     def _add_to_history(self, component: str, state: Dict[str, Any]):
-        # Keep compact entries; deep copy to isolate mutations.
+
         self._state_history.append({
             'component': component,
             'state': copy.deepcopy(state),
             'timestamp': _dt.datetime.now().isoformat()
         })
-        # Limit history
+
         if len(self._state_history) > self._max_history:
             self._state_history.pop(0)
 
@@ -282,7 +239,7 @@ class StateManager:
 
     def _apply_checkpoint(self, checkpoint: Dict[str, Any]) -> bool:
         try:
-            # Shallow validation
+
             assert 'component_states' in checkpoint and 'global_state' in checkpoint
             self._component_states = copy.deepcopy(checkpoint['component_states'])
             self._global_state = copy.deepcopy(checkpoint['global_state'])
@@ -292,7 +249,6 @@ class StateManager:
             self.trace(f"Invalid checkpoint structure: {e}", level="ERROR")
             return False
 
-    # ------------- Persistence (atomic, checksummed) -------------
 
     def _checkpoint_suffix(self) -> str:
         if self._checkpoint_format == "pickle":
@@ -306,16 +262,16 @@ class StateManager:
         return self._checkpoint_dir / f"{name}{suf}"
 
     def _save_checkpoint_to_disk(self, name: str, checkpoint: Dict[str, Any]):
-        # Ensure directory exists lazily to avoid creating empty folders when unused
+
         self._checkpoint_dir.mkdir(parents=True, exist_ok=True)
         path = self._checkpoint_path(name)
         try:
             if self._checkpoint_format == "pickle":
-                # Pickle is powerful but can execute code when loading; prefer JSON.
+
                 payload = pickle.dumps(checkpoint, protocol=pickle.HIGHEST_PROTOCOL)
                 self._atomic_bytes_write(path, payload, compressed=self._compression)
             else:
-                # JSON + checksum for integrity
+
                 payload = self._with_checksum(checkpoint)
                 self._atomic_json_write(path, payload, compressed=self._compression)
             self.trace(f"Checkpoint saved to disk: {path}", level="TRACE")
@@ -327,7 +283,7 @@ class StateManager:
         if not path.exists():
             return None
         try:
-            # Lock (best effort) during read to avoid partial reads during writer replace
+
             with self._file_lock(path.with_suffix(path.suffix + ".lock"), timeout=5.0):
                 if self._checkpoint_format == "pickle":
                     data = self._read_bytes(path, compressed=self._compression)
@@ -341,7 +297,6 @@ class StateManager:
             self.trace(f"Failed to load checkpoint: {e}", level="ERROR")
             return None
 
-    # ------------- Atomic IO helpers -------------
 
     def _atomic_json_write(self, path: Path, obj: Dict[str, Any], compressed: bool = False):
         text = json.dumps(obj, indent=2, ensure_ascii=False, default=str)
@@ -356,10 +311,10 @@ class StateManager:
             return json.load(f)
 
     def _atomic_bytes_write(self, path: Path, data: bytes, compressed: bool = False):
-        # Best-effort interprocess lock
+
         lockfile = path.with_suffix(path.suffix + ".lock")
         with self._file_lock(lockfile, timeout=10.0):
-            # Write to temp file in same dir, fsync, then atomic replace
+
             tmp_fd, tmp_path = tempfile.mkstemp(prefix=path.name, dir=str(path.parent))
             try:
                 with os.fdopen(tmp_fd, "wb") as tmp:
@@ -378,7 +333,7 @@ class StateManager:
                     if os.path.exists(tmp_path):
                         os.remove(tmp_path)
                 except Exception:
-                    pass  # ignore cleanup error
+                    pass
 
     def _read_bytes(self, path: Path, compressed: bool = False) -> bytes:
         if compressed:
@@ -387,11 +342,10 @@ class StateManager:
         with open(path, "rb") as f:
             return f.read()
 
-    # ------------- Checksums -------------
 
     @staticmethod
     def _sha256_of_json(obj: Dict[str, Any]) -> str:
-        # Canonicalize to minimize false mismatches
+
         canon = json.dumps(obj, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
         return hashlib.sha256(canon).hexdigest()
 
@@ -401,7 +355,7 @@ class StateManager:
                 'schema_version': checkpoint.get('schema_version', self._schema_version),
                 'state_version': checkpoint.get('state_version', self._state_version),
                 'timestamp': checkpoint.get('timestamp', _dt.datetime.now().isoformat()),
-                'checksum': '',  # placeholder
+                'checksum': '',
             },
             'data': {
                 'component_states': checkpoint['component_states'],
@@ -428,7 +382,6 @@ class StateManager:
             'timestamp': meta.get('timestamp'),
         }
 
-    # ------------- Lock file (best effort cross-process) -------------
 
     class _SoftLock:
         def __init__(self, path: Path):
@@ -437,7 +390,7 @@ class StateManager:
 
         def acquire(self) -> bool:
             try:
-                # Use O_EXCL to fail if already exists
+
                 fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
                 with os.fdopen(fd, "w") as f:
                     f.write(f"pid={os.getpid()} time={time.time()}\n")
@@ -461,7 +414,6 @@ class StateManager:
             self.release()
 
     def _file_lock(self, lockfile: Path, timeout: float = 10.0):
-        """Context manager yielding a best-effort interprocess lock."""
         class _Locker:
             def __init__(self, outer: StateManager, lf: Path, timeout_s: float):
                 self.outer = outer
@@ -477,7 +429,7 @@ class StateManager:
                     if self.soft.acquire():
                         return self
                     time.sleep(0.05)
-                # Timeout: proceed without interprocess lock, still thread-safe
+
                 self.outer.trace(f"Lock timeout on {self.lf.name}; continuing without interprocess lock", level="WARNING")
                 return self
 
@@ -486,7 +438,6 @@ class StateManager:
 
         return _Locker(self, lockfile, timeout)
 
-    # ------------- Utilities -------------
 
     def _sorted_checkpoint_files(self) -> List[Path]:
         suf = self._checkpoint_suffix()
@@ -498,7 +449,6 @@ class StateManager:
 
 
 class _StateTransaction:
-    """Context manager that batches state updates and rolls back on exception."""
 
     def __init__(self, mgr: StateManager):
         self._m = mgr
@@ -507,7 +457,7 @@ class _StateTransaction:
     def __enter__(self):
         with self._m._lock:
             self._m.trace("Transaction begin", level="TRACE")
-            # lightweight snapshot
+
             self._snapshot = {
                 'component_states': copy.deepcopy(self._m._component_states),
                 'global_state': copy.deepcopy(self._m._global_state),

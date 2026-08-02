@@ -1,6 +1,4 @@
-# ─────────────────────────────────────────────────────────────
-# File: modules/executor/executor.py  (revamped debug wiring + full contract return)
-# ─────────────────────────────────────────────────────────────
+
 
 from __future__ import annotations
 
@@ -17,14 +15,13 @@ from modules.utils.audit_utils import RotatingLogger, format_operator_message
 from modules.utils.info_bus import InfoBusManager
 from modules.utils.lot_calculator import UnifiedLotCalculator
 
-# Import centralized trade limits
 try:
     from config import get_trade_limits
     _TRADE_LIMITS = get_trade_limits()
 except ImportError:
     _TRADE_LIMITS = {"max_trades_per_day": 20, "training_mode_limit": 9999}
 
-# Smart Position Management
+
 from modules.position.smart_position_manager import (
     ExpertSignal,
     PositionAction,
@@ -40,7 +37,6 @@ from .shared.types import PositionSnap, TradeFill, _parse_timestamp
 from .shared.utils import SafeBus, resolve_symbol
 from .unified_logger import ExecutionCycleEntry, UnifiedExecutorLogger
 
-# Exit Engine for peak reset on position close
 try:
     from modules.position.exit_engine import get_exit_engine
 
@@ -50,16 +46,7 @@ except ImportError:
     EXIT_ENGINE_AVAILABLE = False
 
 
-# ═══════════════════════════════════════════════════════════════════
-# v5.7: Canonical direction mapper to unify long/short/buy/sell
-# ═══════════════════════════════════════════════════════════════════
 def _canon_direction(d: str) -> str:
-    """
-    Normalize direction strings to canonical form: 'buy', 'sell', or 'hold'.
-    
-    This prevents mismatches where PPO outputs 'long'/'short' but 
-    SmartPositionManager expects 'BUY'/'SELL'.
-    """
     d = (d or "").lower().strip()
     if d in ("buy", "long", "bullish", "open_long"):
         return "buy"
@@ -69,9 +56,6 @@ def _canon_direction(d: str) -> str:
 
 
 def _direction_to_side(d: str) -> int:
-    """
-    Convert direction string to numeric side: +1 (long), -1 (short), 0 (flat).
-    """
     d = (d or "").lower().strip()
     if d in ("buy", "long", "bullish", "open_long", "scale_up"):
         return 1
@@ -82,14 +66,13 @@ def _direction_to_side(d: str) -> int:
 
 @dataclass
 class ExecutorConfig:
-    execution_mode: str = "sim"        # 'sim' | 'live'
+    execution_mode: str = "sim"
     live_broker: str = "mt5"
     symbol_overrides: Optional[Dict[str, str]] = None
 
-    # Lot sizing now handled by UnifiedLotCalculator
-    # These are fallbacks only - the calculator is the source of truth
+
     lot_step: float = 0.01
-    min_lot: float = 0.01              # Use UnifiedLotCalculator for actual min
+    min_lot: float = 0.01
     contract_size: float = 100000.0
     price_decimals: int = 5
 
@@ -110,11 +93,7 @@ class ExecutorConfig:
     debug_enabled: bool = True
     debug_config: Optional[Dict[str, Any]] = None
 
-    # When running without the full orchestrator stack (no expert/arbiter outputs),
-    # the executor may only receive an intent once (order_queue is pruned after one cycle).
-    # On subsequent cycles, signal_strength becomes 0.0 which can trigger ExitEngine
-    # "signal weak" exits inside SmartPositionManager. Enable this to keep managing
-    # positions cooperatively (default HOLD) when no fresh signal is available.
+
     hold_positions_without_signal: bool = False
 
 
@@ -133,12 +112,11 @@ class Executor(BaseModule):
         self.cfg = ExecutorConfig(**(config or {}))
         super().__init__(config=asdict(self.cfg))
 
-        # Ensure bus exists for post-super setup (may also be created in _initialize)
+
         self.bus = SafeBus(InfoBusManager.get_instance())
         self.logger = RotatingLogger("Executor", log_path="logs/executor/executor.log", operator_mode=True)
 
-        # mirrors (sim)
-        # Prefer explicit config.initial_balance; else try InfoBus environment_config.initial_balance; else safe default
+
         _cfg_ib = None
         try:
             _cfg_ib = (config or {}).get("initial_balance", None)
@@ -150,7 +128,7 @@ class Executor(BaseModule):
                 _cfg_ib = env_cfg.get("initial_balance", None)
             except Exception:
                 _cfg_ib = None
-        # Additional fallbacks: try existing market_state/portfolio_metrics before defaulting
+
         if _cfg_ib is None:
             try:
                 ms = self.bus.get("market_state", "Executor", default=None)
@@ -165,7 +143,7 @@ class Executor(BaseModule):
                     _cfg_ib = pm.get("balance", None)
             except Exception:
                 pass
-        # Try risk_policy.yaml as source of truth before hardcoded fallback
+
         if _cfg_ib is None:
             try:
                 from pathlib import Path
@@ -181,42 +159,41 @@ class Executor(BaseModule):
                     )
             except Exception:
                 pass
-        # Final fallback (should rarely be reached now)
+
         self.initial_balance: float = float(100_000.0 if _cfg_ib is None else _cfg_ib)
         self.balance: float = float(self.initial_balance)
         self.equity: float = float(self.balance)
         self._last_equity: float = float(self.equity)
         self.positions: Dict[str, PositionSnap] = {}
-        self.trades: List[Dict[str, Any]] = []  # Will be trimmed to last 1000
-        self.closed_positions: List[Dict[str, Any]] = []  # Track closed positions for win rate
+        self.trades: List[Dict[str, Any]] = []
+        self.closed_positions: List[Dict[str, Any]] = []
         self.step_idx: int = 0
         self._seen_ids: Set[str] = set()
-        self._max_seen_ids: int = 5000  # Memory limit for seen IDs
-        self._cumulative_pnl: float = 0.0  # Track cumulative P&L for state persistence
-        self._max_trades: int = 1000  # Memory limit for trades list
+        self._max_seen_ids: int = 5000
+        self._cumulative_pnl: float = 0.0
+        self._max_trades: int = 1000
 
-        # live adapter (ensure initialized; _initialize also handles this during super())
+
         if not hasattr(self, "adapter"):
             self.adapter: Optional[BaseLiveAdapter] = None
         self._ensure_adapter()
         self._publish_adapter_status()
 
-        # debugger
+
         dbg_cfg: Dict[str, Any] = {**(self.cfg.debug_config or {}), "enabled": bool(self.cfg.debug_enabled)}
         self.debugger = ExecutorDebugManager(self.bus, config=dbg_cfg)
 
-        # unified logger
+
         self.unified_logger = UnifiedExecutorLogger(self.logger)
 
-        # Smart Position Manager for intelligent live trading
-        # Config is loaded from config/risk_policy.yaml -> smart_position section
+
         self.smart_position_manager = SmartPositionManager()
 
-        # UNIFIED LOT CALCULATOR - Single source of truth for lot sizing
+
         self.lot_calculator = UnifiedLotCalculator.get_instance()
         self.lot_calculator.publish_lot_config_to_bus()
 
-        # seed bus with empty snapshots
+
         self._publish_all(
             exec_fills=[],
             accepted=[],
@@ -227,11 +204,9 @@ class Executor(BaseModule):
             reason="startup",
         )
 
-    # ─────────────────────────────────────────────────────────
-    # initialization / config update
-    # ─────────────────────────────────────────────────────────
+
     def _initialize(self, **kwargs: Any) -> None:
-        # Called by BaseModule.__init__ before this __init__ completes.
+
         if kwargs.get("config") and not isinstance(self.cfg, ExecutorConfig):
             self.cfg = ExecutorConfig(**kwargs["config"])
         if not hasattr(self, "adapter"):
@@ -242,24 +217,17 @@ class Executor(BaseModule):
         try:
             self._publish_adapter_status()
         except Exception:
-            # tolerate early publish issues during bootstrap
+
             pass
-        # update debugger config live
+
         if hasattr(self, "debugger") and self.debugger:
             if self.cfg.debug_enabled:
                 self.debugger.enable()
             else:
                 self.debugger.disable()
 
-    # adapter bring-up
-    def _ensure_adapter(self, mode: Optional[str] = None) -> None:
-        """
-        Ensure live adapter is created and connected if needed.
 
-        Args:
-            mode: Target execution mode ('live' or 'sim'). If None, uses self.cfg.execution_mode.
-                  When called from _resolve_mode(), pass the resolved mode to avoid circular calls.
-        """
+    def _ensure_adapter(self, mode: Optional[str] = None) -> None:
         target_mode = mode if mode is not None else self.cfg.execution_mode
         if target_mode == "live":
             if (self.adapter is None) or (not self.adapter.is_connected()):
@@ -289,7 +257,7 @@ class Executor(BaseModule):
                     {
                         "balance": float(ai.get("balance", 0.0) or 0.0),
                         "equity": float(ai.get("equity", 0.0) or 0.0),
-                        "leverage": float(ai.get("leverage", 100.0) or 100.0),  # From MT5
+                        "leverage": float(ai.get("leverage", 100.0) or 100.0),
                         "margin": float(ai.get("margin", 0.0) or 0.0),
                         "free_margin": float(ai.get("free_margin", 0.0) or 0.0),
                         "currency": str(ai.get("currency", "EUR")),
@@ -300,27 +268,18 @@ class Executor(BaseModule):
         return st
 
     def _publish_adapter_status(self) -> None:
-        """Expose adapter state for UI/debug and reward-level probes."""
         st = self._build_live_adapter_status()
         self.bus.set("live_adapter_status", st, thesis="executor live adapter status")
 
     def _resolve_mode(self) -> str:
-        """Determine execution mode with strong preference for environment_config=live.
-
-        Precedence:
-        1) If environment_config.mode == 'live' -> force 'live' (primary signal when live trading is started)
-        2) Else, use bus 'execution_mode' if set to a valid value
-        3) Else, fall back to static config default
-        Always ensure live adapter is connected before returning 'live'; otherwise fall back to 'sim'.
-        """
         if not self.cfg.allow_runtime_switch:
             return self.cfg.execution_mode
 
-        # Read environment config first (authoritative when live trading loop starts)
+
         envc = self.bus.get("environment_config", "Executor", default={}) or {}
         env_mode = str(envc.get("mode", "")).lower()
 
-        # Then check explicit bus override
+
         em = self.bus.get("execution_mode", "Executor", default=None)
         em_mode = str(em).lower() if isinstance(em, str) else None
 
@@ -331,27 +290,20 @@ class Executor(BaseModule):
         else:
             target = self.cfg.execution_mode
 
-        # Strong override: if the live adapter is already connected, prefer live
-        # regardless of a stray execution_mode value elsewhere on the bus.
+
         if self.adapter and self.adapter.is_connected():
             target = "live"
 
         if target == "live":
             if not self.adapter or not self.adapter.is_connected():
-                # Pass target mode to avoid checking static cfg.execution_mode
+
                 self._ensure_adapter(mode=target)
                 if not (self.adapter and self.adapter.is_connected()):
                     return "sim"
         return target
 
-    # ─────────────────────────────────────────────────────────
-    # main
-    # ─────────────────────────────────────────────────────────
+
     def _account_snapshot(self, pos_snap: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """
-        Canonical account snapshot used by downstream modules.
-        Includes *raw* balance/equity so readers can subscribe to simple keys.
-        """
         if pos_snap is None:
             mode = self._resolve_mode()
             if mode == "live" and self.adapter:
@@ -360,7 +312,7 @@ class Executor(BaseModule):
                 pos_snap = {}
                 for k, v in self.positions.items():
                     current_price = self._sim_price(k, v.side)
-                    # Calculate current unrealized PnL
+
                     if (
                         current_price is not None
                         and current_price > 0
@@ -368,7 +320,7 @@ class Executor(BaseModule):
                         and v.units > 0
                     ):
                         current_pnl = (current_price - v.entry_price) * v.side * v.units
-                        # Update peak if current PnL is higher
+
                         if current_pnl > v.peak_unrealized:
                             v.peak_unrealized = current_pnl
                     pos_snap[k] = v.as_bus(last_price=current_price)
@@ -385,7 +337,7 @@ class Executor(BaseModule):
     async def process(self, **inputs: Any) -> Dict[str, Any]:
         t0 = time.time()
         try:
-            # use bus step if available to align with env; otherwise monotonic
+
             val = self.bus.get("step_idx", "Executor", default=None)
             if val is None:
                 val = self.bus.get("step_idx", "PositionManager", default=None)
@@ -397,16 +349,16 @@ class Executor(BaseModule):
             mode = self._resolve_mode()
             self._publish_adapter_status()
 
-            # capture pre PnL snapshot
+
             balance_before = float(self.balance)
             equity_before = float(self.equity)
 
-            # collect intents
+
             self.debugger.begin("collect_intents")
             accepted, rejected, q_count, dec_count = self._collect_intents()
             self.debugger.end("collect_intents")
 
-            # execute
+
             realized_step = 0.0
             unreal_after = 0.0
             positions_after: Dict[str, Any] = {}
@@ -414,7 +366,7 @@ class Executor(BaseModule):
 
             if mode == "live":
                 self.debugger.begin("execute_live")
-                # Use smart execution for intelligent position management
+
                 fills, step_pnl = self._execute_live_smart(accepted)
                 self.debugger.end("execute_live")
                 positions_after = self.adapter.sync_positions() if self.adapter else {}
@@ -439,7 +391,7 @@ class Executor(BaseModule):
                             v.peak_unrealized = current_pnl
                     positions_after[k] = v.as_bus(last_price=current_price)
 
-            # publish to bus
+
             self.debugger.begin("publish_bus")
             self._publish_all(
                 exec_fills=fills,
@@ -450,7 +402,7 @@ class Executor(BaseModule):
                 unrealized=unreal_after,
             )
             self.debugger.end("publish_bus")
-            # Prune consumed orders to avoid duplicate_id churn
+
             self._prune_order_queue()
         except Exception as e:
             import traceback
@@ -471,7 +423,7 @@ class Executor(BaseModule):
                 pass
             raise
 
-        # Debug: log fills (throttled preview)
+
         try:
             if getattr(self.cfg, "debug_enabled", False) and getattr(self.cfg, "trace_logging", False):
                 limit = max(0, int(getattr(self.cfg, "log_fill_preview", 3)))
@@ -492,7 +444,7 @@ class Executor(BaseModule):
         except Exception:
             pass
 
-        # debugger report
+
         try:
             self.debugger.publish(
                 step=self.step_idx,
@@ -516,7 +468,7 @@ class Executor(BaseModule):
         except Exception as e:
             self.debugger.record_error(f"debug_publish_error: {e}")
 
-        # unified logger report
+
         try:
             if self.cfg.debug_enabled:
                 self._log_unified_cycle(
@@ -537,7 +489,7 @@ class Executor(BaseModule):
         except Exception as e:
             self.logger.warning(f"Unified logger failed: {e}")
 
-        # REQUIRED outputs for orchestrator contract (return payload)
+
         recent = self.trades[-50:] if self.trades else []
         order_data = {"accepted": accepted, "rejected": rejected, "step": int(self.step_idx)}
         execution_data = {"fills": fills, "step": int(self.step_idx)}
@@ -580,7 +532,7 @@ class Executor(BaseModule):
             "step": int(self.step_idx),
         }
 
-        # helpful aliases expected by some readers
+
         current_positions = dict(positions_after)
         pnl_data = {
             "balance": float(self.balance),
@@ -596,7 +548,7 @@ class Executor(BaseModule):
             default={"provider": self.cfg.live_broker, "connected": False},
         )
 
-        # Build normalized position_data list (legacy/risk-friendly schema)
+
         pos_list: List[Dict[str, Any]] = []
         try:
             for inst, p in (positions_after or {}).items():
@@ -619,8 +571,7 @@ class Executor(BaseModule):
             except Exception:
                 pos_list = []
 
-        # Build position_focus_context for return dict
-        # This signals to experts/PPO whether to focus on position management
+
         position_focus = PositionFocusContext.from_positions(positions_after)
         position_focus_dict = position_focus.to_dict()
 
@@ -639,7 +590,7 @@ class Executor(BaseModule):
             "current_positions": current_positions,
             "pnl_data": pnl_data,
             "live_adapter_status": live_adapter_status,
-            "closed_positions": list(self.closed_positions),  # For win rate tracking (sim)
+            "closed_positions": list(self.closed_positions),
             "balance": float(self.balance),
             "equity": float(self.equity),
             "current_pnl": float(step_pnl),
@@ -652,30 +603,26 @@ class Executor(BaseModule):
             },
             "order_queue": [],
             "processing_time_ms": (time.time() - t0) * 1000.0,
-            # Position focus context: tells experts/PPO to focus on managing
-            # existing positions rather than looking for new trades
+
+
             "position_focus_context": position_focus_dict,
         }
 
-    # ─────────────────────────────────────────────────────────
-    # intents
-    # ─────────────────────────────────────────────────────────
+
     def _collect_intents(self) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], int, int]:
         accepted: List[Dict[str, Any]] = []
         rejected: List[Dict[str, Any]] = []
         q_count = 0
         dec_count = 0
 
-        # ==========================================================
-        # MEMORY INTEGRATION: Check for memory veto before processing
-        # ==========================================================
+
         memory_veto = False
         memory_veto_reasons: List[str] = []
-        vetoed_instruments: List[str] = []  # Per-instrument vetoes
+        vetoed_instruments: List[str] = []
         try:
             memory_gate = self.bus.get("memory_gate", "Executor", default=None)
             if isinstance(memory_gate, dict):
-                # Global veto
+
                 if memory_gate.get("veto", False):
                     memory_veto = True
                     memory_veto_reasons = memory_gate.get("reasons", ["Memory system vetoed"])
@@ -687,7 +634,7 @@ class Executor(BaseModule):
                         )
                     )
 
-                # Per-instrument vetoes (from memory's loss streak tracking)
+
                 vetoed_inst_raw = memory_gate.get("vetoed_instruments", [])
                 if isinstance(vetoed_inst_raw, list):
                     vetoed_instruments = [
@@ -704,18 +651,14 @@ class Executor(BaseModule):
         except Exception:
             pass
 
-        # ==========================================================
-        # RISK CONTROLLER INTEGRATION
-        # Only hard vetoes (emergency / critical) are enforced here
-        # Position sizing is done centrally by UnifiedLotCalculator.
-        # ==========================================================
+
         risk_veto = False
         risk_veto_reason = ""
         try:
             risk_assessment = self.bus.get("risk_assessment", "Executor", default=None)
             risk_level = self.bus.get("risk_level", "Executor", default=None)
 
-            # Emergency mode - HARD VETO
+
             if isinstance(risk_assessment, dict):
                 if risk_assessment.get("emergency_active", False):
                     risk_veto = True
@@ -728,7 +671,7 @@ class Executor(BaseModule):
                         )
                     )
 
-            # Critical risk level - HARD VETO
+
             if isinstance(risk_level, str) and risk_level.upper() == "CRITICAL":
                 risk_veto = True
                 risk_veto_reason = "RISK_LEVEL_CRITICAL"
@@ -743,18 +686,15 @@ class Executor(BaseModule):
         except Exception:
             pass
 
-        # ==========================================================
-        # STRATEGY MODULE INTEGRATION (v3.0)
-        # CurriculumPlannerPlus + BiasAuditor
-        # ==========================================================
+
         strategy_position_multiplier: float = 1.0
-        # Use centralized config default for max_trades_per_day
+
         strategy_max_trades_per_day: int = _TRADE_LIMITS.get("max_trades_per_day", 20)
-        curriculum_stage: str = "Expert"       # Default to no restrictions
+        curriculum_stage: str = "Expert"
         bias_active: List[str] = []
 
         try:
-            # BiasAuditor: position size multiplier
+
             bias_adjustments = self.bus.get("bias_adjustments", "Executor", default=None)
             if isinstance(bias_adjustments, dict):
                 strategy_position_multiplier = float(
@@ -762,7 +702,7 @@ class Executor(BaseModule):
                 )
                 strategy_position_multiplier = max(0.1, min(1.0, strategy_position_multiplier))
 
-                # Log if bias is reducing position size
+
                 if strategy_position_multiplier < 0.95:
                     bias_analysis = self.bus.get("bias_analysis", "Executor", default={}) or {}
                     ind_biases = bias_analysis.get("individual_biases", {})
@@ -781,27 +721,26 @@ class Executor(BaseModule):
                         )
                     )
 
-            # CurriculumPlannerPlus: learning constraints
+
             learning_constraints = self.bus.get("learning_constraints", "Executor", default=None)
             curriculum_stage_data = self.bus.get("curriculum_stage", "Executor", default=None)
 
-            # Determine if we're in live mode (adapter connected)
+
             is_live_mode = bool(self.adapter and self.adapter.is_connected())
 
             if isinstance(learning_constraints, dict) and is_live_mode:
-                # Max position size constraint (applied to strategy_position_multiplier)
+
                 max_pos = float(learning_constraints.get("max_position_size", 1.0) or 1.0)
                 if max_pos < 1.0:
                     strategy_position_multiplier = min(strategy_position_multiplier, max_pos)
 
-                # Max trades per day constraint (ONLY in live mode)
-                # Use centralized config default
+
                 default_max_trades = _TRADE_LIMITS.get("max_trades_per_day", 20)
                 strategy_max_trades_per_day = int(
                     learning_constraints.get("max_trades_per_day", default_max_trades) or default_max_trades
                 )
             elif not is_live_mode:
-                # Training mode: allow effectively unlimited trades and full position sizes
+
                 strategy_max_trades_per_day = 1000
 
             if isinstance(curriculum_stage_data, dict):
@@ -820,22 +759,19 @@ class Executor(BaseModule):
         except Exception:
             pass
 
-        # Track trades today for curriculum enforcement
-        # ONLY count NEW position entries (opens), NOT scales/closes
+
         trades_today = 0
         try:
             if self.trades:
                 today_start = dt.datetime.now().replace(
                     hour=0, minute=0, second=0, microsecond=0
                 )
-                
+
                 def _is_new_entry(t: dict) -> bool:
-                    """Check if trade is a NEW position entry (not scale/close)."""
                     action = str(t.get("action", "")).lower()
                     comment = str(t.get("comment", "")).lower()
-                    # New entries have action like "open_long", "open_short", "long", "short"
-                    # or comment="open"
-                    # Exclude: scale_up, scale_down, close, exit, reverse
+
+
                     if any(x in action for x in ["scale", "close", "exit", "reverse"]):
                         return False
                     if any(x in action for x in ["open", "long", "short"]):
@@ -843,21 +779,18 @@ class Executor(BaseModule):
                     if comment == "open":
                         return True
                     return False
-                
+
                 trades_today = sum(
                     1
                     for t in self.trades[-200:]
-                    if isinstance(t, dict) 
+                    if isinstance(t, dict)
                     and t.get("ts", 0) >= today_start.timestamp()
                     and _is_new_entry(t)
                 )
         except Exception:
             pass
 
-        # ==========================================================
-        # TRADING MODE INTEGRATION (v4.0)
-        # TradingModeManager constraints (position scale, max exposure, etc.)
-        # ==========================================================
+
         trading_mode_name: str = "normal"
         trading_mode_position_scale: float = 1.0
         trading_mode_max_exposure: float = 0.5
@@ -891,7 +824,7 @@ class Executor(BaseModule):
                     0.5, min(2.0, trading_mode_stop_loss_multiplier)
                 )
 
-            # Log trading mode constraints if not normal
+
             if trading_mode_name != "normal" or abs(trading_mode_position_scale - 1.0) > 1e-6:
                 eff_value = None
                 if mode_effectiveness is not None:
@@ -923,9 +856,8 @@ class Executor(BaseModule):
             pass
 
         def _apply_trading_mode_sizing(intent: Dict[str, Any]) -> Dict[str, Any]:
-            """Apply TradingModeManager position scale and max exposure to size fields."""
             if 0.99 <= trading_mode_position_scale <= 1.01:
-                return intent  # No adjustment needed
+                return intent
 
             if intent.get("size_eur"):
                 original_size = float(intent["size_eur"])
@@ -944,10 +876,7 @@ class Executor(BaseModule):
 
             return intent
 
-        # ==========================================================
-        # PORTFOLIO RISK ENFORCEMENT: DISABLED FOR PROP FIRMS
-        # Notional exposure is not what prop firms police; they care about P&L.
-        # ==========================================================
+
         def _is_instrument_vetoed(inst: str) -> bool:
             if memory_veto:
                 return True
@@ -964,15 +893,12 @@ class Executor(BaseModule):
             return "instrument_veto", ["Instrument on veto list"]
 
         def _is_risk_blocked(inst: str, action: str) -> bool:
-            """Exposure-based blocking disabled (prop-firm focus on drawdown)."""
             return False
 
         def _exceeds_curriculum_trade_limit() -> bool:
-            """Check if today's trades exceed curriculum limit."""
             return trades_today >= strategy_max_trades_per_day
 
         def _apply_strategy_sizing(intent: Dict[str, Any]) -> Dict[str, Any]:
-            """Apply BiasAuditor and CurriculumPlanner position size adjustments."""
             if strategy_position_multiplier >= 0.99:
                 return intent
 
@@ -992,7 +918,7 @@ class Executor(BaseModule):
 
             return intent
 
-        # explicit order_queue
+
         oq = self.bus.get("order_queue", "Executor", default=[]) or []
         if isinstance(oq, list):
             q_count = len(oq)
@@ -1000,7 +926,7 @@ class Executor(BaseModule):
                 intent = self._normalize_order_item(item)
                 if not intent:
                     rejected.append({"reason": "bad_order_queue_item", "raw": item})
-                # Memory/Risk veto check - reject new opening orders (global OR per-instrument)
+
                 elif intent.get("action", "").lower() in (
                     "open_long",
                     "open_short",
@@ -1010,7 +936,7 @@ class Executor(BaseModule):
                 ):
                     inst = intent.get("instrument", "")
                     action = intent.get("action", "")
-                    # First check memory or risk veto
+
                     if _is_instrument_vetoed(inst):
                         veto_reason, veto_reasons = _get_veto_reason()
                         rejected.append(
@@ -1022,7 +948,7 @@ class Executor(BaseModule):
                             }
                         )
                         continue
-                    # Curriculum limit
+
                     if _exceeds_curriculum_trade_limit():
                         rejected.append(
                             {
@@ -1044,7 +970,7 @@ class Executor(BaseModule):
                             )
                         )
                         continue
-                    # Portfolio risk limit (currently disabled)
+
                     if _is_risk_blocked(inst, action):
                         rejected.append(
                             {
@@ -1064,7 +990,7 @@ class Executor(BaseModule):
                             )
                         )
                         continue
-                    # Apply strategy + trading-mode sizing before min filters
+
                     intent = _apply_strategy_sizing(intent)
                     intent = _apply_trading_mode_sizing(intent)
                     if self._passes_filters(intent):
@@ -1086,7 +1012,7 @@ class Executor(BaseModule):
                     reason = self._filter_reason(intent)
                     rejected.append({"reason": reason, "intent": intent})
 
-        # fallback: position_decision_* (look under PositionManager as well)
+
         if self.cfg.read_position_decisions:
             env_cfg = (
                 self.bus.get("environment_config", "Executor", default=None)
@@ -1094,13 +1020,12 @@ class Executor(BaseModule):
                 or {}
             )
             instruments = env_cfg.get("instruments") or []
-            
-            # Fallback: if no instruments from config, use canonical broker format
-            # NOTE: Use ONLY ONE format to avoid duplicate orders!
+
+
             if not instruments:
-                instruments = ["XAUUSD"]  # MT5 canonical format (single-instrument)
-            
-            # Deduplicate by normalized form (EUR_USD and EURUSD are the same)
+                instruments = ["XAUUSD"]
+
+
             seen_normalized = set()
             unique_instruments = []
             for inst in instruments:
@@ -1109,29 +1034,29 @@ class Executor(BaseModule):
                     seen_normalized.add(normalized)
                     unique_instruments.append(inst)
             instruments = unique_instruments
-            
-            # Debug: Log what instruments we're checking
+
+
             self.logger.debug(f"[EXEC] Checking position_decisions for instruments: {instruments}")
-            
+
             for inst in instruments:
                 core = inst.replace("/", "").replace("_", "")
 
-                # try both module spaces and canonical variants
+
                 node = self.bus.get(f"position_decision_{inst}", "Executor", default=None)
                 self.logger.debug(f"[EXEC] position_decision_{inst} (Executor): {type(node).__name__} = {node}")
-                
+
                 if not (isinstance(node, dict) and node.get("decision")):
                     node = self.bus.get(
                         f"position_decision_{inst}", "PositionManager", default=None
                     )
                     self.logger.debug(f"[EXEC] position_decision_{inst} (PositionManager): {type(node).__name__} = {node}")
-                    
+
                 if not (isinstance(node, dict) and node.get("decision")):
                     node = self.bus.get(
                         f"position_decision_{core}", "PositionManager", default=None
                     )
                     self.logger.debug(f"[EXEC] position_decision_{core} (PositionManager): {type(node).__name__} = {node}")
-                    
+
                 if not (isinstance(node, dict) and node.get("decision")):
                     node = self.bus.get(
                         f"position_decision_{core}", "Executor", default=None
@@ -1160,7 +1085,7 @@ class Executor(BaseModule):
                     else:
                         rejected.append({"reason": self._filter_reason(intent), "intent": intent})
 
-        # Debug summary of intents (compact)
+
         try:
             self.logger.debug(
                 f"[EXEC] Collected: queue={q_count} decisions={dec_count} "
@@ -1169,7 +1094,7 @@ class Executor(BaseModule):
         except Exception:
             pass
 
-        # Trim _seen_ids to prevent memory leak
+
         if len(self._seen_ids) > self._max_seen_ids:
             ids_list = list(self._seen_ids)
             self._seen_ids = set(ids_list[-(self._max_seen_ids // 2) :])
@@ -1177,7 +1102,6 @@ class Executor(BaseModule):
         return accepted, rejected, q_count, dec_count
 
     def _prune_order_queue(self) -> None:
-        """Remove already-seen order IDs from the shared order_queue to prevent duplicate churn."""
         try:
             q = self.bus.get("order_queue", "Executor", default=[]) or []
             if not isinstance(q, list) or not q:
@@ -1238,7 +1162,7 @@ class Executor(BaseModule):
         act = str(intent.get("action", "")).lower()
         if act == "hold" and self.cfg.ignore_hold:
             return False
-        # Always allow risk-reduction/exit actions regardless of thresholds
+
         if act in ("close", "emergency_close", "scale_down"):
             return True
         if float(intent.get("confidence", 0.0)) < self.cfg.min_confidence:
@@ -1265,36 +1189,27 @@ class Executor(BaseModule):
             return "duplicate_id"
         return "filtered"
 
-    # ─────────────────────────────────────────────────────────
-    # Symbol-specific contract sizing
-    # ─────────────────────────────────────────────────────────
+
     def _get_contract_size(self, symbol: str) -> float:
-        """Get contract size for a symbol (units per 1.0 lot)."""
         sym_upper = (symbol or "").upper().replace("_", "").replace("/", "")
 
         if "XAU" in sym_upper or "GOLD" in sym_upper:
-            return 100.0  # Gold: 100 oz per lot
+            return 100.0
         if "XAG" in sym_upper or "SILVER" in sym_upper:
-            return 5000.0  # Silver: 5000 oz per lot
+            return 5000.0
         if "BTC" in sym_upper:
             return 1.0
         if "ETH" in sym_upper:
             return 1.0
 
-        # Default: Forex 100,000 units per lot
+
         return float(self.cfg.contract_size)
 
     def _get_current_volatility(self, symbol: str) -> Optional[float]:
-        """
-        Get current volatility for a symbol from InfoBus.
-
-        Tries multiple sources: volatility_by_instrument, market_conditions, feature data.
-        Returns None if unavailable (lot calculator will use defaults).
-        """
         try:
             norm_symbol = self._normalize_symbol(symbol)
 
-            # Try volatility_by_instrument
+
             vol_map = self.bus.get("volatility_by_instrument", "Executor", default=None)
             if isinstance(vol_map, dict):
                 for key, val in vol_map.items():
@@ -1302,14 +1217,14 @@ class Executor(BaseModule):
                         if isinstance(val, (int, float)):
                             return float(val)
 
-            # Try market_conditions
+
             mc = self.bus.get("market_conditions", "Executor", default=None)
             if isinstance(mc, dict):
                 vol = mc.get("volatility")
                 if isinstance(vol, (int, float)):
                     return float(vol)
 
-            # Try price_data for ATR
+
             pd = self.bus.get("price_data", "Executor", default=None)
             if isinstance(pd, dict):
                 inst_data = pd.get(symbol) or pd.get(norm_symbol)
@@ -1323,24 +1238,12 @@ class Executor(BaseModule):
 
         return None
 
-    # ─────────────────────────────────────────────────────────
-    # SIM execution
-    # ─────────────────────────────────────────────────────────
+
     def _check_sim_exits(self) -> Tuple[List[Dict[str, Any]], float]:
-        """
-        Check all simulation positions for exit conditions.
-
-        Critical for training: prevents unlimited losses in simulation.
-
-        Exit conditions:
-        1. Hard stop loss (absolute max loss per position)
-        2. Trailing profit (lock in gains)
-        3. Time decay (close old losing positions)
-        """
         fills: List[Dict[str, Any]] = []
         realized = 0.0
 
-        # Load exit config from SmartPositionManager (already wired to risk_policy.yaml)
+
         try:
             spm_cfg = self.smart_position_manager.config
             hard_stop_eur = float(spm_cfg.hard_stop_loss_eur)  # type: ignore[attr-defined]
@@ -1349,14 +1252,14 @@ class Executor(BaseModule):
             time_decay_hours = float(spm_cfg.time_decay_hours)  # type: ignore[attr-defined]
             time_decay_stop = float(spm_cfg.time_decay_stop_eur)  # type: ignore[attr-defined]
         except Exception:
-            # Safe fallback
+
             hard_stop_eur = 150.0
             trailing_activation = 100.0
             trailing_pct = 0.30
             time_decay_hours = 4.0
             time_decay_stop = 60.0
 
-        positions_to_close: List[Tuple[str, str, float]] = []  # (inst, reason, pnl)
+        positions_to_close: List[Tuple[str, str, float]] = []
 
         for inst, pos in self.positions.items():
             price = self._sim_price(inst, pos.side)
@@ -1368,16 +1271,16 @@ class Executor(BaseModule):
             if unrealized_pnl > pos.peak_unrealized:
                 pos.peak_unrealized = unrealized_pnl
 
-            # Parse open_time (may be ISO string '2025-12-09T20:10:59Z' or Unix float)
+
             open_ts = _parse_timestamp(pos.open_time)
             age_hours = (time.time() - open_ts) / 3600.0 if open_ts else 0.0
 
             exit_reason = None
 
-            # 1. HARD STOP
+
             if unrealized_pnl <= -hard_stop_eur:
                 exit_reason = f"HARD_STOP: Loss €{unrealized_pnl:.2f} exceeds -€{hard_stop_eur:.0f}"
-            # 2. TRAILING PROFIT
+
             elif pos.peak_unrealized >= trailing_activation:
                 retrace = (
                     (pos.peak_unrealized - unrealized_pnl) / pos.peak_unrealized
@@ -1389,7 +1292,7 @@ class Executor(BaseModule):
                         f"TRAILING_PROFIT: Retraced {retrace*100:.1f}% from peak "
                         f"€{pos.peak_unrealized:.2f}"
                     )
-            # 3. TIME DECAY
+
             elif age_hours >= time_decay_hours and unrealized_pnl <= -time_decay_stop:
                 exit_reason = (
                     f"TIME_DECAY: Position {age_hours:.1f}h old with loss €{unrealized_pnl:.2f}"
@@ -1481,7 +1384,7 @@ class Executor(BaseModule):
         if px is None:
             return None
 
-        # mid → side-aware exec price; side==0 => mid (no spread / slippage)
+
         direction = 0
         if side > 0:
             direction = 1
@@ -1502,12 +1405,6 @@ class Executor(BaseModule):
         return 0.0
 
     def _get_decision_context(self, instrument: str) -> Dict[str, Any]:
-        """
-        Get current PPO and expert decision context for autonomy tracking.
-
-        Returns:
-            Dict with ppo_direction, expert_direction, ppo_confidence, was_ppo_led
-        """
         context = {
             "ppo_direction": None,
             "expert_direction": None,
@@ -1516,7 +1413,7 @@ class Executor(BaseModule):
         }
 
         try:
-            # PPO final decision snapshot
+
             ppo_decision = self.bus.get("ppo_final_decision", "Executor", default={}) or {}
             if isinstance(ppo_decision, dict):
                 ppo_dir = ppo_decision.get("direction", "flat")
@@ -1527,16 +1424,16 @@ class Executor(BaseModule):
                     ppo_decision.get("confidence", 0.0) or 0.0
                 )
 
-            # PPO autonomy phase
+
             autonomy_state = self.bus.get(
                 "ppo_autonomy_state", "Executor", default={}
             ) or {}
             if isinstance(autonomy_state, dict):
-                # PPO is ALWAYS the master now - was_ppo_led is always True
-                # Phase names are: LEARNING, IMPROVING, COMPETENT, EXPERT (analytics only)
+
+
                 context["was_ppo_led"] = True
 
-            # Expert consensus from committee_decision
+
             committee = self.bus.get("committee_decision", "Executor", default={}) or {}
             if isinstance(committee, dict):
                 committee_action = str(committee.get("action", "hold")).lower()
@@ -1558,7 +1455,6 @@ class Executor(BaseModule):
         realized_pnl: float,
         close_reason: str,
     ) -> None:
-        """Track a fully closed position for win rate and analytics (sim only)."""
         closed_record = {
             "instrument": position.instrument,
             "side": position.side,
@@ -1566,7 +1462,7 @@ class Executor(BaseModule):
             "entry_price": position.entry_price,
             "close_price": close_price,
             "pnl": realized_pnl,
-            "profit": realized_pnl,  # Alias for compatibility
+            "profit": realized_pnl,
             "close_reason": close_reason,
             "close_step": self.step_idx,
             "entry_step": getattr(position, "entry_step", 0),
@@ -1577,10 +1473,10 @@ class Executor(BaseModule):
         if len(self.closed_positions) > 500:
             self.closed_positions = self.closed_positions[-500:]
 
-        # MEMORY LEARNING: Update UnifiedMemory with closed trade for online learning
+
         self._update_memory_on_trade_close(closed_record)
 
-        # Reset exit engine peak tracking for this instrument
+
         try:
             if EXIT_ENGINE_AVAILABLE and get_exit_engine:
                 exit_engine = get_exit_engine()
@@ -1591,15 +1487,10 @@ class Executor(BaseModule):
         except Exception as e:
             self.logger.debug(f"[Executor] Failed to reset exit peak: {e}")
 
-        # Notify PPO Autonomy Tracker of trade outcome
+
         self._notify_ppo_autonomy(position, realized_pnl)
 
     def _notify_ppo_autonomy(self, position: "PositionSnap", realized_pnl: float) -> None:
-        """
-        Notify the PPO Autonomy Tracker about a closed trade outcome.
-
-        This enables adaptive leadership transition based on PPO's performance.
-        """
         try:
             ppo_direction = getattr(position, "ppo_direction", None)
             expert_direction = getattr(position, "expert_direction", None)
@@ -1633,36 +1524,23 @@ class Executor(BaseModule):
             self.logger.debug(f"Failed to notify PPO autonomy: {e}")
 
     def _update_memory_on_trade_close(self, closed_record: Dict[str, Any]) -> None:
-        """
-        Notify memory system of closed trade via InfoBus.
-        
-        NOTE: This does NOT create a separate UnifiedMemory instance.
-        The orchestrator's UnifiedMemory reads from 'closed_positions' on the bus.
-        
-        This method ensures the trade is immediately available on the bus
-        and publishes a signal that a new trade is ready for learning.
-        
-        For standalone mode (no orchestrator), this is a no-op because
-        the training callback handles memory learning directly.
-        """
         try:
-            # Publish trade-closed event for any listeners
-            # The orchestrator's UnifiedMemory will pick this up on next process() call
-            # via _store_experiences() which reads from 'closed_positions'
+
+
             self.bus.set(
                 "latest_closed_trade",
                 closed_record,
                 module="Executor",
                 thesis=f"Trade closed: {closed_record.get('instrument')} PnL={closed_record.get('pnl', 0):.2f}"
             )
-            
+
             self.logger.debug(
                 f"[Executor] Published closed trade for memory: {closed_record.get('instrument')} "
                 f"PnL={closed_record.get('pnl', 0):.2f}"
             )
-                    
+
         except Exception as e:
-            # Non-fatal
+
             self.logger.debug(f"[Executor] Trade publish failed (non-fatal): {e}")
 
     def _execute_sim(
@@ -1674,7 +1552,7 @@ class Executor(BaseModule):
         fills: List[Dict[str, Any]] = []
         realized_step = 0.0
 
-        # Check existing positions for exits first (stops, trailing, decay)
+
         exit_fills, exit_realized = self._check_sim_exits()
         fills.extend(exit_fills)
         realized_step += exit_realized
@@ -1867,7 +1745,7 @@ class Executor(BaseModule):
                 if p.units <= 1e-12:
                     self._track_closed_position(p, price, realized, "scale_down")
                     del self.positions[inst]
-                trade_side = -1 if p.side > 0 else +1  # sell to reduce long; buy to reduce short
+                trade_side = -1 if p.side > 0 else +1
                 fill = TradeFill(
                     id=f"fill-{uuid.uuid4().hex[:10]}",
                     ts=time.time(),
@@ -1912,10 +1790,10 @@ class Executor(BaseModule):
                     self._track_closed_position(p, price, realized, action)
                     del self.positions[inst]
 
-        # apply realized → balance
+
         self.balance += realized_step
 
-        # mark-to-market: calculate unrealized P&L at mid/side-aware prices
+
         unreal = 0.0
         for inst, p in self.positions.items():
             px = self._sim_price(inst, p.side)
@@ -1936,35 +1814,20 @@ class Executor(BaseModule):
             return fills, step_pnl, float(realized_step), float(unreal)
         return fills, step_pnl, 0.0, 0.0
 
-    # ─────────────────────────────────────────────────────────
-    # SMART LIVE EXECUTION - Intelligent Position Management
-    # ─────────────────────────────────────────────────────────
-    def _execute_live_smart(self, intents: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], float]:
-        """
-        Smart live execution with position consolidation and intelligent management.
 
-        Key features:
-        1. Syncs actual MT5 positions before any decision
-        2. Prevents duplicate positions (max 1 per symbol)
-        3. Eliminates hedging (closes opposing positions)
-        4. Smart profit-taking and loss-cutting
-        5. Converts intents to smart decisions
-        """
+    def _execute_live_smart(self, intents: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], float]:
         fills: List[Dict[str, Any]] = []
         if not self.adapter or not self.adapter.is_connected():
             return fills, 0.0
 
         prop_limits = self.lot_calculator.check_prop_firm_limits()
-        
-        # ══════════════════════════════════════════════════════════════════
-        # CRITICAL: Check if we need to CLOSE ALL (9% drawdown protection)
-        # This is the primary defense before account death at 10%
-        # ══════════════════════════════════════════════════════════════════
+
+
         if prop_limits.get("must_close_all", False):
             self.logger.critical(
                 f"[SMART] 🚨🚨🚨 EMERGENCY CLOSE ALL! {prop_limits.get('warnings', [])}"
             )
-            # Force close all positions immediately
+
             try:
                 import MetaTrader5 as mt5
                 positions = mt5.positions_get()  # type: ignore[attr-defined]
@@ -1974,7 +1837,7 @@ class Executor(BaseModule):
             except Exception as e:
                 self.logger.error(f"[SMART] Emergency close failed: {e}")
             return fills, 0.0
-        
+
         if not prop_limits.get("can_trade", True):
             self.logger.warning(
                 f"[SMART] 🚫 PROP FIRM BLOCK: Trading halted - {prop_limits.get('warnings', [])}"
@@ -2003,7 +1866,7 @@ class Executor(BaseModule):
         except Exception:
             pass
 
-        # Step 1: sync MT5 positions into SmartPositionManager
+
         try:
             import MetaTrader5 as mt5  # type: ignore[import]
 
@@ -2038,9 +1901,7 @@ class Executor(BaseModule):
             self.logger.warning(f"[SMART] Failed to sync MT5 positions: {e}")
             mt5_positions = []
 
-        # ══════════════════════════════════════════════════════════════════
-        # v5.7 DIAGNOSTIC: Log PPO decisions for debugging buy-only issues
-        # ══════════════════════════════════════════════════════════════════
+
         try:
             ppo_multi = self.bus.get("ppo_multi_decision", "Executor", default=None)
             if isinstance(ppo_multi, dict):
@@ -2051,8 +1912,8 @@ class Executor(BaseModule):
                         dir_score = dec.get("direction_score", 0.0)
                         gate_passed = dec.get("gate_passed", False)
                         action_intent = (dec.get("meta") or {}).get("action_intent", "unknown")
-                        
-                        # Only log actionable decisions or shorts (for debugging)
+
+
                         if gate_passed or direction == "short" or dir_score < -0.2:
                             self.logger.info(
                                 f"[PPO→EXEC] {inst}: direction={direction} dir_score={dir_score:.3f} "
@@ -2061,7 +1922,7 @@ class Executor(BaseModule):
         except Exception:
             pass
 
-        # Step 2: hedge cleanup
+
         try:
             hedge_cleanup = self.smart_position_manager.needs_hedge_cleanup(mt5_positions)
             if hedge_cleanup:
@@ -2126,7 +1987,7 @@ class Executor(BaseModule):
         except Exception as e:
             self.logger.error(f"[SMART] Hedge cleanup failed: {e}")
 
-        # Step 3: manage existing positions (cooperative mode)
+
         smart_positions = self.smart_position_manager.get_all_positions()
 
         for raw_symbol, position in smart_positions.items():
@@ -2158,7 +2019,7 @@ class Executor(BaseModule):
                         intent_strength = float(
                             intent.get("intensity", intent.get("confidence", 0.5)) or 0.5
                         )
-                        # Prefer PPO position_size if available
+
                         ppo_pos = self.bus.get("ppo_position_size", "Executor", default=None)
                         if ppo_pos is not None:
                             try:
@@ -2181,7 +2042,7 @@ class Executor(BaseModule):
                         consensus_confidence=signal_strength,
                     )
 
-            # CLOSE
+
             if decision.action == PositionAction.CLOSE:
                 self.logger.info(
                     format_operator_message(
@@ -2204,7 +2065,7 @@ class Executor(BaseModule):
                     )
                     self.smart_position_manager.record_trade(symbol)
 
-            # REVERSE (close then open opposite)
+
             elif decision.action == PositionAction.REVERSE:
                 self.logger.info(
                     format_operator_message(
@@ -2238,7 +2099,7 @@ class Executor(BaseModule):
                 )
                 self.smart_position_manager.record_trade(symbol)
 
-                # Size the new position (align with SMART_OPEN: prefer unified lot calculator)
+
                 lots = 0.0
                 try:
                     volatility = self._get_current_volatility(symbol)
@@ -2284,7 +2145,7 @@ class Executor(BaseModule):
                         )
                     )
 
-            # SCALE_UP
+
             elif decision.action == PositionAction.SCALE_UP and decision.lots > 0:
                 self.logger.info(
                     format_operator_message(
@@ -2317,7 +2178,7 @@ class Executor(BaseModule):
                     fills.append(fill)
                     self.smart_position_manager.record_trade(symbol, is_scale=True)
 
-            # SCALE_DOWN
+
             elif decision.action == PositionAction.SCALE_DOWN and decision.lots > 0:
                 self.logger.info(
                     format_operator_message(
@@ -2328,14 +2189,14 @@ class Executor(BaseModule):
                         reasons=decision.reasons[:2],
                     )
                 )
-                close_side = -decision.side  # Needed for TradeFill record
-                # Get ticket for partial close (critical for MT5 hedging accounts)
+                close_side = -decision.side
+
                 ticket = getattr(position, "ticket", 0)
                 if ticket:
-                    # Use ticket-based partial close to avoid creating hedges
+
                     result = self._partial_close_by_ticket(ticket, symbol, decision.lots)
                 else:
-                    # Fallback for sim mode or missing ticket
+
                     self.logger.warning(f"[SCALE_DOWN] No ticket for {symbol}, falling back to market_order")
                     result = self.adapter.market_order(symbol, close_side, decision.lots)
                 if result.get("ok"):
@@ -2359,7 +2220,7 @@ class Executor(BaseModule):
                     fills.append(fill)
                     self.smart_position_manager.record_trade(symbol, is_scale=True)
 
-            # SL/TP adjustments
+
             elif decision.action in (
                 PositionAction.ADJUST_SL,
                 PositionAction.ADJUST_TP,
@@ -2411,7 +2272,7 @@ class Executor(BaseModule):
                     except Exception as e:
                         self.logger.warning(f"[SMART] Position adjustment failed: {e}")
                 else:
-                    # Log why we couldn't adjust
+
                     if not ticket:
                         self.logger.warning(
                             f"[SMART] ⚠️ Cannot adjust {symbol} SL/TP: no ticket found on position"
@@ -2421,7 +2282,7 @@ class Executor(BaseModule):
                             f"[SMART] ⚠️ Cannot adjust {symbol}: new_sl is None"
                         )
 
-        # Step 4: process new entry intents smartly
+
         smart_positions = self.smart_position_manager.get_all_positions()
         smart_pos_by_norm: Dict[str, Tuple[str, Any]] = {}
         try:
@@ -2440,7 +2301,7 @@ class Executor(BaseModule):
 
             action = str(intent.get("action", "")).lower()
 
-            # Explicit close via order_queue
+
             if action in ("close", "emergency_close"):
                 close_symbol = exec_symbol
                 if inst_norm in smart_pos_by_norm:
@@ -2485,20 +2346,19 @@ class Executor(BaseModule):
                 "open_short": -1,
                 "scale_down": -1,
             }.get(action, 0)
-            
-            # Get signal strength from intent, but prefer PPO position_size if available
-            # PPO position_size is already risk-normalized 0-1 and reflects confidence
+
+
             intent_strength = float(
                 intent.get("intensity", intent.get("confidence", 0.5)) or 0.5
             )
-            
-            # Try to get PPO position_size for better signal strength
+
+
             ppo_position_size = self.bus.get("ppo_position_size", "Executor", default=None)
             if ppo_position_size is not None:
                 try:
                     ppo_strength = float(ppo_position_size)
                     if ppo_strength > 0.0:
-                        # Use PPO position_size as it reflects actual PPO confidence
+
                         signal_strength = max(intent_strength, ppo_strength)
                     else:
                         signal_strength = intent_strength
@@ -2526,7 +2386,7 @@ class Executor(BaseModule):
                 )
                 continue
 
-            # New opens: extra anti-hedge against MT5 state
+
             if decision.action in (PositionAction.OPEN_LONG, PositionAction.OPEN_SHORT):
                 try:
                     pos_snap = adapter_positions_norm.get(inst_norm)
@@ -2647,7 +2507,7 @@ class Executor(BaseModule):
                     fills.append(fill)
                     self.smart_position_manager.record_trade(exec_symbol, is_scale=True)
 
-        # Step 5: update account state
+
         acct_after = self.adapter.get_account_info()
         eq_after = float(acct_after.get("equity", eq_before) or eq_before)
         step_pnl = float(eq_after - eq_before)
@@ -2671,9 +2531,7 @@ class Executor(BaseModule):
 
         return fills, step_pnl
 
-    # ─────────────────────────────────────────────────────────
-    # Position Management Signal Builder (COOPERATIVE MODE)
-    # ─────────────────────────────────────────────────────────
+
     def _build_position_management_signal(
         self,
         symbol: str,
@@ -2681,16 +2539,11 @@ class Executor(BaseModule):
         position: Any,
         intents: List[Dict[str, Any]],
     ) -> PositionManagementSignal:
-        """
-        Build a rich PositionManagementSignal by gathering all expert opinions.
-
-        Enables cooperative mode: all experts manage existing positions together.
-        """
         expert_signals: List[ExpertSignal] = []
         position_side = getattr(position, "side", 0)
         position_action = "BUY" if position_side > 0 else "SELL"
 
-        # 1) committee_votes
+
         try:
             committee_votes = self.bus.get("committee_votes", "Executor")
             if isinstance(committee_votes, list):
@@ -2720,7 +2573,7 @@ class Executor(BaseModule):
         except Exception:
             pass
 
-        # 2) instrument_signals
+
         try:
             instrument_signals = self.bus.get("instrument_signals", "Executor")
             if isinstance(instrument_signals, dict):
@@ -2741,7 +2594,7 @@ class Executor(BaseModule):
         except Exception:
             pass
 
-        # 3) consensus / fragility / regime
+
         consensus_action = "HOLD"
         consensus_confidence = 0.5
         consensus_score = 0.5
@@ -2753,7 +2606,7 @@ class Executor(BaseModule):
             final_decision = self.bus.get("final_decision", "Executor")
             if isinstance(final_decision, dict):
                 raw_action = str(final_decision.get("action", "HOLD")).lower()
-                # v5.7: Normalize direction strings to BUY/SELL/HOLD
+
                 if raw_action in ("buy", "long", "bullish", "open_long"):
                     consensus_action = "BUY"
                 elif raw_action in ("sell", "short", "bearish", "open_short"):
@@ -2764,14 +2617,14 @@ class Executor(BaseModule):
                     final_decision.get("confidence", 0.5) or 0.5
                 )
 
-            # Also check PPO decision for consensus override
+
             ppo_decision = self.bus.get("ppo_final_decision", "Executor", default=None)
             if isinstance(ppo_decision, dict):
                 ppo_dir = str(ppo_decision.get("direction", "flat")).lower()
                 ppo_gate = ppo_decision.get("gate_passed", False)
                 ppo_conf = float(ppo_decision.get("confidence", 0.0) or 0.0)
-                
-                # If PPO has a strong signal, override consensus_action
+
+
                 if ppo_gate and ppo_conf > 0.5:
                     if ppo_dir in ("long", "buy"):
                         consensus_action = "BUY"
@@ -2819,19 +2672,11 @@ class Executor(BaseModule):
             position_age_hours=float(getattr(position, "age_hours", 0) or 0),
         )
 
-    # ─────────────────────────────────────────────────────────
-    # Symbol helpers / adapter position helpers
-    # ─────────────────────────────────────────────────────────
+
     def _normalize_symbol(self, symbol: str) -> str:
-        """Normalize symbol for comparison (no separators, upper-case)."""
         return (symbol or "").replace("/", "").replace("_", "").upper()
 
     def _normalized_adapter_positions(self) -> Dict[str, Dict[str, Any]]:
-        """
-        Return adapter positions keyed by normalized symbol.
-
-        Handles both dict and list-of-dicts shapes defensively.
-        """
         if not self.adapter or not self.adapter.is_connected():
             return {}
         try:
@@ -2863,14 +2708,6 @@ class Executor(BaseModule):
         return norm
 
     def _position_side_from_snapshot(self, snap: Dict[str, Any]) -> int:
-        """
-        Extract side from a position snapshot.
-
-        Priority:
-        - explicit "side" field (+1/-1)
-        - MT5 "type" field (0=BUY, 1=SELL)
-        - string "direction" field
-        """
         side = 0
         try:
             side = int(snap.get("side", 0) or 0)
@@ -2898,36 +2735,31 @@ class Executor(BaseModule):
         return 0
 
     def _emergency_close_position(self, pos) -> bool:
-        """Emergency close a single position. Called when 9% drawdown threshold hit.
-        
-        This is the LAST DEFENSE before account closure at 10%.
-        No profit checks, no analysis - just close immediately.
-        """
         try:
             import MetaTrader5 as mt5
-            
+
             ticket = getattr(pos, "ticket", 0)
             symbol = getattr(pos, "symbol", "")
             lots = getattr(pos, "volume", 0.0)
             pos_type = getattr(pos, "type", 0)
-            
+
             self.logger.warning(
                 f"[EMERGENCY] 🚨 Closing position: ticket={ticket}, symbol={symbol}, lots={lots}"
             )
-            
+
             close_type = (
                 mt5.ORDER_TYPE_SELL
                 if pos_type == mt5.POSITION_TYPE_BUY
                 else mt5.ORDER_TYPE_BUY
             )
-            
+
             tick = mt5.symbol_info_tick(symbol)  # type: ignore[attr-defined]
             if not tick:
                 self.logger.error(f"[EMERGENCY] No tick for {symbol}")
                 return False
-                
+
             price = tick.bid if close_type == mt5.ORDER_TYPE_SELL else tick.ask
-            
+
             request = {
                 "action": mt5.TRADE_ACTION_DEAL,
                 "symbol": symbol,
@@ -2939,9 +2771,9 @@ class Executor(BaseModule):
                 "comment": "EMERGENCY_9PCT",
                 "type_filling": mt5.ORDER_FILLING_IOC,
             }
-            
+
             result = mt5.order_send(request)  # type: ignore[attr-defined]
-            
+
             if result and result.retcode == mt5.TRADE_RETCODE_DONE:
                 self.logger.warning(f"[EMERGENCY] ✅ CLOSED ticket {ticket}")
                 return True
@@ -2949,13 +2781,12 @@ class Executor(BaseModule):
                 retcode = getattr(result, "retcode", "unknown") if result else "no_result"
                 self.logger.error(f"[EMERGENCY] ❌ Failed to close {ticket}: {retcode}")
                 return False
-                
+
         except Exception as e:
             self.logger.error(f"[EMERGENCY] Exception closing position: {e}")
             return False
 
     def _close_position_by_ticket(self, ticket: int, symbol: str) -> Dict[str, Any]:
-        """Close a specific position by ticket number via MT5."""
         self.logger.debug(f"[CLOSE_TICKET] Attempting to close ticket {ticket} on {symbol}")
 
         if not self.adapter or not self.adapter.is_connected():
@@ -3022,11 +2853,6 @@ class Executor(BaseModule):
             return {"ok": False, "error": str(e)}
 
     def _partial_close_by_ticket(self, ticket: int, symbol: str, lots_to_close: float) -> Dict[str, Any]:
-        """Partially close a position by ticket - CRITICAL for MT5 hedging accounts.
-        
-        On hedging accounts, market_order() creates NEW opposing positions (hedges).
-        To reduce a position, we MUST use TRADE_ACTION_DEAL with 'position' = ticket.
-        """
         self.logger.debug(f"[PARTIAL_CLOSE] Attempting partial close: ticket={ticket}, symbol={symbol}, lots={lots_to_close}")
 
         if not self.adapter or not self.adapter.is_connected():
@@ -3045,7 +2871,7 @@ class Executor(BaseModule):
             current_lots = getattr(pos, "volume", 0.0)
             pos_type = getattr(pos, "type", 0)
 
-            # Safety check: don't close more than we have
+
             actual_close_lots = min(lots_to_close, current_lots)
             if actual_close_lots <= 0:
                 self.logger.warning(f"[PARTIAL_CLOSE] Invalid lots to close: {lots_to_close} (current: {current_lots})")
@@ -3056,7 +2882,7 @@ class Executor(BaseModule):
                 f"closing_lots={actual_close_lots}, type={'BUY' if pos_type == 0 else 'SELL'}"
             )
 
-            # Determine opposite order type for closing
+
             close_type = (
                 mt5.ORDER_TYPE_SELL
                 if pos_type == mt5.POSITION_TYPE_BUY
@@ -3066,9 +2892,9 @@ class Executor(BaseModule):
             request = {
                 "action": mt5.TRADE_ACTION_DEAL,
                 "symbol": symbol,
-                "volume": round(actual_close_lots, 2),  # Round to 2 decimals for MT5
+                "volume": round(actual_close_lots, 2),
                 "type": close_type,
-                "position": ticket,  # CRITICAL: This links to existing position instead of creating hedge
+                "position": ticket,
                 "magic": 123456,
                 "comment": "scale_down",
                 "type_filling": mt5.ORDER_FILLING_IOC,
@@ -3103,9 +2929,7 @@ class Executor(BaseModule):
             self.logger.error(f"[PARTIAL_CLOSE] Exception: {e}")
             return {"ok": False, "error": str(e)}
 
-    # ─────────────────────────────────────────────────────────
-    # bus publishing
-    # ─────────────────────────────────────────────────────────
+
     def _publish_all(
         self,
         *,
@@ -3166,7 +2990,7 @@ class Executor(BaseModule):
 
         self.bus.set("positions", pos_snap, thesis="Positions snapshot (executor)")
 
-        # Position focus context: switch experts/PPO into management mode when positions exist
+
         position_focus = PositionFocusContext.from_positions(pos_snap)
         self.bus.set(
             "position_focus_context",
@@ -3185,17 +3009,17 @@ class Executor(BaseModule):
         self.bus.set("execution_data", execution_data, thesis="Fills this step (executor)")
         self.bus.set("execution_reports", exec_fills, thesis="Fills alias (executor)")
 
-        # Per-step fills snapshot for memory system
+
         self.bus.set("current_fills", exec_fills, thesis="Current step fills (executor)")
 
-        # Per-step fills snapshot for memory system
+
         self.bus.set("current_fills", exec_fills, thesis="Current step fills (executor)")
 
-        # Closed positions & PnL aliases for downstream modules
+
         closed_positions = list(self.closed_positions)
         self.bus.set("closed_positions", closed_positions, thesis="Closed positions (executor)")
 
-        # Portfolio / PnL views
+
         self.bus.set("portfolio_metrics", portfolio_metrics, thesis="Portfolio metrics (executor)")
         self.bus.set("market_state", market_state, thesis="Market/account state (executor)")
 
@@ -3209,7 +3033,7 @@ class Executor(BaseModule):
         }
         self.bus.set("pnl_data", pnl_data, thesis="P&L alias (executor)")
 
-        # Legacy trade_data / position_data wrappers
+
         trade_data = {
             "trades": trade_ledger,
             "recent_trades": recent,
@@ -3244,7 +3068,7 @@ class Executor(BaseModule):
         self.bus.set("position_data", position_data, thesis="Position data bundle (executor)")
         self.bus.set("current_positions", pos_snap, thesis="Current positions alias (executor)")
 
-        # Account state block used by reward functions and dashboards
+
         account_state = {
             "balance": float(self.balance),
             "equity": float(self.equity),
@@ -3253,14 +3077,12 @@ class Executor(BaseModule):
         }
         self.bus.set("account_state", account_state, thesis="Account state (executor)")
 
-        # ═══════════════════════════════════════════════════════════════════
-        # FIX: Publish keys that consumers expect even when idle
-        # ═══════════════════════════════════════════════════════════════════
+
         self.bus.set("current_pnl", float(step_pnl), thesis="Current P&L (executor)")
         self.bus.set("balance", float(self.balance), thesis="Account balance (executor)")
         self.bus.set("pending_orders", accepted, thesis="Pending orders (executor)")
-        # Note: order_queue is owned by PositionManager, but we set a fallback empty list
-        # to prevent BUS MISS when PositionManager hasn't run yet
+
+
         existing_queue = self.bus.get("order_queue", "Executor", default=None)
         if existing_queue is None:
             self.bus.set("order_queue", [], thesis="Order queue fallback (executor)")
@@ -3268,7 +3090,7 @@ class Executor(BaseModule):
         trading_result = {"pnl": float(step_pnl), "step": int(self.step_idx)}
         self.bus.set("trading_result", trading_result, thesis="Per-step trading result (executor)")
 
-        # Expose live adapter status as alias (already built in _publish_adapter_status)
+
         live_adapter_status = self.bus.get(
             "live_adapter_status",
             "Executor",
@@ -3280,9 +3102,7 @@ class Executor(BaseModule):
             thesis="Live adapter status (executor refresh)",
         )
 
-    # ─────────────────────────────────────────────────────────
-    # Unified cycle logging
-    # ─────────────────────────────────────────────────────────
+
     def _log_unified_cycle(
         self,
         *,
@@ -3300,12 +3120,6 @@ class Executor(BaseModule):
         step_pnl: float,
         processing_ms: float,
     ) -> None:
-        """
-        Structured logging hook for UnifiedExecutorLogger.
-
-        Uses ExecutionCycleEntry when available; falls back to a compact log line
-        if the logger/dataclass contract changes.
-        """
         if not getattr(self, "unified_logger", None):
             return
 
@@ -3315,28 +3129,28 @@ class Executor(BaseModule):
             except Exception:
                 signature = None  # type: ignore
 
-            # Build payload matching ExecutionCycleEntry fields
+
             payload = {
-                # Step context
+
                 "step": int(self.step_idx),
                 "mode": str(mode),
                 "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                # Orders
+
                 "orders_received": int(q_count),
                 "orders_accepted": len(accepted),
                 "orders_rejected": len(rejected),
-                "rejected_reasons": {},  # Could be populated from rejected details
-                # Fills
+                "rejected_reasons": {},
+
                 "fills_count": len(fills),
-                "fills_by_instrument": {},  # Could be populated from fills
-                "total_notional": 0.0,  # Could be calculated from fills
-                # Positions
-                "positions_before": {},  # Simplified
+                "fills_by_instrument": {},
+                "total_notional": 0.0,
+
+                "positions_before": {},
                 "positions_after": positions_after or {},
                 "positions_opened": [],
                 "positions_closed": [],
                 "positions_modified": [],
-                # P&L
+
                 "balance_before": float(balance_before),
                 "balance_after": float(self.balance),
                 "equity_before": float(equity_before),
@@ -3344,12 +3158,12 @@ class Executor(BaseModule):
                 "realized_pnl": float(realized_step),
                 "unrealized_pnl": float(unreal_after),
                 "step_pnl": float(step_pnl),
-                # Trades
+
                 "trades_this_step": [],
-                # Quality
+
                 "execution_time_ms": float(processing_ms),
                 "issues": [],
-                # Details
+
                 "accepted_details": list(accepted) if accepted else [],
                 "rejected_details": list(rejected) if rejected else [],
                 "fill_details": list(fills) if fills else [],
@@ -3382,7 +3196,7 @@ class Executor(BaseModule):
                     except Exception:
                         pass
 
-            # Fallback: compact line if structured logging fails
+
             try:
                 self.logger.info(
                     f"[EXEC-CYCLE] step={self.step_idx} mode={mode} "

@@ -1,26 +1,4 @@
 #!/usr/bin/env python3
-"""
-Explain Log Auditor (Short-Term, CSV Timeline) — single-path (env), color-coded per-module correctness
-
-What this version does (by design):
-- NO env vs live comparison. Only reads env-path predictions from explain logs: `states.*`
-- Builds a full candle timeline from CSV (recommended) so realized directions are reliable even if logs are filtered
-- Scores each module on:
-  1) Your chosen horizons (e.g. M15 next candle = 1 bar, 1 hour = 4 bars)
-  2) Each predictor’s “native next candle” horizon:
-     - Committee / Experts / WM: graded on --primary-horizon (default 1 bar, i.e. next M15 candle)
-     - HTF H1: graded on 4 bars (next H1 candle)
-     - HTF H4: graded on 16 bars (next H4 candle)
-     - HTF D1: graded on 96 bars (next D1 candle)
-- Generates HTML where each per-bar prediction cell is GREEN if right, RED if wrong, GRAY if NA, YELLOW if neutral/flat ambiguity
-
-Typical short-term setup (trades < 1 hour):
-- --primary-horizon 1   (next M15 candle)
-- --eval-horizons "1,4" (15m and 60m lookahead)
-
-Usage example (one line):
-  python explain_audit_shortterm.py --input "C:\\Users\\Kushtrimi\\Desktop\\AI\\logs\\explain" --recursive --dataset-dir "C:\\Users\\Kushtrimi\\Desktop\\AI\\data\\processed" --instrument XAUUSD --timeframe M15 --eval-horizons "1,4" --primary-horizon 1
-"""
 
 from __future__ import annotations
 
@@ -35,7 +13,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-# ------------------------- helpers -------------------------
 
 def parse_iso(ts: str) -> Optional[datetime]:
     try:
@@ -45,9 +22,8 @@ def parse_iso(ts: str) -> Optional[datetime]:
 
 
 def minute_key(ts: datetime) -> int:
-    """Epoch-minute key for stable joins across TZ offsets / DST."""
     if ts.tzinfo is None:
-        # treat naive timestamps as UTC to keep deterministic keys
+
         ts = ts.replace(tzinfo=timezone.utc)
     return int(ts.timestamp() // 60)
 
@@ -91,7 +67,7 @@ def verdict(pred: Optional[int], realized: Optional[int]) -> str:
         return "NA"
     if pred == realized:
         return "RIGHT"
-    # Neutral predictions / neutral realizations are “ambiguous” for trading
+
     if pred == 0 or realized == 0:
         return "NEUTRAL"
     return "WRONG"
@@ -100,8 +76,6 @@ def verdict(pred: Optional[int], realized: Optional[int]) -> str:
 def esc(x: Any) -> str:
     return html.escape("" if x is None else str(x))
 
-
-# ------------------------- data models -------------------------
 
 @dataclass
 class Candle:
@@ -124,34 +98,32 @@ class BarAudit:
     decision_ts: Optional[datetime]
     latest_ts: Optional[datetime]
 
-    # close at decision bar
+
     decision_close: Optional[float] = None
 
-    # predictions (env path only)
+
     committee_action: Optional[str] = None
     committee_pred: Optional[int] = None
 
-    experts_pred: Dict[str, Optional[int]] = field(default_factory=dict)  # trend/momentum/theme/seasonality
-    htf_pred: Dict[str, Optional[int]] = field(default_factory=dict)      # H1/H4/D1
+    experts_pred: Dict[str, Optional[int]] = field(default_factory=dict)
+    htf_pred: Dict[str, Optional[int]] = field(default_factory=dict)
     wm_price_pred: Optional[int] = None
     wm_scenario_pred: Optional[int] = None
 
     wm_inconsistent: bool = False
     hard_block_reasons: List[str] = field(default_factory=list)
 
-    # context for grouping / scan
+
     market_regime: Optional[str] = None
     zone_type: Optional[str] = None
     vol_state: Optional[str] = None
     in_prime_window: Optional[bool] = None
     hour_normalized: Optional[float] = None
 
-    # computed later
+
     horizon_delta: Dict[int, Optional[float]] = field(default_factory=dict)
     horizon_realized: Dict[int, Optional[int]] = field(default_factory=dict)
 
-
-# ------------------------- input collection -------------------------
 
 def collect_inputs(input_arg: str, recursive: bool = False) -> List[str]:
     if os.path.isdir(input_arg):
@@ -164,9 +136,7 @@ def collect_inputs(input_arg: str, recursive: bool = False) -> List[str]:
     return sorted(glob.glob(input_arg))
 
 
-# ------------------------- CSV timeline (recommended) -------------------------
-
-Timeline = Dict[int, Candle]  # epoch-minute -> Candle
+Timeline = Dict[int, Candle]
 
 
 def _get_time_col(columns: Sequence[str]) -> str:
@@ -182,7 +152,7 @@ def _parse_dt_any(s: Any) -> Optional[datetime]:
     if not ss:
         return None
 
-    # unix seconds / ms (common in exported data)
+
     if ss.isdigit():
         try:
             iv = int(ss)
@@ -193,12 +163,12 @@ def _parse_dt_any(s: Any) -> Optional[datetime]:
         except Exception:
             pass
 
-    # ISO-ish
+
     dt = parse_iso(ss)
     if dt is not None:
         return dt
 
-    # last resort: attempt a couple formats
+
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y.%m.%d %H:%M:%S", "%d.%m.%Y %H:%M:%S"):
         try:
             return datetime.strptime(ss, fmt).replace(tzinfo=timezone.utc)
@@ -219,7 +189,7 @@ def _resolve_csv_path(dataset_dir: Path, instrument: str, tf: str, dataset_metad
         except Exception:
             meta = {}
 
-    # metadata-driven resolution (optional)
+
     if isinstance(meta, dict):
         files = meta.get("files", {})
         if isinstance(files, dict):
@@ -236,7 +206,7 @@ def _resolve_csv_path(dataset_dir: Path, instrument: str, tf: str, dataset_metad
                     if (dataset_dir / cand.name).exists():
                         return dataset_dir / cand.name
 
-    # common fallbacks
+
     for name in (
         f"{sym}_{tfu}_features.csv",
         f"{sym}_{tfu}.csv",
@@ -246,7 +216,7 @@ def _resolve_csv_path(dataset_dir: Path, instrument: str, tf: str, dataset_metad
         if p.exists():
             return p
 
-    # last resort: glob match
+
     hits = list(dataset_dir.glob(f"{sym}*{tfu}*.csv"))
     return hits[0] if hits else None
 
@@ -319,8 +289,6 @@ def infer_bar_step_minutes(timeline: Timeline, fallback: int = 15) -> int:
     return max(counts.items(), key=lambda kv: kv[1])[0]
 
 
-# ------------------------- horizon realized -------------------------
-
 def compute_horizon_realized(audits: List[BarAudit], timeline: Timeline, horizons: List[int], step_minutes: int) -> None:
     for a in audits:
         if not a.decision_ts or a.decision_close is None:
@@ -341,8 +309,6 @@ def compute_horizon_realized(audits: List[BarAudit], timeline: Timeline, horizon
             a.horizon_delta[h] = d
             a.horizon_realized[h] = sign(d)
 
-
-# ------------------------- predictor routing -------------------------
 
 PredictorKey = str
 
@@ -379,7 +345,7 @@ def pred_for(a: BarAudit, key: PredictorKey) -> Optional[int]:
 
 
 def natural_horizon_for_predictor(key: PredictorKey) -> Optional[int]:
-    # M15 primary assumed
+
     if key == "htf:H1":
         return 4
     if key == "htf:H4":
@@ -434,8 +400,6 @@ def acc_for_native_next_candle(
     return r, t, p, h
 
 
-# ------------------------- audit extraction (per file) -------------------------
-
 def _best_effort_decision_latest_ts(j: Dict[str, Any]) -> Tuple[Optional[datetime], Optional[datetime], str, str]:
     decision_bar = str(safe_get(j, ["meta", "decision_bar"], "")) or ""
     latest_bar = str(safe_get(j, ["meta", "latest_bar"], "")) or ""
@@ -466,14 +430,14 @@ def _parse_env_predictions(j: Dict[str, Any]) -> Tuple[
     Dict[str, Optional[int]],
     Optional[int], Optional[int], bool
 ]:
-    # committee
+
     committee_action = safe_get(j, ["states", "committee_state", "action"])
     if committee_action is None:
         committee_action = safe_get(j, ["states", "committee_state", "direction"])
     committee_action_s = str(committee_action) if isinstance(committee_action, str) else None
     committee_pred = normalize_action(committee_action_s) if committee_action_s else None
 
-    # experts
+
     experts_pred: Dict[str, Optional[int]] = {}
     experts = safe_get(j, ["states", "expert_signals", "experts"], {})
     if isinstance(experts, dict):
@@ -482,7 +446,7 @@ def _parse_env_predictions(j: Dict[str, Any]) -> Tuple[
             p = dir_from_label(direction) if isinstance(direction, str) else None
             experts_pred[name] = p
 
-    # HTF experts
+
     htf_pred: Dict[str, Optional[int]] = {}
     htf = safe_get(j, ["states", "expert_signals", "htf_experts"], {})
     if isinstance(htf, dict):
@@ -491,7 +455,7 @@ def _parse_env_predictions(j: Dict[str, Any]) -> Tuple[
             p = dir_from_label(td) if isinstance(td, str) else None
             htf_pred[htf_tf] = p
 
-    # world model preds
+
     wm_price_pred = None
     price_changes = safe_get(
         j,
@@ -556,7 +520,7 @@ def audit_one(path: str, tf: str = "M15") -> Optional[BarAudit]:
     except Exception:
         hour_norm_f = None
 
-    # decision_close (prefer labels, fallback to states.market_state)
+
     decision_close: Optional[float] = None
     dc = safe_get(j, ["labels", "decision_close"])
     if isinstance(dc, (int, float)):
@@ -578,7 +542,7 @@ def audit_one(path: str, tf: str = "M15") -> Optional[BarAudit]:
             except Exception:
                 decision_close = None
 
-    # env preds
+
     (
         committee_action_s,
         committee_pred,
@@ -613,8 +577,6 @@ def audit_one(path: str, tf: str = "M15") -> Optional[BarAudit]:
         hour_normalized=hour_norm_f,
     )
 
-
-# ------------------------- outputs -------------------------
 
 def write_html(
     rows: List[BarAudit],
@@ -706,7 +668,7 @@ def write_html(
         return "\n".join(lines)
 
     def native_next_candle_table() -> str:
-        # This is the “next candle in every timeframe” view.
+
         lines: List[str] = []
         lines.append("<h2>Accuracy — next candle in each module’s timeframe</h2>")
         lines.append("<p class='small'>Committee/Experts/WM are graded on the primary horizon (H"
@@ -726,7 +688,7 @@ def write_html(
         lines.append("</tbody></table>")
         return "\n".join(lines)
 
-    # Report header
+
     lines: List[str] = []
     lines.append("<!doctype html><html><head><meta charset='utf-8'/>")
     lines.append(f"<title>{esc(title)}</title><style>{css}</style></head><body>")
@@ -738,13 +700,12 @@ def write_html(
         f"WM inconsistent (env): <b>{wm_incons}</b></p>"
     )
 
-    # Tables
+
     lines.append(native_next_candle_table())
     for h in eval_horizons:
         lines.append(summary_table_for_horizon(h))
 
-    # Per-bar detail
-    # We show realized columns for 1,4,16 by default if present in computed horizons.
+
     show_realized_h = [h for h in [1, 4, 16] if any(h in a.horizon_realized for a in rows)]
     lines.append("<h2>Per-bar detail — color-coded correctness</h2>")
     lines.append("<p class='small'>Each module cell is colored using its own evaluation horizon: "
@@ -791,8 +752,6 @@ def write_html(
         f.write("\n".join(lines))
 
 
-# ------------------------- main -------------------------
-
 def parse_horizons(s: str) -> List[int]:
     out: List[int] = []
     for part in str(s).split(","):
@@ -816,7 +775,7 @@ def main() -> None:
     ap.add_argument("--title", default="Explain Audit Report (Short-Term)", help="HTML report title.")
     ap.add_argument("--timeframe", default="M15", help="Primary timeframe key (default: M15).")
 
-    # short-term scoring
+
     ap.add_argument("--primary-horizon", type=int, default=1,
                     help="Horizon (in M15 bars) used to grade committee/experts/WM (default: 1 = next M15 candle).")
     ap.add_argument("--eval-horizons", default="1,4",
@@ -824,7 +783,7 @@ def main() -> None:
     ap.add_argument("--include_flats", action="store_true",
                     help="Include flat realized bars in accuracy counts (default: False).")
 
-    # CSV timeline (recommended)
+
     ap.add_argument("--dataset-dir", required=True, help="Directory containing processed OHLCV CSVs.")
     ap.add_argument("--instrument", required=True, help="Instrument symbol for CSV timeline (e.g., XAUUSD).")
     ap.add_argument("--dataset-metadata", default=None,
@@ -846,7 +805,7 @@ def main() -> None:
             outdir = os.getcwd()
     os.makedirs(outdir, exist_ok=True)
 
-    # timeline from CSV
+
     timeline = build_timeline_from_csv(
         dataset_dir=str(args.dataset_dir),
         instrument=instrument,
@@ -856,7 +815,7 @@ def main() -> None:
 
     step_minutes = infer_bar_step_minutes(timeline, fallback=15)
 
-    # parse audits
+
     audits: List[BarAudit] = []
     for p in paths:
         a = audit_one(p, tf=tf)
@@ -868,7 +827,7 @@ def main() -> None:
     eval_horizons = parse_horizons(args.eval_horizons)
     primary_h = int(args.primary_horizon)
 
-    # ensure we can compute realized for horizons we need (eval + native HTF + primary)
+
     needed = set(eval_horizons + [primary_h, 4, 16, 96])
     compute_horizon_realized(audits, timeline, sorted(needed), step_minutes)
 

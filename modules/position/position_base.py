@@ -1,11 +1,4 @@
-# -------------------------------------------------------------
-# File: modules/position/position_base.py
-# PositionManagerBase — infrastructure, logging, safety gates,
-# P&L peak tracking, and SmartInfoBus I/O utilities.
-#
-# Part 2 will provide the subclass "PositionManager" with the
-# decision logic, sizing, and profit-take / loss-cut application.
-# -------------------------------------------------------------
+
 
 from __future__ import annotations
 
@@ -23,8 +16,6 @@ from typing import Any, Awaitable, Dict, List, Optional, Tuple, TypeVar, Union, 
 import numpy as np
 
 from envs.core.config import TradingConfig
-
-# Core infra
 from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
 from modules.core.mixins import (
     SmartInfoBusRiskMixin,
@@ -37,13 +28,9 @@ from modules.utils.audit_utils import AuditConfiguration, RotatingLogger, format
 from modules.utils.info_bus import InfoBusManager
 from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 
-# Debug system
 from .position_debug import DebugLevel, PositionDebugSystem
 from .position_logger import UnifiedPositionLogger
 
-# ===============================
-# Debug / decision scaffolding
-# ===============================
 
 class ActionType(Enum):
     BUY = "BUY"
@@ -85,9 +72,6 @@ class DebugSnapshot:
         return asdict(self)
 
 
-# ===============================
-# Async helper
-# ===============================
 T_co = TypeVar("T_co")
 
 
@@ -97,20 +81,17 @@ async def _maybe_await(x: Union[Awaitable[T_co], T_co]) -> T_co:
     return cast(T_co, x)
 
 
-# ===============================
-# Decision payloads
-# ===============================
 @dataclass
 class SignalContext:
     instrument: str
     market_intensity: float = 0.0
-    market_direction: int = 0  # -1, 0, 1
+    market_direction: int = 0
     volatility: float = 0.02
     trend_strength: float = 0.0
     momentum: float = 0.0
     volume_profile: float = 1.0
     correlation_penalty: float = 0.0
-    regime: str = "normal"  # normal, volatile, trending, ranging
+    regime: str = "normal"
     liquidity_score: float = 1.0
     session: str = "unknown"
     current_exposure: float = 0.0
@@ -132,17 +113,10 @@ class PositionDecisionResult:
     context: SignalContext
 
 
-# ===============================================================
-# Shared logger to keep file handlers stable across instances
-# ===============================================================
 _PM_SHARED_LOGGER: Optional[RotatingLogger] = None
 
 
-# ===============================================================
-# Profit / loss peak tracking for trailing take-profit
-# ===============================================================
 class ProfitTracker:
-    """Tracks per-instrument running P&L peaks for trailing profit logic."""
 
     def __init__(self) -> None:
         self._peak: Dict[str, float] = defaultdict(float)
@@ -160,11 +134,6 @@ class ProfitTracker:
         return float(self._last_pnl[instrument])
 
     def reset(self, instrument: str) -> None:
-        """
-        Reset peak tracking for an instrument when position is closed.
-        CRITICAL: Must be called when a position closes to prevent stale peaks
-        from affecting new positions on the same instrument.
-        """
         self._peak[instrument] = 0.0
         self._last_pnl[instrument] = 0.0
 
@@ -178,7 +147,7 @@ class ProfitTracker:
         peak = self._peak[instrument]
         cur = self._last_pnl[instrument]
 
-        # Require positive, meaningful peak profit
+
         if peak < max(0.0, min_activation_eur):
             return False
         if peak <= 0.0:
@@ -187,23 +156,15 @@ class ProfitTracker:
         draw = peak - cur
         drop_pct = draw / peak
 
-        # Require both a meaningful retrace and degrading favorability
+
         return (drop_pct >= max(0.0, trailing_pct)) and bool(favors_down)
 
 
-# ===============================================================
-# Base Manager (no decorator). Subclass & decorate in Part 2.
-# ===============================================================
 class PositionManagerBase(
     BaseModule, SmartInfoBusTradingMixin, SmartInfoBusRiskMixin, SmartInfoBusStateMixin
 ):
-    """
-    Base layer: SmartBus I/O, logging, safety gates, profit-tracking, and
-    generic process() flow that calls abstract decision hooks provided in Part 2.
-    """
 
-    # Fields that should NOT be passed to TradingConfig.__init__()
-    # These are internal fields with init=False or env-specific fields
+
     _CONFIG_NON_INIT_FIELDS = frozenset({
         "_risk_policy_loaded",
         "max_steps_per_episode",
@@ -211,10 +172,9 @@ class PositionManagerBase(
 
     @classmethod
     def _sanitize_config_dict(cls, cfg: Dict[str, Any]) -> Dict[str, Any]:
-        """Remove fields that are not valid __init__ parameters for TradingConfig."""
         return {k: v for k, v in cfg.items() if k not in cls._CONFIG_NON_INIT_FIELDS}
 
-    # ---------- lifecycle
+
     def __init__(
         self,
         config: Optional[TradingConfig | Dict[str, Any]] = None,
@@ -224,14 +184,14 @@ class PositionManagerBase(
         debug_log_dir: str = "logs/debug",
         **kwargs: Any,
     ):
-        # Debugger: heavy output only in files, not on console
-        debug_verbosity = DebugLevel.CRITICAL  # Only log critical errors by default
+
+        debug_verbosity = DebugLevel.CRITICAL
         self.debugger = PositionDebugSystem(
             log_dir=debug_log_dir,
             enable=enable_debug,
             verbosity=debug_verbosity,
-            console_output=False,       # No console spam
-            file_output=enable_debug,   # CSV/JSON output only
+            console_output=False,
+            file_output=enable_debug,
         )
 
         self._instruments_forced = instruments is not None
@@ -239,10 +199,10 @@ class PositionManagerBase(
         self.genome = genome or {}
         self.env = None
 
-        # Base module init (may set metadata, etc.)
+
         super().__init__()
 
-        # Config wiring (robust against missing fields)
+
         if isinstance(config, TradingConfig):
             self.C: TradingConfig = config
         elif isinstance(config, dict):
@@ -253,12 +213,12 @@ class PositionManagerBase(
         self.config: Dict[str, Any] = dict(self.C.__dict__)
         self.default_max_pct = self.Cval("max_position_pct", 0.10)
 
-        # Runtime toggles
+
         self.enable_legacy_bus_signal_probe = bool(
             self.config.get("enable_legacy_bus_signal_probe", False)
         )
         raw_bus_signal_flag = self.config.get("use_bus_instrument_signals")
-        # Default: True unless explicitly disabled
+
         self.use_bus_instrument_signals = (
             True if raw_bus_signal_flag is None else bool(raw_bus_signal_flag)
         )
@@ -266,7 +226,7 @@ class PositionManagerBase(
             self.config.get("debug", False) or self.config.get("debug_decisions", False)
         )
 
-        # Robust systems & runtime state
+
         self._initialize_advanced_systems()
         self._sync_from_bus_env()
         self._initialize_genome_parameters(genome)
@@ -274,7 +234,7 @@ class PositionManagerBase(
         self._initialize_position_tracking()
         self._start_monitoring()
 
-        # One-time init logging (debounced)
+
         if not getattr(self, "_init_logged", False):
             bal, _ = self._read_balance_and_drawdown()
             self.logger.info(
@@ -295,7 +255,6 @@ class PositionManagerBase(
             self._init_logged = True
 
     def _initialize(self, **kwargs: Any) -> None:
-        """Module-system friendly re-init, with debounced logs and state preservation."""
         cfg_in = kwargs.get("config", None)
 
         if isinstance(cfg_in, TradingConfig):
@@ -330,11 +289,11 @@ class PositionManagerBase(
         self._initialize_advanced_systems()
         self._sync_from_bus_env()
         self._initialize_genome_parameters(self.genome)
-        # Preserve analytics where possible
+
         self._initialize_position_state(reset_hist_only=True)
         self._initialize_position_tracking(recreate=False)
 
-        # Re-init banner
+
         bal, _ = self._read_balance_and_drawdown()
         self.logger.info(
             format_operator_message(
@@ -347,20 +306,19 @@ class PositionManagerBase(
             )
         )
 
-    # ---------- config helper
+
     def Cval(self, key: str, default: Any) -> Any:
-        """Safe config accessor with sane fallbacks."""
         try:
             v = getattr(self.C, key)
             return v if v is not None else default
         except Exception:
             return default
 
-    # ---------- systems
+
     def _initialize_advanced_systems(self) -> None:
         self.smart_bus = InfoBusManager.get_instance()
-        
-        # FIX: Publish default order_queue immediately to prevent BUS MISS
+
+
         try:
             existing = self.smart_bus.get("order_queue", "PositionManager", default=None)
             if existing is None:
@@ -394,7 +352,7 @@ class PositionManagerBase(
             )
         self.logger = _PM_SHARED_LOGGER
 
-        # Ensure the debugger mirrors into the shared logger if available
+
         try:
             if hasattr(self, "debugger") and self.debugger:
                 attach_fn = getattr(self.debugger, "attach_shared_logger", None)
@@ -409,10 +367,10 @@ class PositionManagerBase(
         self.system_utilities = SystemUtilities()
         self.performance_tracker = PerformanceTracker()
 
-        # Unified logger for clean, structured logs
+
         self.unified_logger = UnifiedPositionLogger(self.logger, self.smart_bus)
 
-        # Simple circuit breaker scaffold for future use
+
         self.circuit_breaker = {
             "failures": 0,
             "last_failure": 0,
@@ -424,7 +382,6 @@ class PositionManagerBase(
         self._scale_cooldown_until: Dict[str, float] = defaultdict(float)
 
     def _start_monitoring(self) -> None:
-        """Background loop that periodically updates portfolio health."""
         if getattr(self, "_monitoring_active", False):
             return
 
@@ -437,7 +394,7 @@ class PositionManagerBase(
                         self.logger.warning(f"Position monitoring error: {inner_e}")
                     time.sleep(30)
             except Exception as e:
-                # Last-resort guard; monitoring should never crash the process
+
                 self.logger.error(f"Monitoring loop failure: {e}")
 
         self._monitoring_active = True
@@ -459,17 +416,17 @@ class PositionManagerBase(
     def _initialize_position_state(self, reset_hist_only: bool = False) -> None:
         if not reset_hist_only:
             self.consecutive_losses = 0
-            # Track consecutive scale-downs per instrument
+
             self.consecutive_scale_downs: Dict[str, int] = defaultdict(int)
             self.open_positions: Dict[str, Dict[str, Any]] = {}
-            # Trade cooldown to prevent rapid-fire trading
+
             self._last_new_position_time: Dict[str, float] = {}
             self._trade_cooldown_seconds = float(
                 self.config.get("trade_cooldown_seconds", 60.0)
             )
-            # Startup grace period: skip signal-based exits until signals stabilize
+
             self._process_call_count: int = 0
-            self._startup_grace_calls: int = 3  # Same as SmartPositionManager
+            self._startup_grace_calls: int = 3
 
         self._decision_history = deque(maxlen=100)
         self._portfolio_health_history = deque(maxlen=50)
@@ -500,7 +457,7 @@ class PositionManagerBase(
             self._position_performance: Dict[str, Dict[str, Any]] = {}
             self._exit_signals: Dict[str, List[Dict[str, Any]]] = {}
 
-    # ---------- bus execution interface (hook)
+
     def _publish_bus_feeds(
         self,
         balance: float,
@@ -510,14 +467,9 @@ class PositionManagerBase(
         execution_data: Optional[Dict[str, Any]] = None,
         order_data: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """
-        Hook for external infra (e.g. dashboards, observers).
-        The base implementation is a no-op by design.
-        """
         return
 
     def _refresh_positions_from_bus(self) -> None:
-        """Synchronise open_positions with canonical bus representation."""
         try:
             pos = self.smart_bus.get("positions", "PositionManager")
             if not isinstance(pos, dict):
@@ -527,7 +479,7 @@ class PositionManagerBase(
                 try:
                     side_val = p.get("side", 0)
                     units = float(p.get("units", 0.0) or 0.0)
-                    # Prefer explicit side, otherwise derive from units
+
                     side = int(np.sign(side_val if side_val != 0 else units))
                     entry = float(p.get("entry_price", 0.0) or 0.0)
                     notional = float(p.get("notional_eur", abs(units) * entry) or 0.0)
@@ -542,7 +494,7 @@ class PositionManagerBase(
                     continue
             self.open_positions = new_positions
         except Exception:
-            # As a safety net, preserve last known self.open_positions
+
             pass
 
     def _get_unrealised_pnl_from_bus(self, inst: str) -> float:
@@ -556,9 +508,8 @@ class PositionManagerBase(
             pass
         return 0.0
 
-    # ---------- env alignment
+
     def _sync_from_bus_env(self) -> None:
-        """Align config / instruments with environment_config, with safe overrides."""
         try:
             env_cfg = self.smart_bus.get("environment_config", "PositionManager")
             if not isinstance(env_cfg, dict):
@@ -600,11 +551,10 @@ class PositionManagerBase(
 
             self.default_max_pct = self.Cval("max_position_pct", 0.10)
         except Exception:
-            # Non-fatal; falls back to local config
+
             pass
 
     def _read_balance_and_drawdown(self) -> Tuple[float, float]:
-        """Read balance and drawdown with priority: portfolio_metrics > market_state > env override."""
         balance = float(self.C.initial_balance)
         drawdown = 0.0
 
@@ -637,7 +587,7 @@ class PositionManagerBase(
 
         return balance, drawdown
 
-    # ---------- orders
+
     def _build_order(
         self,
         instrument: str,
@@ -648,15 +598,14 @@ class PositionManagerBase(
         rationale: Dict[str, Any],
         reduce_only: bool = False,
     ) -> Dict[str, Any]:
-        """Construct a normalized order payload understood by Env/Executor."""
         order_id = str(uuid.uuid4())
         order = {
             "id": order_id,
             "ts": _dt.datetime.utcnow().isoformat() + "Z",
             "source": "PositionManager",
             "instrument": instrument,
-            "side": int(np.sign(side)),  # +1 buy / -1 sell
-            "intent": intent,            # 'open' | 'scale_up' | 'scale_down' | 'close' | 'emergency_close'
+            "side": int(np.sign(side)),
+            "intent": intent,
             "size_eur": float(max(0.0, abs(size_eur))),
             "reduce_only": bool(reduce_only),
             "confidence": float(np.clip(confidence, 0.0, 1.0)),
@@ -668,23 +617,11 @@ class PositionManagerBase(
         return order
 
     def _get_strategy_confidence_boost(self) -> Tuple[float, str]:
-        """
-        Read strategy module outputs and calculate a confidence boost.
-
-        Returns:
-            (boost_amount, reason) - boost is -0.10 to +0.15, reason explains why.
-
-        Strategy signals that can boost confidence:
-        - market_thesis with high confidence
-        - best_thesis strong hypothesis
-        - bias_analysis showing no harmful biases
-        - trading_mode == "aggressive" or "normal" (boost) or "defensive" (penalty)
-        """
         boost = 0.0
         reasons: List[str] = []
 
         try:
-            # 1. Market thesis boost (from ThesisEvolutionEngine)
+
             market_thesis = self.smart_bus.get("market_thesis", "PositionManager")
             if isinstance(market_thesis, dict):
                 thesis_conf = float(market_thesis.get("confidence", 0.0) or 0.0)
@@ -693,7 +630,7 @@ class PositionManagerBase(
                     boost += 0.05
                     reasons.append(f"thesis:{thesis_direction}@{thesis_conf:.0%}")
 
-            # 2. Best thesis boost (strongest current hypothesis)
+
             best_thesis = self.smart_bus.get("best_thesis", "PositionManager")
             if isinstance(best_thesis, dict):
                 best_conf = float(best_thesis.get("confidence", 0.0) or 0.0)
@@ -701,29 +638,29 @@ class PositionManagerBase(
                     boost += 0.05
                     reasons.append(f"best_thesis@{best_conf:.0%}")
 
-            # 3. Bias analysis (from BiasAuditor) - boost if no dangerous biases
+
             bias_analysis = self.smart_bus.get("bias_analysis", "PositionManager")
             if isinstance(bias_analysis, dict):
-                # BiasAuditor outputs 'individual_biases' dict with bias_type -> strength
+
                 individual_biases = bias_analysis.get("individual_biases", {})
                 aggregate = bias_analysis.get("aggregate_metrics", {})
                 total_bias_score = aggregate.get("total_bias_score", 0.0)
 
                 if total_bias_score > 1.0:
-                    # High bias score = penalty
+
                     boost -= 0.05
                     reasons.append(f"bias_penalty:{total_bias_score:.2f}")
                 elif total_bias_score < 0.3 and not individual_biases:
                     boost += 0.03
                     reasons.append("no_severe_bias")
 
-            # 3b. Bias adjustments (position size multipliers from BiasAuditor)
+
             bias_adjustments = self.smart_bus.get("bias_adjustments", "PositionManager")
             if isinstance(bias_adjustments, dict):
-                # Find the minimum adjustment (most restrictive bias)
+
                 min_adjustment = min(bias_adjustments.values()) if bias_adjustments else 1.0
                 if min_adjustment < 0.8:
-                    # Significant bias detected - apply penalty
+
                     penalty = (1.0 - min_adjustment) * 0.1
                     boost -= penalty
                     dominant_bias = (
@@ -733,7 +670,7 @@ class PositionManagerBase(
                     )
                     reasons.append(f"bias_adj:{dominant_bias}@{min_adjustment:.0%}")
 
-            # 4. Trading mode boost (from TradingModeManager)
+
             trading_mode = self.smart_bus.get("trading_mode", "PositionManager")
             if isinstance(trading_mode, str):
                 mode_l = trading_mode.lower()
@@ -748,34 +685,18 @@ class PositionManagerBase(
             if self.debug:
                 self.logger.debug(f"[STRATEGY] Boost calculation error: {e}")
 
-        # Cap the boost
+
         boost = max(-0.10, min(0.15, boost))
         reason = ", ".join(reasons) if reasons else "no_strategy_signals"
         return boost, reason
 
     def _check_voting_consensus(self) -> bool:
-        """
-        SIMPLIFIED RISK-ONLY CONSENSUS GATE (v3.3.0 - PPO MASTER).
-
-        ═══════════════════════════════════════════════════════════════════
-        PPO IS THE MASTER DECISION MAKER.
-        Experts and voting system are ADVISORY ONLY - they do NOT block PPO.
-        ═══════════════════════════════════════════════════════════════════
-
-        This gate ONLY checks for hard safety blocks:
-        1. RISK VETOES: DynamicRiskController/PortfolioRiskSystem HALT/EMERGENCY
-
-        REMOVED: ABSTAIN check - experts cannot block PPO decisions.
-        PPO makes all trading decisions. Experts provide context/signals only.
-        """
         if not bool(self.config.get("require_voting_consensus", True)):
             return True
 
         try:
-            # ═══════════════════════════════════════════════════════════════════
-            # CHECK 1: RISK VETO - Hard safety gate (ONLY blocking check)
-            # If any risk module (DynamicRiskController, etc.) says HALT/EMERGENCY
-            # ═══════════════════════════════════════════════════════════════════
+
+
             expert_votes = self.smart_bus.get("expert_votes", "PositionManager")
             if isinstance(expert_votes, list):
                 risk_voters = [
@@ -796,7 +717,7 @@ class PositionManagerBase(
                     action = str(vote_obj.get("action", "")).lower()
                     confidence = float(vote.get("confidence", 0.0) or 0.0)
 
-                    # Only block on high-confidence risk vetoes
+
                     if expert in risk_voters and action in RISK_BLOCK_ACTIONS and confidence > 0.7:
                         if self.debug:
                             self.logger.debug(
@@ -804,15 +725,7 @@ class PositionManagerBase(
                             )
                         return False
 
-            # ═══════════════════════════════════════════════════════════════════
-            # REMOVED: ABSTAIN check (v3.3.0)
-            # PPO is MASTER - experts/voting are ADVISORY ONLY.
-            # Experts cannot block PPO decisions via ABSTAIN votes.
-            # ═══════════════════════════════════════════════════════════════════
 
-            # ═══════════════════════════════════════════════════════════════════
-            # CHECK 2: EXTREME FRAGILITY WARNING (advisory only - does NOT block)
-            # ═══════════════════════════════════════════════════════════════════
             fragility = 0.0
             try:
                 inst_frag = self.smart_bus.get("instrument_fragility", "PositionManager")
@@ -830,31 +743,20 @@ class PositionManagerBase(
                     f"[GATE] ⚠️ HIGH FRAGILITY WARNING: {fragility:.2f} - proceeding anyway"
                 )
 
-            # ═══════════════════════════════════════════════════════════════════
-            # DEFAULT: ALLOW - PPO is master, experts are advisory only
-            # ═══════════════════════════════════════════════════════════════════
+
             return True
 
         except Exception as e:
             if self.debug:
                 self.logger.warning(f"[GATE] Consensus check error: {e}")
-            # On error, default to allowing (fail-open for trading, not fail-closed)
+
             return True
 
     def _check_trade_cooldown(self, instrument: str, intent: str) -> bool:
-        """
-        Check if we are in a cooldown period for this instrument.
-        Returns True if trade is ALLOWED, False if still in cooldown.
-
-        Only applies to new position opens, not closes or scale operations.
-
-        Uses step-based cooldown in simulation mode (fast training) or
-        real-time cooldown in live mode.
-        """
         if intent not in ("open", "open_long", "open_short"):
-            return True  # Closes and scales are always allowed
+            return True
 
-        # Check execution mode - use step-based cooldown for training
+
         exec_mode = "simulation"
         try:
             exec_mode = str(
@@ -865,7 +767,7 @@ class PositionManagerBase(
             pass
 
         if exec_mode in ("live", "paper"):
-            # Real-time cooldown for live trading
+
             now = time.time()
             last_trade = getattr(self, "_last_new_position_time", {}).get(
                 instrument, 0.0
@@ -880,7 +782,7 @@ class PositionManagerBase(
                     )
                 return False
         else:
-            # Step-based cooldown for simulation/training
+
             current_step = 0
             try:
                 current_step = int(
@@ -906,12 +808,11 @@ class PositionManagerBase(
         return True
 
     def _record_trade_time(self, instrument: str) -> None:
-        """Record when a new position was opened for cooldown tracking."""
         if not hasattr(self, "_last_new_position_time"):
             self._last_new_position_time = {}
         self._last_new_position_time[instrument] = time.time()
 
-        # Also record step-based for simulation mode
+
         if not hasattr(self, "_last_new_position_step"):
             self._last_new_position_step = {}
         try:
@@ -923,10 +824,6 @@ class PositionManagerBase(
             self._last_new_position_step[instrument] = 0
 
     def _enqueue_orders(self, orders: List[Dict[str, Any]]) -> None:
-        """
-        Append orders to shared 'order_queue' with consensus gate,
-        cooldown, and safety exceptions.
-        """
         if not orders:
             return
 
@@ -936,7 +833,7 @@ class PositionManagerBase(
         )
 
         try:
-            # STEP 1: Apply cooldown filter for new positions
+
             cooldown_filtered: List[Dict[str, Any]] = []
             for o in orders:
                 intent = o.get("intent", "")
@@ -951,7 +848,7 @@ class PositionManagerBase(
             if not orders:
                 return
 
-            # STEP 2: If no consensus, only allow reduce-only orders
+
             if not have_consensus:
                 safe = [o for o in orders if bool(o.get("reduce_only"))]
                 blocked = len(orders) - len(safe)
@@ -1004,7 +901,7 @@ class PositionManagerBase(
                 if not orders:
                     return
 
-            # STEP 3: Enqueue orders and record cooldown times
+
             existing = self.smart_bus.get("order_queue", "PositionManager")
             if not isinstance(existing, list):
                 existing = []
@@ -1015,7 +912,7 @@ class PositionManagerBase(
                 if oid not in existing_ids:
                     existing.append(o)
                     existing_ids.add(oid)
-                    # Record trade time for cooldown (only for new position opens)
+
                     intent = o.get("intent", "")
                     if intent in ("open", "open_long", "open_short"):
                         self._record_trade_time(o.get("instrument", ""))
@@ -1032,53 +929,30 @@ class PositionManagerBase(
             self.logger.error(f"Failed to enqueue orders: {e}")
 
     def _is_signal_valid_for_exits(self) -> bool:
-        """
-        Check if signals have been calculated enough times to trust signal-based exits.
-        
-        This prevents closing positions on startup when signals haven't stabilized yet.
-        Same logic as SmartPositionManager._startup_grace_calls.
-        """
         count = getattr(self, "_process_call_count", 0)
         grace = getattr(self, "_startup_grace_calls", 3)
         return count > grace
 
     def _check_cooldown(self, instrument: str) -> bool:
-        """
-        Check if the instrument is past its trade cooldown period.
-        
-        Returns True if trading is allowed (cooldown expired or never traded).
-        Returns False if still in cooldown (should wait before new entry).
-        """
         last_trade_times = getattr(self, "_last_new_position_time", {})
         cooldown_seconds = getattr(self, "_trade_cooldown_seconds", 60.0)
-        
+
         last_trade = last_trade_times.get(instrument)
         if last_trade is None:
-            return True  # Never traded this instrument, allow
-        
+            return True
+
         elapsed = time.time() - last_trade
         return elapsed >= cooldown_seconds
 
-    # ---------- process() — calls abstract decision pipeline provided by Part 2
-    async def process(self, **inputs: Any) -> Dict[str, Any]:
-        """
-        Main processing flow.
 
-        Part 2 provides `process_market_signals()` and produces decisions.
-        This layer handles:
-        - Market snapshot assembly (inputs + bus)
-        - Time-budgeted decision pipeline
-        - Bus publishing
-        - Order translation + enqueue under consensus and cooldown gates
-        - Contract-shaped payload for the caller
-        """
+    async def process(self, **inputs: Any) -> Dict[str, Any]:
         t0 = time.time()
-        
-        # Track calls for startup grace period (signal-based exits skip first N calls)
+
+
         if hasattr(self, "_process_call_count"):
             self._process_call_count += 1
 
-        # Robust metadata access: metadata is optional
+
         metadata = getattr(self, "metadata", None)
         try:
             budget_ms = float(
@@ -1092,7 +966,7 @@ class PositionManagerBase(
         try:
             self._refresh_positions_from_bus()
 
-            # Build market snapshot (inputs + Bus)
+
             market_from_inputs = self._extract_market_data_from_inputs(inputs)
             bus_snapshot = self._extract_market_data_from_smartbus() or {}
             market_data: Dict[str, Any] = self._merge_market_maps(
@@ -1101,7 +975,7 @@ class PositionManagerBase(
 
             await asyncio.sleep(0)
 
-            # If we have no usable data for any configured instrument, just report health and hold
+
             if not any(
                 isinstance(market_data.get(i, {}), dict) and market_data.get(i)
                 for i in self.instruments
@@ -1118,13 +992,13 @@ class PositionManagerBase(
                     **metrics,
                 )
 
-            # decisions from Part 2
+
             decisions = await _maybe_await(self.process_market_signals(market_data))
             await asyncio.sleep(0)
 
             elapsed_ms = (time.time() - t0) * 1000.0
             if elapsed_ms > budget_ms * 0.95:
-                # Under time pressure: publish decisions to bus but skip order translation
+
                 await self._update_smartbus_with_decisions(decisions)
                 metrics = self._read_env_metrics()
                 current_queue = self._safe_get_order_queue()
@@ -1138,11 +1012,11 @@ class PositionManagerBase(
                     **metrics,
                 )
 
-            # Publish artifacts (no execution yet)
+
             await self._update_smartbus_with_decisions(decisions)
             await asyncio.sleep(0)
 
-            # Translate + enqueue (with consensus gate safety)
+
             orders_created = self._translate_decisions_to_orders(decisions)
             self._enqueue_orders(orders_created)
 
@@ -1150,11 +1024,11 @@ class PositionManagerBase(
             thesis = await self._generate_position_thesis(market_data, decisions)
             metrics = self._read_env_metrics()
 
-            # Flush unified logger at end of processing
+
             if self.debug:
                 self._flush_logs()
 
-            # History bookkeeping for adaptive logic
+
             self._decision_history.append(
                 {
                     "ts": _dt.datetime.utcnow().isoformat() + "Z",
@@ -1190,7 +1064,7 @@ class PositionManagerBase(
                 **metrics,
             )
 
-    # ---------- abstract hooks (implemented in Part 2)
+
     @create_error_handler("process_market_signals")
     def process_market_signals(
         self, market_data: Dict[str, Any]
@@ -1200,16 +1074,10 @@ class PositionManagerBase(
     def _make_position_decision(self, context: SignalContext) -> PositionDecisionResult:
         raise NotImplementedError("Provided in Part 2 (position_logic.py)")
 
-    # ---------- translation / payload
+
     def _translate_decisions_to_orders(
         self, decisions: Dict[str, PositionDecisionResult]
     ) -> List[Dict[str, Any]]:
-        """
-        Translate per-instrument decisions into executable order payloads.
-
-        Critical fix: SCALE_UP / SCALE_DOWN / CLOSE now respect the *existing*
-        position side per instrument, so shorts are scaled/closed correctly.
-        """
         orders: List[Dict[str, Any]] = []
 
         for inst, dr in decisions.items():
@@ -1225,7 +1093,7 @@ class PositionManagerBase(
             except Exception:
                 existing_side = 0
 
-            # Decide intent
+
             intent = {
                 PositionDecision.OPEN_LONG: "open",
                 PositionDecision.OPEN_SHORT: "open",
@@ -1235,14 +1103,14 @@ class PositionManagerBase(
                 PositionDecision.EMERGENCY_CLOSE: "emergency_close",
             }[dr.decision]
 
-            # Decide side with proper handling of existing positions
+
             if dr.decision == PositionDecision.OPEN_LONG:
                 side = 1
             elif dr.decision == PositionDecision.OPEN_SHORT:
                 side = -1
             elif dr.decision == PositionDecision.SCALE_UP:
-                # Increase in the direction of the current position if known,
-                # otherwise fall back to market_direction or default long.
+
+
                 if existing_side != 0:
                     side = existing_side
                 else:
@@ -1253,28 +1121,27 @@ class PositionManagerBase(
                 PositionDecision.CLOSE,
                 PositionDecision.EMERGENCY_CLOSE,
             ):
-                # Reduce/close: trade opposite to the existing position side.
-                # For CLOSE/EMERGENCY_CLOSE with unknown side: send side=0 with close_all flag
-                # The executor should interpret this as "close ALL positions for this symbol"
+
+
                 if existing_side != 0:
                     side = -existing_side
                 elif dr.decision in (PositionDecision.CLOSE, PositionDecision.EMERGENCY_CLOSE):
-                    # Unknown side but explicit CLOSE - use side=0 to signal "close all"
-                    # This handles hedged positions (BUY+SELL that net to 0)
+
+
                     side = 0
                     self.logger.info(
                         f"[CLOSE_ALL] {dr.decision.value} for {inst}: "
                         f"existing_side=0, sending close_all intent to executor."
                     )
                 else:
-                    # SCALE_DOWN with unknown side - skip to avoid creating hedge
+
                     self.logger.warning(
                         f"[HEDGE_PREVENTION] Skipping {dr.decision.value} for {inst}: "
                         f"existing_side=0 (unknown). Cannot scale down unknown position safely."
                     )
-                    continue  # Skip this order to prevent hedge creation
+                    continue
             else:
-                # Fallback: should not happen, but keep safe
+
                 side = 0
 
             reduce_only = dr.decision in (
@@ -1383,7 +1250,7 @@ class PositionManagerBase(
             "processing_time_ms": float(processing_ms),
         }
 
-    # ---------- env metrics & signals
+
     def _read_env_metrics(self) -> Dict[str, Any]:
         balance, drawdown = self._read_balance_and_drawdown()
         equity = balance
@@ -1404,7 +1271,7 @@ class PositionManagerBase(
             positions = self.smart_bus.get("positions", "PositionManager")
             if isinstance(positions, dict):
                 positions_snapshot = positions
-                # update peak P&L for trailing TP
+
                 for inst, node in positions.items():
                     pnl = float(node.get("unrealized_pnl_eur", 0.0) or 0.0)
                     self._profit_tracker.update(inst, pnl)
@@ -1443,9 +1310,8 @@ class PositionManagerBase(
             pass
         return []
 
-    # ---------- market extraction (inputs + bus)
+
     def _derive_intensity(self, inst_dict: Dict[str, Any]) -> Optional[float]:
-        """Derive a signed intensity from trend/momentum/RSI when no explicit signal exists."""
         try:
             trend = float(inst_dict.get("trend_strength", 0.0))
             mom = float(inst_dict.get("momentum", 0.0))
@@ -1463,7 +1329,6 @@ class PositionManagerBase(
             return None
 
     def _extract_market_data_from_inputs(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract and normalize market data from process() inputs."""
         out: Dict[str, Any] = {}
 
         market_data = inputs.get("market_data") or {}
@@ -1536,8 +1401,8 @@ class PositionManagerBase(
                         md.get("volatility", self.Cval("min_volatility", 0.015)),
                     )
                 )
-                # Clamp volatility to reasonable bounds (0.1% to 100%).
-                # ATR values > 1.0 are likely raw price ATR, not percentage - normalize.
+
+
                 if raw_vol > 1.0 and inst_dict.get("current_price", 0) > 0:
                     raw_vol = raw_vol / inst_dict["current_price"]
                 inst_dict["volatility"] = float(np.clip(raw_vol, 0.001, 1.0))
@@ -1552,7 +1417,7 @@ class PositionManagerBase(
             if isinstance(ti, dict):
                 sma20 = float(ti.get("sma_20", 0.0))
                 sma50 = float(ti.get("sma_50", 0.0))
-                # Normalize trend_strength to [-1, 1] and handle missing SMA data
+
                 if sma50 == 0.0:
                     inst_dict["trend_strength"] = 0.0
                 else:
@@ -1624,7 +1489,6 @@ class PositionManagerBase(
         return out
 
     def _extract_market_data_from_smartbus(self) -> Optional[Dict[str, Any]]:
-        """Extract and normalize market data from SmartInfoBus."""
         out: Dict[str, Any] = {}
 
         price_map = self.smart_bus.get("price_data", "PositionManager") or {}
@@ -1802,7 +1666,6 @@ class PositionManagerBase(
     def _merge_market_maps(
         self, bus_map: Dict[str, Any], in_map: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Merge bus-derived and input-derived market views with sensible precedence."""
         out: Dict[str, Any] = dict(bus_map) if isinstance(bus_map, dict) else {}
 
         for inst in self.instruments:
@@ -1813,7 +1676,7 @@ class PositionManagerBase(
             if isinstance(i, dict) and i:
                 merged.update(i)
 
-            # Preserve bus intensity if present, otherwise clean invalid entries
+
             if isinstance(b, dict) and isinstance(b.get("intensity", None), (int, float)):
                 merged["intensity"] = b["intensity"]
                 if "intensity_source" in b:
@@ -1824,14 +1687,14 @@ class PositionManagerBase(
                     merged.pop("intensity", None)
                     merged.pop("intensity_source", None)
 
-            # Bus session overrides local if available
+
             if isinstance(b, dict) and "session" in b:
                 merged["session"] = b["session"]
 
             if merged:
                 out[inst] = merged
 
-        # Copy any non-instrument keys from input (e.g., market_regime)
+
         for k, v in (in_map or {}).items():
             if k in self.instruments:
                 continue
@@ -1841,17 +1704,17 @@ class PositionManagerBase(
             elif v is not None:
                 out[k] = v
 
-        # market_regime: bus overrides inputs if present
+
         if isinstance(bus_map, dict) and "market_regime" in bus_map:
             out["market_regime"] = bus_map["market_regime"]
 
         return out
 
-    # ---------- thesis / logs
+
     async def _generate_position_thesis(
         self, market_data: Dict[str, Any], decisions: Dict[str, PositionDecisionResult]
     ) -> str:
-        # Lightweight, constant-time summary string suitable for rapid training loops.
+
         return (
             f"PortfolioHealth={self._portfolio_health_score:.2f} | "
             f"Exposure={self._total_exposure_ratio:.1%} | "
@@ -1860,7 +1723,6 @@ class PositionManagerBase(
         )
 
     def _flush_logs(self) -> None:
-        """Flush both shared logger and debugger safely."""
         try:
             lg = getattr(self, "logger", None)
             if lg and hasattr(lg, "flush"):
@@ -1874,9 +1736,8 @@ class PositionManagerBase(
         except Exception:
             pass
 
-    # ---------- health / adaptation
+
     def _read_risk_level(self) -> float:
-        """Read a normalized [0,1] risk level from canonical bus feeds."""
         risk_level = 0.0
         try:
             tri = self.smart_bus.get("time_risk_analysis", "PositionManager") or {}
@@ -1895,7 +1756,6 @@ class PositionManagerBase(
         return float(np.clip(risk_level, 0.0, 1.0))
 
     def _update_position_health(self) -> None:
-        """Periodic portfolio health update used by monitoring thread."""
         try:
             self._refresh_positions_from_bus()
             current_exposure = self._calculate_current_exposure_ratio()
@@ -1913,10 +1773,10 @@ class PositionManagerBase(
             risk_level = self._read_risk_level()
             self._risk_management_score = max(0.1, 1.0 - risk_level)
 
-            # Adapt params based on recent decisions and performance
+
             self._adapt_parameters()
 
-            # Publish compact health node
+
             self.smart_bus.set(
                 "position_health",
                 {
@@ -1932,9 +1792,8 @@ class PositionManagerBase(
             self.logger.warning(f"Position health update failed: {e}")
 
     def _adapt_parameters(self) -> None:
-        """Slowly adjust dynamic max_pct, sensitivity, and risk_tolerance."""
         try:
-            # Dynamic max position percentage based on portfolio health
+
             if len(self._decision_history) >= 10:
                 recent = list(self._decision_history)[-10:]
                 avg_ph = np.mean(
@@ -1962,7 +1821,7 @@ class PositionManagerBase(
                 else:
                     self._adaptive_params["dynamic_max_pct"] = current * 0.95 + base * 0.05
 
-            # Signal sensitivity based on average non-hold confidence
+
             if len(self._decision_history) >= 5:
                 rec = list(self._decision_history)[-5:]
                 confs: List[float] = []
@@ -1983,7 +1842,7 @@ class PositionManagerBase(
                             float(self._adaptive_params["signal_sensitivity"]) * 0.98,
                         )
 
-            # Risk tolerance based on loss streak
+
             if self.consecutive_losses == 0:
                 self._adaptive_params["risk_tolerance"] = min(
                     1.3, float(self._adaptive_params["risk_tolerance"]) * 1.01
@@ -1996,7 +1855,6 @@ class PositionManagerBase(
             self.logger.warning(f"Parameter adaptation failed: {e}")
 
     def _calculate_current_exposure_ratio(self) -> float:
-        """Total notional exposure from bus positions / balance."""
         balance, _ = self._read_balance_and_drawdown()
         total_exposure = 0.0
         try:
@@ -2018,7 +1876,6 @@ class PositionManagerBase(
         return total_exposure / max(balance, 1.0)
 
     def _assess_portfolio_health(self) -> Dict[str, float]:
-        """Compute a composite health score based on DD, exposure, streak, and risk feeds."""
         balance, drawdown = self._read_balance_and_drawdown()
 
         total_exposure = 0.0
@@ -2070,7 +1927,6 @@ class PositionManagerBase(
         }
 
     def _assess_market_regime(self, market_data: Dict[str, Any]) -> str:
-        """Classify the high-level market regime from volatility/trend/momentum."""
         if "market_regime" in market_data:
             return str(market_data["market_regime"])
 
@@ -2101,7 +1957,7 @@ class PositionManagerBase(
         else:
             return "ranging"
 
-    # ---------- signals compactors
+
     def _map_decision_to_intensity(self, dr: PositionDecisionResult) -> float:
         d = dr.decision
         mag = float(np.clip(dr.intensity, 0.0, 1.0))
@@ -2139,7 +1995,7 @@ class PositionManagerBase(
             for inst in self.instruments
         }
 
-    # ---------- SmartBus publishing of decisions (aggregated + namespaced)
+
     async def _update_smartbus_with_decisions(
         self, decisions: Dict[str, PositionDecisionResult]
     ) -> None:
@@ -2250,7 +2106,7 @@ class PositionManagerBase(
             thesis="Portfolio health (diagnostic)",
         )
 
-        # Publish under namespaced key to avoid stepping on StrategyArbiter
+
         self.smart_bus.set(
             "position_manager_instrument_signals",
             instrument_signals,
@@ -2260,7 +2116,7 @@ class PositionManagerBase(
 
         _register_keys(to_register)
 
-    # ---------- state persistence
+
     def get_state(self) -> Dict[str, Any]:
         return {
             "config": dict(self.C.__dict__),
@@ -2293,13 +2149,13 @@ class PositionManagerBase(
             try:
                 self.C = TradingConfig(**cfg_in)
             except TypeError:
-                # Sanitize unknown keys - get only fields that are valid init params
-                # Use dataclass fields() to check which have init=True
+
+
                 from dataclasses import fields as dc_fields
                 try:
                     init_fields = {f.name for f in dc_fields(TradingConfig) if f.init}
                 except Exception:
-                    # Fallback: use vars but exclude private/internal fields
+
                     default_cfg = TradingConfig()
                     init_fields = {k for k in vars(default_cfg).keys() if not k.startswith('_')}
                 sanitized = {k: v for k, v in cfg_in.items() if k in init_fields}
@@ -2418,11 +2274,8 @@ class PositionManagerBase(
         except Exception:
             self.failure_count = getattr(self, "failure_count", 0)
 
-    # ==========================================================
-    # Helpers used by Part 2 (profit trailing, cooldown, favors)
-    # ==========================================================
+
     def update_profit_tracker(self, instrument: str) -> None:
-        """Call after reading bus to refresh P&L peak for instrument."""
         pnl = self._get_unrealised_pnl_from_bus(instrument)
         self._profit_tracker.update(instrument, pnl)
 
@@ -2440,14 +2293,13 @@ class PositionManagerBase(
     def favors_trend_down(
         self, instrument: str, current_intensity: float, lookback: int = 5, eps: float = 0.05
     ) -> bool:
-        """Rough 'favors down' detector: negative slope of recent intensity with buffer."""
         hist = self.signal_history.get(instrument, [])
         if not hist:
             return current_intensity < 0.0
         seq = (hist + [current_intensity])[-max(3, lookback) :]
         if len(seq) < 3:
             return current_intensity < 0.0
-        # Simple slope vs index
+
         xs = np.arange(len(seq), dtype=float)
         x_mean = xs.mean()
         y_mean = np.mean(seq)
@@ -2463,14 +2315,8 @@ class PositionManagerBase(
     def arm_scale_cooldown(self, instrument: str, seconds: float = 15.0) -> None:
         self._scale_cooldown_until[instrument] = time.time() + max(0.0, seconds)
 
-    # ---------- cleanup
-    def __del__(self):
-        """
-        Best-effort cleanup.
 
-        We cannot rely on __del__ for critical logic, but we can try to
-        stop the monitoring loop and flush logs to avoid noisy shutdowns.
-        """
+    def __del__(self):
         try:
             if getattr(self, "_monitoring_active", False):
                 self._monitoring_active = False

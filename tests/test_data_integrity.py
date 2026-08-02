@@ -1,11 +1,3 @@
-"""Data-integrity and look-ahead tests for the tracked feature CSVs.
-
-The committed feature files were verified clean (every indicator aligns at
-shift 0; max |corr| with next-bar return is 0.018). These tests pin that
-property so a future change to the feature generator cannot silently introduce
-look-ahead — the single defect most likely to produce a profitable-looking
-backtest and a losing live account.
-"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -29,11 +21,6 @@ def df() -> pd.DataFrame:
 
 
 def _best_shift(actual: pd.Series, recomputed: pd.Series) -> int:
-    """Which time shift best explains the stored column?
-
-    0 means causal. A negative shift means the column was computed from FUTURE
-    bars, i.e. look-ahead.
-    """
     scores = {}
     for shift in (-2, -1, 0, 1, 2):
         candidate = recomputed.shift(shift)
@@ -62,7 +49,6 @@ def _best_shift(actual: pd.Series, recomputed: pd.Series) -> int:
     ],
 )
 def test_indicator_is_causal(df, column, builder):
-    """Each indicator must be best explained by shift 0, never a future shift."""
     if column not in df.columns:
         pytest.skip(f"{column} not in feature set")
     shift = _best_shift(df[column], builder(df))
@@ -71,7 +57,6 @@ def test_indicator_is_causal(df, column, builder):
 
 
 def test_no_feature_strongly_predicts_next_bar_return(df):
-    """A leaked column shows an implausibly high correlation with the future."""
     forward = df["close"].shift(-1) / df["close"] - 1.0
     numeric = df.select_dtypes(include=[np.number])
     corr = numeric.corrwith(forward).abs().dropna()
@@ -101,15 +86,12 @@ def test_no_nan_or_non_positive_prices(df):
 
 
 def test_no_weekend_bars(df):
-    """Saturday bars, or Sunday before the 22:00 open, indicate a bad merge."""
     time = df["time"]
     weekend = ((time.dt.weekday == 5) | ((time.dt.weekday == 6) & (time.dt.hour < 22))).sum()
     assert int(weekend) == 0, f"{weekend} weekend bars present"
 
 
 def test_higher_timeframe_agrees_with_aggregated_m15(df):
-    """H1 must equal the aggregate of its four M15 bars, or the timeframes were
-    built from different sources."""
     h1_path = DATA_DIR / "XAUUSD_H1_features.csv"
     if not h1_path.is_file():
         pytest.skip("H1 file not available")

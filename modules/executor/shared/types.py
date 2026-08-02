@@ -6,11 +6,10 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Union
 
-DEFAULT_CONTRACT_SIZE = 100_000.0  # default FX contract
+DEFAULT_CONTRACT_SIZE = 100_000.0
 
 
 def _sf(v: Any, default: float = 0.0) -> float:
-    """Safe finite float."""
     try:
         f = float(v)
         return f if math.isfinite(f) else default
@@ -19,7 +18,6 @@ def _sf(v: Any, default: float = 0.0) -> float:
 
 
 def _iso(ts: Union[str, int, float, None]) -> Optional[str]:
-    """Best-effort ISO8601 UTC 'Z' timestamp, pass through strings."""
     if ts is None:
         return None
     if isinstance(ts, str):
@@ -34,25 +32,24 @@ def _iso(ts: Union[str, int, float, None]) -> Optional[str]:
 
 
 def _parse_timestamp(ts: Union[str, int, float, None]) -> Optional[float]:
-    """Parse ISO8601 string or numeric timestamp to Unix float."""
     if ts is None:
         return None
-    # Already numeric
+
     if isinstance(ts, (int, float)):
         try:
             f = float(ts)
             return f if math.isfinite(f) else None
         except Exception:
             return None
-    # ISO string: '2025-12-09T20:10:59Z' or similar
+
     if isinstance(ts, str):
         try:
-            # Try parsing ISO format
-            s = ts.rstrip("Z")  # Remove trailing Z
+
+            s = ts.rstrip("Z")
             dt = _dt.datetime.fromisoformat(s.replace("Z", ""))
             return dt.timestamp()
         except Exception:
-            # Fallback: try direct float conversion (might be numeric string)
+
             try:
                 return float(ts)
             except Exception:
@@ -61,49 +58,40 @@ def _parse_timestamp(ts: Union[str, int, float, None]) -> Optional[float]:
 
 
 def _contract_size_for_symbol(symbol: str) -> float:
-    """
-    Symbol-specific contract size (units per 1.0 lot).
-
-    This mirrors the logic used in Executor and MT5Adapter:
-    - XAU*/GOLD* : 100 oz per lot
-    - XAG*/SILVER*: 5000 oz per lot
-    - BTC*/ETH*  : 1 unit per lot
-    - else       : 100,000 units (standard FX)
-    """
     s = (symbol or "").upper().replace("_", "").replace("/", "")
     if not s:
         return DEFAULT_CONTRACT_SIZE
 
-    # Metals
+
     if "XAU" in s or "GOLD" in s:
         return 100.0
     if "XAG" in s or "SILVER" in s:
         return 5000.0
 
-    # Crypto
+
     if "BTC" in s or "ETH" in s:
         return 1.0
 
-    # Default FX
+
     return DEFAULT_CONTRACT_SIZE
 
 
 @dataclass(slots=True)
 class PositionSnap:
     instrument: str
-    side: int                # +1 long, -1 short
+    side: int
     units: float
     entry_price: float
     notional_eur: float = 0.0
     open_time: Optional[Union[str, int, float]] = None
-    peak_unrealized: float = 0.0          # optional, some UIs use this
-    entry_step: Optional[int] = None      # optional step index (sim)
-    
-    # Decision context at entry (for PPO autonomy tracking)
-    ppo_direction: Optional[str] = None       # PPO's direction at entry: "long"/"short"/"flat"
-    expert_direction: Optional[str] = None    # Expert consensus at entry
-    ppo_confidence: Optional[float] = None    # PPO's confidence at entry
-    was_ppo_led: Optional[bool] = None        # Was PPO leading when this trade was opened?
+    peak_unrealized: float = 0.0
+    entry_step: Optional[int] = None
+
+
+    ppo_direction: Optional[str] = None
+    expert_direction: Optional[str] = None
+    ppo_confidence: Optional[float] = None
+    was_ppo_led: Optional[bool] = None
 
     def as_bus(
         self,
@@ -111,18 +99,18 @@ class PositionSnap:
         *,
         include_aliases: bool = True
     ) -> Dict[str, Any]:
-        # sanitize
+
         s = 1 if self.side >= 0 else -1
         u = abs(_sf(self.units))
         ep = _sf(self.entry_price)
         notional = _sf(self.notional_eur) or (u * ep)
-        lp = _sf(last_price) if last_price is not None else ep  # default to entry if no current price
+        lp = _sf(last_price) if last_price is not None else ep
 
         upnl = 0.0
         if lp > 0.0 and ep > 0.0 and u > 0.0:
             upnl = (lp - ep) * s * u
 
-        # Determine position type/action
+
         if s > 0:
             pos_type = "BUY"
             action = "LONG"
@@ -130,7 +118,7 @@ class PositionSnap:
             pos_type = "SELL"
             action = "SHORT"
 
-        # Contract size & lots (symbol-aware: FX, XAU, XAG, BTC, ETH)
+
         cs = _contract_size_for_symbol(self.instrument)
         lot_size = u / cs if (u > 0.0 and cs > 0.0) else 0.0
 
@@ -144,30 +132,30 @@ class PositionSnap:
             "entry_price": float(ep),
             "notional_eur": float(notional),
             "unrealized_pnl": float(upnl),
-            "unrealized_pnl_eur": float(upnl),  # alias some modules expect
+            "unrealized_pnl_eur": float(upnl),
             "open_time": _iso(self.open_time) if self.open_time else time.time(),
             "age_hours": float(age_hours),
             "peak_unrealized": float(_sf(self.peak_unrealized)),
 
-            # Additional fields for visualizer and monitoring
+
             "type": pos_type,
             "action": action,
             "current_price": float(lp),
-            "price": float(lp),        # alias
-            "pnl": float(upnl),        # alias for unrealized_pnl
-            "profit": float(upnl),     # alias
+            "price": float(lp),
+            "pnl": float(upnl),
+            "profit": float(upnl),
 
-            # Contract / lot details
+
             "contract_size": float(cs),
             "lot_size": float(lot_size),
-            "volume": float(lot_size),  # alias (MT5 convention: volume=lots)
-            "lots": float(lot_size),    # alias
+            "volume": float(lot_size),
+            "lots": float(lot_size),
 
-            # Simple identifiers (sim-mode tickets)
+
             "id": self.entry_step if self.entry_step is not None else hash(self.instrument) % 10000,
             "ticket": self.entry_step if self.entry_step is not None else hash(self.instrument) % 10000,
 
-            "open_price": float(ep),  # alias
+            "open_price": float(ep),
             "entry_time": _iso(self.open_time) if self.open_time else time.time(),
         }
 
@@ -175,9 +163,9 @@ class PositionSnap:
             out["entry_step"] = int(self.entry_step)
 
         if include_aliases:
-            # a couple of common keys different parts of the stack look for
+
             out["symbol"] = self.instrument
-            out["price_open"] = float(ep)  # some legacy consumers use price_open
+            out["price_open"] = float(ep)
         return out
 
 
@@ -195,21 +183,21 @@ class TradeFill:
     realized_pnl: float = 0.0
     origin_id: str = ""
     comment: str = ""
-    ticket: Optional[Union[int, str]] = None  # live brokers often provide one
+    ticket: Optional[Union[int, str]] = None
 
     def as_bus(self) -> Dict[str, Any]:
-        # sanitize
+
         s = 1 if self.side >= 0 else -1
         u = abs(_sf(self.units))
         px = _sf(self.price)
         notional = _sf(self.notional_eur) or (u * px)
         rpnl = _sf(self.realized_pnl)
 
-        # Contract-aware lot computation (aligned with positions)
+
         cs = _contract_size_for_symbol(self.instrument)
         lots = u / cs if (u > 0.0 and cs > 0.0) else 0.0
 
-        # Direction string for dashboard display
+
         direction = "BUY" if s > 0 else "SELL"
 
         out: Dict[str, Any] = {
@@ -217,28 +205,28 @@ class TradeFill:
             "ts": float(_sf(self.ts, time.time())),
             "step": int(self.step),
             "instrument": self.instrument,
-            "symbol": self.instrument,        # alias
+            "symbol": self.instrument,
             "action": self.action,
-            "direction": direction,           # human-readable direction
-            "type": direction,                # alias for direction
+            "direction": direction,
+            "type": direction,
             "side": int(s),
             "units": float(u),
             "price": float(px),
-            "entry_price": float(px),         # alias for dashboard compatibility
-            "exit_price": float(px),          # alias for dashboard (same as price for fills)
+            "entry_price": float(px),
+            "exit_price": float(px),
             "notional_eur": float(notional),
-            "notional": float(notional),      # alias
+            "notional": float(notional),
             "realized_pnl": rpnl,
-            "pnl": rpnl,                      # alias
-            "pnl_eur": rpnl,                  # alias
-            "profit": rpnl,                   # alias for dashboard
+            "pnl": rpnl,
+            "pnl_eur": rpnl,
+            "profit": rpnl,
             "origin_id": self.origin_id,
             "comment": self.comment,
 
-            # Contract / lot info for fills (matches PositionSnap)
+
             "contract_size": float(cs),
             "lots": float(lots),
-            "volume": float(lots),            # alias
+            "volume": float(lots),
         }
         if self.ticket is not None:
             out["ticket"] = self.ticket

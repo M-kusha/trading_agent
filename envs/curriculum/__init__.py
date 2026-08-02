@@ -1,17 +1,5 @@
-# envs/curriculum/__init__.py
-"""
-Curriculum learning components for trading RL agent.
 
-This package contains:
-- curriculum_manager: CurriculumManager, CurriculumStage
-- curriculum_config: Stage configs, DataDifficulty, ExecutionDifficulty, etc.
-- curriculum_invariants: Curriculum invariant checks
-- validation_gates: Stage promotion validation
-- regime_skill_assessment: Regime-specific skill tracking
-- metrics, skills, protocols: Supporting classes
-"""
 
-# Core curriculum components (moved from envs/)
 from envs.curriculum.curriculum_config import (
     CurriculumStageConfig,
     DataDifficulty,
@@ -31,8 +19,6 @@ from envs.curriculum.curriculum_manager import (
     CurriculumManager,
     CurriculumStage,
 )
-
-# Supporting classes (already in curriculum/)
 from envs.curriculum.metrics import (
     CompositeScore,
     EpisodeMetrics,
@@ -63,44 +49,36 @@ from envs.curriculum.validation_gates import (
 )
 
 __all__ = [
-    # Core
+
+    "AntiGamingChecker",
+    "CompositeScore",
+    "CurriculumInvariantChecker",
     "CurriculumManager",
     "CurriculumStage",
-    # Config
-    "DataDifficulty",
-    "ExecutionDifficulty",
-    "TradingConstraints",
-    "RewardShaping",
     "CurriculumStageConfig",
-    "get_stage_config",
-    "get_stage_progression",
-    # Invariants
-    "CurriculumInvariantChecker",
+    "DataDifficulty",
+    "DemotionAnalyzer",
+    "DemotionRecord",
+    "EpisodeMetrics",
+    "ExecutionDifficulty",
     "InvariantViolation",
-    "AntiGamingChecker",
-    "reconcile_trade_accounting",
-    # Validation
+    "LearningVelocity",
+    "RecoveryProtocolState",
+    "RegimePerformance",
+    "RegimeSkillAssessment",
+    "ReviewSessionState",
+    "RewardShaping",
+    "RollingStats",
+    "SkillAssessment",
+    "StressTestConfig",
+    "StressTestRunner",
+    "TradingConstraints",
     "ValidationGateChecker",
     "ValidationGateConfig",
     "ValidationGateResult",
-    "StressTestRunner",
-    "StressTestConfig",
-    # Regime skills
-    "RegimeSkillAssessment",
-    "RegimePerformance",
-    # Metrics
-    "EpisodeMetrics",
-    "RollingStats",
-    "LearningVelocity",
-    "CompositeScore",
-    "compute_composite_score",
     "compute_adjusted_thresholds",
-    # Skills
-    "SkillAssessment",
-    "DemotionRecord",
-    "DemotionAnalyzer",
-    # Protocols
-    "RecoveryProtocolState",
-    "ReviewSessionState",
+    "compute_composite_score",
+    "get_stage_config",
+    "get_stage_progression",
+    "reconcile_trade_accounting",
 ]
-

@@ -1,9 +1,4 @@
-# ─────────────────────────────────────────────────────────────
-# File: modules/utils/info_bus.py
-# [ROCKET-X] PRODUCTION-READY SmartInfoBus - Zero-Wiring Architecture (XL)
-# MAXED OUT: Transactions, Middleware, Waiters, Bulk Ops, Throttling, Snapshots
-# VERSION: 2.0 (Hardened based on architectural audit)
-# ─────────────────────────────────────────────────────────────
+
 
 from __future__ import annotations
 
@@ -29,11 +24,9 @@ from typing import Any, Callable, DefaultDict, Deque, Dict, List, Optional, Set,
 import numpy as np
 import psutil
 
-# Import core dependencies
 from modules.utils.audit_utils import AuditSystem, RotatingLogger, format_operator_message
 
 
-# Typed structures for quality metrics (module scope for reuse in annotations)
 class QualityTrend(TypedDict):
     ts: float
     score: float
@@ -43,126 +36,114 @@ class QualityEntry(TypedDict, total=False):
     issues: List[str]
     trends: List[QualityTrend]
 
-# Public exports
+
 __all__ = [
-    "SmartInfoBus",
-    "InfoBusManager",
-    "InfoBusConfig",
-    "DataVersion",
     "DataRequest",
+    "DataVersion",
+    "InfoBus",
+    "InfoBusConfig",
+    "InfoBusExtractor",
+    "InfoBusManager",
+    "InfoBusQuality",
+    "InfoBusUpdater",
+    "SmartInfoBus",
     "create_info_bus",
     "validate_info_bus",
-    "InfoBusExtractor",
-    "InfoBusUpdater",
-    "InfoBusQuality",
-    # Legacy type alias exported for backward compatibility
-    "InfoBus",
 ]
 
-# Backward compatibility: some modules import `InfoBus` as a type symbol.
-# The legacy InfoBus is a dict-shaped container that may include a
-# reference to the XL SmartInfoBus under the `_smart_bus` key.
-# Providing this alias maintains compatibility without changing callers.
+
 InfoBus = Dict[str, Any]
 
-# ═══════════════════════════════════════════════════════════════════
-# CONFIGURATION
-# ═══════════════════════════════════════════════════════════════════
 
 @dataclass
 class InfoBusConfig:
-    """
-    Military-grade configuration for SmartInfoBus with comprehensive validation.
-    """
-    # Core settings
+
     enabled: bool = True
     debug_mode: bool = True
     log_level: str = "DEBUG"
     max_cache_size: int = 20000
     cache_ttl_seconds: int = 3600
 
-    # Performance settings
+
     max_parallel_operations: int = 50
     default_timeout_ms: int = 5000
     health_check_interval_ms: int = 25000
     metrics_retention_hours: int = 24
     background_thread_count: int = 3
 
-    # Data management
-    max_data_age_seconds: int = 600  # 10 minutes
-    max_history_versions: int = 50   # Reduced from 2000 to prevent memory accumulation
+
+    max_data_age_seconds: int = 600
+    max_history_versions: int = 50
     cleanup_interval_seconds: int = 45
     integrity_validation: bool = True
     auto_cleanup: bool = True
     compression_enabled: bool = False
 
-    # Circuit breaker
+
     circuit_breaker_threshold: int = 3
     recovery_time_seconds: int = 60
     failure_escalation_enabled: bool = True
     emergency_mode_enabled: bool = True
 
-    # Event system
+
     max_event_log_size: int = 120000
     event_replay_enabled: bool = True
     subscription_timeout_ms: int = 1000
     async_callback_support: bool = True
 
-    # Security & audit
+
     validation_enabled: bool = True
     audit_enabled: bool = True
     encryption_enabled: bool = False
     access_control_enabled: bool = False
 
-    # Quality & analytics
+
     quality_monitoring_enabled: bool = True
     predictive_analytics_enabled: bool = True
     anomaly_detection_enabled: bool = True
     performance_profiling_enabled: bool = True
 
-    # Advanced features
+
     dependency_tracking_enabled: bool = True
     circular_dependency_detection: bool = True
     auto_dependency_resolution: bool = True
     smart_caching_enabled: bool = True
 
-    # NEW: control switches
+
     read_only_mode: bool = False
     pause_support_enabled: bool = True
     enable_transactions: bool = True
-    rate_limit_writes_per_sec: int = 0  # 0 = unlimited
-    default_namespace: Optional[str] = None  # e.g. "core"
+    rate_limit_writes_per_sec: int = 0
+    default_namespace: Optional[str] = None
 
-    # Operating mode - affects staleness checks
-    live_mode: bool = False  # When False (training), staleness threshold is relaxed
-    staleness_check_enabled: bool = True  # Set to False to disable staleness checks entirely (dashboard mode)
 
-    # [FIXED] New contract enforcement flags from audit
+    live_mode: bool = False
+    staleness_check_enabled: bool = True
+
+
     enforce_single_writer: bool = True
     enforce_dependency_declaration: bool = True
-    # Contract enforcement mode:
-    # - "off":   no enforcement/logging
-    # - "warn":  log first-time violations, allow operation
-    # - "strict": raise on violations
+
+
     contract_enforcement: str = "off"
 
-    # Cross-process persistence (enables frontend to see training data)
-    persistence_enabled: bool = True  # Default ON for frontend visibility
+
+    persistence_enabled: bool = True
     persist_write_interval_seconds: float = 1.0
     persistence_file: str = "state/infobus_data.json"
-    persist_keys: Optional[List[str]] = None  # If None, persist all keys
-    # Keys that should NOT be loaded from persistence on startup (memory learning data)
-    # These keys accumulate incorrectly across sessions if loaded
+    persist_keys: Optional[List[str]] = None
+
+
     no_load_keys: List[str] = None  # type: ignore  # Will be set in __post_init__
 
     def __post_init__(self):
-        # Set default no_load_keys if not provided
-        # These are memory-learning keys that accumulate incorrectly across sessions
+
+
         if self.no_load_keys is None:
             self.no_load_keys = [
-                # Pattern/memory learning data - must start fresh each session
+
                 "pattern_memory",
-                "pattern_effectiveness", 
+                "pattern_effectiveness",
                 "playbook_recall",
                 "playbook_quality",
                 "playbook_memory",
@@ -176,7 +157,7 @@ class InfoBusConfig:
                 "neural_memory",
                 "memory_embedding",
                 "memory_compression",
-                # Trade history - each session should track its own trades
+
                 "recent_trades",
                 "trades",
                 "trade_history",
@@ -230,9 +211,6 @@ class InfoBusConfig:
     def to_dict(self) -> Dict[str, Any]:
         return {k: v for k, v in self.__dict__.items() if not k.startswith('_')}
 
-# ═══════════════════════════════════════════════════════════════════
-# DATA OBJECTS
-# ═══════════════════════════════════════════════════════════════════
 
 @dataclass
 class DataVersion:
@@ -247,7 +225,7 @@ class DataVersion:
     validation_hash: str = field(default="")
     access_count: int = field(default=0)
 
-    # Enhanced tracking
+
     creation_stack_trace: Optional[str] = field(default=None)
     last_access_time: float = field(default_factory=time.time)
     access_patterns: Dict[str, int] = field(default_factory=dict)
@@ -293,9 +271,7 @@ class DataVersion:
     def age_seconds(self) -> float:
         return time.time() - self.timestamp
 
-# ─────────────────────────────────────────────────────────────
-# In class DataVersion (modules/utils/info_bus.py)
-# ─────────────────────────────────────────────────────────────
+
     def _compute_validation_hash(self) -> str:
         try:
             data_str = json.dumps({
@@ -370,7 +346,7 @@ class DataRequest:
     priority: int = 0
     callback: Optional[Callable] = None
     timeout_seconds: float = 60.0
-    # Tracking
+
     request_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     retry_count: int = 0
     max_retries: int = 3
@@ -406,15 +382,12 @@ class DataRequest:
             return False
         return True
 
-# ═══════════════════════════════════════════════════════════════════
-# CIRCUIT BREAKER
-# ═══════════════════════════════════════════════════════════════════
 
 @dataclass
 class CircuitBreakerState:
     failure_count: int = 0
     last_failure_time: float = 0
-    state: str = "CLOSED"  # CLOSED, OPEN, HALF_OPEN
+    state: str = "CLOSED"
     successful_calls: int = 0
     total_calls: int = 0
     last_success_time: float = 0
@@ -424,10 +397,10 @@ class CircuitBreakerState:
     consecutive_successes: int = 0
     failure_history: deque = field(default_factory=lambda: deque(maxlen=100))
     success_history: deque = field(default_factory=lambda: deque(maxlen=100))
-    # Diagnostics
+
     last_error: str = ""
     last_error_time: float = 0.0
-    last_open_reason: str | None = None  # why we moved to OPEN (threshold/rate/probe)
+    last_open_reason: str | None = None
 
     def record_success(self):
         self.successful_calls += 1
@@ -492,14 +465,14 @@ class CircuitBreakerState:
                 self._half_open_trials = 0
                 return True
             return False
-        # HALF_OPEN
+
         if (now - self.last_failure_time > recovery_time * 2 and self.consecutive_failures == 0):
             self.state = "CLOSED"
             self._half_open_trials = 0
             return True
         trials = getattr(self, "_half_open_trials", 0)
         if trials >= 3:
-            # Hit probe limit without enough successes
+
             self.last_open_reason = self.last_open_reason or "half_open_probe_limit"
             return False
         self._half_open_trials = trials + 1
@@ -542,30 +515,12 @@ class CircuitBreakerState:
             'open_reason': self.last_open_reason,
         }
 
-# ═══════════════════════════════════════════════════════════════════
-# SMARTINFOBUS (XL)
-# ═══════════════════════════════════════════════════════════════════
 
 class SmartInfoBus:
-    """
-    XL Information Bus — feature-complete:
-      • Thread-safe set/get with integrity, TTL, LRU, history
-      • Middleware hooks (pre/post set & get)
-      • Transactions (context manager) + bulk ops
-      • Waiters: wait_for(key) / wait_for_many()
-      • Schema validators per-key
-      • Read-only & Pause modes
-      • Write rate-limiting per module
-      • Snapshot import/export (+ gzip), sessions, metrics
-      • Circuit breaker & module health telemetry
-    """
 
-    # ──────────────────────────────────────────────────────────────
-    # Construction
-    # ──────────────────────────────────────────────────────────────
+
     @staticmethod
     def _load_config_from_yaml() -> Optional[InfoBusConfig]:
-        """Load InfoBusConfig from system_config.yaml if available."""
         try:
             import yaml as yaml_module
             config_paths = [
@@ -579,43 +534,43 @@ class SmartInfoBus:
                         system_config = yaml_module.safe_load(f)
                     if system_config and "info_bus" in system_config:
                         bus_cfg = system_config["info_bus"]
-                        # Map YAML keys to InfoBusConfig fields
+
                         return InfoBusConfig(
-                            # Cross-process persistence controls
+
                             persistence_enabled=bus_cfg.get("persistence_enabled", True),
                             persist_write_interval_seconds=float(
                                 bus_cfg.get("persist_write_interval_seconds", 0.5)
                             ),
                             persistence_file=bus_cfg.get("persistence_file", "state/infobus_data.json"),
-                            persist_keys=bus_cfg.get("persist_keys"),  # None means persist all
-                            # Staleness checking control
+                            persist_keys=bus_cfg.get("persist_keys"),
+
                             staleness_check_enabled=bool(bus_cfg.get("staleness_check_enabled", True)),
-                            # Optional live-mode + staleness overrides
+
                             live_mode=bool(bus_cfg.get("live_mode", False)),
                             max_data_age_seconds=int(bus_cfg.get("max_data_age_seconds", 600)),
                         )
                     break
         except Exception:
-            # Fall back to defaults on any configuration load error
+
             pass
         return None
 
     def __init__(self, config: Optional[InfoBusConfig] = None):
-        # Load config from system_config.yaml if not provided
+
         if config is None:
             config = self._load_config_from_yaml()
             self.config = config or InfoBusConfig()
 
-            # Core data store + history
+
             self._data_store: Dict[str, DataVersion] = {}
             self._data_history: Dict[str, deque] = defaultdict(lambda: deque(maxlen=self.config.max_history_versions))
             self._data_timestamps: Dict[str, float] = {}
 
-            # Cross-process persistence - use config value
+
             self._persistence_file = getattr(self.config, 'persistence_file', "state/infobus_data.json")
             self._persistence_lock = threading.Lock()
 
-            # Locks
+
             self._access_lock = threading.RLock()
             self._write_lock = threading.Lock()
             self._registry_lock = threading.RLock()
@@ -627,41 +582,41 @@ class SmartInfoBus:
             self._contract_lock = threading.Lock()
             self._contract_violations_seen: Set[Tuple[str, str, str]] = set()
 
-            # Events log
+
             self._event_log: deque = deque(maxlen=self.config.max_event_log_size)
 
-            # Registries
+
             self._providers: Dict[str, Set[str]] = defaultdict(set)
             self._consumers: Dict[str, Set[str]] = defaultdict(set)
             self._module_graph: Dict[str, Set[str]] = defaultdict(set)
 
-            # Perf stats (reduced sizes to prevent memory accumulation)
+
             self._access_patterns = defaultdict(lambda: defaultdict(int))
-            self._latency_history = defaultdict(lambda: deque(maxlen=500))      # Reduced from 5000
+            self._latency_history = defaultdict(lambda: deque(maxlen=500))
             self._cache_hits = 0
             self._cache_misses = 0
-            self._operation_timings = defaultdict(lambda: deque(maxlen=500))    # Reduced from 2000
+            self._operation_timings = defaultdict(lambda: deque(maxlen=500))
             self._memory_usage_history = deque(maxlen=200)
             self._cpu_usage_history = deque(maxlen=200)
             self._predictive_metrics = {}
 
-            # Subscriptions
+
             self._subscribers: Dict[str, List[Callable]] = defaultdict(list)
             self._async_subscribers: Dict[str, List[Callable]] = defaultdict(list)
 
-            # Circuit breaker
+
             self._circuit_breakers: Dict[str, CircuitBreakerState] = defaultdict(CircuitBreakerState)
             self._module_disabled: Set[str] = set()
 
-            # Requests & waiters (BOUNDED to prevent memory leaks)
-            self._pending_requests: deque = deque(maxlen=1000)  # Was unbounded List
-            self._request_history: deque = deque(maxlen=1000)   # Reduced from 10000
-            self._waiters: Dict[str, deque] = defaultdict(lambda: deque(maxlen=100))  # Was unbounded List
 
-            # Quality / Validation
+            self._pending_requests: deque = deque(maxlen=1000)
+            self._request_history: deque = deque(maxlen=1000)
+            self._waiters: Dict[str, deque] = defaultdict(lambda: deque(maxlen=100))
+
+
             self._validation_enabled = self.config.validation_enabled
 
-            # Typed quality ledger to satisfy static analysis
+
             def _default_quality_entry() -> "QualityEntry":
                 return {"score": 100.0, "issues": [], "trends": []}
 
@@ -669,7 +624,7 @@ class SmartInfoBus:
             self._anomaly_detector = None
             self._quality_lock = threading.Lock()
 
-            # Emergency & control
+
             self._emergency_mode = False
             self._emergency_triggers = 0
             self._emergency_threshold = 5
@@ -677,12 +632,12 @@ class SmartInfoBus:
             self._paused = threading.Event()
             self._paused.clear()
 
-            # Cache stats
+
             self._cache_stats = defaultdict(int)
             self._cache_access_times = defaultdict(float)
             self._cache_priorities = defaultdict(float)
 
-            # Thread infra
+
             self._maintenance_running = True
             self._maintenance_threads = []
             self._cleanup_thread: Optional[threading.Thread] = None
@@ -690,15 +645,15 @@ class SmartInfoBus:
             self._cleanup_interval = 60
             self._thread_pool = ThreadPoolExecutor(max_workers=self.config.background_thread_count, thread_name_prefix="InfoBus")
 
-            # Async task management (BOUNDED to prevent accumulation)
-            self._pending_tasks: Set["asyncio.Task[Any]"] = set()  # Track async tasks
-            # [FIXED] Corrected type hint from asyncio.Future to concurrent.futures.Future
-            self._pending_async_ops: deque = deque(maxlen=500)  # Was unbounded List
+
+            self._pending_tasks: Set["asyncio.Task[Any]"] = set()
+
+            self._pending_async_ops: deque = deque(maxlen=500)
             self._shutdown_event = asyncio.Event()
-            # [FIXED] Changed from asyncio.Lock to a thread-safe RLock
+
             self._async_lock = threading.RLock()
 
-            # Logger / Audit
+
             self.logger = RotatingLogger(
                 name="SmartInfoBus",
                 log_dir="logs/infobus",
@@ -708,14 +663,14 @@ class SmartInfoBus:
             )
             self._audit_system = AuditSystem("SmartInfoBus") if self.config.audit_enabled else None
 
-            # Log startup mode clearly for operators
+
             staleness_enabled = getattr(self.config, 'staleness_check_enabled', True)
             if not staleness_enabled:
                 self.logger.info(
                     "[BUS][STARTUP] Staleness checking DISABLED (dashboard/monitoring mode)"
                 )
             else:
-                # Note: TradingModeManager is the source of truth, config.live_mode is just a hint
+
                 is_live = self._is_live_mode()
                 if is_live:
                     self.logger.warning(
@@ -727,30 +682,26 @@ class SmartInfoBus:
                         "[BUS][STARTUP] Running in TRAINING MODE - staleness threshold extended to 2 hours"
                     )
 
-            # Middleware & validators
+
             self._pre_set_hooks: List[Callable[[str, Any, Dict[str, Any]], Any]] = []
             self._post_set_hooks: List[Callable[[str, DataVersion], None]] = []
             self._pre_get_hooks: List[Callable[[str, str, Dict[str, Any]], None]] = []
             self._post_get_hooks: List[Callable[[str, str, Any, Dict[str, Any]], None]] = []
             self._validators: Dict[str, Callable[[Any], bool]] = {}
 
-            # Single-writer policy for critical canonical keys
+
             self._critical_single_writer_keys: Set[str] = {
                 "market_regime", "training_metrics", "performance_metrics",
                 "risk_data", "sequence_quality", "trade_vote",
-                # Contended keys: enforce single-writer policy explicitly
+
                 "mode_recommendations", "member_confidences", "expert_votes",
             }
 
-            # Ownership registry and policies (lightweight, in-memory)
+
             self._owners: Dict[str, str] = {}
             self._policies: Dict[str, Dict[str, Any]] = defaultdict(dict)
-            self._streams: Dict[str, Deque[Dict[str, Any]]] = defaultdict(lambda: deque(maxlen=1000))  # Reduced from 10000
+            self._streams: Dict[str, Deque[Dict[str, Any]]] = defaultdict(lambda: deque(maxlen=1000))
 
-            # Default stream-like feeds (multi-writer, append-only)
-            # Note: keep 'vote' as a stream; 'expert_votes' is a canonical snapshot
-            # owned by the coordinator and must remain a state key to avoid BUS MISS
-            # in consumers that call get('expert_votes').
 
             def _single_writer_guard(key: str, value: Any, meta: Dict[str, Any]) -> Any:
                 try:
@@ -758,7 +709,7 @@ class SmartInfoBus:
                     if base_key not in self._critical_single_writer_keys:
                         return None
 
-                    # If the key is configured as a stream, do not enforce single-writer
+
                     pol = self._policies.get(key) or self._policies.get(base_key)
                     if pol and pol.get("mode") == "stream":
                         return None
@@ -791,13 +742,13 @@ class SmartInfoBus:
 
             self.register_pre_set_hook(_single_writer_guard)
 
-            # Rate-limiting
-            self._rate_counters: DefaultDict[str, Deque[float]] = defaultdict(lambda: deque(maxlen=1000))  # Reduced from 10000
 
-            # Transactions
+            self._rate_counters: DefaultDict[str, Deque[float]] = defaultdict(lambda: deque(maxlen=1000))
+
+
             self._tx_local = threading.local()
 
-            # Initialize subsystems
+
             self._initialize_anomaly_detection() if self.config.anomaly_detection_enabled else self._seed_anomaly_default()
             self._start_background_services()
             self._init_dependency_tracing_state()
@@ -805,7 +756,7 @@ class SmartInfoBus:
             self._initialization_time = time.time()
             self._initialize_system_monitoring()
 
-            # Emit init
+
             self._emit('bus_initialized', {
                 'timestamp': self._initialization_time,
                 'config': self.config.to_dict(),
@@ -816,35 +767,23 @@ class SmartInfoBus:
                                                     details=f"Features: {', '.join(self._get_enabled_features())}",
                                                     context="startup"))
 
-            # No implicit seeding; providers are responsible for publishing their own keys.
 
-            # Load persisted data on startup
             self._load_persisted_data()
 
-    # ──────────────────────────────────────────────────────────────
-    # Live Mode Detection (uses TradingModeManager as source of truth)
-    # ──────────────────────────────────────────────────────────────
+
     def _is_live_mode(self) -> bool:
-        """
-        Check if the system is in LIVE trading mode.
-        Uses TradingModeManager as the single source of truth, with config as fallback.
-        """
         try:
             from modules.core.trading_mode import TradingModeManager
             return TradingModeManager.is_live()
         except ImportError:
-            # Fallback to config if TradingModeManager is not available
+
             return getattr(self.config, 'live_mode', False)
         except Exception:
             return getattr(self.config, 'live_mode', False)
 
     def set_live_mode(self, is_live: bool) -> None:
-        """
-        Set the live mode for staleness checking.
-        Called by TradingModeManager when mode changes.
-        """
         self.config.live_mode = is_live
-        # Also enable staleness checking when entering live/training mode
+
         self.config.staleness_check_enabled = True
         mode_str = "LIVE" if is_live else "TRAINING"
         threshold = self.config.max_data_age_seconds if is_live else 7200
@@ -854,57 +793,49 @@ class SmartInfoBus:
         )
 
     def set_staleness_check_enabled(self, enabled: bool) -> None:
-        """
-        Enable or disable staleness checking.
-        Disable for dashboard/monitoring mode where no orchestrator loop runs.
-        Enable for training/live trading where data freshness matters.
-        """
         self.config.staleness_check_enabled = enabled
         status = "ENABLED" if enabled else "DISABLED"
         self.logger.info(f"[BUS][STALENESS] Staleness checking {status}")
 
-    # ──────────────────────────────────────────────────────────────
-    # Cross-Process Persistence
-    # ──────────────────────────────────────────────────────────────
+
     def _persist_data(self, key: str, value: Any) -> None:
-        """Persist key-value data to file for cross-process sharing (opt-in, debounced)."""
-        # Backward-compatible config gates (won't fail if attrs are missing)
+
         if not getattr(self.config, 'persistence_enabled', False):
             return
-        
-        # Check if this key should be persisted
+
+
         persist_keys = getattr(self.config, 'persist_keys', None)
         if persist_keys is not None and key not in persist_keys:
-            return  # Skip keys not in the allowed list
-            
+            return
+
         try:
             with self._persistence_lock:
-                # Debounce writes
+
                 if not hasattr(self, "_last_persist_write"):
                     self._last_persist_write = 0.0
                 now = time.time()
                 interval = float(getattr(self.config, 'persist_write_interval_seconds', 1.0))
                 if now - self._last_persist_write < interval:
-                    # Queue the key for next batch write
+
                     if not hasattr(self, "_pending_persist_keys"):
                         self._pending_persist_keys: Set[str] = set()
                     self._pending_persist_keys.add(key)
                     return
 
-                # Ensure directory exists
+
                 persist_file = getattr(self.config, 'persistence_file', self._persistence_file)
                 persist_dir = os.path.dirname(persist_file)
                 if persist_dir and not os.path.exists(persist_dir):
                     os.makedirs(persist_dir, exist_ok=True)
-                
-                # Read existing persisted data safely (fallbacks + repair)
+
+
                 persisted_data: Dict[str, Any] = self._safe_read_json_file(persist_file)
 
-                # Collect all pending keys + current key
+
                 keys_to_persist = getattr(self, "_pending_persist_keys", set()) | {key}
-                self._pending_persist_keys = set()  # Clear pending
-                
-                # Batch persist all queued keys
+                self._pending_persist_keys = set()
+
+
                 for k in keys_to_persist:
                     if k in self._data_store:
                         stored_val = self._data_store[k].value
@@ -916,7 +847,7 @@ class SmartInfoBus:
                             'version': version
                         }
 
-                # Atomic write with backup to avoid partial/corrupt files
+
                 self._atomic_write_json(persist_file, persisted_data)
                 self._last_persist_write = now
 
@@ -925,42 +856,36 @@ class SmartInfoBus:
 
 
     def _load_persisted_data(self) -> None:
-          """Load persisted data from file on startup.
-          
-          Note: Keys in config.no_load_keys are skipped to prevent accumulation
-          of stale memory-learning data across sessions. If persist_keys is set,
-          only those keys are eligible for cross-process persistence.
-          """
           try:
               persist_file = getattr(self.config, "persistence_file", self._persistence_file)
               if os.path.exists(persist_file):
                   persisted_data = self._safe_read_json_file(persist_file)
-                  
-                  # Keys that should NOT be loaded (memory learning data)
+
+
                   no_load_keys = set(getattr(self.config, "no_load_keys", []) or [])
-                  
-                  # Optional allowlist of keys that participate in persistence
+
+
                   persist_keys = getattr(self.config, "persist_keys", None)
                   persist_keys_set: Optional[Set[str]] = set(persist_keys) if isinstance(persist_keys, list) else None
-                  
+
                   loaded_count = 0
                   skipped_count = 0
-                  
-                  # Load persisted data into memory store if not already present
+
+
                   for key, data in persisted_data.items():
-                      # Skip memory-learning keys that accumulate incorrectly across sessions
+
                       if key in no_load_keys:
                           skipped_count += 1
                           continue
-                      
-                      # Skip keys not explicitly allowed when an allowlist is configured
+
+
                       if persist_keys_set is not None and key not in persist_keys_set:
                           skipped_count += 1
                           continue
-                      
+
                       if key not in self._data_store:
                           try:
-                              # Create a minimal DataVersion for persisted data
+
                               data_version = DataVersion(
                                   value=data["value"],
                                   version=data.get("version", 1),
@@ -976,22 +901,21 @@ class SmartInfoBus:
                               self.logger.warning(
                                   f"[PERSISTENCE] Failed to load persisted key '{key}': {e}"
                               )
-                  
+
                   self.logger.info(
                       f"[PERSISTENCE] Loaded {loaded_count} keys, skipped {skipped_count} memory-learning keys (fresh session)"
                   )
           except Exception as e:
               self.logger.warning(f"[PERSISTENCE] Failed to load persisted data: {e}")
-  
+
     def _get_persisted_value(self, key: str) -> Any:
-          """Get value from persistent storage if not in memory."""
           try:
-              # Respect persist_keys allowlist if configured - only keys explicitly
-              # allowed should ever be sourced from cross-process persistence.
+
+
               persist_keys = getattr(self.config, "persist_keys", None)
               if isinstance(persist_keys, list) and key not in persist_keys:
                   return None
-              
+
               persist_file = getattr(self.config, "persistence_file", self._persistence_file)
               if os.path.exists(persist_file):
                   persisted_data = self._safe_read_json_file(persist_file)
@@ -1002,12 +926,11 @@ class SmartInfoBus:
           return None
 
     def _make_serializable(self, value: Any) -> Any:
-        """Convert value to JSON-serializable format."""
         import math
         if isinstance(value, (str, int, bool, type(None))):
             return value
         elif isinstance(value, float):
-            # Handle inf and NaN which are not JSON-compliant
+
             if math.isnan(value) or math.isinf(value):
                 return 0.0
             return value
@@ -1018,29 +941,23 @@ class SmartInfoBus:
         elif hasattr(value, '__dict__'):
             return self._make_serializable(value.__dict__)
         elif isinstance(value, np.ndarray):
-            # Handle inf/NaN in numpy arrays
+
             arr = value.copy()
             arr = np.where(np.isnan(arr), 0.0, arr)
             arr = np.where(np.isinf(arr), 0.0, arr)
             return arr.tolist()
         else:
-            # For other types, convert to string representation
+
             return str(value)
 
-    #
-    # Persistence hardening helpers
-    #
+
     def _safe_read_json_file(self, path: str) -> Dict[str, Any]:
-        """Robust JSON file reader with fallback/repair.
-        - Returns parsed dict, or {} on failure.
-        - Tries main file, then .bak, then salvage truncated content.
-        """
-        # Fast path
+
         try:
             with open(path, 'r') as f:
                 return json.load(f)
         except Exception as e1:
-            # Try backup
+
             bak = f"{path}.bak"
             try:
                 if os.path.exists(bak):
@@ -1051,13 +968,13 @@ class SmartInfoBus:
             except Exception:
                 pass
 
-            # Try salvage
+
             try:
                 with open(path, 'r', encoding='utf-8', errors='ignore') as f:
                     content = f.read()
                 repaired = self._salvage_truncated_json(content)
                 if repaired is not None:
-                    # Backup corrupt file (best effort) and write repaired
+
                     try:
                         shutil.copy2(path, f"{path}.corrupt")
                     except Exception:
@@ -1071,10 +988,6 @@ class SmartInfoBus:
             return {}
 
     def _salvage_truncated_json(self, content: str) -> Optional[Dict[str, Any]]:
-        """Attempt to salvage a truncated top-level JSON object by
-        truncating at the last position where braces balance.
-        Returns dict on success, else None.
-        """
         try:
             return json.loads(content)
         except Exception:
@@ -1110,7 +1023,6 @@ class SmartInfoBus:
         return None
 
     def _atomic_write_json(self, path: str, data: Dict[str, Any]) -> None:
-        """Write JSON atomically with .bak backup of previous file."""
         directory = os.path.dirname(os.path.abspath(path)) or '.'
         os.makedirs(directory, exist_ok=True)
         payload = json.dumps(data, indent=2)
@@ -1133,9 +1045,7 @@ class SmartInfoBus:
                 pass
             raise
 
-    # ──────────────────────────────────────────────────────────────
-    # Helper: namespaces, pause, read-only, throttling
-    # ──────────────────────────────────────────────────────────────
+
     def _ns_key(self, key: str, namespace: Optional[str]) -> str:
         if not namespace:
             namespace = self.config.default_namespace
@@ -1164,7 +1074,7 @@ class SmartInfoBus:
 
         now = time.time()
 
-        # Ensure the per-module bucket is a deque (defensive in case anything overwrote it)
+
         dq = self._rate_counters.get(module)
         if not isinstance(dq, deque):
             dq = deque(maxlen=10000)
@@ -1172,7 +1082,7 @@ class SmartInfoBus:
 
         dq.append(now)
 
-        # drop entries older than 1s
+
         while len(dq) and (now - dq[0]) > 1.0:
             dq.popleft()
 
@@ -1180,9 +1090,6 @@ class SmartInfoBus:
             raise RuntimeError(f"Write rate exceeded for module '{module}' ({limit}/sec)")
 
 
-    # ──────────────────────────────────────────────────────────────
-    # Middleware & Validators
-    # ──────────────────────────────────────────────────────────────
     def register_pre_set_hook(self, fn: Callable[[str, Any, Dict[str, Any]], Any]):
         self._pre_set_hooks.append(fn)
 
@@ -1196,7 +1103,6 @@ class SmartInfoBus:
         self._post_get_hooks.append(fn)
 
     def register_validator(self, key: str, fn: Callable[[Any], bool]):
-        """Register a schema/shape validator for a key."""
         self._validators[key] = fn
 
     def _apply_pre_set(self, key: str, value: Any, meta: Dict[str, Any]) -> Any:
@@ -1207,7 +1113,7 @@ class SmartInfoBus:
                     value = maybe
             except Exception as e:
                 self.logger.error(f"[HOOK] pre_set error for {key}: {e}")
-                # [FIXED] Re-raise contract violations to enforce them
+
                 if isinstance(e, PermissionError):
                     raise
         return value
@@ -1233,9 +1139,7 @@ class SmartInfoBus:
             except Exception as e:
                 self.logger.error(f"[HOOK] post_get error for {key}: {e}")
 
-    # ──────────────────────────────────────────────────────────────
-    # System info & initialization helpers
-    # ──────────────────────────────────────────────────────────────
+
     def _get_enabled_features(self) -> List[str]:
         feats = ["core", "thread_safety", "performance_monitoring", "history", "events"]
         if self.config.audit_enabled:
@@ -1323,29 +1227,22 @@ class SmartInfoBus:
             self.logger.error(f"Failed to initialize system monitoring: {e}")
 
 
-    # ──────────────────────────────────────────────────────────────
-    # Background workers (performance & quality)
-    # ──────────────────────────────────────────────────────────────
     def _background_performance_monitoring(self) -> None:
-        """
-        Periodically record host metrics and derive simple performance signals.
-        Emits soft alerts for degraded cache hit-rate or latency spikes.
-        """
         self.logger.info("[TOOL] Background performance monitor started")
         interval = max(1.0, float(self.config.health_check_interval_ms) / 1000.0)
 
         while self._maintenance_running:
             try:
-                # Host metrics (CPU/mem)
+
                 self._record_system_metrics()
 
-                # Hit rate & latency signals
+
                 with self._performance_lock:
                     total = self._cache_hits + self._cache_misses
                     hit_rate = self._cache_hits / max(total, 1)
                     self._predictive_metrics["hit_rate"] = hit_rate
 
-                    # Compute rolling p95 latency per module (cheap heuristic)
+
                     hot_modules: Dict[str, float] = {}
                     for m, timings in self._latency_history.items():
                         if timings:
@@ -1354,7 +1251,7 @@ class SmartInfoBus:
                             hot_modules[m] = p95
                     self._predictive_metrics["p95_by_module"] = hot_modules
 
-                # Emit warnings on clear degradation
+
                 if total > 200 and hit_rate < 0.20:
                     self._emit(
                         "performance_alert",
@@ -1366,7 +1263,7 @@ class SmartInfoBus:
                         },
                     )
 
-                # Very high module p95s
+
                 slow = [(m, p95) for m, p95 in self._predictive_metrics.get("p95_by_module", {}).items() if p95 > 500]
                 if slow:
                     worst = max(slow, key=lambda x: x[1])
@@ -1383,16 +1280,12 @@ class SmartInfoBus:
             except Exception as e:
                 self.logger.debug(f"[perf-monitor] loop error: {e}")
 
-            # pacing
+
             time.sleep(interval)
 
     def _background_quality_monitoring(self) -> None:
-        """
-        Periodically sweep data quality. Tracks per-key quality trends and emits warnings
-        for low quality, low confidence, or excessive staleness.
-        """
         self.logger.info("[TOOL] Background quality monitor started")
-        # run a bit more often than cleanup; but at least 2s
+
         interval = max(2.0, float(self.config.cleanup_interval_seconds) / 2.0)
 
         while self._maintenance_running and self.config.quality_monitoring_enabled:
@@ -1407,23 +1300,23 @@ class SmartInfoBus:
 
                 now = time.time()
                 for key, dv in snapshot_items:
-                    # Update local quality ledger
+
                     try:
                         with self._quality_lock:
                             q = self._quality_metrics[key]
-                            # Keep score as float consistently
+
                             q['score'] = float(dv.quality_score)
-                            # Work on a typed local list to avoid int|list unions
+
                             trends = cast(List[QualityTrend], q.get('trends', []))
                             item: QualityTrend = {'ts': now, 'score': float(dv.quality_score)}
                             trends.append(item)
                             if len(trends) > 200:
                                 trends.pop(0)
-                            q['trends'] = trends  # write back
+                            q['trends'] = trends
                     except Exception:
                         pass
 
-                    # Collect issues
+
                     if dv.quality_score < 50.0:
                         low_quality_keys.append(key)
                         issues_found += 1
@@ -1465,9 +1358,7 @@ class SmartInfoBus:
         except Exception as e:
             self.logger.debug(f"Failed to record system metrics: {e}")
 
-    # ──────────────────────────────────────────────────────────────
-    # Cleanup / TTL / LRU
-    # ──────────────────────────────────────────────────────────────
+
     def _start_cleanup_thread(self):
         if self._cleanup_thread and self._cleanup_thread.is_alive():
             return
@@ -1501,16 +1392,10 @@ class SmartInfoBus:
         if expired or removed:
             self.logger.debug(f"🗑️ Cleaned: {len(expired)} expired, {removed} LRU")
 
-    # ──────────────────────────────────────────────────────────────
-    # Core operations – set/get (+ bulk) with transactions & validators
-    # ──────────────────────────────────────────────────────────────
+
     def set(self, key: str, value: Any, module: str, thesis: str | None = None,
             confidence: float = 1.0, dependencies: List[str] | None = None,
             processing_time_ms: float = 0.0, *, namespace: Optional[str] = None) -> None:
-        """
-        Store a value with versioning, TTL, safety, middleware, validators, and optional namespace.
-        Transaction-aware: if inside a transaction, it's queued until commit.
-        """
         self._enforce_read_only()
         if self._paused.is_set():
             raise RuntimeError("SmartInfoBus is paused")
@@ -1530,7 +1415,7 @@ class SmartInfoBus:
             "dependencies": dependencies, "processing_time_ms": processing_time_ms,
             "namespace": namespace
         }
-        # Prevent Environment from writing canonical provider-owned keys to avoid owner violations
+
         try:
             base_key = full_key.split(":", 1)[-1]
             if module == "Environment" and base_key in {"market_data", "market_context", "step_idx", "environment_config"}:
@@ -1538,7 +1423,7 @@ class SmartInfoBus:
         except Exception:
             pass
 
-        # Contract enforcement: writers should only write declared provides.
+
         try:
             mode = str(getattr(self.config, "contract_enforcement", "off")).lower().strip()
         except Exception:
@@ -1590,7 +1475,7 @@ class SmartInfoBus:
 
         value = self._apply_pre_set(full_key, value, meta)
 
-        # Ownership guard: block non-owner writes to canonical keys (soft-fail)
+
         owner = self._owners.get(full_key) or self._owners.get(key)
         if owner and owner != module:
             self._log_event({"type": "owner_violation", "key": full_key, "expected_owner": owner, "writer": module})
@@ -1600,13 +1485,13 @@ class SmartInfoBus:
                 pass
             return
 
-        # Stream policy: append-only (no provider table churn)
+
         pol = self._policies.get(full_key) or self._policies.get(key)
         if pol and pol.get("mode") == "stream":
             self._streams[full_key].append({"t": time.time(), "module": module, "value": self._safe_clone(value)})
             return
 
-        # Validators (schema/shape)
+
         validator = self._validators.get(full_key) or self._validators.get(key)
         if validator:
             try:
@@ -1616,14 +1501,14 @@ class SmartInfoBus:
             except Exception as e:
                 raise ValueError(f"Validator error for '{full_key}': {e}")
 
-        # Transaction-aware
+
         if getattr(self._tx_local, "buffer", None) is not None:
             self._tx_local.buffer.append(("set", (full_key, value, module, thesis, confidence, dependencies, processing_time_ms)))
             return
 
         self._set_core(full_key, value, module, thesis, confidence, dependencies, processing_time_ms)
 
-    # Ownership & policy helpers
+
     def declare_owner(self, key: str, owner: str) -> None:
         if not key or not owner:
             raise ValueError("key and owner must be non-empty")
@@ -1644,11 +1529,10 @@ class SmartInfoBus:
                 stored_value = value
             self._streams[full_key].append({"t": time.time(), "module": module, "value": stored_value})
             return
-        # fallback to standard set if not a stream key
+
         self.set(key, value, module, thesis)
 
 
-    # Core application of a set (factored for transactions)
     def _set_core(self, full_key: str, value: Any, module: str, thesis: Optional[str], confidence: float,
                 dependencies: Optional[List[str]], processing_time_ms: float) -> None:
         try:
@@ -1677,7 +1561,7 @@ class SmartInfoBus:
                 if len(self._data_store) > self.config.max_cache_size:
                     self._cleanup_expired_and_lru()
 
-            # Register provider only for non-stream keys (prevents "provider flip" storms)
+
             with self._registry_lock:
                 base_key = full_key.split(":", 1)[-1]
                 pol = self._policies.get(full_key) or self._policies.get(base_key)
@@ -1712,14 +1596,14 @@ class SmartInfoBus:
                 "confidence": confidence, "has_thesis": thesis is not None
             })
 
-            # Notify waiters
+
             self._notify_waiters(full_key, data)
 
-            # Post-set hooks + pending requests
+
             self._apply_post_set(full_key, data)
             self._check_pending_requests(full_key)
 
-            # Persist data for cross-process sharing
+
             self._persist_data(full_key, stored_value)
 
             self.logger.debug(f"[OK] {module} set '{full_key}' v{version} (conf={confidence:0.2f})")
@@ -1731,10 +1615,6 @@ class SmartInfoBus:
 
 
     def set_many(self, entries: List[Dict[str, Any]], *, atomic: bool = False, namespace: Optional[str] = None) -> int:
-        """
-        Bulk set; entries is a list of dicts with at minimum {key, value, module}.
-        If atomic=True, performed within a transaction.
-        """
         if atomic:
             with self.transaction():
                 for e in entries:
@@ -1756,13 +1636,10 @@ class SmartInfoBus:
     def get(self, key: str, module: str, max_age: Optional[float] = None,
             min_confidence: float = 0.0, default: Any = None, *, namespace: Optional[str] = None,
             declared_dependencies: Optional[Set[str]] = None) -> Any:
-        """
-        Get value with freshness/confidence validation, middleware hooks, and dependency enforcement.
-        """
         try:
             full_key = self._ns_key(key, namespace)
 
-            # Enforce dependency declaration (contract)
+
             if self.config.enforce_dependency_declaration:
                 if declared_dependencies is not None:
                     if full_key not in declared_dependencies and key not in declared_dependencies:
@@ -1820,10 +1697,10 @@ class SmartInfoBus:
 
                 data = self._data_store.get(full_key)
                 if not data:
-                    # Check for persisted data from other processes
+
                     persisted_value = self._get_persisted_value(full_key)
                     if persisted_value is not None:
-                        # Create a temporary DataVersion for the persisted data
+
                         data = DataVersion(
                             value=persisted_value,
                             timestamp=time.time(),
@@ -1832,7 +1709,7 @@ class SmartInfoBus:
                             confidence=1.0,
                             version=1
                         )
-                        # Don't store in memory to avoid conflicts, just return the value
+
                         self._apply_post_get(full_key, module, persisted_value, {"from_persistence": True})
                         return persisted_value
 
@@ -1852,22 +1729,22 @@ class SmartInfoBus:
                     return default
 
                 age_seconds = data.age_seconds()
-                
-                # Skip staleness check entirely if disabled (dashboard/monitoring mode)
+
+
                 staleness_enabled = getattr(self.config, 'staleness_check_enabled', True)
-                
+
                 if staleness_enabled:
-                    # Defensive: callers sometimes pass default as positional 3rd arg, which binds to max_age.
-                    # Ensure max_age_check is numeric; otherwise fall back to configured max age and warn once.
+
+
                     if isinstance(max_age, (int, float)):
                         max_age_check = float(max_age)
                     else:
                         max_age_check = float(self.config.max_data_age_seconds)
-                        # In training mode, use a much higher threshold (or disable)
-                        # Use TradingModeManager as source of truth for live vs training mode
+
+
                         is_live = self._is_live_mode()
                         if not is_live:
-                            max_age_check = max(max_age_check, 7200.0)  # 2 hours for training
+                            max_age_check = max(max_age_check, 7200.0)
                     if max_age is not None and not isinstance(max_age, (int, float)):
                         try:
                             self.logger.warning(
@@ -1876,7 +1753,7 @@ class SmartInfoBus:
                             )
                         except Exception:
                             pass
-                    
+
                     if age_seconds > max_age_check:
                         self._emit('stale_data_warning', {'key': full_key, 'age': age_seconds, 'module': module, 'max_age': max_age_check})
                         self.logger.warning(f"Stale data: {full_key} is {age_seconds:.1f}s old (max: {max_age_check}s)")
@@ -1917,22 +1794,14 @@ class SmartInfoBus:
                 raise
             return default
 
-            
-    # [NEW] Added for performance-critical paths where cloning can be skipped.
-    def get_readonly_ref(self, key: str, module: str, default: Any = None, *, namespace: Optional[str] = None) -> Any:
-        """
-        Get a direct, read-only reference to a value without cloning it.
 
-        WARNING: This is a high-performance, unsafe operation. The caller MUST NOT
-        mutate the returned object, as it is a direct reference to the cached data.
-        Mutating the returned object will corrupt the InfoBus state.
-        """
+    def get_readonly_ref(self, key: str, module: str, default: Any = None, *, namespace: Optional[str] = None) -> Any:
         full_key = self._ns_key(key, namespace)
         with self._access_lock:
             data = self._data_store.get(full_key)
             if not data:
                 return default
-            # Perform standard checks (age, confidence, integrity)
+
             if data.is_stale(self.config.max_data_age_seconds) or not data.validate_integrity():
                 return default
             data.increment_access(accessor_module=f"{module}_readonly")
@@ -1945,9 +1814,7 @@ class SmartInfoBus:
             out[k] = self.get(k, module, max_age=max_age, min_confidence=min_confidence, default=default, namespace=namespace)
         return out
 
-    # ──────────────────────────────────────────────────────────────
-    # Waiters (sync wait on values becoming available/matching a predicate)
-    # ──────────────────────────────────────────────────────────────
+
     def wait_for(
         self,
         key: str,
@@ -1956,12 +1823,9 @@ class SmartInfoBus:
         predicate: Optional[Callable[[Any], bool]] = None,
         namespace: Optional[str] = None
     ) -> Optional[Any]:
-        """
-        Block the caller until key appears (and predicate(value) is True if provided) or timeout.
-        """
         full_key = self._ns_key(key, namespace)
 
-        # Fast-path with explicit None-guard so Pylance sees the narrow
+
         existing = self.get_with_metadata(full_key, "WaiterBootstrap")
         if existing is not None and (predicate is None or predicate(existing.value)):
             return existing.value
@@ -2002,9 +1866,7 @@ class SmartInfoBus:
             except Exception:
                 event.set()
 
-    # ──────────────────────────────────────────────────────────────
-    # Metadata & requests
-    # ──────────────────────────────────────────────────────────────
+
     def get_with_metadata(self, key: str, module: str) -> Optional[DataVersion]:
         try:
             with self._access_lock:
@@ -2060,9 +1922,7 @@ class SmartInfoBus:
             self.logger.error(f"[CRASH] Failed to create data request: {e}")
             return None
 
-    # ──────────────────────────────────────────────────────────────
-    # Registry / graph
-    # ──────────────────────────────────────────────────────────────
+
     def register_provider(self, module: str, provides: List[str]):
         if not isinstance(provides, list):
             provides = [provides]
@@ -2155,9 +2015,7 @@ class SmartInfoBus:
             self.logger.error(f"[CRASH] Failed to find circular dependencies: {e}")
             return []
 
-    # ──────────────────────────────────────────────────────────────
-    # Performance / health / metrics
-    # ──────────────────────────────────────────────────────────────
+
     def record_module_timing(self, module: str, duration_ms: float):
         if duration_ms < 0:
             self.logger.warning(f"Invalid duration for {module}: {duration_ms}ms")
@@ -2217,23 +2075,21 @@ class SmartInfoBus:
         except Exception as e:
             self.logger.error(f"[CRASH] Failed to reset failures for {module}: {e}")
 
-# ─────────────────────────────────────────────────────────────
-# In class SmartInfoBus (modules/utils/info_bus.py)
-# ─────────────────────────────────────────────────────────────
+
     def get_module_health(self, module: str) -> Dict[str, Any]:
         try:
-            # Snapshot breaker state first (no nested locking into is_module_enabled)
+
             with self._circuit_breaker_lock:
                 br = self._circuit_breakers.get(module, CircuitBreakerState())
 
             enabled = self.is_module_enabled(module)
 
-            # Read perf stats
+
             with self._performance_lock:
                 lat = list(self._latency_history.get(module, []))
                 ap = dict(self._access_patterns.get(module, {}))
 
-            # Read registry info
+
             with self._registry_lock:
                 provides = [k for k, ps in self._providers.items() if module in ps]
                 consumes = [k for k, cs in self._consumers.items() if module in cs]
@@ -2267,13 +2123,13 @@ class SmartInfoBus:
 
     def get_performance_metrics(self) -> Dict[str, Any]:
         try:
-            # Canonical lock order: access -> registry -> performance -> circuit -> event -> request
+
             with self._access_lock:
                 active_keys = len(self._data_store)
                 total_versions = sum(len(h) for h in self._data_history.values())
 
             with self._registry_lock:
-                pass  # reserved for coupled reads if needed
+                pass
 
             with self._performance_lock:
                 total = self._cache_hits + self._cache_misses
@@ -2295,7 +2151,7 @@ class SmartInfoBus:
                 total_fail = sum(b.failure_count for b in self._circuit_breakers.values())
 
             with self._event_lock:
-                pass  # reserved
+                pass
 
             with self._request_lock:
                 pend = len(self._pending_requests)
@@ -2321,7 +2177,6 @@ class SmartInfoBus:
 
 
     def export_metrics_text(self) -> str:
-        """Simple text exposition, Prometheus-style (no server)."""
         m = self.get_performance_metrics()
         lines = [
             "# HELP infobus_cache_hit_rate Cache hit rate.",
@@ -2354,11 +2209,9 @@ class SmartInfoBus:
                     return e.get('timestamp', time.time())
         return time.time()
 
-    # ──────────────────────────────────────────────────────────────
-    # Cloning & trace helpers
-    # ──────────────────────────────────────────────────────────────
+
     def _safe_clone(self, obj: Any) -> Any:
-        # [FIXED] Optimized to avoid deepcopy for immutable types
+
         if isinstance(obj, (int, float, str, bool, tuple, type(None))):
             return obj
         try:
@@ -2461,9 +2314,7 @@ class SmartInfoBus:
             self.logger.error(f"[CRASH] Failed to build dependency report: {e}")
             return f"{title}\nERROR: {e}"
 
-    # ──────────────────────────────────────────────────────────────
-    # Events
-    # ──────────────────────────────────────────────────────────────
+
     def subscribe(self, event_type: str, callback: Callable):
         if not callable(callback):
             raise ValueError("Callback must be callable")
@@ -2483,13 +2334,12 @@ class SmartInfoBus:
             self.logger.error(f"[CRASH] Failed to unsubscribe: {e}")
 
     async def _track_task_completion(self, task: "asyncio.Task[Any]") -> None:
-            """Track and remove completed tasks from the set."""
             try:
                 await task
             except asyncio.CancelledError:
-                pass  # Expected when cancelled
+                pass
             finally:
-                # [FIXED] Use standard `with` on the thread-safe lock
+
                 with self._async_lock:
                     self._pending_tasks.discard(task)
 
@@ -2503,7 +2353,7 @@ class SmartInfoBus:
 
         for cb in callbacks:
             try:
-                # For core event_logged notifications, invoke synchronously to avoid flakiness in tests
+
                 if event_type == 'event_logged':
                     if asyncio.iscoroutinefunction(cb):
                         try:
@@ -2513,7 +2363,7 @@ class SmartInfoBus:
                                 self._pending_tasks.add(task)
                             asyncio.create_task(self._track_task_completion(task))
                         except RuntimeError:
-                            # No running loop; run in thread pool
+
                             result = self._thread_pool.submit(lambda: asyncio.run(cb(data)))
                             with self._async_lock:
                                 self._pending_async_ops.append(result)
@@ -2544,9 +2394,6 @@ class SmartInfoBus:
             self._emit('event_logged', event)
         except Exception as e:
             self.logger.error(f"[CRASH] Failed to log event: {e}")
-
-    # Bootstrap canonical owners (call once during orchestrator start or first get_instance)
-    # NOTE: bootstrap_canonical_owners removed to avoid implicit ownership coupling.
 
 
     def _log_miss(self, key: str, module: str):
@@ -2586,7 +2433,7 @@ class SmartInfoBus:
                     if data is None or not isinstance(data, DataVersion):
                         continue
 
-                    dv = cast(DataVersion, data)  # helps the type checker
+                    dv = cast(DataVersion, data)
 
                     if req.matches_data(dv):
                         payload = {
@@ -2612,7 +2459,7 @@ class SmartInfoBus:
 
                         fulfilled.append(i)
 
-                # Convert to list for indexed removal, then back to deque
+
                 req_list = list(self._pending_requests)
                 for i in reversed(fulfilled):
                     req_list.pop(i)
@@ -2623,9 +2470,6 @@ class SmartInfoBus:
             self.logger.error(f"[CRASH] Failed to check pending requests: {e}")
 
 
-    # ──────────────────────────────────────────────────────────────
-    # Maintenance
-    # ──────────────────────────────────────────────────────────────
     def _background_maintenance(self):
         self.logger.info("[TOOL] Background maintenance started")
         while self._maintenance_running:
@@ -2691,9 +2535,7 @@ class SmartInfoBus:
         except Exception as e:
             self.logger.error(f"[CRASH] Data integrity validation failed: {e}")
 
-    # ──────────────────────────────────────────────────────────────
-    # Analysis / reporting / snapshots
-    # ──────────────────────────────────────────────────────────────
+
     def get_data_freshness_report(self) -> Dict[str, Dict[str, Any]]:
         try:
             report = {}
@@ -2790,12 +2632,8 @@ class SmartInfoBus:
                         include_values: bool = True, include_history: bool = False,
                         include_events: bool = False, include_metrics: bool = True,
                         compress: bool = False) -> Dict[str, Any]:
-        """
-        Concurrency-safe snapshotting with consistent lock order.
-        Holds locks briefly to copy, then serializes unlocked.
-        """
         try:
-            # Step 1: Acquire locks in canonical order and copy minimal state
+
             with self._access_lock, self._registry_lock, self._performance_lock, self._circuit_breaker_lock, self._event_lock:
                 data_state = copy.deepcopy({k: dv.to_dict(include_value=include_values) for k, dv in self._data_store.items()})
                 history = {k: [ver.to_dict(include_value=False) for ver in list(hist)[-5:]]
@@ -2806,7 +2644,7 @@ class SmartInfoBus:
                 disabled_modules = copy.deepcopy(self._module_disabled)
                 events_tail = list(self._event_log)[-1500:] if include_events else []
 
-            # Step 2: Build snapshot object unlocked
+
             snap = {
                 "meta": {"generated_at": datetime.now(timezone.utc).isoformat(),
                         "python": sys.version.split()[0], "platform": sys.platform,
@@ -2825,7 +2663,7 @@ class SmartInfoBus:
                 snap["metrics"] = self.get_performance_metrics()
                 snap["cache_stats"] = self.get_cache_stats()
 
-            # Step 3: Write to file if requested
+
             if filepath:
                 if compress or filepath.endswith(".gz"):
                     with gzip.open(filepath, "wt", encoding="utf-8") as f:
@@ -2925,9 +2763,7 @@ class SmartInfoBus:
             self.logger.error(f"[CRASH] clear_caches failed: {e}")
         return removed
 
-    # ──────────────────────────────────────────────────────────────
-    # Transactions (context manager)
-    # ──────────────────────────────────────────────────────────────
+
     class _TxContext:
         def __init__(self, bus: "SmartInfoBus"):
             self.bus = bus
@@ -2944,9 +2780,9 @@ class SmartInfoBus:
         def __exit__(self, exc_type, exc, tb):
             try:
                 if exc:
-                    # rollback — simply drop buffer
+
                     return False
-                # commit
+
                 ops = getattr(self.bus._tx_local, "buffer", [])
                 for op, args in ops:
                     if op == "set":
@@ -2957,20 +2793,13 @@ class SmartInfoBus:
                 self.bus._tx_local.buffer = None
 
     def transaction(self) -> "SmartInfoBus._TxContext":
-        """Usage: with bus.transaction(): bus.set(...); bus.set(...)."""
         return SmartInfoBus._TxContext(self)
 
-    # ──────────────────────────────────────────────────────────────
-    # Shutdown
-    # ──────────────────────────────────────────────────────────────
+
     def shutdown(self) -> None:
-            """
-            Enhanced shutdown with comprehensive async task cleanup and resource management.
-            Ensures no pending tasks cause "Task was destroyed but it is pending!" errors.
-            """
             self.logger.info("[STOP] Shutting down SmartInfoBus …")
 
-            # Phase 1: Stop background processing immediately
+
             self._maintenance_running = False
             self._shutdown_event.set()
             if getattr(self, "_cleanup_thread", None) and self._cleanup_thread and self._cleanup_thread.is_alive():
@@ -2978,15 +2807,15 @@ class SmartInfoBus:
                 self.logger.debug("[STOP] Waiting for cleanup thread to finish ...")
                 self._cleanup_thread.join(timeout=5.0)
 
-            # Phase 2: Cancel all pending async tasks gracefully
+
             cancelled_tasks = 0
             try:
-                # [FIXED] Use standard `with` on the thread-safe lock
+
                 with self._async_lock:
                     pending_count = len(self._pending_tasks)
                     self.logger.debug(f"[STOP] Cancelling {pending_count} pending async tasks ...")
 
-                    # Cancel all tracked tasks
+
                     tasks_to_cancel = list(self._pending_tasks)
                     self._pending_tasks.clear()
 
@@ -2995,7 +2824,7 @@ class SmartInfoBus:
                             task.cancel()
                             cancelled_tasks += 1
 
-                    # Cancel related operations in thread pool
+
                     pending_ops_count = len(self._pending_async_ops)
                     self.logger.debug(f"[STOP] Cancelling {pending_ops_count} pending async operations ...")
                     for future in self._pending_async_ops:
@@ -3006,7 +2835,7 @@ class SmartInfoBus:
             except Exception as e:
                 self.logger.warning(f"[STOP] Async task cleanup error: {e}")
 
-            # Phase 3: Wait for threads to finish with generous timeout
+
             try:
                 all_threads = []
                 if hasattr(self, "_maintenance_threads"):
@@ -3022,7 +2851,7 @@ class SmartInfoBus:
             except Exception as e:
                 self.logger.warning(f"[STOP] Thread cleanup error: {e}")
 
-            # Phase 4: Shutdown thread pool (this will wait for active work)
+
             try:
                 if hasattr(self, "_thread_pool") and self._thread_pool:
                     self.logger.debug("[STOP] Shutting down thread pool ...")
@@ -3030,43 +2859,43 @@ class SmartInfoBus:
             except Exception as e:
                 self.logger.warning(f"[STOP] Thread pool shutdown error: {e}")
 
-            # Phase 5: Final cleanup - clear all data structures
+
             try:
-                # Core stores
+
                 with self._write_lock:
                     self._data_store.clear()
                     self._data_history.clear()
                     self._data_timestamps.clear()
                     self._waiters.clear()
 
-                # Registries
+
                 with self._registry_lock:
                     self._providers.clear()
                     self._consumers.clear()
                     self._module_graph.clear()
                     self._capabilities.clear()
 
-                # Event system
+
                 with self._event_lock:
                     self._event_log.clear()
 
-                # Circuit breakers
+
                 with self._circuit_breaker_lock:
                     self._circuit_breakers.clear()
                     self._module_disabled.clear()
 
-                # Requests
+
                 with self._request_lock:
                     self._pending_requests.clear()
                     self._request_history.clear()
 
-                # Performance & metrics
+
                 with self._performance_lock:
                     self._access_patterns.clear()
                     self._operation_timings.clear()
                     self._predictive_metrics.clear()
 
-                # Subscriptions
+
                 with self._subscription_lock:
                     self._subscribers.clear()
                     self._async_subscribers.clear()
@@ -3074,7 +2903,7 @@ class SmartInfoBus:
             except Exception as e:
                 self.logger.warning(f"[STOP] Data cleanup error: {e}")
 
-            # Phase 6: Final statistics (best-effort)
+
             try:
                 m = self.get_performance_metrics()
                 self.logger.info(f"[STATS] Final: {m['total_requests']} req, {m['cache_hit_rate']*100:.0f}% hits, "
@@ -3084,12 +2913,8 @@ class SmartInfoBus:
 
             self.logger.info("[SUCCESS] SmartInfoBus shutdown complete - all resources cleaned up")
 
-# ═══════════════════════════════════════════════════════════════════
-# HELPER: ASYNC TASK CLEANUP UTILITIES (for testing/debugging)
-# ═══════════════════════════════════════════════════════════════════
 
     def get_async_task_status(self) -> Dict[str, Any]:
-        """Debug helper to check async cleanup status."""
         try:
             tasks = self._pending_tasks.copy()
             pending_tasks = len(tasks)
@@ -3112,7 +2937,6 @@ class SmartInfoBus:
             return {'error': 'Status unavailable'}
 
     def _check_thread_pool_status(self) -> bool:
-        """Check if thread pool is still active."""
         try:
             if hasattr(self, '_thread_pool') and self._thread_pool:
                 return not self._thread_pool._shutdown
@@ -3121,7 +2945,6 @@ class SmartInfoBus:
             return False
 
     def force_cleanup_async_tasks(self) -> int:
-        """Force cleanup of any lingering async tasks (emergency only)."""
         try:
             cancelled = 0
             tasks_to_cancel = list(self._pending_tasks)
@@ -3137,28 +2960,19 @@ class SmartInfoBus:
             return -1
 
 
-# ═══════════════════════════════════════════════════════════════════
-# SINGLETON MANAGER
-# ═══════════════════════════════════════════════════════════════════
-
 class InfoBusManager:
-    """
-    Thread-safe singleton manager for SmartInfoBus (XL).
-    Provides global access to the unified bus without wiring.
-    """
     _instance: Optional[SmartInfoBus] = None
-    _lock = threading.RLock()  # allow re-entrant access during nested calls
+    _lock = threading.RLock()
 
-    
+
     @classmethod
     def get_instance(cls) -> SmartInfoBus:
-        """Get (or lazily create) the SmartInfoBus singleton instance."""
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
                     cls._instance = SmartInfoBus()
                     try:
-                        # Default policies for stream-like keys (prevents "provider changed" churn)
+
                         cls._instance.set_policy("thesis_stream", mode="stream")
                         cls._instance.set_policy("vote", mode="stream")
                     except Exception:
@@ -3172,15 +2986,11 @@ class InfoBusManager:
         provides: List[str] | None = None,
         requires: List[str] | None = None,
     ):
-        """
-        Convenience helper so modules can declare what they provide/require
-        without importing the bus directly.
-        """
         try:
             bus = cls.get_instance()
             bus.register_capabilities(module_name, provides=provides, requires=requires)
         except Exception as e:
-            # Never let capability registration crash the process
+
             try:
                 bus = cls.get_instance()
                 bus.logger.warning(f"register_module_capabilities failed for {module_name}: {e}")
@@ -3189,30 +2999,25 @@ class InfoBusManager:
 
     @classmethod
     def dependency_report(cls, title: str = "Dependency Report") -> str:
-        """Generate a human-readable dependency report."""
         bus = cls.get_instance()
         return bus.dump_dependency_report(title)
 
     @classmethod
     def create_info_bus(cls, env: Any, step: int = 0) -> Dict[str, Any]:
-        """
-        Create a legacy InfoBus-shaped dict backed by SmartInfoBus (XL).
-        Mirrors previous helpers while writing prices into the SmartInfoBus.
-        """
         smart_bus = cls.get_instance()
 
-        # Legacy/compat shape
+
         info_bus = {
             'timestamp': datetime.now().isoformat(),
             'step_idx': step,
             'episode_idx': getattr(env, 'episode_count', 0),
-            '_smart_bus': smart_bus,  # reference to the XL bus
+            '_smart_bus': smart_bus,
             'prices': {},
             'positions': [],
             'risk': {'risk_score': 0.0}
         }
 
-        # Extract price data from the environment, if available
+
         if hasattr(env, 'data') and hasattr(env, 'instruments'):
             for instrument in env.instruments:
                 try:
@@ -3221,7 +3026,7 @@ class InfoBusManager:
                         if step < len(df):
                             price = float(df['close'].iloc[step])
                             info_bus['prices'][instrument] = price
-                            # Reflect into XL bus (namespaced: market)
+
                             smart_bus.set(
                                 f'price_{instrument}',
                                 price,
@@ -3239,7 +3044,6 @@ class InfoBusManager:
 
     @classmethod
     def reset_instance(cls):
-        """Reset the singleton (useful in tests)."""
         with cls._lock:
             if cls._instance:
                 try:
@@ -3249,13 +3053,8 @@ class InfoBusManager:
             cls._instance = None
 
 
-# ═══════════════════════════════════════════════════════════════════
-# LEGACY COMPATIBILITY (helpers/extractors/updaters)
-# ═══════════════════════════════════════════════════════════════════
-
 @dataclass
 class InfoBusQuality:
-    """Quality assessment for InfoBus validation."""
     score: float
     is_valid: bool
     missing_fields: List[str] = field(default_factory=list)
@@ -3263,24 +3062,19 @@ class InfoBusQuality:
 
 
 def create_info_bus(env: Any, step: int = 0) -> Dict[str, Any]:
-    """Legacy shim — delegates to InfoBusManager."""
     return InfoBusManager.create_info_bus(env, step)
 
 
 def validate_info_bus(info_bus: Dict[str, Any]) -> InfoBusQuality:
-    """
-    Legacy validation with enhanced scoring.
-    Ensures presence of required fields and basic freshness.
-    """
     required = ['timestamp', 'step_idx']
     missing = [f for f in required if f not in info_bus]
     issues: List[str] = []
 
-    # Check for SmartInfoBus integration
+
     if '_smart_bus' not in info_bus:
         issues.append("Missing SmartInfoBus integration")
 
-    # Timestamp freshness (<= 10 minutes)
+
     if 'timestamp' in info_bus:
         try:
             ts = datetime.fromisoformat(info_bus['timestamp'].replace('Z', '+00:00'))
@@ -3290,10 +3084,10 @@ def validate_info_bus(info_bus: Dict[str, Any]) -> InfoBusQuality:
         except Exception:
             issues.append("Invalid timestamp format")
 
-    # Compute score
+
     score = 100.0
-    score -= len(missing) * 25      # 25 points per missing field
-    score -= len(issues) * 10       # 10 points per issue
+    score -= len(missing) * 25
+    score -= len(issues) * 10
     score = max(0.0, score)
 
     return InfoBusQuality(
@@ -3305,24 +3099,17 @@ def validate_info_bus(info_bus: Dict[str, Any]) -> InfoBusQuality:
 
 
 class InfoBusExtractor:
-    """Legacy extractor that delegates to SmartInfoBus (XL)."""
 
     @staticmethod
     def get_risk_score(info_bus: Dict[str, Any]) -> float:
-        """
-        Supports:
-          • top-level: info_bus['risk_score']
-          • nested:    info_bus['risk']['risk_score']
-          • XL bus:    bus.get('risk_score', 'InfoBusExtractor')
-        """
-        # direct top-level
+
         if 'risk_score' in info_bus:
             try:
                 return float(info_bus['risk_score'])
             except Exception:
                 pass
 
-        # legacy nested dict
+
         risk = info_bus.get('risk')
         if isinstance(risk, dict) and 'risk_score' in risk:
             try:
@@ -3330,7 +3117,7 @@ class InfoBusExtractor:
             except Exception:
                 pass
 
-        # SmartInfoBus fallback
+
         if '_smart_bus' in info_bus:
             smart_bus: SmartInfoBus = info_bus['_smart_bus']
             dv = smart_bus.get('risk_score', 'InfoBusExtractor', namespace=None)
@@ -3344,7 +3131,6 @@ class InfoBusExtractor:
 
     @staticmethod
     def get_market_regime(info_bus: Dict[str, Any]) -> str:
-        """Return market regime from legacy dict or XL bus."""
         if 'market_regime' in info_bus:
             return str(info_bus['market_regime'])
         if '_smart_bus' in info_bus:
@@ -3356,10 +3142,6 @@ class InfoBusExtractor:
 
     @staticmethod
     def has_fresh_data(info_bus: Dict[str, Any], max_age_seconds: float = 1.0) -> bool:
-        """
-        A loose heuristic: if the bus has observed hits recently, consider it fresh.
-        (Retains legacy behavior while being resilient.)
-        """
         if '_smart_bus' in info_bus:
             smart_bus: SmartInfoBus = info_bus['_smart_bus']
             metrics = smart_bus.get_performance_metrics()
@@ -3368,7 +3150,6 @@ class InfoBusExtractor:
 
     @staticmethod
     def extract_risk_context(info_bus: Dict[str, Any]) -> Dict[str, Any]:
-        """Aggregate a compact risk context from both legacy and XL bus sources."""
         ctx = {
             'risk_score': InfoBusExtractor.get_risk_score(info_bus),
             'drawdown_pct': info_bus.get('drawdown_pct', 0.0),
@@ -3377,7 +3158,7 @@ class InfoBusExtractor:
             'market_regime': InfoBusExtractor.get_market_regime(info_bus),
         }
 
-        # Enrich from XL bus (optional keys)
+
         if '_smart_bus' in info_bus:
             smart_bus: SmartInfoBus = info_bus['_smart_bus']
             for key in ['volatility', 'correlation_risk', 'liquidity_risk']:
@@ -3389,13 +3170,9 @@ class InfoBusExtractor:
 
 
 class InfoBusUpdater:
-    """Legacy updater that writes through to SmartInfoBus (XL)."""
 
     @staticmethod
     def add_vote(info_bus: Dict[str, Any], vote: Dict[str, Any]) -> None:
-        """
-        Append a vote to the legacy list and mirror as a versioned bus key.
-        """
         votes = info_bus.get('votes', [])
         votes.append(vote)
         info_bus['votes'] = votes
@@ -3413,7 +3190,6 @@ class InfoBusUpdater:
 
     @staticmethod
     def set_risk_score(info_bus: Dict[str, Any], score: float) -> None:
-        """Set risk score in both legacy and XL shapes."""
         info_bus['risk_score'] = score
         info_bus.setdefault('risk', {})['risk_score'] = score
 
@@ -3430,14 +3206,12 @@ class InfoBusUpdater:
 
     @staticmethod
     def set_market_regime(info_bus: Dict[str, Any], regime: str) -> None:
-        """Set market regime in legacy shape and XL bus (market namespace)."""
         info_bus['market_regime'] = regime
 
         if '_smart_bus' in info_bus:
             smart_bus: SmartInfoBus = info_bus['_smart_bus']
-            # Single-writer policy: do not publish canonical market_regime from updater.
-            # Leave legacy dict updated for backward compatibility; rely on
-            # dedicated market module (e.g., FractalRegimeConfirmation) to publish.
+
+
             providers = set(smart_bus.get_providers('market_regime'))
             if not providers or providers == {'InfoBusUpdater'}:
                 smart_bus.set(
@@ -3451,7 +3225,6 @@ class InfoBusUpdater:
 
     @staticmethod
     def add_alert(info_bus: Dict[str, Any], message: str, *, severity: str = "info", module: str = "InfoBusUpdater", code: Optional[str] = None) -> None:
-        """Append an alert to the legacy InfoBus and mirror to SmartInfoBus if available."""
         alert = {
             'timestamp': now_utc(),
             'severity': severity.upper(),
@@ -3467,11 +3240,11 @@ class InfoBusUpdater:
         alerts.append(alert)
         info_bus['alerts'] = alerts
 
-        # Mirror to SmartInfoBus as a stream entry when available
+
         if '_smart_bus' in info_bus:
             try:
                 smart_bus: SmartInfoBus = info_bus['_smart_bus']
-                # Use publish() for append-only stream semantics
+
                 smart_bus.set(
                     'last_alert',
                     alert,
@@ -3485,7 +3258,6 @@ class InfoBusUpdater:
 
     @staticmethod
     def add_module_data(info_bus: Dict[str, Any], module_name: str, data: Dict[str, Any]) -> None:
-        """Record module-scoped data in legacy shape and mirror to SmartInfoBus."""
         md = info_bus.get('module_data')
         if not isinstance(md, dict):
             md = {}
@@ -3507,17 +3279,11 @@ class InfoBusUpdater:
                 pass
 
 
-# ═══════════════════════════════════════════════════════════════════
-# TINY UTILITIES
-# ═══════════════════════════════════════════════════════════════════
-
 def now_utc() -> str:
-    """Current UTC timestamp (ISO8601, timezone-aware)."""
     return datetime.now(timezone.utc).isoformat()
 
 
 def extract_standard_context(info_bus: Dict[str, Any]) -> Dict[str, Any]:
-    """Small helper to derive a standard snapshot of context for modules."""
     return {
         'regime': InfoBusExtractor.get_market_regime(info_bus),
         'risk_score': InfoBusExtractor.get_risk_score(info_bus),

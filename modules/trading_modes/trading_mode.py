@@ -1,7 +1,3 @@
-"""
-⚙️ Enhanced Trading Mode Manager with SmartInfoBus Integration v3.1
-Intelligent trading mode switching based on comprehensive market analysis and performance tracking
-"""
 
 from __future__ import annotations
 
@@ -16,10 +12,6 @@ import numpy as np
 from modules.contracts import module_args
 from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
 from modules.core.mixins import SmartInfoBusStateMixin, SmartInfoBusTradingMixin
-
-# ═══════════════════════════════════════════════════════════════════
-# MODERN SMARTINFOBUS IMPORTS
-# ═══════════════════════════════════════════════════════════════════
 from modules.core.module_base import BaseModule, module
 from modules.monitoring.performance_tracker import PerformanceTracker
 from modules.utils.audit_utils import RotatingLogger, format_operator_message
@@ -27,9 +19,6 @@ from modules.utils.circuit_breaker_utils import create_standard_breaker
 from modules.utils.info_bus import InfoBusManager
 from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 
-# ─────────────────────────────────────────────────────────────
-# Typed configuration (lint-safe) + dict bridge for BaseModule
-# ─────────────────────────────────────────────────────────────
 
 @dataclass
 class TradingModeManagerConfig:
@@ -46,11 +35,11 @@ class TradingModeManagerConfig:
     session_awareness: bool = True
     volatility_scaling: bool = True
     debug: bool = True
-    # circuit breaker
+
     breaker_error_window: int = 10
     breaker_open_threshold: int = 5
     breaker_cooldown_sec: float = 20.0
-    # namespaced health keys (single-writer style)
+
     status_key: str = "trading_mode_manager_status"
     health_key: str = "trading_mode_manager_health"
 
@@ -63,18 +52,8 @@ class TradingModeManagerConfig:
     timeout_ms=3000,
 ))
 class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
-    """
-    ⚙️ PRODUCTION-GRADE Trading Mode Manager v3.1
 
-    Intelligent trading mode management system with:
-    - Adaptive mode switching based on market conditions and performance
-    - Comprehensive risk assessment and performance tracking
-    - Market regime and session awareness for contextual decisions
-    - SmartInfoBus zero-wiring architecture (single-writer discipline)
-    - Real-time effectiveness monitoring and optimization
-    """
 
-    # Enhanced trading modes with comprehensive definitions
     TRADING_MODES = {
         "safe": {
             "description": "Conservative risk management with capital preservation focus",
@@ -114,56 +93,54 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         }
     }
 
-    # ── lifecycle ────────────────────────────────────────────
 
     def __init__(self, config: Optional[Dict[str, Any]] = None, **kwargs):
-        # Typed config; keep dict copy for BaseModule internals
+
         cfg_dict = (config or {}).copy()
-        # Merge user config into defaults safely
+
         merged = {**asdict(TradingModeManagerConfig()), **cfg_dict}
         self._cfg = TradingModeManagerConfig(**merged)
         self.config = cfg_dict
 
-        # Circuit breaker (unified implementation)
+
         self.circuit_breaker = create_standard_breaker(
             name="TradingModeManager",
             threshold=self._cfg.breaker_open_threshold,
-            open_base_timeout=self._cfg.breaker_cooldown_sec / 4,  # 15s base
-            open_max_timeout=self._cfg.breaker_cooldown_sec,  # 60s max
+            open_base_timeout=self._cfg.breaker_cooldown_sec / 4,
+            open_max_timeout=self._cfg.breaker_cooldown_sec,
             window_seconds=30.0,
             failure_rate_threshold=0.5
         )
         self._recent_failures: deque[bool] = deque(maxlen=self._cfg.breaker_error_window)
 
-        # Initialize systems
+
         self._initialize_advanced_systems()
 
-        # Parent init (calls _initialize)
+
         super().__init__()
 
     def _initialize(self):
-        """Initialize advanced trading mode management systems"""
-        # Initialize base mixins / state helpers
+
         self._initialize_trading_state()
         self._initialize_state_management()
         self._initialize_advanced_systems()
 
-        # Seed optional dependencies with safe defaults to satisfy stage readiness
+
         try:
-            # Always seed these keys on init to prevent BUS MISS errors
+
             bus = InfoBusManager.get_instance()
-            # shadow_predictions - used internally and by ThesisEvolutionEngine
+
             existing = bus.get("shadow_predictions", "TradingModeManager", default=None)
             if existing is None:
                 bus.set("shadow_predictions", {}, module="TradingModeManager", thesis="Baseline shadow predictions (empty)")
-            # economic_calendar - used by ThesisEvolutionEngine
+
             existing = bus.get("economic_calendar", "TradingModeManager", default=None)
             if existing is None:
                 bus.set("economic_calendar", {}, module="TradingModeManager", thesis="Baseline economic calendar (empty)")
         except Exception:
             pass
 
-        # Enhanced mode configuration
+
         self.initial_mode = self._cfg.initial_mode if self._cfg.initial_mode in self.TRADING_MODES else 'normal'
         self.window = int(self._cfg.window)
         self.auto_mode = bool(self._cfg.auto_mode)
@@ -178,30 +155,30 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         self.volatility_scaling = bool(self._cfg.volatility_scaling)
         self.debug = bool(self._cfg.debug)
 
-        # Core state management
+
         self.current_mode = self.initial_mode
         self.mode_persistence = 0
         self.last_mode_change = None
         self.last_change_reason = ""
 
-        # Enhanced state tracking
+
         self.stats_history = deque(maxlen=self.window * 2)
         self.mode_history = deque(maxlen=100)
         self.decision_trace = deque(maxlen=200)
         self.performance_history = deque(maxlen=200)
 
-        # Market context awareness
+
         self.market_regime = "unknown"
         self.volatility_regime = "medium"
         self.market_session = "unknown"
         self.market_schedule = self.config.get('market_schedule')
 
-        # Performance analytics with comprehensive tracking
+
         self.mode_analytics = defaultdict(lambda: defaultdict(list))
         self.regime_performance = defaultdict(lambda: defaultdict(list))
         self.session_performance = defaultdict(lambda: defaultdict(list))
 
-        # Enhanced mode switching statistics
+
         self.mode_stats = {
             "total_switches": 0,
             "auto_switches": 0,
@@ -215,7 +192,7 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             "session_start": datetime.datetime.now().isoformat()
         }
 
-        # Enhanced decision factors with intelligence
+
         self.decision_factors = {
             "performance_score": 0.5,
             "risk_score": 0.5,
@@ -228,20 +205,20 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             "stability_score": 0.5
         }
 
-        # Adaptive mode thresholds
+
         self.mode_thresholds = self._initialize_adaptive_thresholds()
 
-        # Learning and adaptation systems
+
         self.learning_history = deque(maxlen=50)
         self.threshold_adaptations = deque(maxlen=50)
         self.effectiveness_tracking = defaultdict(list)
 
-        # Circuit breaker
+
         self.error_count = 0
         self.circuit_breaker_threshold = 5
         self.is_disabled = False
 
-        # Mode intelligence parameters
+
         self.mode_intelligence = {
             'adaptation_speed': 0.1,
             'confidence_threshold': 0.7,
@@ -251,7 +228,7 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             'consensus_importance': 0.6
         }
 
-        # Generate initialization thesis
+
         self._generate_initialization_thesis()
 
         version = getattr(self.metadata, 'version', '3.1.0') if self.metadata else '3.1.0'
@@ -264,20 +241,13 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             regime_awareness=self.regime_awareness
         ))
 
-        # Post initial namespaced health
+
         self._post_health_status()
 
-    # ── mixin-required overrides ───────────────────────────
 
     async def propose_action(self, **inputs: Any) -> Dict[str, Any]:
-        """Provide a compact trading-mode action proposal.
-
-        Contract:
-        - Never returns None (satisfies SmartInfoBusTradingMixin typing)
-        - Minimal, side-effect-free; uses current state and lightweight scoring
-        """
         try:
-            # Lightweight confidence using existing factors; fall back safely
+
             consensus = float(self.decision_factors.get('consensus_score', 0.5))
             context = float(self.decision_factors.get('market_context_score', 0.5))
             stability = float(self.decision_factors.get('stability_score', 0.5))
@@ -293,7 +263,7 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             }
             return action
         except Exception as e:
-            # Never return None; degrade gracefully
+
             if hasattr(self, 'logger'):
                 self.logger.warning(f"propose_action degraded: {e}")
             return {
@@ -305,13 +275,12 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             }
 
     async def calculate_confidence(self, action: Dict[str, Any], **inputs: Any) -> float:
-        """Compute confidence for a given action; must return float (non-optional)."""
         try:
             if isinstance(action, dict) and 'confidence' in action:
                 v = action.get('confidence')
                 if isinstance(v, (int, float, np.generic)):
                     return float(np.clip(v, 0.0, 1.0))
-            # Derive from current decision factors
+
             consensus = float(self.decision_factors.get('consensus_score', 0.5))
             context = float(self.decision_factors.get('market_context_score', 0.5))
             stability = float(self.decision_factors.get('stability_score', 0.5))
@@ -322,7 +291,6 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             return 0.5
 
     def _initialize_advanced_systems(self):
-        """Initialize all modern system components"""
         self.smart_bus = InfoBusManager.get_instance()
         self.logger = RotatingLogger(
             name="TradingModeManager",
@@ -338,11 +306,9 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         self.performance_tracker = PerformanceTracker()
 
     def _post_health_status(self):
-        """Write compact health and status snapshots (namespaced keys)."""
         try:
-            # Seed required (non-namespaced) SmartBus keys early to prevent
-            # downstream strict consumers (e.g., PPO observation builder) from
-            # failing during startup/warmup before the first `process()` tick.
+
+
             try:
                 existing_mode = self.smart_bus.get("trading_mode", "TradingModeManager", default=None)
                 if not isinstance(existing_mode, str) or not existing_mode:
@@ -398,7 +364,7 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                                thesis="TradingModeManager status heartbeat")
             self.smart_bus.set(self._cfg.health_key, self._get_health_metrics(), module='TradingModeManager',
                                thesis="TradingModeManager health metrics")
-            # Also maintain explicit initialization heartbeat key for contract consumers
+
             init_view = {
                 'status': 'initialized' if not self.is_disabled else 'disabled',
                 'timestamp': datetime.datetime.now().isoformat(),
@@ -412,18 +378,12 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         except Exception as e:
             self.logger.warning(f"[MONITOR] health update failed: {e}")
 
-    # ── initialization helpers (referenced above) ──────────
 
     def _initialize_adaptive_thresholds(self) -> Dict[str, Dict[str, float]]:
-        """Create per-mode adaptive thresholds with sensible defaults.
-
-        This is a lightweight, deterministic initializer to satisfy static typing
-        and provide reasonable starting thresholds.
-        """
         try:
             thresholds: Dict[str, Dict[str, float]] = {}
             for mode, cfg in self.TRADING_MODES.items():
-                # Seed thresholds using TRADING_MODES guidance
+
                 thresholds[mode] = {
                     'min_win_rate': float(cfg.get('win_rate_threshold', 0.4)),
                     'max_drawdown': float(cfg.get('drawdown_limit', 0.1)),
@@ -434,7 +394,7 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 }
             return thresholds
         except Exception:
-            # Fallback safe defaults
+
             return {
                 'safe': {'min_win_rate': 0.0, 'max_drawdown': 0.15, 'max_exposure': 0.3, 'min_consensus': 0.0, 'performance_threshold': 0.4, 'stability_requirement': 0.6},
                 'normal': {'min_win_rate': 0.4, 'max_drawdown': 0.10, 'max_exposure': 0.6, 'min_consensus': 0.30, 'performance_threshold': 0.5, 'stability_requirement': 0.5},
@@ -443,7 +403,6 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             }
 
     def _generate_initialization_thesis(self) -> None:
-        """Publish a concise initialization thesis to the logger and bus."""
         try:
             thesis = format_operator_message(
                 icon="⚙️",
@@ -454,9 +413,9 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 regime_awareness=self.regime_awareness,
                 session_awareness=self.session_awareness,
             )
-            # Log it
+
             self.logger.info(thesis)
-            # Optionally publish to InfoBus as part of mode status
+
             status = {
                 'initial_mode': self.initial_mode,
                 'window': self.window,
@@ -466,23 +425,16 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             try:
                 self.smart_bus.set(self._cfg.status_key, {**status, '_thesis': thesis}, module='TradingModeManager', thesis='Initialization thesis')
             except Exception:
-                # Non-fatal if bus is unavailable during init
+
                 pass
         except Exception as e:
             self.logger.warning(f"Initialization thesis generation failed: {e}")
 
-    # ── core process ─────────────────────────────────────────
 
     async def process(self, **inputs) -> Dict[str, Any]:
-        """
-        Modern async processing with comprehensive mode management
-
-        Returns:
-            Dict containing mode status, analytics, recommendations, and _thesis
-        """
         start_time = time.time()
         try:
-            # Log process entry
+
             self.logger.info(format_operator_message(
                 icon="🔄",
                 message="Processing trading mode decision",
@@ -492,20 +444,19 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 breaker_state=self.circuit_breaker.get_state()
             ))
 
-            # Circuit breaker check
+
             if self.is_disabled:
                 return self._generate_disabled_response()
 
             if not self.circuit_breaker.allow_request():
                 return self._generate_breaker_response()
 
-            # Get comprehensive market data from SmartInfoBus
+
             market_data = await self._get_comprehensive_market_data()
 
-            # CRITICAL FIX: Merge inputs with market_data (inputs may contain trade data from environment)
-            # Priority: inputs override bus data (fresher data from current step)
+
             if inputs:
-                # Merge trade-related keys from inputs
+
                 merged_count = 0
                 for key in ['trades', 'recent_trades', 'current_fills', 'portfolio_metrics', 'positions', 'balance', 'equity']:
                     if key in inputs and inputs[key] is not None:
@@ -515,34 +466,34 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 if self.debug and merged_count > 0:
                     self.logger.debug(f"Merged {merged_count} keys from inputs into market_data")
 
-            # Update market context awareness
+
             await self._update_market_context_comprehensive(market_data)
 
-            # Extract and analyze performance data
+
             performance_data = await self._extract_performance_data_comprehensive(market_data)
 
-            # Update performance statistics with new data
+
             await self._update_performance_statistics_comprehensive(performance_data, market_data)
 
-            # Perform intelligent mode decision analysis
+
             mode_decision = await self._make_intelligent_mode_decision_comprehensive(performance_data, market_data)
 
-            # Apply mode decision with comprehensive tracking
+
             mode_change_result = await self._apply_mode_decision_comprehensive(mode_decision, market_data)
 
-            # Analyze current mode effectiveness
+
             effectiveness_analysis = await self._analyze_mode_effectiveness_comprehensive(performance_data, market_data)
 
-            # Update adaptive thresholds based on market conditions
+
             threshold_updates = await self._update_adaptive_thresholds_comprehensive(performance_data, market_data)
 
-            # Generate mode recommendations
+
             recommendations = await self._generate_intelligent_mode_recommendations(mode_decision, effectiveness_analysis)
 
-            # Generate comprehensive thesis
+
             thesis = await self._generate_comprehensive_mode_thesis(mode_decision, effectiveness_analysis)
 
-            # Create comprehensive results (include initialization view for contract compliance)
+
             results = {
                 'trading_mode': self.current_mode,
                 'mode_config': self._get_mode_configuration(),
@@ -559,50 +510,43 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 'trading_mode_manager_initialization': self._get_tmm_init_view()
             }
 
-            # Update SmartInfoBus with comprehensive thesis (single-writer keys)
+
             await self._update_smartinfobus_comprehensive(results, thesis)
 
-            # NOTE: performance_data is provided by SessionManager, NOT TradingModeManager
-            # Removed illegal publication to stop provider ownership conflicts
 
-            # Record performance metrics
             processing_time = int((time.time() - start_time) * 1000)
             self.performance_tracker.record_metric('TradingModeManager', 'process_time', processing_time, True)
 
-            # Update mode statistics book-keeping
+
             self._update_mode_performance_metrics()
 
-            # Circuit breaker: record success
+
             self.circuit_breaker.record_success()
             self._recent_failures.append(False)
 
-            # Reset error count on successful processing
+
             self.error_count = 0
             self._post_health_status()
 
-            # NOTE: performance_data is provided by SessionManager, NOT TradingModeManager
-            # Removed from return to stop provider ownership conflicts
 
             return results
 
         except Exception as e:
-            # Circuit breaker: record failure
+
             self.circuit_breaker.record_failure()
             self._recent_failures.append(True)
 
             return await self._handle_processing_error(e, start_time)
 
-    # ── data access ──────────────────────────────────────────
 
     async def _get_comprehensive_market_data(self) -> Dict[str, Any]:
-        """Get comprehensive market data using modern SmartInfoBus patterns"""
         try:
             data = {
-                # Original data sources (with fallbacks for trade data)
+
                 'recent_trades': self.smart_bus.get('recent_trades', 'TradingModeManager') or [],
                 'trades': self.smart_bus.get('trades', 'TradingModeManager') or [],
                 'current_fills': self.smart_bus.get('current_fills', 'TradingModeManager') or [],
-                # CRITICAL: closed_positions for accurate win rate (completed round-trips only)
+
                 'closed_positions': self.smart_bus.get('closed_positions', 'TradingModeManager') or [],
                 'risk_metrics': self.smart_bus.get('risk_metrics', 'TradingModeManager') or {},
                 'portfolio_metrics': self.smart_bus.get('portfolio_metrics', 'TradingModeManager') or {},
@@ -616,7 +560,7 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 'volatility_data': self.smart_bus.get('volatility_data', 'TradingModeManager') or {},
                 'economic_calendar': self.smart_bus.get('economic_calendar', 'TradingModeManager') or {},
 
-                # Risk module integrations
+
                 'execution_quality': self.smart_bus.get('execution_quality', 'TradingModeManager') or {},
                 'risk_alerts': self.smart_bus.get('risk_alerts', 'TradingModeManager') or [],
                 'anomaly_detection': self.smart_bus.get('anomaly_detection', 'TradingModeManager') or {},
@@ -625,7 +569,7 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 'risk_scaling': self.smart_bus.get('risk_scaling', 'TradingModeManager') or {},
                 'anomaly_score': self.smart_bus.get('anomaly_score', 'TradingModeManager') or 0.0,
 
-                # Voting & consensus integrations
+
                 'consensus_score': self.smart_bus.get('consensus_score', 'TradingModeManager') or 0.5,
                 'consensus_quality': self.smart_bus.get('consensus_quality', 'TradingModeManager') or {},
                 'committee_confidence': self.smart_bus.get('committee_confidence', 'TradingModeManager') or 0.5,
@@ -633,7 +577,7 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 'collusion_score': self.smart_bus.get('collusion_score', 'TradingModeManager') or 0.0,
                 'member_confidences': self.smart_bus.get('member_confidences', 'TradingModeManager') or {},
 
-                # Market intelligence integrations
+
                 'market_predictions': self.smart_bus.get('market_predictions', 'TradingModeManager') or {},
                 'shadow_predictions': self.smart_bus.get('shadow_predictions', 'TradingModeManager') or {},
                 'theme_detection': self.smart_bus.get('theme_detection', 'TradingModeManager') or {},
@@ -641,14 +585,14 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 'regime_prediction': self.smart_bus.get('regime_prediction', 'TradingModeManager') or {},
                 'market_predictions_confidence': self.smart_bus.get('prediction_confidence', 'TradingModeManager') or 0.5,
 
-                # Strategy integrations
+
                 'bias_analysis': self.smart_bus.get('bias_analysis', 'TradingModeManager') or {},
                 'adaptation_recommendations': self.smart_bus.get('adaptation_recommendations', 'TradingModeManager') or [],
                 'market_thesis': self.smart_bus.get('market_thesis', 'TradingModeManager') or {},
                 'best_thesis': self.smart_bus.get('best_thesis', 'TradingModeManager') or {},
             }
 
-            # Log data retrieval summary
+
             available_keys = sum(1 for v in data.values() if v not in [None, {}, [], 0.0, 0.5, 'unknown'])
             if self.debug:
                 self.logger.info(format_operator_message(
@@ -668,13 +612,12 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             return self._get_safe_market_defaults()
 
     async def _update_market_context_comprehensive(self, market_data: Dict[str, Any]):
-        """Update comprehensive market context awareness"""
         try:
             old_regime = self.market_regime
             old_volatility = self.volatility_regime
             old_session = self.market_session
 
-            # Update regime tracking
+
             market_context = market_data.get('market_context', {}) or {}
             self.market_regime = market_data.get('market_regime', 'unknown') or market_context.get('regime', 'unknown')
             self.volatility_regime = market_context.get('volatility_level', 'medium')
@@ -682,12 +625,12 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             session_raw = market_context.get('session', market_context.get('trading_session', 'unknown'))
             self.market_session = normalize_session_name(str(session_raw))
 
-            # Detect significant changes
+
             regime_changed = self.market_regime != old_regime and old_regime != 'unknown'
             volatility_changed = self.volatility_regime != old_volatility and old_volatility != 'unknown'
             session_changed = self.market_session != old_session and old_session != 'unknown'
 
-            # Log and adapt if needed
+
             if regime_changed or volatility_changed:
                 impact_assessment = self._assess_market_change_impact(regime_changed, volatility_changed, session_changed)
                 self.logger.info(format_operator_message(
@@ -706,7 +649,6 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             self.logger.warning(f"Market context update failed: {error_context}")
 
     def _assess_market_change_impact(self, regime_changed: bool, volatility_changed: bool, session_changed: bool) -> str:
-        """Assess the impact level of market changes"""
         try:
             impact_score = 0
             if regime_changed:
@@ -728,17 +670,16 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             return 'medium'
 
     async def _trigger_emergency_threshold_adaptation(self, market_data: Dict[str, Any]):
-        """Trigger emergency adaptation of thresholds due to significant market changes"""
         try:
             _ = self._calculate_emergency_adaptation_factor(market_data)
             for mode in self.mode_thresholds:
                 thresholds = self.mode_thresholds[mode]
-                # Make thresholds more conservative during high volatility/uncertainty
+
                 if self.volatility_regime in ['high', 'extreme'] or self.market_regime == 'unknown':
                     thresholds['max_drawdown'] = float(max(0.01, thresholds['max_drawdown'] * 0.8))
                     thresholds['min_win_rate'] = float(min(1.0, thresholds['min_win_rate'] * 1.1))
                     thresholds['min_consensus'] = float(min(1.0, thresholds['min_consensus'] * 1.2))
-                # Regime-specific
+
                 if self.market_regime == 'volatile':
                     thresholds['stability_requirement'] = float(min(1.0, thresholds['stability_requirement'] * 1.3))
                 elif self.market_regime in ['trending', 'momentum']:
@@ -761,7 +702,6 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             self.logger.warning(f"Emergency threshold adaptation failed: {error_context}")
 
     def _calculate_emergency_adaptation_factor(self, market_data: Dict[str, Any]) -> float:
-        """Calculate emergency adaptation factor based on market stress"""
         try:
             stress_factors = 0
             if self.volatility_regime == 'extreme':
@@ -781,23 +721,18 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         except Exception:
             return 1.0
 
-    # ── performance extraction ───────────────────────────────
 
     async def _extract_performance_data_comprehensive(self, market_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract comprehensive performance data with enhanced analytics"""
         try:
             performance_data: Dict[str, Any] = {}
-            
-            # CRITICAL FIX: Use closed_positions for win rate calculation
-            # recent_trades contains ALL fills (opens + closes), which double-counts
-            # closed_positions contains only COMPLETED trades (proper win rate)
+
+
             closed_positions = market_data.get('closed_positions', []) or []
-            
-            # Fallback to recent_trades only for backward compatibility
-            # But filter to only include trades with realized PnL (actual closes)
+
+
             recent_trades = market_data.get('recent_trades', []) or []
 
-            # Debug: Log what sources are available
+
             if self.debug:
                 sources_available = {
                     'closed_positions': len(closed_positions) if isinstance(closed_positions, list) else 'not_list',
@@ -807,18 +742,17 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 }
                 self.logger.debug(f"Trade sources available: {sources_available}")
 
-            # Use closed_positions as the primary source for trade counting (accurate win rate)
-            # These represent actual completed round-trip trades
+
             if closed_positions:
                 actual_trades = closed_positions
                 if self.debug:
                     self.logger.debug(f"Using {len(actual_trades)} closed_positions for performance calc")
             else:
-                # Fallback: filter recent_trades to only include closes (where realized_pnl != 0)
-                # This filters out position opens which have realized_pnl = 0
+
+
                 actual_trades = [
-                    t for t in recent_trades 
-                    if (t.get('realized_pnl', 0) != 0 or t.get('pnl', 0) != 0 or 
+                    t for t in recent_trades
+                    if (t.get('realized_pnl', 0) != 0 or t.get('pnl', 0) != 0 or
                         'close' in str(t.get('action', '')).lower() or
                         'reduce' in str(t.get('action', '')).lower())
                 ]
@@ -827,43 +761,42 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
 
             performance_data['recent_trades'] = actual_trades
             performance_data['trade_count'] = len(actual_trades)
-            performance_data['total_trades'] = len(actual_trades)  # Alias for logging compatibility
+            performance_data['total_trades'] = len(actual_trades)
 
-            # Debug: Log final trade count
+
             if self.debug:
                 self.logger.debug(f"Final trade count for performance calculation: {len(actual_trades)}")
 
             if actual_trades:
-                # Extract realized P&L from actual trades (closed positions)
-                # These are the true completed trades with real profit/loss
+
+
                 realized_pnls = [float(trade.get('pnl', 0) or trade.get('profit', 0) or trade.get('realized_pnl', 0) or 0) for trade in actual_trades]
 
-                # CRITICAL FIX: Also get unrealized P&L from open positions
-                # Trades show realized_pnl=0.0 for position opens, but positions have unrealized_pnl
+
                 unrealized_pnl = 0.0
                 positions = market_data.get('positions', []) or []
 
-                # Handle positions as list or dict
+
                 if isinstance(positions, dict):
                     positions = list(positions.values()) if positions else []
 
                 if isinstance(positions, list):
                     for pos in positions:
                         if isinstance(pos, dict):
-                            # Try multiple field names for unrealized P&L
+
                             upnl = pos.get('unrealized_pnl') or pos.get('unrealized_pnl_eur') or pos.get('pnl') or 0.0
                             try:
                                 unrealized_pnl += float(upnl)
                             except (ValueError, TypeError):
                                 pass
 
-                # Combine realized and unrealized P&L for total performance
+
                 total_pnl = sum(realized_pnls) + unrealized_pnl
 
-                # For per-trade metrics, use realized P&L (but report total P&L separately)
+
                 pnls = realized_pnls
 
-                # Debug: Log PnL breakdown
+
                 if self.debug:
                     pnl_summary = {
                         'trade_count': len(pnls),
@@ -877,7 +810,7 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
 
                 wins = sum(1 for p in pnls if p > 0)
                 performance_data['win_rate'] = wins / max(1, len(pnls))
-                performance_data['total_pnl'] = float(total_pnl)  # Use combined P&L
+                performance_data['total_pnl'] = float(total_pnl)
                 performance_data['realized_pnl'] = float(sum(realized_pnls))
                 performance_data['unrealized_pnl'] = float(unrealized_pnl)
                 performance_data['avg_pnl'] = float(total_pnl / max(1, len(pnls)))
@@ -899,23 +832,23 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                     'recent_trend': 0.0, 'trend_consistency': 0.5
                 })
 
-            # Risk metrics (with fallback to portfolio_metrics for balance/equity)
+
             risk_metrics = market_data.get('risk_metrics', {}) or {}
             portfolio_metrics = market_data.get('portfolio_metrics', {}) or {}
 
-            # Try multiple sources for balance/equity
+
             balance = risk_metrics.get('balance') or risk_metrics.get('equity')
             if not balance:
                 balance = portfolio_metrics.get('equity') or portfolio_metrics.get('balance')
             if not balance:
-                balance = 10000.0  # Default fallback
+                balance = 10000.0
 
             performance_data['current_balance'] = float(balance)
             performance_data['drawdown'] = max(0.0, float(risk_metrics.get('current_drawdown', 0.0) or 0.0))
             performance_data['max_drawdown'] = max(0.0, float(risk_metrics.get('max_drawdown', 0.0) or 0.0))
             performance_data['risk_score'] = float(risk_metrics.get('risk_score', 0.5) or 0.5)
 
-            # Consensus
+
             votes_data = market_data.get('votes', []) or []
             confidences: List[float] = []
             if isinstance(votes_data, list):
@@ -938,7 +871,7 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             else:
                 performance_data.update({'consensus': 0.5, 'vote_agreement': 0.5, 'vote_count': 0, 'consensus_strength': 0.5})
 
-            # Volatility (robust aggregation: handle dicts like {symbol: {atr, volatility}} or numeric values)
+
             volatility_data = market_data.get('volatility_data', {}) or {}
             vol_values: List[float] = []
             try:
@@ -958,17 +891,17 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                                 vol_values.append(float(val))
                         elif isinstance(v, (int, float, np.generic)):
                             vol_values.append(float(v))
-                # Fallback single value
+
                 elif isinstance(volatility_data, (int, float, np.generic)):
                     vol_values.append(float(volatility_data))
             except Exception:
-                # On any parsing error, keep vol_values as collected so far
+
                 pass
 
             performance_data['volatility'] = float(np.mean(vol_values)) if vol_values else 0.02
             performance_data['volatility_regime_score'] = self._get_volatility_regime_score()
 
-            # Exposure (robust to positions being dict keyed by symbol or list of dicts)
+
             positions_raw = market_data.get('positions', []) or []
 
             pos_list: List[Dict[str, Any]] = []
@@ -993,7 +926,7 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 return 0.0
 
             def _pos_exposure_value(p: Dict[str, Any]) -> float:
-                # Prefer explicit notionals/exposure, else fall back to size/units, else derive units*price
+
                 for key in ('notional', 'notional_eur', 'notional_usd', 'notional_value', 'exposure',
                             'size', 'units', 'quantity', 'qty', 'volume', 'amount'):
                     if key in p:
@@ -1009,24 +942,24 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             performance_data['position_count'] = len(pos_list)
             performance_data['exposure_ratio'] = float(min(1.0, total_exposure / max(performance_data['current_balance'], 1)))
 
-            # Strategy performance
+
             strategy_performance = market_data.get('strategy_performance', {}) or {}
             performance_data['strategy_effectiveness'] = float(strategy_performance.get('effectiveness_score', 0.5) or 0.5)
             performance_data['strategy_confidence'] = float(strategy_performance.get('confidence_score', 0.5) or 0.5)
 
-            # Session performance
+
             session_metrics = market_data.get('session_metrics', {}) or {}
             performance_data['session_pnl'] = float(session_metrics.get('session_pnl', 0.0) or 0.0)
             performance_data['session_trades'] = int(session_metrics.get('session_trades', 0) or 0)
 
-            # Sharpe
+
             if len(recent_trades) > 5:
                 returns = [float(trade.get('pnl', 0) or 0) / max(performance_data['current_balance'], 1.0) for trade in recent_trades]
                 performance_data['sharpe'] = float((np.sqrt(252) * np.mean(returns) / np.std(returns)) if np.std(returns) > 0 else 0.0)
             else:
                 performance_data['sharpe'] = 0.0
 
-            # Log performance extraction if debug enabled
+
             if self.debug:
                 self.logger.info(format_operator_message(
                     icon="📈",
@@ -1050,7 +983,6 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             return self._get_safe_performance_defaults()
 
     def _calculate_profit_factor(self, pnls: List[float]) -> float:
-        """Calculate profit factor from PnL list"""
         try:
             if not pnls:
                 return 1.0
@@ -1063,7 +995,6 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             return 1.0
 
     def _calculate_trend_consistency(self, pnls: List[float]) -> float:
-        """Calculate trend consistency score"""
         try:
             if len(pnls) < 2:
                 return 0.5
@@ -1087,18 +1018,15 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             return 0.5
 
     def _get_volatility_regime_score(self) -> float:
-        """Get score based on current volatility regime"""
         volatility_scores = {
             'low': 0.8, 'medium': 0.7, 'high': 0.4, 'extreme': 0.2, 'unknown': 0.5,
             'very_low': 0.9, 'medium_high': 0.5
         }
         return float(volatility_scores.get(self.volatility_regime, 0.5))
 
-    # ── performance stats ────────────────────────────────────
 
     async def _update_performance_statistics_comprehensive(self, performance_data: Dict[str, Any],
                                                            market_data: Dict[str, Any]):
-        """Update comprehensive performance statistics with enhanced tracking"""
         try:
             stats_entry = {
                 'timestamp': datetime.datetime.now().isoformat(),
@@ -1126,7 +1054,7 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             }
             self.stats_history.append(stats_entry)
 
-            # Mode analytics
+
             mp = self.mode_analytics[self.current_mode]
             mp['win_rates'].append(stats_entry['win_rate'])
             mp['pnl_values'].append(stats_entry['avg_pnl'])
@@ -1136,7 +1064,7 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             mp['profit_factors'].append(stats_entry['profit_factor'])
             mp['timestamps'].append(stats_entry['timestamp'])
 
-            # Regime/session analytics
+
             if self.regime_awareness and self.market_regime != 'unknown':
                 rp = self.regime_performance[self.market_regime]
                 rp['modes'].append(self.current_mode)
@@ -1151,7 +1079,7 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 sp['win_rates'].append(stats_entry['win_rate'])
                 sp['timestamps'].append(stats_entry['timestamp'])
 
-            # Effectiveness tracking
+
             eff = self._calculate_mode_effectiveness(stats_entry)
             self.effectiveness_tracking[self.current_mode].append({
                 'timestamp': stats_entry['timestamp'],
@@ -1166,7 +1094,6 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             self.logger.warning(f"Performance statistics update failed: {error_context}")
 
     def _calculate_mode_effectiveness(self, stats_entry: Dict[str, Any]) -> float:
-        """Calculate effectiveness score for current mode"""
         try:
             performance_component = float(np.tanh(stats_entry.get('avg_pnl', 0.0) / 50.0) * 0.5 + 0.5)
             drawdown = float(stats_entry.get('drawdown', 0.0))
@@ -1183,11 +1110,9 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         except Exception:
             return 0.5
 
-    # ── decision making ──────────────────────────────────────
 
     async def _make_intelligent_mode_decision_comprehensive(self, performance_data: Dict[str, Any],
                                                             market_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Make comprehensive intelligent mode decision with advanced analysis"""
         try:
             decision: Dict[str, Any] = {
                 'current_mode': self.current_mode,
@@ -1201,7 +1126,7 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 'market_alignment': {}
             }
 
-            # Market closed → safe mode
+
             if not self._is_market_open():
                 decision.update({
                     'recommended_mode': 'safe',
@@ -1211,21 +1136,21 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 })
                 return decision
 
-            # Auto mode guard
+
             if not self.auto_mode:
                 decision['reasoning'] = ['Auto mode disabled - maintaining current mode']
                 return decision
 
-            # Persistence requirement
+
             if self.mode_persistence < self.min_persistence:
                 decision['reasoning'] = [f'Mode persistence required ({self.mode_persistence}/{self.min_persistence})']
                 return decision
 
-            # Factors
+
             await self._calculate_decision_factors_comprehensive(performance_data, market_data)
             decision['decision_factors'] = self.decision_factors.copy()
 
-            # Scores & assessments
+
             mode_scores = await self._calculate_mode_scores_comprehensive(performance_data, market_data)
             decision['analysis_details']['mode_scores'] = mode_scores
 
@@ -1235,12 +1160,12 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             market_alignment = await self._assess_market_alignment_comprehensive(performance_data, market_data)
             decision['market_alignment'] = market_alignment
 
-            # Best mode
+
             best_mode_analysis = self._find_optimal_mode_with_confidence(mode_scores, risk_assessment, market_alignment)
             recommended_mode = best_mode_analysis['mode']
             confidence = float(best_mode_analysis['confidence'])
 
-            # Reasoning & change analysis
+
             reasoning = await self._generate_mode_reasoning_comprehensive(
                 performance_data, market_data, mode_scores, risk_assessment, market_alignment
             )
@@ -1260,7 +1185,7 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 }
             })
 
-            # Log decision analysis
+
             self.logger.info(format_operator_message(
                 icon="🎯",
                 message="Mode decision analysis completed",
@@ -1287,9 +1212,8 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
 
     async def _calculate_decision_factors_comprehensive(self, performance_data: Dict[str, Any],
                                                         market_data: Dict[str, Any]):
-        """Calculate comprehensive decision factors with enhanced intelligence"""
         try:
-            # Performance factor with trend analysis
+
             if len(self.stats_history) >= 5:
                 recent_stats = list(self.stats_history)[-5:]
                 avg_win_rate = float(np.mean([s['win_rate'] for s in recent_stats]))
@@ -1306,7 +1230,7 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             else:
                 self.decision_factors['performance_score'] = 0.5
 
-            # Risk factor
+
             drawdown = float(performance_data.get('drawdown', 0.0))
             max_drawdown = float(performance_data.get('max_drawdown', 0.0))
             volatility = float(performance_data.get('volatility', 0.02))
@@ -1322,7 +1246,7 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 0.2 * exposure_score
             )
 
-            # Consensus
+
             consensus = float(performance_data.get('consensus', 0.5))
             consensus_strength = float(performance_data.get('consensus_strength', 0.5))
             vote_count = int(performance_data.get('vote_count', 0))
@@ -1333,7 +1257,7 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 0.2 * vote_confidence
             )
 
-            # Context
+
             regime_score = self._get_regime_score_enhanced(self.market_regime)
             volatility_level_score = self._get_volatility_level_score_enhanced(self.volatility_regime)
             session_score = self._get_session_score_enhanced(self.market_session)
@@ -1342,48 +1266,47 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 0.4 * volatility_level_score +
                 0.2 * session_score
             )
-            # Additional
+
             self.decision_factors['volatility_score'] = volatility_score
             self.decision_factors['regime_score'] = regime_score
             self.decision_factors['session_score'] = session_score
             self.decision_factors['trend_score'] = float(performance_data.get('trend_consistency', 0.5))
             self.decision_factors['stability_score'] = self._calculate_stability_score(performance_data)
 
-            # Integrate additional data sources
-            # Use real consensus score from ConsensusDetector if available
+
             if 'consensus_score' in market_data and market_data['consensus_score'] != 0.5:
                 real_consensus = float(market_data['consensus_score'])
                 self.decision_factors['consensus_score'] = (
-                    0.7 * real_consensus +  # Weight real consensus higher
+                    0.7 * real_consensus +
                     0.3 * self.decision_factors['consensus_score']
                 )
 
-            # Adjust risk score based on anomaly detection
+
             if 'anomaly_score' in market_data:
                 anomaly_data = market_data.get('anomaly_score', 0.0)
-                # Handle both dict and float formats
+
                 if isinstance(anomaly_data, dict):
                     anomaly_score = float(anomaly_data.get('score', 0.0)) if 'score' in anomaly_data else 0.0
                 else:
                     anomaly_score = float(anomaly_data) if anomaly_data else 0.0
 
-                if anomaly_score > 0.7:  # High anomaly detected
-                    self.decision_factors['risk_score'] *= 0.7  # Reduce risk score
+                if anomaly_score > 0.7:
+                    self.decision_factors['risk_score'] *= 0.7
                     self.decision_factors['stability_score'] *= 0.6
 
-            # Incorporate risk alerts
+
             risk_alerts = market_data.get('risk_alerts', [])
             if isinstance(risk_alerts, list) and len(risk_alerts) > 0:
-                alert_severity = min(len(risk_alerts) / 5.0, 1.0)  # Max out at 5 alerts
+                alert_severity = min(len(risk_alerts) / 5.0, 1.0)
                 self.decision_factors['risk_score'] *= (1.0 - 0.3 * alert_severity)
 
-            # Use market predictions for trend score
+
             predictions = market_data.get('market_predictions', {})
             if isinstance(predictions, dict) and predictions:
-                # Handle prediction_confidence as either dict or float
+
                 pred_conf_raw = market_data.get('market_predictions_confidence', 0.5)
                 if isinstance(pred_conf_raw, dict):
-                    # Extract numeric confidence from dict (try multiple keys)
+
                     pred_confidence = float(
                         pred_conf_raw.get('current_confidence') or
                         pred_conf_raw.get('prediction_confidence') or
@@ -1392,15 +1315,15 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                     )
                 else:
                     pred_confidence = float(pred_conf_raw) if pred_conf_raw is not None else 0.5
-                
+
                 if pred_confidence > 0.6:
-                    # Blend prediction confidence into trend score
+
                     self.decision_factors['trend_score'] = (
                         0.6 * self.decision_factors['trend_score'] +
                         0.4 * pred_confidence
                     )
 
-            # Log factor calculations
+
             if self.debug:
                 self.logger.info(format_operator_message(
                     icon="📊",
@@ -1443,7 +1366,6 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         return float(session_scores.get(session, 0.5))
 
     def _calculate_stability_score(self, performance_data: Dict[str, Any]) -> float:
-        """Calculate system stability score based on various factors"""
         try:
             factors: List[float] = []
             if len(self.stats_history) >= 5:
@@ -1462,7 +1384,6 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
 
     async def _calculate_mode_scores_comprehensive(self, performance_data: Dict[str, Any],
                                                    market_data: Dict[str, Any]) -> Dict[str, float]:
-        """Calculate comprehensive scores for each trading mode"""
         try:
             mode_scores: Dict[str, float] = {}
             for mode in self.TRADING_MODES:
@@ -1476,7 +1397,6 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
 
     async def _calculate_single_mode_score_comprehensive(self, mode: str, performance_data: Dict[str, Any],
                                                          market_data: Dict[str, Any]) -> float:
-        """Calculate comprehensive score for a single mode with enhanced logic"""
         try:
             mode_config = self.TRADING_MODES[mode]
             thresholds = self.mode_thresholds[mode]
@@ -1498,7 +1418,7 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             market_score = float(self.decision_factors['market_context_score'])
             stability_score = float(self.decision_factors['stability_score'])
 
-            # Base score
+
             score = 0.5
 
             if mode == 'safe':
@@ -1565,18 +1485,15 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             return 0.5
 
     def _get_volatility_adjustment_factor(self) -> float:
-        """Get volatility adjustment factor for mode scoring"""
         adjustments = {
             'very_low': 1.1, 'low': 1.05, 'medium': 1.0,
             'medium_high': 0.95, 'high': 0.85, 'extreme': 0.7, 'unknown': 1.0
         }
         return float(adjustments.get(self.volatility_regime, 1.0))
 
-    # ── risk & alignment ─────────────────────────────────────
 
     async def _perform_comprehensive_risk_assessment(self, performance_data: Dict[str, Any],
                                                      market_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Perform comprehensive risk assessment for mode decision"""
         try:
             risk_assessment = {
                 'overall_risk_level': 'medium',
@@ -1799,7 +1716,6 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
     def _find_optimal_mode_with_confidence(self, mode_scores: Dict[str, float],
                                            risk_assessment: Dict[str, Any],
                                            market_alignment: Dict[str, Any]) -> Dict[str, Any]:
-        """Find optimal mode with confidence assessment"""
         try:
             final_scores: Dict[str, float] = {}
             for mode in self.TRADING_MODES:
@@ -1825,7 +1741,6 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
     def _analyze_mode_change_necessity(self, recommended_mode: str, confidence: float,
                                        mode_scores: Dict[str, float],
                                        risk_assessment: Dict[str, Any]) -> Dict[str, Any]:
-        """Analyze if mode change is necessary with enhanced logic"""
         try:
             current_score = float(mode_scores.get(self.current_mode, 0.5))
             recommended_score = float(mode_scores.get(recommended_mode, current_score))
@@ -1860,12 +1775,10 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         except Exception:
             return {'should_change': False, 'improvement': 0.0, 'urgency': 'normal'}
 
-    # ── newly implemented production-grade helpers ───────────
 
     async def _generate_mode_reasoning_comprehensive(self, performance_data: Dict[str, Any], market_data: Dict[str, Any],
                                                      mode_scores: Dict[str, float], risk_assessment: Dict[str, Any],
                                                      market_alignment: Dict[str, Any]) -> List[str]:
-        """Generate comprehensive reasoning for mode decision"""
         try:
             reasons: List[str] = []
             reasons.append(f"Performance score={self.decision_factors['performance_score']:.2f}, "
@@ -1885,7 +1798,6 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             return ["Mode decision based on comprehensive analysis"]
 
     async def _apply_mode_decision_comprehensive(self, decision: Dict[str, Any], market_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Apply mode decision with comprehensive tracking"""
         try:
             changed = False
             old_mode = self.current_mode
@@ -1920,10 +1832,10 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                     confidence=f"{decision.get('confidence', 0.0):.2f}"
                 ))
             else:
-                # increase persistence if no change
+
                 self.mode_persistence += 1
 
-                # Log why mode change was rejected
+
                 recommended = decision.get('recommended_mode', old_mode)
                 reasons = decision.get('reasoning', [])
                 rejection_reason = "unknown"
@@ -1950,7 +1862,7 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                         persistence=f"{self.mode_persistence}/{self.min_persistence}"
                     ))
 
-            # Decision trace
+
             self.decision_trace.append({
                 'timestamp': datetime.datetime.now().isoformat(),
                 'current_mode': old_mode,
@@ -1966,7 +1878,6 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
 
     async def _analyze_mode_effectiveness_comprehensive(self, performance_data: Dict[str, Any],
                                                         market_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Analyze mode effectiveness comprehensively"""
         try:
             if not self.effectiveness_tracking.get(self.current_mode):
                 eff = 0.5
@@ -1974,7 +1885,7 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 recent = self.effectiveness_tracking[self.current_mode][-5:]
                 eff = float(np.mean([e['effectiveness'] for e in recent]))
             self.mode_stats['mode_effectiveness'] = float(eff)
-            # Best performing mode (last 20 effectiveness points)
+
             best = self.current_mode
             best_score = eff
             for mode, hist in self.effectiveness_tracking.items():
@@ -1992,24 +1903,23 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
 
     async def _update_adaptive_thresholds_comprehensive(self, performance_data: Dict[str, Any],
                                                         market_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Update adaptive thresholds comprehensively (slow drift, volatility-aware)"""
         try:
             updates = {}
-            # Drift step
+
             alpha = float(self.mode_intelligence.get('adaptation_speed', 0.1)) * 0.1
             for mode, th in self.mode_thresholds.items():
-                # Use recent effectiveness to slightly relax/tighten
+
                 if self.effectiveness_tracking.get(mode):
                     eff = float(np.mean([e['effectiveness'] for e in self.effectiveness_tracking[mode][-5:]]))
                 else:
                     eff = 0.5
-                # If effective, relax slightly, else tighten slightly
+
                 sign = 1 if eff > 0.55 else -1
-                # Drawdown tolerance
+
                 th['max_drawdown'] = float(np.clip(th['max_drawdown'] * (1 + sign * alpha * 0.1), 0.02, 0.2))
-                # Win-rate requirement
+
                 th['min_win_rate'] = float(np.clip(th['min_win_rate'] * (1 - sign * alpha * 0.1), 0.0, 0.8))
-                # Consensus requirement
+
                 th['min_consensus'] = float(np.clip(th['min_consensus'] * (1 - sign * alpha * 0.1), 0.0, 0.8))
                 updates[mode] = dict(th)
 
@@ -2026,7 +1936,6 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
 
     async def _generate_intelligent_mode_recommendations(self, mode_decision: Dict[str, Any],
                                                          effectiveness_analysis: Dict[str, Any]) -> List[str]:
-        """Generate intelligent mode recommendations"""
         try:
             recs: List[str] = []
             eff = float(effectiveness_analysis.get('current_effectiveness', 0.5))
@@ -2046,7 +1955,6 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
 
     async def _generate_comprehensive_mode_thesis(self, mode_decision: Dict[str, Any],
                                                   effectiveness_analysis: Dict[str, Any]) -> str:
-        """Generate comprehensive mode thesis"""
         try:
             parts = [
                 f"Mode: {self.current_mode.upper()} | Effectiveness {effectiveness_analysis.get('current_effectiveness', 0.5):.2f}.",
@@ -2068,9 +1976,8 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             return f"Trading mode management proceeding; thesis error: {error_context}"
 
     async def _update_smartinfobus_comprehensive(self, results: Dict[str, Any], thesis: str):
-        """Update SmartInfoBus comprehensively (single-writer keys only)"""
         try:
-            # Publish ONLY what we provide
+
             self.smart_bus.set('trading_mode', results.get('trading_mode', self.current_mode),
                                module='TradingModeManager', thesis=thesis)
             self.smart_bus.set('mode_config', results.get('mode_config', {}),
@@ -2083,7 +1990,7 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                                module='TradingModeManager', thesis="Decision factors updated")
             self.smart_bus.set('mode_thresholds', results.get('mode_thresholds', {}),
                                module='TradingModeManager', thesis="Mode thresholds updated")
-            # Do not write 'market_context' (owned by MarketDataProvider). If needed, embed context in mode_stats.
+
             try:
                 mc = results.get('market_context', {})
                 if isinstance(mc, dict) and mc:
@@ -2094,8 +2001,8 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                                        module='TradingModeManager', thesis="Mode stats updated (with context)")
             except Exception:
                 pass
-            # Do not publish contested key 'mode_recommendations' (canonical owner: OpponentModeEnhancer)
-            # If needed for dashboards, include recommendations under namespaced stats instead.
+
+
             recs = results.get('mode_recommendations', [])
             if isinstance(recs, list) and recs:
                 stats = results.get('mode_stats', {}) or {}
@@ -2104,17 +2011,15 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
                 self.smart_bus.set('mode_stats', stats,
                                    module='TradingModeManager', thesis="Mode stats updated (with recommendations)")
 
-            # Namespaced health/status
+
             self._post_health_status()
 
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, 'smartinfobus_update')
             self.logger.warning(f"SmartInfoBus update failed: {error_context}")
 
-    # ── utilities & payload shaping ──────────────────────────
 
     def _is_market_open(self) -> bool:
-        """Check if market is open based on schedule"""
         if not self.market_schedule:
             return True
         try:
@@ -2140,7 +2045,6 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             return True
 
     def _get_mode_configuration(self) -> Dict[str, Any]:
-        """Get current mode configuration"""
         cfg = self.TRADING_MODES[self.current_mode]
         return {
             'mode': self.current_mode,
@@ -2159,7 +2063,6 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         return out
 
     def _get_comprehensive_mode_stats(self) -> Dict[str, Any]:
-        """Get comprehensive mode statistics"""
         return {
             **self.mode_stats,
             'decision_factors': self.decision_factors.copy(),
@@ -2168,7 +2071,6 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         }
 
     def _get_mode_analytics_summary(self) -> Dict[str, Any]:
-        """Get summary of mode analytics"""
         summary: Dict[str, Any] = {}
         for mode, analytics in self.mode_analytics.items():
             if analytics.get('win_rates'):
@@ -2182,7 +2084,6 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         return summary
 
     def _get_market_context_summary(self) -> Dict[str, Any]:
-        """Get market context summary"""
         return {
             'regime': self.market_regime,
             'volatility_regime': self.volatility_regime,
@@ -2194,7 +2095,6 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         }
 
     def _calculate_rolling_stats(self) -> Dict[str, Any]:
-        """Calculate rolling statistics"""
         if not self.stats_history:
             return {
                 'win_rate': 0.5, 'avg_pnl': 0.0, 'total_pnl': 0.0, 'drawdown': 0.0, 'consensus': 0.5,
@@ -2214,17 +2114,14 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         }
 
     def _update_mode_performance_metrics(self):
-        """Update mode performance metrics"""
         self.mode_stats['current_mode_duration'] += 1
         self.mode_stats['total_uptime'] += 1
-        # NOTE: mode_duration is a tick counter, NOT milliseconds - don't use record_metric
-        # which expects duration_ms and logs "slow operation" warnings
+
+
         self.performance_tracker.record_metric('TradingModeManager', 'mode_effectiveness', self.mode_stats['mode_effectiveness'])
-        # mode_persistence is also a counter, not duration - remove from record_metric
-        # self.performance_tracker.record_metric('TradingModeManager', 'mode_persistence', self.mode_persistence)
+
 
     def _get_health_metrics(self) -> Dict[str, Any]:
-        """Get comprehensive health metrics for monitoring"""
         try:
             session_hours = (datetime.datetime.now() - datetime.datetime.fromisoformat(self.mode_stats['session_start'])).total_seconds() / 3600.0
         except Exception:
@@ -2246,7 +2143,6 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         }
 
     async def _handle_processing_error(self, error: Exception, start_time: float) -> Dict[str, Any]:
-        """Handle processing errors with intelligent recovery"""
         self.error_count += 1
         error_context = self.error_pinpointer.analyze_error(error, "TradingModeManager")
 
@@ -2276,7 +2172,7 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             'trading_mode_manager_initialization': self._get_tmm_init_view()
         }
 
-        # Try to publish minimal info
+
         try:
             await self._update_smartinfobus_comprehensive(payload, payload['_thesis'])
         except Exception:
@@ -2305,7 +2201,6 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         }
 
     def _generate_disabled_response(self) -> Dict[str, Any]:
-        """Generate response when module is disabled"""
         return {
             'trading_mode': self.current_mode,
             'mode_config': {'status': 'disabled'},
@@ -2321,7 +2216,6 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         }
 
     def _generate_breaker_response(self) -> Dict[str, Any]:
-        """Response when breaker OPEN but module not fully disabled"""
         return {
             'trading_mode': self.current_mode,
             'mode_config': self._get_mode_configuration(),
@@ -2337,7 +2231,6 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         }
 
     def _get_tmm_init_view(self) -> Dict[str, Any]:
-        """Safely read or synthesize initialization view for contract compliance"""
         try:
             init_view = self.smart_bus.get('trading_mode_manager_initialization', 'TradingModeManager')
             if isinstance(init_view, dict) and init_view:
@@ -2351,12 +2244,8 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             'auto_mode': getattr(self, 'auto_mode', True)
         }
 
-    # ═══════════════════════════════════════════════════════════════════
-    # PUBLIC API METHODS
-    # ═══════════════════════════════════════════════════════════════════
 
     def set_mode(self, mode: str, reason: str = "Manual override") -> None:
-        """Set trading mode manually"""
         if mode not in self.TRADING_MODES:
             raise ValueError(f"Invalid mode: {mode}. Must be one of {list(self.TRADING_MODES.keys())}")
         old_mode = self.current_mode
@@ -2397,7 +2286,6 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
         return self._get_comprehensive_mode_stats()
 
     def get_observation_components(self) -> np.ndarray:
-        """Return mode features for RL observation"""
         try:
             mode_encoding = np.zeros(len(self.TRADING_MODES), dtype=np.float32)
             mode_index = list(self.TRADING_MODES.keys()).index(self.current_mode)
@@ -2428,7 +2316,6 @@ class TradingModeManager(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusState
             return np.concatenate([default_encoding, default_additional])
 
     def get_trading_mode_report(self) -> str:
-        """Generate comprehensive trading mode report"""
         mode_emoji = {'safe': '[SAFE]', 'normal': '[BALANCE]', 'aggressive': '[FAST]', 'extreme': '[ROCKET]'}
         current_emoji = mode_emoji.get(self.current_mode, '❓')
         mode_config = self.TRADING_MODES.get(self.current_mode, {})

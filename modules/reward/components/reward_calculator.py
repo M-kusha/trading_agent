@@ -1,8 +1,4 @@
-# modules/reward/components/reward_calculator.py
-"""
-Reward Calculation Component
-Handles core reward calculation logic with all penalties and bonuses
-"""
+
 
 from __future__ import annotations
 
@@ -13,16 +9,6 @@ import numpy as np
 
 
 class RewardCalculator:
-    """
-    Core reward calculation engine
-
-    Features:
-    - PnL-based reward calculation
-    - Dynamic penalty application
-    - Bonus calculations
-    - Component tracking
-    - Debug integration
-    """
 
     def __init__(
         self,
@@ -30,41 +16,31 @@ class RewardCalculator:
         state: Any,
         logger: Any,
         debug_manager: Any,
-        env: Optional[Any] = None,   # NEW: make env explicit & optional to satisfy Pylance
+        env: Optional[Any] = None,
     ):
-        """Initialize calculator"""
 
         self.cfg = config
         self.state = state
         self.logger = logger
         self.debug_manager = debug_manager
-        self.env: Optional[Any] = env  # ensure attribute exists → fixes Pylance 'env unknown'
+        self.env: Optional[Any] = env
 
-        # Calculation tracking
+
         self.calculation_count: int = 0
         self.component_magnitudes: Dict[str, float] = {}
-        
-        # Step-by-step PnL tracking (for proper RL reward signals)
-        # RL needs the CHANGE in value per step, not cumulative totals
+
+
         self._last_step_balance: Optional[float] = None
 
-    # ─────────────────────────────────────────────────────────────
-    # Public
-    # ─────────────────────────────────────────────────────────────
 
     async def calculate_enhanced_reward(
         self,
         reward_data: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """
-        Calculate reward with all components
-
-        Returns shaped reward and detailed components
-        """
 
         self.calculation_count += 1
 
-        # Extract core data
+
         trades: List[Dict[str, Any]] = list(reward_data.get('trades', []) or [])
         balance_now: float = self._to_float_safe(reward_data.get('balance_now', 0.0))
         baseline_balance_raw = reward_data.get('baseline_balance', balance_now)
@@ -72,67 +48,64 @@ class RewardCalculator:
             None if baseline_balance_raw is None else self._to_float_safe(baseline_balance_raw)
         )
 
-        # Calculate denominator (never zero)
+
         denom = baseline_balance if (baseline_balance and baseline_balance > 0) else max(1e-9, balance_now)
 
-        # FIX: Calculate STEP-BY-STEP PnL change (not cumulative total)
-        # RL needs per-step rewards that reflect the action's immediate impact
-        # Using cumulative PnL causes the reward to always be large negative after losses
+
         if self._last_step_balance is None:
             self._last_step_balance = baseline_balance if baseline_balance else balance_now
-        
-        # Step delta: change since last step (what RL actually learns from)
+
+
         step_pnl_delta = balance_now - self._last_step_balance
         self._last_step_balance = balance_now
-        
-        # Normalize by initial balance to keep in reasonable range
-        step_reward = step_pnl_delta / denom * 100.0  # Scale: 1% balance change = 1.0 reward
-        
-        # Also track cumulative for metrics/debugging
+
+
+        step_reward = step_pnl_delta / denom * 100.0
+
+
         total_pnl = balance_now - (baseline_balance if baseline_balance else balance_now)
 
-        # Also calculate realized-only PnL from trades for metrics/debugging
+
         realised_pnl_from_trades = self._calculate_realised_pnl(trades)
 
-        base_component = step_pnl_delta / denom  # Use step delta, not cumulative
+        base_component = step_pnl_delta / denom
 
-        # Initialize components
+
         components = self._initialize_components(
             reward_data, total_pnl, base_component,
             balance_now, baseline_balance
         )
-        components['step_pnl_delta'] = step_pnl_delta  # Track for debugging
+        components['step_pnl_delta'] = step_pnl_delta
 
-        # FIX: Start with STEP delta as base reward (not cumulative PnL!)
-        # This gives the RL agent a proper learning signal
+
         reward = step_reward
 
-        # Apply penalties
+
         penalties = await self._calculate_penalties(reward_data, components)
         if penalties:
             reward -= sum(penalties.values())
             components.update(penalties)
 
-        # Apply bonuses
+
         bonuses = await self._calculate_bonuses(reward_data, trades, realised_pnl_from_trades, components)
         if bonuses:
             reward += sum(bonuses.values())
             components.update(bonuses)
 
-        # Apply consensus factor (clamped to [0.25, 1.75] to avoid runaway scaling)
+
         consensus_factor = float(np.clip(components['consensus_factor'], 0.25, 1.75))
         components['consensus_factor'] = consensus_factor
         reward *= consensus_factor
 
-        # Final clipping
+
         final_reward = float(np.clip(reward, -10.0, 10.0))
         components['final_reward'] = final_reward
         components['method'] = 'enhanced_async_calculation'
 
-        # Update state
+
         await self._update_calculation_state(trades, realised_pnl_from_trades, final_reward)
 
-        # Log if significant
+
         if abs(final_reward) > 0.2 or self.calculation_count % 10 == 1:
             self._log_calculation(final_reward, components, reward_data)
 
@@ -142,9 +115,6 @@ class RewardCalculator:
             'calculation_method': 'enhanced_async'
         }
 
-    # ─────────────────────────────────────────────────────────────
-    # Initialization & Base
-    # ─────────────────────────────────────────────────────────────
 
     def _initialize_components(
         self,
@@ -154,7 +124,6 @@ class RewardCalculator:
         balance_now: float,
         baseline_balance: Optional[float]
     ) -> Dict[str, Any]:
-        """Initialize component dictionary with safe defaults"""
 
         consensus_raw = reward_data.get('consensus', 0.5)
         try:
@@ -176,7 +145,7 @@ class RewardCalculator:
             'market_regime': str(reward_data.get('regime', 'unknown') or 'unknown'),
             'volatility_level': str(reward_data.get('volatility_level', 'medium') or 'medium'),
             'consensus_factor': 0.5 + consensus_val,
-            # Initialize all component slots
+
             'drawdown_penalty': 0.0,
             'risk_penalty': 0.0,
             'tail_penalty': 0.0,
@@ -193,13 +162,6 @@ class RewardCalculator:
         }
 
     def _calculate_realised_pnl(self, trades: List[Dict[str, Any]]) -> float:
-        """Calculate total realised PnL from trades.
-
-        Accepts multiple common field names to be robust across executors:
-        - 'pnl' (direct)
-        - 'realized_pnl' / 'realised_pnl' (executor fill schema)
-        - fallback: 0.0 if none present
-        """
         if not trades:
             return 0.0
         total_pnl = 0.0
@@ -221,7 +183,6 @@ class RewardCalculator:
         return float(total_pnl)
 
     def _extract_drawdown(self, reward_data: Dict[str, Any]) -> float:
-        """Extract drawdown from various sources, safely"""
         risk_metrics = reward_data.get('risk_metrics') or {}
         drawdown = (risk_metrics.get('current_drawdown')
                     if isinstance(risk_metrics, dict) else None)
@@ -238,29 +199,21 @@ class RewardCalculator:
         except Exception:
             return 0.0
 
-    # ─────────────────────────────────────────────────────────────
-    # Penalty Calculations
-    # ─────────────────────────────────────────────────────────────
 
     async def _calculate_penalties(
         self,
         reward_data: Dict[str, Any],
         components: Dict[str, Any]
     ) -> Dict[str, float]:
-        """Calculate all penalties"""
 
         penalties: Dict[str, float] = {}
 
-        # ═══════════════════════════════════════════════════════════════
-        # TRADE COST PENALTY: Penalize opening new positions
-        # This teaches the agent to be SELECTIVE - only trade when confident
-        # Agent must overcome this cost with profits to net positive reward
-        # ═══════════════════════════════════════════════════════════════
+
         trade_cost = self._calculate_trade_open_cost(reward_data.get('trades', []))
         if trade_cost > 0:
             penalties['trade_open_cost'] = trade_cost
 
-        # Drawdown penalty
+
         drawdown_penalty = self._calculate_drawdown_penalty(
             components['drawdown'],
             components['market_regime']
@@ -268,7 +221,7 @@ class RewardCalculator:
         if drawdown_penalty > 0:
             penalties['drawdown_penalty'] = drawdown_penalty
 
-        # Risk penalty
+
         risk_penalty = self._calculate_risk_penalty(
             reward_data.get('actions'),
             components['volatility_level']
@@ -276,19 +229,19 @@ class RewardCalculator:
         if risk_penalty > 0:
             penalties['risk_penalty'] = risk_penalty
 
-        # Tail risk penalty
+
         tail_penalty = self._calculate_tail_penalty(
             reward_data.get('trades', []) or []
         )
         if tail_penalty > 0:
             penalties['tail_penalty'] = tail_penalty
 
-        # Mistake penalty
+
         mistake_penalty = await self._calculate_mistake_penalty(reward_data)
         if mistake_penalty > 0:
             penalties['mistake_penalty'] = mistake_penalty
 
-        # No trade penalty (if no trades)
+
         trades_any = bool(reward_data.get('trades'))
         if not trades_any:
             no_trade_penalty = self._calculate_no_trade_penalty(
@@ -298,7 +251,7 @@ class RewardCalculator:
             if no_trade_penalty > 0:
                 penalties['no_trade_penalty'] = no_trade_penalty
 
-        # Prop firm penalty (progressive as approaching DD limits)
+
         prop_firm_penalty = self._calculate_prop_firm_penalty(
             components['drawdown'],
             reward_data.get('daily_dd_used', 0.0),
@@ -310,7 +263,6 @@ class RewardCalculator:
         return penalties
 
     def _calculate_drawdown_penalty(self, drawdown: float, regime: str) -> float:
-        """Calculate drawdown penalty"""
         try:
             d = float(drawdown)
         except Exception:
@@ -319,19 +271,19 @@ class RewardCalculator:
         if d <= 0.05:
             return 0.0
 
-        # Quadratic penalty
+
         penalty = (d ** 2) * float(self.cfg.dd_pen_weight)
 
-        # Adjust for regime
+
         regime_multipliers = {
-            'volatile': 0.8,   # Less penalty in volatile
-            'trending': 1.2,   # More penalty in trending
+            'volatile': 0.8,
+            'trending': 1.2,
             'ranging': 1.0,
             'unknown': 1.0
         }
         penalty *= regime_multipliers.get(str(regime), 1.0)
 
-        # Apply adaptive scaling
+
         penalty *= float(self.state.adaptive_params.get('dynamic_penalty_scaling', 1.0))
 
         return float(penalty)
@@ -341,21 +293,20 @@ class RewardCalculator:
         actions: Optional[Any],
         volatility_level: str
     ) -> float:
-        """Calculate risk penalty based on actions"""
         if actions is None:
             return 0.0
 
         try:
-            # Calculate action magnitude
+
             if isinstance(actions, (list, tuple, np.ndarray)):
                 action_magnitude = float(np.linalg.norm(np.array(actions, dtype=np.float32)))
             else:
                 action_magnitude = abs(float(actions))
 
-            # Base penalty
+
             penalty = min(action_magnitude * float(self.cfg.risk_pen_weight), 0.2)
 
-            # Adjust for volatility
+
             vol_multipliers = {
                 'low': 1.2,
                 'medium': 1.0,
@@ -370,7 +321,6 @@ class RewardCalculator:
             return 0.0
 
     def _calculate_tail_penalty(self, trades: List[Dict[str, Any]]) -> float:
-        """Calculate tail risk penalty"""
         if not trades:
             return 0.0
 
@@ -388,11 +338,11 @@ class RewardCalculator:
         if not losses:
             return 0.0
 
-        # Calculate penalty based on average loss
+
         avg_loss = abs(float(np.mean(losses)))
         penalty = avg_loss * float(self.cfg.tail_pen_weight) * 0.1
 
-        # Extra penalty for extreme losses
+
         extreme_losses = [l for l in losses if l < -100.0]
         if extreme_losses:
             penalty *= 1.5
@@ -400,12 +350,11 @@ class RewardCalculator:
         return float(penalty)
 
     async def _calculate_mistake_penalty(self, reward_data: Dict[str, Any]) -> float:
-        """Calculate mistake-based penalty. Robust to missing sources."""
         try:
-            # Try reward_data (preferred)
+
             mistake_memory = reward_data.get('mistake_memory')
             if not isinstance(mistake_memory, dict):
-                # Some pipelines place it inside raw_inputs
+
                 mistake_memory = (reward_data.get('raw_inputs') or {}).get('mistake_memory')
 
             if isinstance(mistake_memory, dict):
@@ -418,7 +367,7 @@ class RewardCalculator:
                 penalty *= float(self.state.adaptive_params.get('dynamic_penalty_scaling', 1.0))
                 return float(penalty)
 
-            # Try environment (optional)
+
             if self.env is not None and hasattr(self.env, 'mistake_memory'):
                 try:
                     mm = self.env.mistake_memory.get_observation_components()  # type: ignore[attr-defined]
@@ -438,43 +387,28 @@ class RewardCalculator:
         return 0.0
 
     def _calculate_trade_open_cost(self, trades: List[Dict[str, Any]]) -> float:
-        """
-        Calculate cost penalty for opening new positions.
-        
-        This teaches the agent to be SELECTIVE:
-        - Every new trade has a "cost" (like spread/commission)
-        - Agent must overcome this cost with profits to net positive
-        - Discourages churning / over-trading
-        - Encourages waiting for high-probability setups
-        
-        Args:
-            trades: List of trades from this step
-            
-        Returns:
-            Cost penalty (positive value = penalty to subtract from reward)
-        """
         if not trades:
             return 0.0
-            
-        # Count NEW position entries (not scales or closes)
+
+
         new_entries = 0
         for trade in trades:
             if not isinstance(trade, dict):
                 continue
             action = str(trade.get('action', '')).lower()
-            # Only count actual new position opens
+
             if action in ('open_long', 'open_short', 'open', 'entry'):
                 new_entries += 1
-        
+
         if new_entries == 0:
             return 0.0
-        
-        # Get trade cost weight from config (default 0.15)
+
+
         trade_cost_per_entry = float(getattr(self.cfg, 'trade_open_cost', 0.15))
-        
-        # Apply cost per new entry
+
+
         total_cost = new_entries * trade_cost_per_entry
-        
+
         return float(total_cost)
 
     def _calculate_no_trade_penalty(
@@ -482,18 +416,17 @@ class RewardCalculator:
         drawdown: float,
         volatility_level: str
     ) -> float:
-        """Calculate penalty for not trading"""
         penalty = float(self.cfg.no_trade_penalty_weight)
         penalty *= float(self.state.adaptive_params.get('activity_threshold', 1.0))
 
-        # Reduce penalty if in drawdown
+
         try:
             if float(drawdown) > 0.1:
                 penalty *= 0.3
         except Exception:
             pass
 
-        # Reduce penalty in extreme volatility
+
         if str(volatility_level) == 'extreme':
             penalty *= 0.5
 
@@ -505,63 +438,52 @@ class RewardCalculator:
         daily_dd_used: float,
         prop_firm_limits: Optional[Dict[str, Any]] = None
     ) -> float:
-        """
-        Calculate progressive prop firm penalty as drawdown approaches limits.
-        
-        This teaches the AI to:
-        1. Be cautious as DD approaches limits (progressive penalty)
-        2. Severely penalize actual limit breaches
-        3. Consider both daily and max DD limits
-        """
         if not getattr(self.cfg, 'prop_firm_enabled', True):
             return 0.0
-        
-        # Get limits from config or override from reward_data
+
+
         daily_limit = float(getattr(self.cfg, 'daily_dd_limit', 0.05))
         max_limit = float(getattr(self.cfg, 'max_dd_limit', 0.10))
-        
+
         if prop_firm_limits and isinstance(prop_firm_limits, dict):
             daily_limit = float(prop_firm_limits.get('daily_dd_limit', daily_limit))
             max_limit = float(prop_firm_limits.get('max_dd_limit', max_limit))
-        
+
         try:
             current_dd = float(current_dd)
             daily_dd_used = float(daily_dd_used) if daily_dd_used else current_dd
         except Exception:
             return 0.0
-        
+
         penalty = 0.0
         weight = float(getattr(self.cfg, 'prop_firm_dd_penalty_weight', 3.0))
         violation_weight = float(getattr(self.cfg, 'prop_firm_violation_penalty', 5.0))
-        
-        # Daily DD penalty (progressive)
+
+
         if daily_limit > 0:
             daily_ratio = daily_dd_used / daily_limit
             if daily_ratio >= 1.0:
-                # Violation! Severe penalty
+
                 penalty += violation_weight * (1.0 + (daily_ratio - 1.0) * 2.0)
             elif daily_ratio > 0.7:
-                # Approaching limit - progressive quadratic penalty
-                # At 70%: 0.09 * weight, at 90%: 0.81 * weight
-                proximity = (daily_ratio - 0.7) / 0.3  # 0 to 1
+
+
+                proximity = (daily_ratio - 0.7) / 0.3
                 penalty += (proximity ** 2) * weight
-        
-        # Max DD penalty (progressive, stacks with daily)
+
+
         if max_limit > 0:
             max_ratio = current_dd / max_limit
             if max_ratio >= 1.0:
-                # Violation! Severe penalty
+
                 penalty += violation_weight * (1.0 + (max_ratio - 1.0) * 2.0)
             elif max_ratio > 0.6:
-                # Start warning earlier for max DD (60%)
-                proximity = (max_ratio - 0.6) / 0.4  # 0 to 1
-                penalty += (proximity ** 2) * weight * 0.8  # Slightly lower than daily
-        
+
+                proximity = (max_ratio - 0.6) / 0.4
+                penalty += (proximity ** 2) * weight * 0.8
+
         return float(penalty)
 
-    # ─────────────────────────────────────────────────────────────
-    # Bonus Calculations
-    # ─────────────────────────────────────────────────────────────
 
     async def _calculate_bonuses(
         self,
@@ -570,48 +492,47 @@ class RewardCalculator:
         realised_pnl: float,
         components: Dict[str, Any]
     ) -> Dict[str, float]:
-        """Calculate all bonuses"""
 
         bonuses: Dict[str, float] = {}
 
         if trades:
-            # Win bonus
+
             win_bonus = self._calculate_win_bonus(trades)
             if win_bonus > 0:
                 bonuses['win_bonus'] = win_bonus
 
-            # Activity bonus
+
             activity_bonus = self._calculate_activity_bonus(
                 len(trades), realised_pnl
             )
             if activity_bonus > 0:
                 bonuses['activity_bonus'] = activity_bonus
 
-        # Consistency bonus
+
         consistency_bonus = await self._calculate_consistency_bonus()
         if consistency_bonus > 0:
             bonuses['consistency_bonus'] = consistency_bonus
 
-        # Sharpe bonus (can be negative)
+
         sharpe_bonus = await self._calculate_sharpe_bonus()
         if sharpe_bonus != 0:
             bonuses['sharpe_bonus'] = sharpe_bonus
 
-        # Regime bonus
+
         regime_bonus = await self._calculate_regime_bonus(
             components['market_regime'], realised_pnl
         )
         if regime_bonus != 0:
             bonuses['regime_bonus'] = regime_bonus
 
-        # Volatility adjustment
+
         vol_adjustment = await self._calculate_volatility_adjustment(
             components['volatility_level'], realised_pnl
         )
         if vol_adjustment != 0:
             bonuses['volatility_adjustment'] = vol_adjustment
 
-        # Profit target bonus (prop firm progress)
+
         profit_bonus = self._calculate_profit_target_bonus(
             components['balance_now'],
             components['baseline_balance'],
@@ -623,13 +544,6 @@ class RewardCalculator:
         return bonuses
 
     def _calculate_win_bonus(self, trades: List[Dict[str, Any]]) -> float:
-        """Calculate winning trade bonus.
-        
-        FIXED: Prevents positive feedback loop by:
-        1. Requiring minimum history before streak bonuses
-        2. Capping streak bonus multiplier
-        3. Using diminishing returns for high win rates
-        """
         if not trades:
             return 0.0
 
@@ -643,14 +557,13 @@ class RewardCalculator:
 
         win_ratio = winning_trades / max(1, len(trades))
 
-        # Use sqrt for diminishing returns - prevents overfitting to early wins
-        # 50% win rate -> 0.71 factor, 80% win rate -> 0.89 factor
+
         diminishing_factor = float(np.sqrt(win_ratio))
         bonus = diminishing_factor * float(self.cfg.win_bonus_weight)
 
-        # Streak bonus ONLY if we have sufficient history (prevents early overfitting)
+
         history_len = len(self.state.pnl_history)
-        if history_len >= 10:  # Need 10+ samples before streak bonus
+        if history_len >= 10:
             recent = list(self.state.pnl_history)[-3:]
             recent_wins = []
             for p in recent:
@@ -659,7 +572,7 @@ class RewardCalculator:
                 except Exception:
                     recent_wins.append(False)
             if all(recent_wins):
-                # Cap streak bonus at 1.15x (was 1.3x - too aggressive)
+
                 bonus *= 1.15
 
         return float(bonus)
@@ -669,10 +582,9 @@ class RewardCalculator:
         trade_count: int,
         realised_pnl: float
     ) -> float:
-        """Calculate trading activity bonus"""
         bonus = min(int(trade_count) * 0.1, 0.3)
 
-        # Extra bonus for profitable activity
+
         try:
             if float(realised_pnl) > 0.0:
                 bonus *= 1.2
@@ -682,7 +594,6 @@ class RewardCalculator:
         return float(bonus)
 
     async def _calculate_consistency_bonus(self) -> float:
-        """Calculate consistency bonus"""
         if len(self.state.pnl_history) < 3:
             return 0.0
 
@@ -700,10 +611,10 @@ class RewardCalculator:
 
         positive_ratio = positives / max(1, len(recent_pnls))
 
-        # Quadratic for consistency
+
         consistency_score = positive_ratio ** 2
 
-        # Momentum bonus
+
         if len(recent_pnls) >= 5:
             early_half = recent_pnls[:len(recent_pnls)//2]
             late_half = recent_pnls[len(recent_pnls)//2:]
@@ -725,7 +636,7 @@ class RewardCalculator:
             momentum = late_ratio - early_ratio
             consistency_score *= (1.0 + momentum * 0.2)
 
-        # Streak bonus
+
         streak = 0
         for pnl in reversed(recent_pnls):
             try:
@@ -744,7 +655,6 @@ class RewardCalculator:
         return float(consistency_score * float(self.cfg.consistency_bonus_weight))
 
     async def _calculate_sharpe_bonus(self) -> float:
-        """Calculate Sharpe ratio bonus"""
         if len(self.state.reward_history) < 5:
             return 0.0
 
@@ -752,14 +662,14 @@ class RewardCalculator:
         mean_reward = float(np.mean(rewards))
         std_reward = float(np.std(rewards))
 
-        # Minimum std to avoid division issues
+
         min_std = max(0.1, abs(mean_reward) * 0.1)
         std_reward = max(std_reward, min_std)
 
-        # Calculate Sharpe (annualized-like scaling with sqrt(N))
+
         sharpe = mean_reward / std_reward * np.sqrt(min(len(rewards), 252))
 
-        # Regime adjustment
+
         if hasattr(self.state, 'last_regime'):
             regime_multipliers = {
                 'trending': 1.2,
@@ -769,7 +679,7 @@ class RewardCalculator:
             }
             sharpe *= regime_multipliers.get(getattr(self.state, 'last_regime', 'unknown'), 1.0)
 
-        # Apply sensitivity
+
         sensitivity = float(self.state.adaptive_params.get('regime_sensitivity', 1.0))
         normalized_sharpe = np.tanh(sharpe / (6.0 / max(1e-6, sensitivity)))
 
@@ -784,10 +694,9 @@ class RewardCalculator:
         regime: str,
         pnl: float
     ) -> float:
-        """Calculate regime-specific bonus"""
         regime_str = str(regime)
 
-        # track in state for analytics
+
         try:
             self.state.last_regime = regime_str
             self.state.record_regime_performance(regime_str, float(pnl))
@@ -815,7 +724,6 @@ class RewardCalculator:
         volatility_level: str,
         pnl: float
     ) -> float:
-        """Calculate volatility-based adjustment"""
 
         try:
             self.state.record_volatility_performance(str(volatility_level), float(pnl))
@@ -831,7 +739,7 @@ class RewardCalculator:
 
         base = (vol_multipliers.get(str(volatility_level), 1.0) - 1.0) * abs(float(pnl)) * 0.1
 
-        # Bonus for profitable trading in high volatility
+
         if str(volatility_level) in ('high', 'extreme') and float(pnl) > 0.0:
             base += float(pnl) * 0.05
 
@@ -845,45 +753,36 @@ class RewardCalculator:
         baseline_balance: float,
         prop_firm_limits: Optional[Dict[str, Any]] = None
     ) -> float:
-        """
-        Calculate bonus for progress toward prop firm profit target.
-        
-        Incentivizes:
-        1. Making consistent progress toward profit target
-        2. Extra bonus when crossing milestones (25%, 50%, 75%, 100%)
-        3. Encourages profitable but controlled trading
-        """
         if not getattr(self.cfg, 'prop_firm_enabled', True):
             return 0.0
-        
+
         profit_target = float(getattr(self.cfg, 'profit_target', 0.10))
         if prop_firm_limits and isinstance(prop_firm_limits, dict):
             profit_target = float(prop_firm_limits.get('profit_target', profit_target))
-        
+
         if profit_target <= 0 or baseline_balance <= 0:
             return 0.0
-        
+
         try:
             balance_now = float(balance_now)
             baseline_balance = float(baseline_balance)
         except Exception:
             return 0.0
-        
-        # Calculate profit progress (0.0 to 1.0+)
+
+
         current_profit_pct = (balance_now - baseline_balance) / baseline_balance
         progress_ratio = current_profit_pct / profit_target if profit_target > 0 else 0.0
-        
+
         if progress_ratio <= 0:
             return 0.0
-        
+
         weight = float(getattr(self.cfg, 'profit_target_bonus_weight', 1.5))
         bonus = 0.0
-        
-        # Base progress bonus (diminishing returns via sqrt)
+
+
         bonus += np.sqrt(min(progress_ratio, 1.0)) * weight * 0.3
-        
-        # Milestone bonuses (one-time per episode would be ideal, but stateless here)
-        # So we use a small continuous bonus for being past milestones
+
+
         if progress_ratio >= 0.25:
             bonus += 0.05 * weight
         if progress_ratio >= 0.50:
@@ -891,14 +790,11 @@ class RewardCalculator:
         if progress_ratio >= 0.75:
             bonus += 0.15 * weight
         if progress_ratio >= 1.0:
-            # Target reached! Big bonus
-            bonus += 0.5 * weight
-        
-        return float(min(bonus, 2.0))  # Cap to prevent runaway
 
-    # ─────────────────────────────────────────────────────────────
-    # State & Logging
-    # ─────────────────────────────────────────────────────────────
+            bonus += 0.5 * weight
+
+        return float(min(bonus, 2.0))
+
 
     async def _update_calculation_state(
         self,
@@ -906,11 +802,10 @@ class RewardCalculator:
         pnl: float,
         reward: float
     ) -> None:
-        """Update state after calculation"""
         try:
             self.state.record_calculation(trades, float(pnl), float(reward))
-            
-            # SPARSE REWARD DETECTION: Warn if PnL is always zero (training will fail)
+
+
             if self.calculation_count > 20:
                 recent_pnls = list(self.state.pnl_history)[-20:] if hasattr(self.state, 'pnl_history') else []
                 if recent_pnls and all(abs(p) < 1e-6 for p in recent_pnls):
@@ -920,7 +815,7 @@ class RewardCalculator:
                         "2) Balance updates flowing, 3) Position manager publishing fills"
                     )
         except Exception as e:
-            # never fail hard on state updates
+
             self.logger.debug(f"record_calculation failed: {e}")
 
     def _log_calculation(
@@ -929,7 +824,6 @@ class RewardCalculator:
         components: Dict[str, Any],
         reward_data: Dict[str, Any]
     ) -> None:
-        """Log calculation details"""
         try:
             self.logger.info(
                 f"Reward calculated: {float(reward):.4f} | "
@@ -939,17 +833,13 @@ class RewardCalculator:
                 f"Volatility: {components.get('volatility_level', 'medium')}"
             )
         except Exception:
-            # logging must not break pipeline
+
             pass
 
     def reset(self) -> None:
-        """Reset step-by-step tracking for new episode"""
         self._last_step_balance = None
         self.calculation_count = 0
 
-    # ─────────────────────────────────────────────────────────────
-    # Utilities
-    # ─────────────────────────────────────────────────────────────
 
     @staticmethod
     def _to_float_safe(v: Any, default: float = 0.0) -> float:

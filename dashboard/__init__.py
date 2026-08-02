@@ -1,9 +1,5 @@
-# ─────────────────────────────────────────────────────────────
-# File: dashboard/__init__.py
-# Training Dashboard Package
-# ─────────────────────────────────────────────────────────────
 
-# Conditional imports - gracefully handle missing dependencies
+
 try:
     from .server import WEB_AVAILABLE, start_dashboard_server
     __all__ = ['WEB_AVAILABLE', 'start_dashboard_server']

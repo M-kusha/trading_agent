@@ -23,7 +23,6 @@ from typing import (
     runtime_checkable,
 )
 
-# Optional libs (visualization)
 try:
     import networkx as _nx  # type: ignore
 except Exception:
@@ -34,16 +33,12 @@ except Exception:
     _plt = None  # type: ignore
 
 
-# ─────────────────────────────────────────────────────────────
-# Light fallbacks for logger and InfoBus (override by wiring)
-# ─────────────────────────────────────────────────────────────
-
 @runtime_checkable
 class LoggerProto(Protocol):
     def info(self, *args: Any, **kwargs: Any) -> None: ...
     def warning(self, *args: Any, **kwargs: Any) -> None: ...
     def error(self, *args: Any, **kwargs: Any) -> None: ...
-    # Optional in some codebases
+
     def debug(self, *args: Any, **kwargs: Any) -> None: ...  # type: ignore[override]
 
 def _fmt_op(icon: str, message: str, **ctx: Any) -> str:
@@ -64,7 +59,7 @@ class _FallbackLogger:
     def debug(self, msg: str, *args: Any, **kwargs: Any) -> None:
         print(f"[DEBUG] {self._name} | {msg}")
 
-# Prefer project logger if available
+
 try:
     from modules.utils.audit_utils import RotatingLogger as _RealLogger  # type: ignore
     from modules.utils.audit_utils import format_operator_message as _real_fmt
@@ -72,20 +67,20 @@ try:
         try:
             return _real_fmt(icon, message, **ctx)
         except TypeError:
-            # Different signature in some repos
+
             return _fmt_op(icon, message, **ctx)
     LoggerClass: Callable[..., LoggerProto] = _RealLogger  # type: ignore[assignment]
 except Exception:
     LoggerClass = _FallbackLogger  # type: ignore[assignment]
     _fmt = _fmt_op
 
-# InfoBus adapter
+
 class _NullBus:
     def subscribe(self, *_: Any, **__: Any) -> None: ...
     def unsubscribe(self, *_: Any, **__: Any) -> None: ...
     def get_data_freshness_report(self) -> Dict[str, Dict[str, Any]]: return {}
     def get_providers(self, *_: Any, **__: Any) -> List[str]: return []
-    # Optional internal snapshots used by auditor (if your bus exposes them)
+
     _providers: Dict[str, Set[str]] = {}
     _consumers: Dict[str, Set[str]] = {}
     def set(self, *_: Any, **__: Any) -> None: ...
@@ -98,7 +93,7 @@ def _get_bus() -> Any:
     except Exception:
         return _NullBus()
 
-# Optional orchestrator (for module registry + metadata)
+
 def _get_orchestrator() -> Any:
     try:
         from modules.core.module_system import ModuleOrchestrator  # type: ignore
@@ -108,28 +103,24 @@ def _get_orchestrator() -> Any:
         return None
 
 
-# ─────────────────────────────────────────────────────────────
-# Config & Models
-# ─────────────────────────────────────────────────────────────
-
 @dataclass
 class SuiteConfig:
-    # Heartbeat & lifecycle thresholds
-    heartbeat_interval_seconds: float = 30.0        # Reduced frequency to avoid spam
-    stale_age_warn_seconds: float = 300.0           # Increased from 60s - training steps are slow
-    stale_age_critical_seconds: float = 600.0       # Increased from 180s - training steps are slow
-    resolution_warn_seconds: float = 60.0           # Increased from 15s
-    # Logging / Debug
+
+    heartbeat_interval_seconds: float = 30.0
+    stale_age_warn_seconds: float = 300.0
+    stale_age_critical_seconds: float = 600.0
+    resolution_warn_seconds: float = 60.0
+
     operator_mode: bool = True
     plain_english: bool = True
-    debug: bool = False                             # <── Disabled for training performance
-    debug_ring_size: int = 500                       # recent events ring buffer
-    log_on_every_event: bool = False                # Disabled for training performance
-    # Discovery roots
+    debug: bool = False
+    debug_ring_size: int = 500
+    log_on_every_event: bool = False
+
     modules_root: str = "modules"
-    # Visualization defaults
+
     viz_output_path: str = "dependency_graph.png"
-    # Validation
+
     critical_single_writer_suffixes: Tuple[str, ...] = ("_vote",)
     critical_single_writer_keys: Tuple[str, ...] = (
         "market_regime", "training_metrics", "performance_metrics",
@@ -138,7 +129,7 @@ class SuiteConfig:
 
 @dataclass
 class KeyLifecycle:
-    status: str = "UNKNOWN"                # UNKNOWN | MISSING | STALE | FRESH
+    status: str = "UNKNOWN"
     first_seen_ts: float = 0.0
     last_event_ts: float = 0.0
     resolved_ts: float = 0.0
@@ -161,7 +152,7 @@ class KeyLifecycle:
 class ValidationIssue:
     module: str
     issue_type: str
-    severity: str  # 'error' | 'warning' | 'info'
+    severity: str
     message: str
     suggestion: Optional[str] = None
 
@@ -186,12 +177,8 @@ class ValidationReport:
             "integration_score": self.integration_score,
         }
 
-# ─────────────────────────────────────────────────────────────
-# Graph helpers (fallbacks if networkx missing)
-# ─────────────────────────────────────────────────────────────
 
 class _Graph:
-    """Tiny directed-graph helper with cycle detection, isolates, SCC groups."""
     def __init__(self) -> None:
         self.adj: Dict[str, Set[str]] = defaultdict(set)
         self.nodes: Set[str] = set()
@@ -234,7 +221,7 @@ class _Graph:
         return cycles
 
     def strongly_connected_components(self) -> List[Set[str]]:
-        # Tarjan
+
         index = 0
         indices: Dict[str, int] = {}
         low: Dict[str, int] = {}
@@ -266,36 +253,14 @@ class _Graph:
         return sccs
 
 
-# ─────────────────────────────────────────────────────────────
-# SystemIntegritySuite (unified)
-# ─────────────────────────────────────────────────────────────
-
 class SystemIntegritySuite:
-    """
-    One-stop monitoring, validation, and (optional) visualization.
 
-    Key capabilities:
-      - Live lifecycle tracking (MISSING/STALE/FRESH), MTTR, flaps, provider changes
-      - Heartbeat summaries + watchlist SLA alerts
-      - Single-pass dependency audit (orphans, duplicates, danglers, stale)
-      - Module graph validation (duplicate/missing writers, cycles)
-      - Visualization (if networkx/matplotlib available)
-      - Enhanced debug telemetry (ring buffer, stale root-cause, module hotspots)
 
-    Integrations expected (overridable on __init__):
-      • bus: InfoBus-like object with .subscribe/.unsubscribe/.get_data_freshness_report()
-             and best-effort _providers/_consumers snapshots.
-      • logger: RotatingLogger-like with info/warning/error(/debug).
-      • orchestrator: optional; if present, used for module list + metadata.
-    """
-    
-    # Singleton instance
     _singleton_instance: Optional["SystemIntegritySuite"] = None
     _singleton_lock = threading.Lock()
 
-    # ── Construction ──────────────────────────────────────────
+
     def __new__(cls, *args, **kwargs):
-        """Singleton pattern to prevent multiple instances."""
         if cls._singleton_instance is None:
             with cls._singleton_lock:
                 if cls._singleton_instance is None:
@@ -303,10 +268,9 @@ class SystemIntegritySuite:
                     instance._initialized = False  # type: ignore[attr-defined]
                     cls._singleton_instance = instance
         return cls._singleton_instance
-    
+
     @classmethod
     def get_instance(cls, **kwargs) -> "SystemIntegritySuite":
-        """Get or create the singleton instance."""
         if cls._singleton_instance is None:
             return cls(**kwargs)
         return cls._singleton_instance
@@ -319,11 +283,11 @@ class SystemIntegritySuite:
         logger: Optional[LoggerProto] = None,
         orchestrator: Any = None,
     ) -> None:
-        # Prevent re-initialization of singleton
+
         if getattr(self, "_initialized", False):
             return
-        
-        # Allow env overrides for quick toggling
+
+
         env_debug = os.getenv("SIS_DEBUG")
         cfg = config or SuiteConfig()
         if env_debug is not None:
@@ -339,97 +303,95 @@ class SystemIntegritySuite:
         )  # type: ignore[arg-type]
         self.orchestrator = orchestrator or _get_orchestrator()
 
-        # Lifecycle store
+
         self._lock = threading.RLock()
         self._lifecycle: Dict[str, KeyLifecycle] = {}
         self._recent_resolved: Deque[Tuple[float, str, float]] = deque(maxlen=200)
         self._recent_flaps: Deque[Tuple[float, str, int]] = deque(maxlen=200)
         self._provider_changes: Deque[Tuple[float, str, str, str]] = deque(maxlen=200)
 
-        # Debug telemetry
+
         self._events: Deque[Dict[str, Any]] = deque(maxlen=self.cfg.debug_ring_size)
         self._stale_index: Dict[str, Dict[str, Any]] = {}
         self._miss_index: Dict[str, Dict[str, Any]] = {}
         self._module_stats: DefaultDict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
 
-        # Live taps & heartbeat
+
         self._live_attached = False
         self._monitor_stop = threading.Event()
         self._monitor_thread: Optional[threading.Thread] = None
         self._heartbeat_interval = self.cfg.heartbeat_interval_seconds
 
-        # Defaults for taps (safe even if attach_live_taps not called yet)
+
         self._show_values = False
         self._max_preview = 160
         self._problems_only = True
         self._ignore_re: Optional[re.Pattern] = re.compile(r"^(log_|module_events/|log_metrics_)")
 
-        # Watchlist (customize as needed)
+
         self.watchlist: Set[str] = {
             "environment_config", "execution_mode", "time_risk_analysis",
             "pending_orders", "account_state", "market_state", "market_context"
         }
 
-        # Write-once keys: Keys that are intentionally set once at startup/init
-        # and are NOT expected to be refreshed. Exclude from staleness warnings.
+
         self.write_once_keys: Set[str] = {
-            # Module initialization keys (set once per module lifecycle)
+
             "preflight_report", "warmup_report", "autotune_report",
             "selftest_report", "startup_report", "system_ready",
             "enhanced_training_start", "environment_observation_size",
-            # Config keys (set once at startup)
+
             "config_update", "env_mode", "mode_config", "mode_thresholds",
             "environment_config",
-            # Initialization markers (pattern: *_initialization)
-            # These are handled by suffix matching in _is_write_once()
+
+
         }
-        # Suffixes that indicate write-once initialization keys
+
         self._write_once_suffixes: Tuple[str, ...] = (
             "_initialization", "_init", "_config", "_capabilities",
         )
 
-        # Rate limiting for BUS MISS warnings to prevent log spam
-        self._miss_warn_times: Dict[str, float] = {}  # key -> last warning time
-        self._miss_warn_interval = 60.0  # seconds between warnings per key
-        self._miss_warn_counts: Dict[str, int] = {}  # key -> suppressed count
-        self._init_time = time.time()  # Track init time for grace period
-        self._startup_grace_period = 60.0  # Suppress warnings for first 60 seconds (extended for full pipeline warmup)
-        
-        # Keys that are expected to miss on first tick (inter-module dependencies)
-        # These resolve after the first full orchestration cycle
-        self._expected_first_tick_misses: Set[str] = {
-            "expert_performance",  # StrategyArbiter provides after voting modules run
-            "committee_members",   # VotingCommitteeCoordinator provides after first process()
-            "trade_vote",          # Deprecated - use trade_vote_v2
-            "trade_vote_v2",       # VotingKernel provides after first process()
-            "consensus_score",     # ConsensusDetector provides after first process()
-            "voting_consensus",    # VotingKernel provides after first process()
-            # v4.4.0: Additional inter-stage dependencies that resolve after first cycle
-            "committee_proposal_vectors",      # CommitteeCoordinator -> ConsensusAnalyzer, CollusionDetector
-            "committee_decisions_by_instrument",  # CommitteeCoordinator -> UncertaintySampler, FinalArbiter
-            "kernel_consensus_score",          # SlimVotingKernel -> RiskAdjustedReward
-            "risk_budget",                     # Not provided by any module (uses risk_data.risk_budget_used instead)
-            "actions",                         # Training loop provides, not bus-driven
-            "observations",                    # Training loop provides, not bus-driven
-        }
-        
-        # Rate limiting for provider change warnings
-        self._provider_change_times: Dict[str, float] = {}  # key -> last warning time
-        self._provider_change_interval = 120.0  # seconds between warnings per key
-        self._provider_change_counts: Dict[str, int] = {}  # key -> suppressed count
-        
-        # Rate limiting for BUS GET BLOCKED warnings (CRITICAL: prevents log explosion)
-        self._blocked_warn_times: Dict[str, float] = {}  # key:requester -> last warning time
-        self._blocked_warn_interval = 60.0  # seconds between warnings per key:requester pair
-        self._blocked_warn_counts: Dict[str, int] = {}  # key:requester -> suppressed count
 
-        self._d("Debug enabled")  # initial debug note
+        self._miss_warn_times: Dict[str, float] = {}
+        self._miss_warn_interval = 60.0
+        self._miss_warn_counts: Dict[str, int] = {}
+        self._init_time = time.time()
+        self._startup_grace_period = 60.0
+
+
+        self._expected_first_tick_misses: Set[str] = {
+            "expert_performance",
+            "committee_members",
+            "trade_vote",
+            "trade_vote_v2",
+            "consensus_score",
+            "voting_consensus",
+
+            "committee_proposal_vectors",
+            "committee_decisions_by_instrument",
+            "kernel_consensus_score",
+            "risk_budget",
+            "actions",
+            "observations",
+        }
+
+
+        self._provider_change_times: Dict[str, float] = {}
+        self._provider_change_interval = 120.0
+        self._provider_change_counts: Dict[str, int] = {}
+
+
+        self._blocked_warn_times: Dict[str, float] = {}
+        self._blocked_warn_interval = 60.0
+        self._blocked_warn_counts: Dict[str, int] = {}
+
+        self._d("Debug enabled")
         self._i("🧭", "SystemIntegritySuite initialized")
-        
-        # Mark singleton as initialized
+
+
         self._initialized = True
 
-    # ── Internal logging helpers ──────────────────────────────
+
     def _d(self, message: str, **ctx: Any) -> None:
         if self.cfg.debug:
             try:
@@ -465,7 +427,7 @@ class SystemIntegritySuite:
         with self._lock:
             self._events.append(evt)
 
-    # ── Public debug toggles ──────────────────────────────────
+
     def enable_debug(self) -> None:
         self.cfg.debug = True
         self._d("Debug toggled ON by runtime")
@@ -474,7 +436,7 @@ class SystemIntegritySuite:
         self._d("Debug toggled OFF by runtime")
         self.cfg.debug = False
 
-    # ── Lifecycle monitor: live taps ──────────────────────────
+
     def attach_live_taps(
         self,
         *,
@@ -490,7 +452,7 @@ class SystemIntegritySuite:
         self._problems_only = problems_only
         self._ignore_re = re.compile(ignore_pattern) if ignore_pattern else None
 
-        # Subscribe to core InfoBus channels (best-effort)
+
         try:
             self.bus.subscribe("data_miss", self._on_miss)
             self.bus.subscribe("data_get_blocked", self._on_get_blocked)
@@ -521,7 +483,7 @@ class SystemIntegritySuite:
         self._live_attached = False
         self._i("🧹", "Live taps detached")
 
-    # ── Heartbeat ─────────────────────────────────────────────
+
     def start_heartbeat(self, interval_s: float = 30.0) -> None:
         if self._monitor_thread and self._monitor_thread.is_alive():
             return
@@ -549,17 +511,17 @@ class SystemIntegritySuite:
     def _heartbeat_once(self) -> None:
         now = time.time()
         freshness, providers_map, consumers_map = self._snapshot_bus()
-        # Map provider/consumer membership
+
         with self._lock:
             for k, provs in providers_map.items():
                 self._lifecycle.setdefault(k, KeyLifecycle()).providers |= set(provs)
             for k, cons in consumers_map.items():
                 self._lifecycle.setdefault(k, KeyLifecycle()).consumers |= set(cons)
 
-        # Track write-once keys separately (for summary)
+
         write_once_count = 0
 
-        # Fresh / Stale
+
         for key, meta in freshness.items():
             age = float(meta.get("age_seconds", 0.0) or 0.0)
             provider = meta.get("source") or meta.get("source_module") or meta.get("provider")
@@ -567,14 +529,14 @@ class SystemIntegritySuite:
             if age <= self.cfg.stale_age_warn_seconds:
                 self._mark_fresh(key, provider, version, now)
             else:
-                # Skip staleness warnings for write-once keys
+
                 if self._is_write_once(key):
-                    # Still mark as fresh since write-once keys are intentionally static
+
                     self._mark_fresh(key, provider, version, now)
                     write_once_count += 1
                 else:
                     self._mark_stale(key, provider, version, now)
-                    # Detailed root-cause trace for stale detected by heartbeat
+
                     consumers = sorted(list(consumers_map.get(key, [])))
                     self._note_stale(
                         key=key,
@@ -586,14 +548,14 @@ class SystemIntegritySuite:
                         requester=None,
                     )
 
-        # Missing (consumed but no provider and not in freshness)
+
         for key, consumers in consumers_map.items():
             if key not in providers_map or not providers_map[key]:
                 if key not in freshness:
                     self._mark_missing(key, "/".join(sorted(consumers)) if consumers else None, now)
                     self._note_missing(key=key, requester_hint=None, consumers=sorted(consumers))
 
-        # Summary (exclude write-once from stale count in logs)
+
         snap = self._lifecycle_snapshot()
         self._i("💓", "Heartbeat",
                  missing=len(snap["unresolved"]),
@@ -601,7 +563,7 @@ class SystemIntegritySuite:
                  fresh=len(snap["fresh"]),
                  write_once=write_once_count if write_once_count > 0 else None)
 
-        # SLA for watchlist
+
         overdue: List[Tuple[str, float]] = []
         with self._lock:
             for key in self.watchlist:
@@ -614,7 +576,7 @@ class SystemIntegritySuite:
             self._w("⏰", "Watchlist SLA breach", key=key, age=f"{age:.1f}s",
                     threshold=f"{self.cfg.resolution_warn_seconds:.1f}s")
 
-        # Escalate critically stale items
+
         criticals = self._collect_critically_stale(now)
         for entry in criticals[:10]:
             self._w("🐢", "Critically stale key",
@@ -623,12 +585,8 @@ class SystemIntegritySuite:
                     consumers=",".join(entry.get("consumers", [])) or "-",
                     last_requesters=",".join(list(entry.get("last_requesters", []))[:4]) or "-")
 
-    # ── One-shot audit & validation ───────────────────────────
+
     def validate_and_audit(self, *, title: str = "System Audit", export_path: Optional[str] = None) -> Dict[str, Any]:
-        """
-        1) Dependency audit (orphans/dups/danglers/stale + lifecycle snapshot)
-        2) Module graph validation (duplicate or missing writers, cycles)
-        """
         audit = self._scan_dependencies(title=title)
         validation = self._validate_modules()
         result = {
@@ -645,22 +603,19 @@ class SystemIntegritySuite:
                 self._e("💥", f"Failed to export report: {e}")
         return result
 
-    # ── Visualization (optional) ──────────────────────────────
+
     def visualize(self, output_path: Optional[str] = None) -> None:
-        """
-        Generate a dependency graph of providers→consumers using networkx/matplotlib if available.
-        """
         output_path = output_path or self.cfg.viz_output_path
         _, providers_map, consumers_map = self._snapshot_bus()
 
-        # Build graph
+
         if _nx and _plt:
             G = _nx.DiGraph()
             for key, providers in providers_map.items():
                 for p in providers:
-                    # draw edge: provider module -> each consumer module for that key
+
                     for c in consumers_map.get(key, []):
-                        G.add_edge(p, c)  # module-level dependency via shared key
+                        G.add_edge(p, c)
 
             _plt.figure(figsize=(12, 8))
             pos = _nx.spring_layout(G, k=1)  # type: ignore[arg-type]
@@ -675,31 +630,31 @@ class SystemIntegritySuite:
         else:
             self._w("🖼️", "Visualization skipped (networkx/matplotlib not available)")
 
-    # ── Internal: dependency audit ────────────────────────────
+
     def _scan_dependencies(self, *, title: str) -> Dict[str, Any]:
         t0 = time.time()
         freshness, providers_map, consumers_map = self._snapshot_bus()
 
-        # Orphans: consumed but no provider
+
         orphans: List[Tuple[str, List[str]]] = []
         for key, consumers in consumers_map.items():
             if not providers_map.get(key):
                 orphans.append((key, sorted(consumers)))
 
-        # Duplicates: >1 provider
+
         dups: List[Tuple[str, List[str]]] = [
             (k, sorted(list(providers)))
             for k, providers in providers_map.items()
             if len(providers) > 1
         ]
 
-        # Danglers: provided but no consumers
+
         danglers: List[Tuple[str, List[str]]] = []
         for key, provs in providers_map.items():
             if not consumers_map.get(key):
                 danglers.append((key, sorted(list(provs))))
 
-        # Stale keys
+
         stale: List[Tuple[str, Dict[str, Any]]] = []
         for key, meta in freshness.items():
             try:
@@ -708,7 +663,7 @@ class SystemIntegritySuite:
             except Exception:
                 pass
 
-        # Lifecycle slice
+
         lifecycle = self._lifecycle_snapshot()
 
         elapsed_ms = int((time.time() - t0) * 1000)
@@ -729,27 +684,20 @@ class SystemIntegritySuite:
             "generated_at": time.time(),
         }
 
-        # Log concise summary
+
         self._i("📋", "Dependency audit",
                 orphans=len(orphans), dups=len(dups),
                 danglers=len(danglers), stale=len(stale),
                 elapsed=f"{elapsed_ms}ms")
         return results
 
-    # ── Internal: module validation ───────────────────────────
-    def _validate_modules(self) -> ValidationReport:
-        """
-        Validates module dependency graph for:
-          - duplicate writers of critical keys
-          - missing writers for required keys
-          - potential cycles between modules
-        Uses orchestrator if available; otherwise best-effort static scan.
-        """
-        modules: Set[str] = set()
-        provides: DefaultDict[str, Set[str]] = defaultdict(set)  # key -> provider modules
-        requires: DefaultDict[str, Set[str]] = defaultdict(set)  # key -> consumer modules
 
-        # Preferred path: orchestrator metadata (if your project exposes it)
+    def _validate_modules(self) -> ValidationReport:
+        modules: Set[str] = set()
+        provides: DefaultDict[str, Set[str]] = defaultdict(set)
+        requires: DefaultDict[str, Set[str]] = defaultdict(set)
+
+
         if self.orchestrator and getattr(self.orchestrator, "metadata", None):
             for mname, meta in self.orchestrator.metadata.items():  # type: ignore[attr-defined]
                 modules.add(mname)
@@ -758,7 +706,7 @@ class SystemIntegritySuite:
                 for k in getattr(meta, "requires", []) or []:
                     requires[k].add(mname)
         else:
-            # Fallback: derive from InfoBus provider/consumer snapshots or reconstruct
+
             _, providers_map, consumers_map = self._snapshot_bus()
             for key, provs in providers_map.items():
                 for p in provs:
@@ -769,12 +717,12 @@ class SystemIntegritySuite:
                     modules.add(c)
                     requires[key].add(c)
 
-            # As a last resort, do a lightweight AST scan to discover module class names
+
             modules |= self._discover_module_class_names(Path(self.cfg.modules_root))
 
         report = ValidationReport(total_modules=len(modules), validated_modules=len(modules))
 
-        # Duplicate writers (critical keys only)
+
         duplicate: Dict[str, List[str]] = {}
         for key, provs in provides.items():
             if len(provs) > 1 and (key in self.cfg.critical_single_writer_keys or key.endswith(self.cfg.critical_single_writer_suffixes)):
@@ -789,7 +737,7 @@ class SystemIntegritySuite:
                 suggestion="Enforce single-writer policy or namespace outputs."
             ))
 
-        # Missing writers
+
         missing: Dict[str, List[str]] = {}
         for key, consumers in requires.items():
             if not provides.get(key):
@@ -804,7 +752,7 @@ class SystemIntegritySuite:
                 suggestion="Add a provider module or remove/soften requirement."
             ))
 
-        # Module-level graph: edges from provider module -> consumer module if any shared key
+
         if _nx:
             G = _nx.DiGraph()
             for key, provs in provides.items():
@@ -832,7 +780,7 @@ class SystemIntegritySuite:
                 suggestion="Break cycles via decoupling or bus-first handoffs."
             ))
 
-        # Score (simple penalties)
+
         score = 100.0
         for i in report.issues:
             if i.severity == "error":
@@ -851,7 +799,7 @@ class SystemIntegritySuite:
                 missing=len(report.missing_writers),
                 cycles=len(report.cycles),
                 score=f"{report.integration_score:.1f}%")
-        # Publish a tiny summary on the bus if available
+
         try:
             self.bus.set("validation/summary", {
                 "score": report.integration_score,
@@ -865,7 +813,7 @@ class SystemIntegritySuite:
 
         return report
 
-    # ── Helpers: lifecycle events ─────────────────────────────
+
     def _should_ignore(self, key: Any) -> bool:
         try:
             s = str(key or "")
@@ -874,14 +822,6 @@ class SystemIntegritySuite:
         return bool(self._ignore_re and self._ignore_re.search(s))
 
     def _is_write_once(self, key: str) -> bool:
-        """Check if a key is a write-once key that shouldn't be flagged as stale.
-        
-        Write-once keys are intentionally set once at initialization/startup
-        and are NOT expected to refresh. Examples:
-          - Module initialization markers (*_initialization)
-          - Startup reports (preflight_report, warmup_report, etc.)
-          - Static config keys (mode_config, environment_config)
-        """
         if key in self.write_once_keys:
             return True
         for suffix in self._write_once_suffixes:
@@ -905,16 +845,16 @@ class SystemIntegritySuite:
         self._note_missing(key=str(key), requester_hint=requester, consumers=None)
         if requester:
             self._module_stats[requester]["miss"] += 1
-        
-        # Skip logging during startup grace period
+
+
         if now - self._init_time < self._startup_grace_period:
             return
-        
-        # Skip expected first-tick misses (these are normal for first run)
+
+
         if key in self._expected_first_tick_misses:
             return
-        
-        # Rate-limited warning to prevent log spam
+
+
         miss_key = f"{key}:{requester}"
         last_warn = self._miss_warn_times.get(miss_key, 0.0)
         if now - last_warn >= self._miss_warn_interval:
@@ -971,16 +911,16 @@ class SystemIntegritySuite:
             self._module_stats[requester]["get_blocked"] += 1
         if provider:
             self._module_stats[provider]["served_stale"] += 1
-        
-        # Skip logging during startup grace period
+
+
         if now - self._init_time < self._startup_grace_period:
             return
-        
-        # Skip write-once keys (they're intentionally static)
+
+
         if self._is_write_once(str(key)):
             return
-        
-        # Rate-limited warning to prevent log spam (CRITICAL FIX)
+
+
         blocked_key = f"{key}:{requester}"
         last_warn = self._blocked_warn_times.get(blocked_key, 0.0)
         if now - last_warn >= self._blocked_warn_interval:
@@ -1027,7 +967,7 @@ class SystemIntegritySuite:
                 last_error=(str(last_error)[:160] if last_error else None),
             )
         except Exception:
-            # Fallback to minimal message
+
             self._e("🚫", "MODULE DISABLED", module=evt.get("module"),
                     failures=evt.get("failures"), consecutive=evt.get("consecutive_failures"))
 
@@ -1037,7 +977,7 @@ class SystemIntegritySuite:
             self._module_stats[module]["enabled"] += 1
         self._i("✅", "MODULE ENABLED", module=module)
 
-    # ── Helpers: lifecycle transitions ────────────────────────
+
     def _get_lc(self, key: str) -> KeyLifecycle:
         with self._lock:
             return self._lifecycle.setdefault(key, KeyLifecycle())
@@ -1048,12 +988,12 @@ class SystemIntegritySuite:
             old = lc.status
             lc.last_event_ts = now
 
-            # Provider change tracking with rate limiting
+
             if provider and provider != lc.last_provider and lc.last_provider is not None:
                 lc.provider_changes += 1
                 self._provider_changes.append((now, key, lc.last_provider, provider))
-                
-                # Rate-limited logging for provider changes
+
+
                 last_warn = self._provider_change_times.get(key, 0.0)
                 if now - last_warn >= self._provider_change_interval:
                     suppressed = self._provider_change_counts.get(key, 0)
@@ -1093,7 +1033,7 @@ class SystemIntegritySuite:
         lc.miss_count += 1
         self._transition(key, "MISSING", now, None, None)
         self._record_event("miss", key=key, requester=requester_hint)
-        # Only log "Tracking missing key" once per key, and skip during grace period
+
         if lc.miss_count == 1 and (now - self._init_time >= self._startup_grace_period):
             self._w("🕵️", "Tracking missing key", key=key, requester=requester_hint or "unknown")
 
@@ -1145,20 +1085,13 @@ class SystemIntegritySuite:
                 "watchlist": sorted(list(self.watchlist)),
             }
 
-    # ── Helpers: data snapshots & discovery ───────────────────
+
     def _snapshot_bus(self) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Set[str]], Dict[str, Set[str]]]:
-        """
-        Return (freshness, providers_map, consumers_map) with multiple fallbacks:
-          1) Native bus maps (_providers/_consumers) if present & non-empty
-          2) A bus method called get_provider_consumer_snapshot() if your bus exposes one
-          3) Reconstruction via orchestrator.metadata + bus.get_providers(key)
-          4) Final empty maps (no crash)
-        """
         freshness: Dict[str, Dict[str, Any]] = {}
         providers_map: Dict[str, Set[str]] = {}
         consumers_map: Dict[str, Set[str]] = {}
 
-        # Freshness (best-effort)
+
         try:
             fr = self.bus.get_data_freshness_report()
             if isinstance(fr, dict):
@@ -1166,7 +1099,7 @@ class SystemIntegritySuite:
         except Exception:
             freshness = {}
 
-        # 1) Native bus snapshots (_providers/_consumers)
+
         try:
             _p = getattr(self.bus, "_providers", {}) or {}
             _c = getattr(self.bus, "_consumers", {}) or {}
@@ -1177,10 +1110,10 @@ class SystemIntegritySuite:
         except Exception:
             pass
 
-        # 2) Custom bus API (optional): get_provider_consumer_snapshot()
+
         try:
             if hasattr(self.bus, "get_provider_consumer_snapshot"):
-                snap = self.bus.get_provider_consumer_snapshot()  # expected: {"providers": {k:[mods]}, "consumers": {k:[mods]}}
+                snap = self.bus.get_provider_consumer_snapshot()
                 if isinstance(snap, dict):
                     p = snap.get("providers") or {}
                     c = snap.get("consumers") or {}
@@ -1191,7 +1124,7 @@ class SystemIntegritySuite:
         except Exception:
             pass
 
-        # 3) Reconstruct from orchestrator metadata + bus.get_providers()
+
         try:
             pm, cm = self._reconstruct_maps_from_orchestrator()
             if pm or cm:
@@ -1199,18 +1132,14 @@ class SystemIntegritySuite:
         except Exception:
             pass
 
-        # 4) Nothing available – return empty maps (suite stays quiet but alive)
+
         return freshness, {}, {}
 
     def _reconstruct_maps_from_orchestrator(self) -> Tuple[Dict[str, Set[str]], Dict[str, Set[str]]]:
-        """
-        Build providers/consumers maps using orchestrator.metadata and bus.get_providers(key).
-        This lets the suite work even when the bus doesn't expose internal maps.
-        """
         providers_map: Dict[str, Set[str]] = defaultdict(set)
         consumers_map: Dict[str, Set[str]] = defaultdict(set)
 
-        # Prefer orchestrator if available
+
         meta = getattr(self.orchestrator, "metadata", None)
         if not meta or not hasattr(self.bus, "get_providers"):
             return {}, {}
@@ -1219,24 +1148,24 @@ class SystemIntegritySuite:
             reqs = (getattr(m, "requires", []) or [])
             provs = (getattr(m, "provides", []) or [])
 
-            # Consumers: this module requires these keys
+
             for key in reqs:
                 consumers_map[key].add(module_name)
 
-                # Providers: ask the bus who writes this key (if any)
+
                 try:
                     writers = self.bus.get_providers(key) or []
                     for w in writers:
                         providers_map[key].add(str(w))
                 except Exception:
-                    # If the bus can't answer yet, we still have valid consumers; providers may remain empty for now.
+
                     pass
 
-            # Providers (declared): even if bus can't resolve, at least register declared writers
+
             for key in provs:
                 providers_map[key].add(module_name)
 
-        # Cast defaultdicts to plain dicts for safety
+
         return dict(providers_map), dict(consumers_map)
 
     def _discover_module_class_names(self, root: Path) -> Set[str]:
@@ -1252,7 +1181,7 @@ class SystemIntegritySuite:
                 continue
             for node in ast.walk(tree):
                 if isinstance(node, ast.ClassDef):
-                    # Heuristic: classes that declare process()/get_state()/set_state()
+
                     has_process = False; has_support = False
                     for b in node.body:
                         if isinstance(b, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -1264,16 +1193,15 @@ class SystemIntegritySuite:
                         names.add(node.name)
         return names
 
-    # ── Diagnostics: quick debug snapshot ─────────────────────
+
     def debug_dump(self) -> Dict[str, Any]:
-        """One-shot, human-readable snapshot counts; prints to logger and returns the data."""
         fr, pm, cm = self._snapshot_bus()
-        
-        # Top hotspots (modules causing/experiencing issues)
+
+
         miss_hot = sorted(((m, s.get("miss", 0)) for m, s in self._module_stats.items()), key=lambda x: x[1], reverse=True)[:5]
         block_hot = sorted(((m, s.get("get_blocked", 0)) for m, s in self._module_stats.items()), key=lambda x: x[1], reverse=True)[:5]
         stale_served = sorted(((m, s.get("served_stale", 0)) for m, s in self._module_stats.items()), key=lambda x: x[1], reverse=True)[:5]
-        
+
         data: Dict[str, Any] = {
             "freshness_keys": len(fr),
             "provider_keys": len(pm),
@@ -1292,29 +1220,25 @@ class SystemIntegritySuite:
         self._i("🔎", "Debug dump", **data)
         return data
 
-    # ── Health monitoring interface (for HealthMonitor integration) ──
+
     def get_health_status(self) -> Dict[str, Any]:
-        """
-        Returns health status compatible with HealthMonitor.
-        Reports on suite's own operational health and system integrity metrics.
-        """
         try:
-            # Get lifecycle snapshot
+
             lifecycle = self._lifecycle_snapshot()
             fr, pm, cm = self._snapshot_bus()
 
-            # Count issues
+
             unresolved_count = len(lifecycle.get('unresolved', []))
             stale_count = len(lifecycle.get('stale', []))
             fresh_count = len(lifecycle.get('fresh', []))
             total_tracked = len(self._lifecycle)
 
-            # Determine health status
+
             status = 'OK'
             is_healthy = True
             issues = []
 
-            # Check for critical issues
+
             if unresolved_count > 10:
                 status = 'DEGRADED'
                 is_healthy = False
@@ -1325,17 +1249,17 @@ class SystemIntegritySuite:
                     status = 'WARNING'
                 issues.append(f"{stale_count} stale data keys")
 
-            # Check if monitoring is active
+
             if self._monitor_thread and not self._monitor_thread.is_alive():
                 status = 'DEGRADED'
                 is_healthy = False
                 issues.append("Heartbeat monitor not running")
 
-            # Check if taps are attached
+
             if not self._live_attached:
                 issues.append("Live taps not attached (reduced observability)")
 
-            # Check for watchlist violations
+
             watchlist_violations = 0
             with self._lock:
                 for key in self.watchlist:
@@ -1347,7 +1271,7 @@ class SystemIntegritySuite:
                 status = 'WARNING'
                 issues.append(f"{watchlist_violations}/{len(self.watchlist)} watchlist keys not fresh")
 
-            # Top offenders summary
+
             hotspots = self.debug_dump().get("hotspots", {}) if self.cfg.debug else None
 
             return {
@@ -1384,12 +1308,12 @@ class SystemIntegritySuite:
                 'last_error': str(e)
             }
 
-    # ── Enhanced debug analytics (stale & miss RCA) ───────────
+
     def _note_stale(
         self,
         *,
         key: str,
-        cause: str,                      # 'heartbeat_age' | 'get_blocked'
+        cause: str,
         provider: Optional[str],
         version: Any,
         age: Optional[float],
@@ -1429,7 +1353,7 @@ class SystemIntegritySuite:
         self._record_event("stale_trace", key=key, cause=cause, provider=provider,
                            requester=requester, age=age, reason=reason)
 
-        # Optional chatty debug line
+
         if self.cfg.debug:
             self._d("Stale trace",
                     key=key, cause=cause, provider=provider or "unknown",
@@ -1479,7 +1403,7 @@ class SystemIntegritySuite:
             if top_n is not None:
                 items = items[:top_n]
 
-            # Group by provider and by requester (hotspots)
+
             by_provider: DefaultDict[str, int] = defaultdict(int)
             by_requester: DefaultDict[str, int] = defaultdict(int)
             for it in items:
@@ -1498,7 +1422,6 @@ class SystemIntegritySuite:
             return summary
 
     def export_debug(self, path: str) -> None:
-        """Export events, stale RCA, misses, and module stats for offline forensics."""
         try:
             Path(path).parent.mkdir(parents=True, exist_ok=True)
             out = {
@@ -1541,12 +1464,8 @@ class SystemIntegritySuite:
         return out
 
 
-# ─────────────────────────────────────────────────────────────
-# CLI demo (optional): python monitoring_unified.py
-# ─────────────────────────────────────────────────────────────
-
 if __name__ == "__main__":
-    # Try to force a real bus if available in this process
+
     try:
         from modules.utils.info_bus import InfoBusManager  # type: ignore
         bus = InfoBusManager.get_instance()
@@ -1554,19 +1473,19 @@ if __name__ == "__main__":
         bus = _get_bus()
 
     suite = SystemIntegritySuite(bus=bus)
-    # Example: toggle debug quickly via env SIS_DEBUG=1
+
     suite.attach_live_taps(ignore_pattern=None, problems_only=False, show_values=False)
     suite.start_heartbeat(interval_s=suite.cfg.heartbeat_interval_seconds)
     try:
-        time.sleep(1.0)  # let providers register if system is booting
+        time.sleep(1.0)
         out = suite.validate_and_audit(export_path="logs/integrity/audit_validation.json")
         print("AUDIT SUMMARY:", json.dumps(out["audit"]["summary"], indent=2))
         print("VALIDATION:", json.dumps(out["validation"], indent=2))
         print("DEBUG:", suite.debug_dump())
-        # Export richer debug bundle
+
         suite.export_debug("logs/integrity/debug_bundle.json")
-        suite.visualize()  # requires networkx + matplotlib
-        # Optional: print top stale root causes
+        suite.visualize()
+
         if suite.cfg.debug:
             print("STALE REPORT:", json.dumps(suite.get_stale_report(top_n=20), indent=2))
     finally:

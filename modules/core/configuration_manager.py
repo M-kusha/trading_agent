@@ -1,17 +1,4 @@
 #!/usr/bin/env python3
-"""
-Configuration Manager for SmartInfoBus System
-Centralized configuration loading and distribution to modules
-
-Improvements over previous version:
-- Thread-safe YAML loading with per-instance loader and proper base path for nested !include
-- Optional include root-guard to keep includes under config/
-- Recursive secret redaction (nested dicts/lists)
-- Robust validator arity detection via inspect.signature
-- Monotonic time for watcher cadence (immune to wall-clock changes)
-- Nested ENV overrides: PREFIX__A__B=value -> config['a']['b'] = parsed
-- Minor hardening and clearer logging around reload events
-"""
 
 from __future__ import annotations
 
@@ -34,13 +21,10 @@ from yaml.loader import SafeLoader
 from modules.utils.audit_utils import RotatingLogger, format_operator_message
 
 _INCLUDE_MAX_DEPTH = 32
-_MAX_INCLUDE_BYTES = 5 * 1024 * 1024  # 5 MB guard for includes
-# ─────────────────────────────────────────────────────────────
-# YAML helpers: deep-merge, env interpolation, custom tags
-# ─────────────────────────────────────────────────────────────
+_MAX_INCLUDE_BYTES = 5 * 1024 * 1024
+
 
 def _deep_merge(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:
-    """Non-destructive deep merge: return new dict of a←b (b overrides a)."""
     if not isinstance(a, dict) or not isinstance(b, dict):
         return copy.deepcopy(b)
     out = copy.deepcopy(a)
@@ -52,7 +36,6 @@ def _deep_merge(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 def _interpolate_env(value: Any) -> Any:
-    """Interpolates ${ENV[:default]} tokens in strings recursively."""
     if isinstance(value, str):
         out = []
         i = 0
@@ -80,12 +63,11 @@ def _interpolate_env(value: Any) -> Any:
         return {k: _interpolate_env(v) for k, v in value.items()}
     return value
 
-# Custom YAML loader with per-instance .name to support nested relative includes
+
 class _EnvLoader(SafeLoader):
     pass
 
 def _safe_read_yaml_with_loader(path: Path) -> Any:
-    """Thread-safe YAML load with per-instance loader and multi-encoding strategy."""
     encodings = ('utf-8', 'utf-8-sig', 'latin-1', 'cp1252')
     last_exc = None
     for enc in encodings:
@@ -104,20 +86,14 @@ def _safe_read_yaml_with_loader(path: Path) -> Any:
     raise last_exc or RuntimeError(f"YAML load failed for {path}")
 
 def _yaml_include(loader: _EnvLoader, node):
-    """!include path/to/file.yaml (relative to the including file).
-    - Enforces includes stay under config/ if that root exists.
-    - Only allows .yaml/.yml.
-    - Guards against cyclic includes and excessive depth.
-    - Rejects very large files by size.
-    """
     base = Path(getattr(loader, 'name', '.') or '.').parent
     raw = loader.construct_scalar(node)
     path = Path(raw)
 
-    # Resolve target
+
     target = (path if path.is_absolute() else (base / path)).resolve(strict=True)
 
-    # Enforce config/ root if present
+
     config_root = Path('config').resolve()
     if config_root.exists():
         try:
@@ -125,18 +101,18 @@ def _yaml_include(loader: _EnvLoader, node):
         except ValueError:
             raise ValueError(f"Blocked include outside config root: {target}")
 
-    # Only YAML files
+
     if target.suffix.lower() not in {'.yaml', '.yml'}:
         raise ValueError(f"Blocked include with non-YAML extension: {target}")
 
-    # Size guard
+
     try:
         if target.stat().st_size > _MAX_INCLUDE_BYTES:
             raise ValueError(f"Blocked include larger than {_MAX_INCLUDE_BYTES} bytes: {target}")
     except FileNotFoundError:
         raise
 
-    # Cycle/Depth protection (per-loader stack)
+
     stack = getattr(loader, "_include_stack", None)
     if stack is None:
         stack = []
@@ -157,7 +133,6 @@ def _yaml_include(loader: _EnvLoader, node):
 
 
 def _yaml_env(loader: _EnvLoader, node):
-    """!env VAR[:default] — returns environment variable or default."""
     token = loader.construct_scalar(node)
     if ':' in token:
         var, default = token.split(':', 1)
@@ -168,42 +143,34 @@ def _yaml_env(loader: _EnvLoader, node):
 _EnvLoader.add_constructor('!include', _yaml_include)
 _EnvLoader.add_constructor('!env', _yaml_env)
 
-# ─────────────────────────────────────────────────────────────
 
 @dataclass
 class ModuleConfigSpec:
-    """Configuration specification for a module."""
     name: str
     category: str
-    config_section: str  # dot-path inside system config
+    config_section: str
     default_config: Dict[str, Any] = field(default_factory=dict)
     required_keys: List[str] = field(default_factory=list)
-    # validator can be Callable[[Any], bool] OR Callable[[Any, Dict[str, Any]], bool]
+
     validation_rules: Dict[str, Callable] = field(default_factory=dict)
-    # optional post-processor: Callable[[Dict[str, Any]], Dict[str, Any]]
+
     postprocess: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None
-    # optional env prefix for overrides (e.g., SIB_PPOAGENT__LEARNING_RATE)
+
     env_prefix: Optional[str] = None
-    # versioning (for migrations)
+
     schema_version: str = "1.0"
 
 class ConfigurationManager:
-    """
-    Production-grade configuration manager for SmartInfoBus system.
-    Loads configurations from YAML files and distributes to modules.
-    """
 
     _instance: Optional['ConfigurationManager'] = None
     _lock = threading.Lock()
-    
 
-    # keys that look like secrets and should be redacted when logging
+
     _SECRET_KEYS = {'password', 'passwd', 'token', 'api_key', 'secret', 'bearer', 'client_secret'}
 
     def __init__(self):
-        """Initialize configuration manager"""
 
-        # Configuration file paths (primary + overlays)
+
         self.config_paths = {
             'system': Path('config/system_config.yaml'),
             'system_local': Path('config/system_config.local.yaml'),
@@ -212,29 +179,29 @@ class ConfigurationManager:
             'explainability': Path('config/explainability_standards.yaml')
         }
 
-        # Loaded configurations
+
         self.configs: Dict[str, Dict[str, Any]] = {}
         self.module_configs: Dict[str, Dict[str, Any]] = {}
         self._state_lock = threading.RLock()
-        # Module specifications
+
         self.module_specs: Dict[str, ModuleConfigSpec] = {}
 
-        # Configuration watchers
+
         self.config_watchers: List[Callable[[str, Dict[str, Any], Dict[str, Any]], None]] = []
         self.module_watchers: Dict[str, List[Callable[[str, Dict[str, Any], Dict[str, Any]], None]]] = defaultdict(list)
 
-        # File monitoring
+
         self.file_timestamps: Dict[str, float] = {}
         self.monitoring_active = False
         self.monitor_thread: Optional[threading.Thread] = None
         self._reload_events: "queue.Queue[Tuple[str, Path]]" = queue.Queue()
-        self._debounce_ms = 400  # collapse bursty writes
+        self._debounce_ms = 400
 
-        # Snapshots + hashing
+
         self._last_snapshot_hash: Dict[str, str] = {}
         self._module_runtime_overrides: Dict[str, Dict[str, Any]] = {}
 
-        # Setup logging
+
         self.logger = RotatingLogger(
             name="ConfigurationManager",
             log_path="logs/config/configuration_manager.log",
@@ -243,16 +210,16 @@ class ConfigurationManager:
             plain_english=True
         )
 
-        # Bus integration for config_update publishing
+
         from modules.utils.info_bus import InfoBusManager
         self.bus = InfoBusManager.get_instance()
         try:
             self.bus.register_provider("ConfigurationManager", ["config_update"])
         except Exception:
-            # Already registered or bus not ready — keep going
+
             pass
 
-        # Initialize
+
         self._initialize_module_specs()
         self._load_all_configurations(broadcast="initial_load")
 
@@ -266,30 +233,19 @@ class ConfigurationManager:
             )
         )
 
-    # ─────────────────────────────────────────────────────────
-    # Singleton
-    # ─────────────────────────────────────────────────────────
+
     @classmethod
     def get_instance(cls) -> 'ConfigurationManager':
-        """Get singleton instance"""
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
                     cls._instance = cls()
         return cls._instance
 
-    # ─────────────────────────────────────────────────────────
-    # Specs
-    # ─────────────────────────────────────────────────────────
+
     def _initialize_module_specs(self):
-        """Initialize module configuration specifications (defaults)."""
-        # NOTE: unchanged content except for stylistic/logging harmonization
-        # (kept identical to preserve your existing behavior)
-        # --- BEGIN your existing specs block ---
-        # Market Analysis Modules
 
 
-        # Strategy Modules
         self.module_specs['StrategyGenomePool'] = ModuleConfigSpec(
             name='StrategyGenomePool',
             category='strategy',
@@ -308,7 +264,7 @@ class ConfigurationManager:
             }
         )
 
-        # Risk Management Modules
+
         self.module_specs['RiskManager'] = ModuleConfigSpec(
             name='RiskManager',
             category='risk',
@@ -326,12 +282,12 @@ class ConfigurationManager:
             }
         )
 
-        # Meta Learning Modules
+
         self.module_specs['PPOAgent'] = ModuleConfigSpec(
             name='PPOAgent',
             category='meta',
-            # PPOAgentShell is registered under the "PPOAgent" contract name.
-            # System config lives at modules.PPOAgent.config (MetaRLController is deprecated).
+
+
             config_section='modules.PPOAgent.config',
             default_config={
                 'learning_rate': 0.0003,
@@ -346,7 +302,7 @@ class ConfigurationManager:
             }
         )
 
-        # Additional Risk Management Modules
+
         self.module_specs['DynamicRiskController'] = ModuleConfigSpec(
             name='DynamicRiskController',
             category='risk',
@@ -502,7 +458,6 @@ class ConfigurationManager:
             }
         )
 
-        # Voting System Modules
 
         self.module_specs['AlternativeRealitySampler'] = ModuleConfigSpec(
             name='AlternativeRealitySampler',
@@ -524,10 +479,6 @@ class ConfigurationManager:
         )
 
 
-
-
-
-        # Strategy Modules
         self.module_specs['BiasAuditor'] = ModuleConfigSpec(
             name='BiasAuditor',
             category='strategy',
@@ -655,7 +606,7 @@ class ConfigurationManager:
             }
         )
 
-        # Meta System Modules
+
         self.module_specs['MetaAgent'] = ModuleConfigSpec(
             name='MetaAgent',
             category='meta',
@@ -714,9 +665,7 @@ class ConfigurationManager:
             }
         )
 
-        # Memory System
 
-        # External Data Modules
         self.module_specs['SessionManager'] = ModuleConfigSpec(
             name='SessionManager',
             category='external',
@@ -755,7 +704,7 @@ class ConfigurationManager:
             }
         )
 
-        # Execution System
+
         self.module_specs['Executor'] = ModuleConfigSpec(
             name='Executor',
             category='executor',
@@ -774,7 +723,7 @@ class ConfigurationManager:
             }
         )
 
-        # Position Management
+
         self.module_specs['PositionManager'] = ModuleConfigSpec(
             name='PositionManager',
             category='position',
@@ -793,7 +742,7 @@ class ConfigurationManager:
             }
         )
 
-        # Trading Modes
+
         self.module_specs['TradingModeManager'] = ModuleConfigSpec(
             name='TradingModeManager',
             category='trading_modes',
@@ -811,7 +760,7 @@ class ConfigurationManager:
             }
         )
 
-        # Reward System
+
         self.module_specs['RiskAdjustedReward'] = ModuleConfigSpec(
             name='RiskAdjustedReward',
             category='reward',
@@ -830,7 +779,7 @@ class ConfigurationManager:
             }
         )
 
-        # Auditing Modules
+
         self.module_specs['AuditingCoordinator'] = ModuleConfigSpec(
             name='AuditingCoordinator',
             category='auditing',
@@ -883,8 +832,6 @@ class ConfigurationManager:
             }
         )
 
-        # Features Modules
-
 
         self.module_specs['FractalRegimeConfirmation'] = ModuleConfigSpec(
             name='FractalRegimeConfirmation',
@@ -936,7 +883,7 @@ class ConfigurationManager:
             }
         )
 
-        # Missing Modules from Log Warnings
+
         self.module_specs['NewsSentimentModule'] = ModuleConfigSpec(
             name='NewsSentimentModule',
             category='external',
@@ -1056,8 +1003,6 @@ class ConfigurationManager:
             }
         )
 
-        # Missing modules from contracts.py
-
 
         self.module_specs['TradeMapVisualizer'] = ModuleConfigSpec(
             name='TradeMapVisualizer',
@@ -1078,25 +1023,10 @@ class ConfigurationManager:
             }
         )
 
-        # New Modular Voting System Components
-        # These are the slim/focused versions used in the new voting pipeline
-
-
-
-
-
-
-
-
-
-
-
-        # --- END your existing specs block ---
 
         self.logger.info(f"Initialized {len(self.module_specs)} module specifications")
 
     def register_module_spec(self, spec: ModuleConfigSpec):
-        """Register or update a module specification and build its config."""
         self.module_specs[spec.name] = spec
         try:
             module_config = self._extract_module_config(spec)
@@ -1107,20 +1037,15 @@ class ConfigurationManager:
             self.module_configs[spec.name] = spec.default_config.copy()
 
     def register_module_specs(self, specs: List[ModuleConfigSpec]):
-        """Bulk register multiple specs."""
         for s in specs:
             self.register_module_spec(s)
 
-    # ─────────────────────────────────────────────────────────
-    # Loading and building
-    # ─────────────────────────────────────────────────────────
+
     def _load_yaml_any(self, path: Path) -> Dict[str, Any]:
-        """Load YAML with custom loader + env interpolation (thread-safe)."""
         data = _safe_read_yaml_with_loader(path)
         return data if isinstance(data, dict) else {}
 
     def _load_configuration_file(self, name: str, path: Path, optional: bool = False):
-        """Load a single configuration file."""
         try:
             if not path.exists():
                 if not optional:
@@ -1137,15 +1062,12 @@ class ConfigurationManager:
             self.configs[name] = {}
 
     def _load_all_configurations(self, *, broadcast: Optional[str] = None):
-        """Load base + overlays, interpolate env, rebuild module configs.
-        If `broadcast` is provided, publish a config_update with that reason.
-        """
-        # Base files
+
         self._load_configuration_file('system', self.config_paths['system'])
-        # Optional overlays
+
         self._load_configuration_file('system_local', self.config_paths['system_local'], optional=True)
 
-        # Overlays: config/system_config.d/*.yaml
+
         merged_dir = {}
         if self.config_paths['system_dir'].exists():
             for extra in sorted(glob.glob(str(self.config_paths['system_dir'] / "*.yaml"))):
@@ -1153,31 +1075,31 @@ class ConfigurationManager:
                 self._load_configuration_file(name, Path(extra), optional=True)
                 merged_dir = _deep_merge(merged_dir, self.configs.get(name, {}))
 
-        # Merge overlay precedence: base <- dir/*.yaml <- local
+
         sys_base = self.configs.get('system', {})
         sys_dir = merged_dir
         sys_local = self.configs.get('system_local', {})
         system_final = _deep_merge(_deep_merge(sys_base, sys_dir), sys_local)
 
-        # Risk + explainability (simple load)
+
         self._load_configuration_file('risk', self.config_paths['risk'], optional=True)
         self._load_configuration_file('explainability', self.config_paths['explainability'], optional=True)
 
-        # Interpolate env & store
+
         system_final = _interpolate_env(system_final)
         self.configs['system'] = system_final
 
-        # Build module-specific configurations
+
         self._build_module_configurations()
 
-        # Record snapshot hashes
+
         self._hash_and_snapshot('system', system_final)
         if 'risk' in self.configs:
             self._hash_and_snapshot('risk', self.configs['risk'])
         if 'explainability' in self.configs:
             self._hash_and_snapshot('explainability', self.configs['explainability'])
 
-        # Optionally broadcast
+
         if broadcast:
             self._publish_config_update(broadcast)
 
@@ -1187,14 +1109,14 @@ class ConfigurationManager:
             data = json.dumps(payload, sort_keys=True, separators=(',', ':')).encode('utf-8')
             h = hashlib.sha256(data).hexdigest()
             self._last_snapshot_hash[name] = h
-            # Write lightweight snapshot occasionally
+
             snap_dir = Path("logs/config/snapshots"); snap_dir.mkdir(parents=True, exist_ok=True)
             with open(snap_dir / f"{name}.json", "w", encoding="utf-8") as f:
                 f.write(json.dumps(payload, indent=2, ensure_ascii=False))
         except Exception as e:
             self.logger.warning(f"Snapshot failed for {name}: {e}")
 
-    # ---------- ENV overrides (nested) ----------
+
     @staticmethod
     def _set_nested(config: Dict[str, Any], path: List[str], value: Any):
         cur = config
@@ -1206,7 +1128,6 @@ class ConfigurationManager:
 
     @staticmethod
     def _apply_env_overrides(config: Dict[str, Any], prefix: str) -> Dict[str, Any]:
-        """Apply nested env overrides: PREFIX__A__B=value -> config['a']['b']=parsed."""
         if not prefix:
             return config
         pre = prefix.upper().rstrip('_') + '__'
@@ -1227,13 +1148,12 @@ class ConfigurationManager:
         return config
 
     def _build_module_configurations(self):
-        """Build module-specific configurations from loaded YAML files + runtime overrides."""
         with self._state_lock:
             built: Dict[str, Dict[str, Any]] = {}
             for module_name, spec in self.module_specs.items():
                 try:
                     module_config = self._extract_module_config(spec)
-                    # Runtime overrides (e.g., tests or interactive changes)
+
                     if module_name in self._module_runtime_overrides:
                         module_config = _deep_merge(module_config, self._module_runtime_overrides[module_name])
                     built[module_name] = module_config
@@ -1242,7 +1162,7 @@ class ConfigurationManager:
                     self.logger.error(f"Failed to build config for {module_name}: {e}")
                     built[module_name] = spec.default_config.copy()
 
-            # Diff & notify watchers
+
             old = self.module_configs
             self.module_configs = built
             for module_name, callbacks in self.module_watchers.items():
@@ -1257,10 +1177,9 @@ class ConfigurationManager:
 
 
     def _extract_module_config(self, spec: ModuleConfigSpec) -> Dict[str, Any]:
-        """Extract configuration for a specific module."""
         config = copy.deepcopy(spec.default_config)
 
-        # 1) from system config (dot-path)
+
         sys_cfg = self.configs.get('system', {})
         current: Any = sys_cfg
         for part in spec.config_section.split('.'):
@@ -1272,7 +1191,7 @@ class ConfigurationManager:
         if current and isinstance(current, dict):
             config = _deep_merge(config, current)
 
-        # 2) category-level standards from explainability
+
         expl = self.configs.get('explainability', {})
         if isinstance(expl, dict):
             module_standards = expl.get('module_standards', {})
@@ -1286,11 +1205,11 @@ class ConfigurationManager:
                     }
                     config = _deep_merge(config, explain_bits)
 
-        # 3) risk overlays if module is risk
+
         if spec.category == 'risk':
             risk_cfg = self.configs.get('risk', {})
             if isinstance(risk_cfg, dict):
-                # Apply global risk limits and controls
+
                 global_risk = {
                     'risk_controls': risk_cfg.get('controls', {}),
                     'risk_limits': risk_cfg.get('limits', {}),
@@ -1298,19 +1217,19 @@ class ConfigurationManager:
                 }
                 config = _deep_merge(config, global_risk)
 
-                # Apply module-specific risk overrides
+
                 risk_modules = risk_cfg.get('modules', {})
                 if spec.name in risk_modules:
                     config = _deep_merge(config, risk_modules[spec.name])
 
-        # 4) Env overrides by prefix (flat + nested)
+
         if spec.env_prefix:
             config = self._apply_env_overrides(config, spec.env_prefix)
 
-        # Validate
+
         self._validate_module_config(spec, config)
 
-        # Postprocess
+
         if spec.postprocess:
             try:
                 config = spec.postprocess(copy.deepcopy(config))
@@ -1320,18 +1239,17 @@ class ConfigurationManager:
         return config
 
     def _validate_module_config(self, spec: ModuleConfigSpec, config: Dict[str, Any]):
-        """Validate module configuration."""
-        # Schema/version check (optional)
+
         cfg_version = str(config.get('_schema_version', spec.schema_version))
         if cfg_version != spec.schema_version:
             self.logger.warning(f"{spec.name}: schema version mismatch (cfg={cfg_version}, expected={spec.schema_version})")
 
-        # Required keys
+
         for required_key in spec.required_keys:
             if required_key not in config:
                 raise ValueError(f"Missing required key '{required_key}' for {spec.name}")
 
-        # Validation rules (robust arity detection)
+
         for key, validator in spec.validation_rules.items():
             if key in config:
                 try:
@@ -1349,46 +1267,34 @@ class ConfigurationManager:
                 if not ok:
                     raise ValueError(f"Validation failed for {spec.name}.{key}: {config[key]}")
 
-    # ─────────────────────────────────────────────────────────
-    # Public getters
-    # ─────────────────────────────────────────────────────────
+
     def get_module_config(self, module_name: str) -> Dict[str, Any]:
-        """Get configuration for a specific module (copy)."""
         if module_name in self.module_configs:
             return copy.deepcopy(self.module_configs[module_name])
         self.logger.warning(f"No configuration found for module: {module_name}")
         return {}
 
     def get_system_config(self) -> Dict[str, Any]:
-        """Get system-wide configuration."""
         return copy.deepcopy(self.configs.get('system', {}))
 
     def get_risk_policy(self) -> Dict[str, Any]:
-        """Get risk policy configuration."""
         return copy.deepcopy(self.configs.get('risk', {}))
 
     def get_explainability_standards(self) -> Dict[str, Any]:
-        """Get explainability standards."""
         return copy.deepcopy(self.configs.get('explainability', {}))
 
     def get_execution_config(self) -> Dict[str, Any]:
-        """Get execution configuration for ModuleOrchestrator."""
         return self.get_system_config().get('execution', {})
 
     def get_module_registry(self) -> Dict[str, Any]:
-        """Get module registry configuration."""
         return self.get_system_config().get('modules', {})
 
     def _publish_config_update(self, reason: str, changed: Optional[List[str]] = None) -> None:
-        """
-        Publish a consolidated configuration update to the InfoBus so the Orchestrator
-        (and anything else) can hot-apply without polling files.
-        """
         try:
             payload = {
                 "timestamp": time.time(),
-                "reason": reason,                      # e.g., "initial_load" | "reload"
-                "changed_roots": changed or [],        # which roots changed, if known
+                "reason": reason,
+                "changed_roots": changed or [],
                 "system_hash": self._last_snapshot_hash.get("system"),
                 "risk_hash": self._last_snapshot_hash.get("risk"),
                 "explainability_hash": self._last_snapshot_hash.get("explainability"),
@@ -1407,24 +1313,18 @@ class ConfigurationManager:
             self.logger.debug(f"config_update publish failed: {e}")
 
     def get_persistence_config(self) -> Dict[str, Any]:
-        """Get persistence configuration."""
         return self.get_system_config().get('persistence', {})
 
     def get_hot_reload_config(self) -> Dict[str, Any]:
-        """Get hot reload configuration."""
         return self.get_system_config().get('hot_reload', {})
 
     def get_monitoring_config(self) -> Dict[str, Any]:
-        """Observability/monitoring configuration (for MonitoringHub)."""
         default = {'publish_interval_s': 60}
         mon = self.get_system_config().get('monitoring', {})
         return {**default, **mon} if isinstance(mon, dict) else default
 
-    # ─────────────────────────────────────────────────────────
-    # Runtime overrides (tests/ops) and watchers
-    # ─────────────────────────────────────────────────────────
+
     def apply_runtime_overrides(self, module_name: str, overrides: Dict[str, Any]):
-        """Apply in-memory overrides for a module (not persisted)."""
         if not isinstance(overrides, dict):
             raise TypeError("overrides must be a dict")
         with self._state_lock:
@@ -1443,18 +1343,13 @@ class ConfigurationManager:
 
 
     def add_config_watcher(self, callback: Callable[[str, Dict[str, Any], Dict[str, Any]], None]):
-        """Add a configuration change watcher: (name, old, new)."""
         self.config_watchers.append(callback)
 
     def add_module_watcher(self, module_name: str, callback: Callable[[str, Dict[str, Any], Dict[str, Any]], None]):
-        """Add a module-specific configuration watcher: (module_name, old, new)."""
         self.module_watchers[module_name].append(callback)
 
-    # ─────────────────────────────────────────────────────────
-    # Monitoring / reloading
-    # ─────────────────────────────────────────────────────────
+
     def _start_monitoring(self):
-        """Start configuration file monitoring."""
         if self.monitoring_active:
             return
         self.monitoring_active = True
@@ -1463,15 +1358,13 @@ class ConfigurationManager:
         self.logger.info("Started configuration file monitoring")
 
     def stop_monitoring(self):
-        """Stop configuration file monitoring."""
         self.monitoring_active = False
         if self.monitor_thread:
             self.monitor_thread.join(timeout=1)
         self.logger.info("Stopped configuration file monitoring")
 
     def _monitor_loop(self):
-        """Coalescing file watcher loop (polling with monotonic cadence)."""
-        # Initial seeds
+
         to_watch: List[Tuple[str, Path]] = [
             ('system', self.config_paths['system']),
             ('system_local', self.config_paths['system_local']),
@@ -1479,7 +1372,7 @@ class ConfigurationManager:
             ('explainability', self.config_paths['explainability']),
         ]
 
-        # dynamic .d directory files
+
         def refresh_dir_files():
             if self.config_paths['system_dir'].exists():
                 for extra in glob.glob(str(self.config_paths['system_dir'] / "*.yaml")):
@@ -1496,7 +1389,7 @@ class ConfigurationManager:
                 now_mono = time.monotonic()
                 if now_mono - last_check_mono >= 1.0:
                     last_check_mono = now_mono
-                    # scan
+
                     for name, p in list(to_watch):
                         try:
                             if p.exists():
@@ -1506,7 +1399,7 @@ class ConfigurationManager:
                                     self._reload_events.put((name, p))
                                     self.file_timestamps[name] = mtime
                             else:
-                                # file removed — treat as empty reload
+
                                 if name in self.file_timestamps:
                                     self._reload_events.put((name, p))
                                     self.file_timestamps[name] = 0
@@ -1514,15 +1407,15 @@ class ConfigurationManager:
                             continue
 
                 if now_mono >= next_dir_refresh_mono:
-                    # refresh dir list every 10s
+
                     to_watch = [t for t in to_watch if not t[0].startswith('system_dir::')]
                     refresh_dir_files()
                     next_dir_refresh_mono = now_mono + 10.0
 
-                # Debounce + handle events
+
                 try:
                     name, path = self._reload_events.get(timeout=0.25)
-                    # coalesce burst
+
                     time.sleep(self._debounce_ms / 1000.0)
                     pending = {(name, str(path))}
                     while not self._reload_events.empty():
@@ -1538,11 +1431,10 @@ class ConfigurationManager:
                 time.sleep(2.0)
 
     def _reload_changed_files(self, names: set):
-        """Reload a set of changed config files and notify watchers."""
         with self._state_lock:
             old_all = {k: copy.deepcopy(v) for k, v in self.configs.items()}
 
-            # Reload targeted names (minimal work; full rebuild follows)
+
             for name in names:
                 try:
                     if name == 'system':
@@ -1560,10 +1452,10 @@ class ConfigurationManager:
                 except Exception as e:
                     self.logger.warning(f"Reload of {name} failed: {e}")
 
-            # Rebuild system aggregate and modules (no broadcast here)
+
             self._load_all_configurations(broadcast=None)
 
-            # Notify top-level watchers on changed roots
+
             for cb in self.config_watchers:
                 try:
                     for root in ('system', 'risk', 'explainability'):
@@ -1576,18 +1468,14 @@ class ConfigurationManager:
 
             self.logger.info("Successfully reloaded configuration bundle")
 
-            # Announce the change over the bus once, with correct reason
+
             try:
                 self._publish_config_update("reload", changed=sorted(names))
             except Exception as e:
                 self.logger.debug(f"Failed to publish config_update after reload: {e}")
 
 
-    # ─────────────────────────────────────────────────────────
-    # Utilities
-    # ─────────────────────────────────────────────────────────
     def _redacted(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Recursively redact obvious secrets before logging/watching."""
         secrets = self._SECRET_KEYS
 
         def scrub(obj: Any) -> Any:
@@ -1606,14 +1494,12 @@ class ConfigurationManager:
         return scrub(copy.deepcopy(data))
 
     def __del__(self):
-        """Cleanup on destruction"""
         try:
             self.stop_monitoring()
         except Exception:
             pass
 
     def shutdown(self):
-        """Graceful shutdown: stop file monitoring thread."""
         try:
             self.stop_monitoring()
         except Exception as e:

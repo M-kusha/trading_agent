@@ -1,13 +1,3 @@
-"""
-Enhanced Active Trade Monitor with SmartInfoBus Integration
-Monitors position duration and provides intelligent alerts with context awareness
-
-Contract Guarantees:
-- Always returns: position_duration_risk, duration_alerts, position_tracking, trade_monitor_status, and _thesis
-- Writes only its owned keys on the SmartInfoBus (single-writer style)
-- All timestamps ISO-8601, numpy scalars cast to Python types
-- Background health monitor (daemon) + circuit breaker for repeated errors
-"""
 
 from __future__ import annotations
 
@@ -29,46 +19,39 @@ from modules.utils.audit_utils import RotatingLogger, format_operator_message
 from modules.utils.info_bus import InfoBusManager
 from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 
-# ─────────────────────────────────────────────────────────────
-# Typed configuration (lint-safe) + dict bridge for BaseModule
-# ─────────────────────────────────────────────────────────────
 
 @dataclass
 class ActiveTradeMonitorConfig:
     enabled: bool = True
-    max_duration: int = 200               # hard stop for duration-based ageing
-    critical_duration: int = 150          # escalated risk after this
-    warning_duration: int = 50            # early attention threshold
-    # monitoring
-    health_interval_sec: float = 5.0      # daemon heartbeat
-    breaker_error_window: int = 10        # how many recent cycles we inspect
-    breaker_open_threshold: int = 4       # open breaker if ≥ N failures in window
-    breaker_cooldown_sec: float = 20.0    # auto-reset to half-open after cooldown
-    # velocity tuning
-    rapid_velocity: int = 5               # steps per cycle flagged as rapid
+    max_duration: int = 200
+    critical_duration: int = 150
+    warning_duration: int = 50
+
+    health_interval_sec: float = 5.0
+    breaker_error_window: int = 10
+    breaker_open_threshold: int = 4
+    breaker_cooldown_sec: float = 20.0
+
+    rapid_velocity: int = 5
     fast_velocity: int = 3
     history_maxlen: int = 200
-    # severity score weights
+
     w_alert_critical: float = 1.0
     w_alert_warning: float = 0.6
     w_alert_info: float = 0.3
     w_concentration_warning: float = 0.5
     w_concentration_critical: float = 1.0
-    # context multipliers
+
     vol_mult: Dict[str, float] = field(default_factory=lambda: {
         'low': 0.8, 'medium': 1.0, 'high': 1.3, 'extreme': 1.6
     })
     regime_mult: Dict[str, float] = field(default_factory=lambda: {
         'volatile_market': 1.5, 'trending_market': 0.8, 'ranging_market': 1.0
     })
-    # namespacing for health/status (avoid collisions)
+
     status_key: str = "active_trade_monitor_status"
     health_key: str = "active_trade_monitor_health"
 
-
-# ─────────────────────────────────────────────────────────────
-# Module
-# ─────────────────────────────────────────────────────────────
 
 @module(**module_args(
     "ActiveTradeMonitor",
@@ -78,46 +61,39 @@ class ActiveTradeMonitorConfig:
     timeout_ms=3000,
 ))
 class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin):
-    """
-    Enhanced Active Trade Monitor with SmartInfoBus Integration
 
-    Monitors position durations with intelligent context-aware thresholds,
-    velocity analysis, and progressive risk assessment.
-    """
-
-    # ── lifecycle ────────────────────────────────────────────
 
     def __init__(self, config: Optional[Dict[str, Any]] = None, **kwargs):
-        # Typed config for internal logic; keep dict for BaseModule
+
         cfg_dict = (config or {}).copy()
         self._cfg = ActiveTradeMonitorConfig(**{**asdict(ActiveTradeMonitorConfig()), **cfg_dict})
-        self.config = cfg_dict  # BaseModule may expect a dict-like
+        self.config = cfg_dict
 
         self._fully_initialized = False
-        self._breaker_state = "CLOSED"       # CLOSED | OPEN | HALF_OPEN
+        self._breaker_state = "CLOSED"
         self._last_failure_ts: float = 0.0
         self._recent_failures: deque[bool] = deque(maxlen=self._cfg.breaker_error_window)
 
-        # Initialize advanced systems (logger, bus, perf, etc.)
+
         self._initialize_advanced_systems()
 
-        # Parent init (may call _initialize)
+
         super().__init__()
 
-        # Derived shortcuts from config
+
         self.enabled: bool = bool(self._cfg.enabled)
         self.max_duration: int = int(self._cfg.max_duration)
         self.warning_duration: int = int(self._cfg.warning_duration)
         self.critical_duration: int = int(self._cfg.critical_duration)
 
-        # State
+
         self._fully_initialized = True
         self._lock = threading.RLock()
         self.position_durations: Dict[str, int] = {}
         self.position_first_seen: Dict[str, str] = {}
-        self.position_velocity: Dict[str, int] = {}  # integer steps/cycle
-        self.position_instruments: Dict[str, str] = {}  # pid -> symbol/instrument
-        self.position_entry_info: Dict[str, Dict[str, Any]] = {}  # pid -> entry details (price, side, etc.)
+        self.position_velocity: Dict[str, int] = {}
+        self.position_instruments: Dict[str, str] = {}
+        self.position_entry_info: Dict[str, Dict[str, Any]] = {}
         self.duration_history: deque = deque(maxlen=self._cfg.history_maxlen)
 
         self.risk_score: float = 0.0
@@ -141,7 +117,6 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
         ))
 
     def _initialize_advanced_systems(self):
-        """Initialize advanced monitoring and error handling systems"""
         self.smart_bus = InfoBusManager.get_instance()
         self.logger = RotatingLogger(
             name="ActiveTradeMonitor",
@@ -156,18 +131,8 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
         self.system_utilities = SystemUtilities()
         self.performance_tracker = PerformanceTracker()
 
-    # ── main loop ────────────────────────────────────────────
 
     async def process(self, **kwargs) -> Dict[str, Any]:
-        """
-        Enhanced position duration monitoring with comprehensive analysis.
-
-        Returns a payload that ALWAYS contains:
-          - position_duration_risk
-          - duration_alerts
-          - position_tracking
-          - _thesis
-        """
         start = time.time()
         try:
             if not self.enabled:
@@ -175,7 +140,7 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
                 self._write_bus_from_payload(payload, thesis=payload["_thesis"])
                 return payload
 
-            # Circuit breaker: short-circuit when OPEN (fallback but still return contract)
+
             if self._breaker_state == "OPEN":
                 thesis = ("Circuit breaker OPEN due to repeated errors. "
                           "Skipping monitoring cycle; system will auto-attempt reset.")
@@ -185,38 +150,38 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
 
             self.step_count += 1
 
-            # Extract context (safe defaults)
+
             market_context = self._safe_get_bus_dict('market_context')
             raw_positions = self._safe_get_bus_any('positions', default=[])
             positions_dict = self._normalize_positions(raw_positions)
 
-            # Process monitoring
+
             monitoring_results = await self._monitor_positions_comprehensive(positions_dict, market_context)
 
-            # Thesis + metrics
+
             thesis = await self._generate_monitoring_thesis(monitoring_results, market_context)
             risk_metrics = self._calculate_comprehensive_risk_metrics(monitoring_results)
 
-            # Build contract-conform payload
+
             payload = self._format_provides_output(
                 monitoring_results=monitoring_results,
                 risk_metrics=risk_metrics,
                 thesis=thesis
             )
 
-            # Update bus (single-writer keys only)
+
             self._write_bus_from_payload(payload, thesis=thesis)
 
-            # Record performance
+
             elapsed_ms = int((time.time() - start) * 1000)
             self.performance_tracker.record_metric('ActiveTradeMonitor', 'monitoring_cycle', elapsed_ms, True)
 
-            # Bookend: healthy cycle
+
             self._recent_failures.append(False)
             return payload
 
         except Exception as e:
-            # Failure path: update breaker and return error-safe payload
+
             self._recent_failures.append(True)
             self._last_failure_ts = time.time()
             self._update_breaker_state_on_failure()
@@ -227,17 +192,15 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
             self.performance_tracker.record_metric('ActiveTradeMonitor', 'monitoring_cycle', elapsed_ms, False)
 
             payload = self._generate_error_response(str(error_context))
-            # Try to publish what we can (never violate single-writer)
+
             try:
                 self._write_bus_from_payload(payload, thesis=payload["_thesis"])
             except Exception:
                 pass
             return payload
 
-    # ── helpers: bus + contract ─────────────────────────────
 
     def _write_bus_from_payload(self, payload: Dict[str, Any], thesis: str) -> None:
-        """Write only owned keys to the bus; keep single-writer discipline."""
         try:
             self.smart_bus.set('position_duration_risk', payload['position_duration_risk'],
                                module='ActiveTradeMonitor', thesis=thesis)
@@ -257,7 +220,6 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
         risk_metrics: Dict[str, Any],
         thesis: str
     ) -> Dict[str, Any]:
-        """Strictly format the provides payload to always include required keys + _thesis."""
         alerts = monitoring_results.get('alerts') or {}
         alerts = {
             'critical': list(alerts.get('critical', [])),
@@ -267,13 +229,13 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
         stats = monitoring_results.get('duration_statistics') or {}
         stats_by_inst = monitoring_results.get('duration_statistics_by_instrument') or {}
 
-        # Cast to python types for serialization safety
-        def _py(v):  # small caster for numpy types
+
+        def _py(v):
             if isinstance(v, (np.generic,)):
                 return v.item()
             return v
 
-        # Status view required by contract
+
         status_view = {
             'initialized': True,
             'enabled': bool(self.enabled),
@@ -284,7 +246,7 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
             'timestamp': datetime.datetime.now().isoformat()
         }
 
-        # Per-instrument stats: make sure values are plain Python types
+
         def _py_stats_dict(d: Dict[str, Any]) -> Dict[str, Any]:
             return {k: _py(v) for k, v in d.items()}
 
@@ -320,14 +282,12 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
         }
         return payload
 
-    # ── monitoring core ─────────────────────────────────────
 
     async def _monitor_positions_comprehensive(
         self,
         positions: Dict[str, Dict[str, Any]],
         market_context: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Comprehensive position monitoring with intelligent analysis"""
         start_time = time.time()
 
         alerts = {'critical': [], 'warning': [], 'info': []}
@@ -339,18 +299,18 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
                     symbol = position.get('symbol') or position.get('instrument') or 'UNKNOWN'
                     current_ids.add(pid)
 
-                    # Track instrument for this position id
+
                     self.position_instruments[pid] = str(symbol)
 
-                    # Calculate duration + velocity
+
                     duration_info = self._calculate_enhanced_duration(position, pid)
                     self.position_durations[pid] = duration_info['duration']
                     self.position_velocity[pid] = duration_info['velocity']
 
-                    # First-seen timestamp and entry info (for enhanced closure logging)
+
                     if pid not in self.position_first_seen:
                         self.position_first_seen[pid] = datetime.datetime.now().isoformat()
-                        # Store entry info for closure logging
+
                         self.position_entry_info[pid] = {
                             'symbol': symbol,
                             'side': position.get('side', position.get('direction', 'unknown')),
@@ -359,7 +319,7 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
                             'entry_step': position.get('entry_step', self.step_count),
                             'opened_at': datetime.datetime.now().isoformat(),
                         }
-                        # Log position open
+
                         self.logger.info(format_operator_message(
                             icon="📈",
                             message="Position opened - tracking started",
@@ -370,7 +330,7 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
                             volume=self.position_entry_info[pid]['volume'],
                         ))
 
-                    # Assess severity with context
+
                     severity_info = self._assess_position_severity_enhanced(
                         pid, duration_info, position, market_context
                     )
@@ -390,7 +350,7 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
                     error_context = self.error_pinpointer.analyze_error(e, "position_processing")
                     self.logger.warning(f"Position processing failed for {pid}: {error_context}")
 
-            # Handle closures
+
             closure_info = self._process_position_closures(current_ids, market_context)
 
             processing_time = int((time.time() - start_time) * 1000)
@@ -406,22 +366,21 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
             }
 
     def _calculate_enhanced_duration(self, position: Dict[str, Any], pid: str) -> Dict[str, Any]:
-        """Calculate enhanced duration metrics with velocity analysis (per position id)"""
         try:
-            # Priority 1: explicit duration/bars_held
+
             raw_duration = position.get('duration', position.get('bars_held', None))
             if raw_duration is not None:
                 base = max(0, int(raw_duration))
             else:
-                # Priority 2: derive from step_idx - entry_step
+
                 entry_step = int(position.get('entry_step', 0) or 0)
                 current_step = int(self.smart_bus.get('step_idx', 'ActiveTradeMonitor') or self.step_count)
                 base = max(0, current_step - entry_step) if entry_step > 0 else 0
 
             prev = int(self.position_durations.get(pid, 0))
-            velocity = max(0, base - prev)  # monotonic duration; clamp negatives to 0
+            velocity = max(0, base - prev)
 
-            # History for analytics
+
             self.duration_history.append({
                 'position_id': pid,
                 'duration': base,
@@ -448,17 +407,16 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
         position: Dict[str, Any],
         market_context: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Enhanced severity assessment with context awareness and velocity analysis"""
         try:
             duration = int(duration_info['duration'])
             velocity = int(duration_info['velocity'])
 
-            # Get context-adjusted thresholds
+
             regime = str(market_context.get('regime', 'ranging'))
             volatility = str(market_context.get('volatility_level', 'medium'))
             thresholds = self._get_context_adjusted_thresholds(regime, volatility)
 
-            # Base severity
+
             if duration >= thresholds['critical']:
                 base_level = 'critical'
             elif duration >= thresholds['warning']:
@@ -470,18 +428,18 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
 
             context_factors: List[str] = []
 
-            # Velocity escalators/relaxers
+
             if velocity >= self._cfg.rapid_velocity and base_level == 'info':
                 base_level = 'warning'
                 context_factors.append('rapid_duration_increase')
 
-            # Profit tolerance
+
             pnl = float(position.get('unrealised_pnl', position.get('pnl', 0.0)) or 0.0)
             if pnl > 0 and base_level == 'warning' and duration < thresholds['critical']:
                 base_level = 'info'
                 context_factors.append('profitable_position_tolerance')
 
-            # High volatility tolerance
+
             if volatility in ('high', 'extreme') and base_level == 'warning' and duration < int(thresholds['critical'] * 0.9):
                 base_level = 'info'
                 context_factors.append('high_volatility_tolerance')
@@ -501,10 +459,9 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
             return {'level': 'unknown', 'threshold_used': 0, 'context_factors': ['assessment_error']}
 
     def _get_context_adjusted_thresholds(self, regime: str, volatility: str) -> Dict[str, int]:
-        """Compute thresholds with regime/volatility multipliers"""
         base = {'info': self.warning_duration, 'warning': self.critical_duration, 'critical': self.max_duration}
 
-        # Map regime to key expected in config
+
         regime_key = f"{regime}_market" if not regime.endswith("_market") else regime
         reg_mult = float(self._cfg.regime_mult.get(regime_key, self._cfg.regime_mult['ranging_market']))
         vol_mult = float(self._cfg.vol_mult.get(volatility, 1.0))
@@ -513,7 +470,6 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
         return {lvl: int(val * final_mult) for lvl, val in base.items()}
 
     def _process_position_closures(self, current_ids: set[str], market_context: Dict[str, Any]) -> Dict[str, Any]:
-        """Process closures and update analytics with enhanced logging"""
         closed_ids = set(self.position_durations.keys()) - current_ids
         closure_info = {'closed_count': len(closed_ids), 'closure_details': []}
 
@@ -523,7 +479,7 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
             instrument = self.position_instruments.get(pid, entry_info.get('symbol', 'UNKNOWN'))
             first_seen = self.position_first_seen.get(pid, 'unknown')
 
-            # Determine closure type
+
             if duration >= self.max_duration:
                 ctype = 'timeout'
                 close_reason = f"Exceeded max duration ({self.max_duration} steps)"
@@ -541,8 +497,8 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
             self.regime_performance[regime]['durations'].append(duration)
             self.regime_performance[regime]['closures'] += 1
 
-            # Calculate estimated real time (assuming ~10s per step in live mode)
-            est_minutes = (duration * 10) / 60  # rough estimate
+
+            est_minutes = (duration * 10) / 60
 
             closure_detail = {
                 'position_id': pid,
@@ -557,7 +513,7 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
             }
             closure_info['closure_details'].append(closure_detail)
 
-            # Enhanced logging based on closure type
+
             if ctype == 'timeout':
                 self.logger.warning(format_operator_message(
                     icon="⏰",
@@ -586,7 +542,7 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
                     regime=regime,
                 ))
             else:
-                # Normal closure - log at info level
+
                 self.logger.info(format_operator_message(
                     icon="✅",
                     message="Position closed normally",
@@ -597,7 +553,7 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
                     opened_at=entry_info.get('opened_at', first_seen),
                 ))
 
-            # Cleanup all tracking for this position
+
             self.position_durations.pop(pid, None)
             self.position_first_seen.pop(pid, None)
             self.position_velocity.pop(pid, None)
@@ -607,7 +563,6 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
         return closure_info
 
     def _calculate_duration_statistics(self) -> Dict[str, Any]:
-        """Aggregate global duration stats (safe and typed)"""
         try:
             if not self.position_durations:
                 return {
@@ -650,10 +605,6 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
             }
 
     def _calculate_duration_statistics_by_instrument(self) -> Dict[str, Any]:
-        """
-        Aggregate duration stats per instrument.
-        This is the per-symbol layer so XAUUSD / EURUSD can be inspected independently.
-        """
         try:
             inst_durations: Dict[str, List[int]] = defaultdict(list)
             for pid, dur in self.position_durations.items():
@@ -695,26 +646,19 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
             return {}
 
     def _calculate_comprehensive_risk_metrics(self, monitoring_results: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Compute risk score from alerts, concentration and velocity distribution.
-
-        Hybrid design:
-        - Global risk_score / severity_level (for simple consumers)
-        - Per-instrument risk metrics in risk_metrics['per_instrument'][symbol]
-        """
         try:
             alerts = monitoring_results['alerts']
             stats = monitoring_results['duration_statistics']
             stats_by_inst = monitoring_results.get('duration_statistics_by_instrument') or {}
 
-            # ---- Global alert risk ----
+
             alert_risk = (
                 len(alerts['critical']) * self._cfg.w_alert_critical +
                 len(alerts['warning']) * self._cfg.w_alert_warning +
                 len(alerts['info']) * self._cfg.w_alert_info
             ) / max(stats.get('active_positions', 1), 1)
 
-            # ---- Global concentration risk ----
+
             concentration_risk = 0.0
             ap = stats.get('active_positions', 0)
             if ap > 0:
@@ -723,15 +667,15 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
                 concentration_risk = (over_warn * self._cfg.w_concentration_warning +
                                       over_crit * self._cfg.w_concentration_critical)
 
-            # ---- Global velocity risk ----
+
             vel_vals = list(int(v) for v in self.position_velocity.values())
             rapid = sum(1 for v in vel_vals if v > self._cfg.fast_velocity)
             velocity_risk = (rapid / max(len(vel_vals), 1)) if vel_vals else 0.0
 
-            # Combined global risk score (bounded)
+
             self.risk_score = float(np.clip(alert_risk + concentration_risk + velocity_risk, 0.0, 1.0))
 
-            # Global severity
+
             if self.risk_score > 0.7 or len(alerts['critical']) > 0:
                 self.severity_level = 'critical'
             elif self.risk_score > 0.4 or len(alerts['warning']) > 0:
@@ -741,8 +685,7 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
             else:
                 self.severity_level = 'normal'
 
-            # ---- Per-instrument risk metrics ----
-            # Build alert counts per instrument using alert entries' "symbol"
+
             alert_counts_by_inst: Dict[str, Dict[str, int]] = defaultdict(
                 lambda: {'critical': 0, 'warning': 0, 'info': 0}
             )
@@ -751,7 +694,7 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
                     sym = str(item.get('symbol') or 'UNKNOWN')
                     alert_counts_by_inst[sym][lvl] += 1
 
-            # Velocities per instrument
+
             vel_by_inst: Dict[str, List[int]] = defaultdict(list)
             for pid, vel in self.position_velocity.items():
                 inst = self.position_instruments.get(pid, "UNKNOWN")
@@ -832,7 +775,6 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
 
     async def _generate_monitoring_thesis(self, monitoring_results: Dict[str, Any],
                                           market_context: Dict[str, Any]) -> str:
-        """Generate plain-English thesis explaining monitoring decisions."""
         try:
             stats = monitoring_results.get('duration_statistics', {})
             stats_by_inst = monitoring_results.get('duration_statistics_by_instrument', {})
@@ -854,7 +796,7 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
             else:
                 parts.append("No active positions.")
 
-            # Brief per-instrument view (first few instruments)
+
             if stats_by_inst:
                 inst_summaries = []
                 for inst, s in list(stats_by_inst.items())[:3]:
@@ -886,10 +828,8 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
             error_context = self.error_pinpointer.analyze_error(e, "thesis_generation")
             return f"Thesis generation failed: {error_context}"
 
-    # ── recommendations & actions ────────────────────────────
 
     def _generate_recommendations(self, monitoring_results: Dict[str, Any]) -> List[str]:
-        """Generate recommendations (not bus-published; used by propose_action)."""
         recs: List[str] = []
         try:
             alerts = monitoring_results.get('alerts', {'critical': [], 'warning': [], 'info': []})
@@ -907,7 +847,7 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
             if int(stats.get('active_positions', 0)) > 5:
                 recs.append("High global concentration: consider reducing open positions.")
 
-            # Per-instrument hints (e.g., XAU vs EUR)
+
             for inst, s in stats_by_inst.items():
                 if s.get('positions_over_critical', 0) > 0:
                     recs.append(f"{inst}: positions exceeding critical duration, prioritize review.")
@@ -931,7 +871,6 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
         return recs
 
     async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
-        """Confidence in proposed action, bounded [0.1, 1.0]."""
         try:
             base = 0.7
             n = len(self.position_durations)
@@ -950,14 +889,13 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
             return 0.5
 
     async def propose_action(self, **inputs) -> Dict[str, Any]:
-        """Propose risk actions; supports positions as dict or list."""
         try:
             raw_positions = inputs.get('positions')
             if raw_positions is None:
                 raw_positions = self._safe_get_bus_any('positions', default=[])
             positions = self._normalize_positions(raw_positions)
 
-            # snapshot severity
+
             duration_risks: Dict[str, Any] = {}
             recommendations: List[Dict[str, Any]] = []
 
@@ -1022,10 +960,8 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
                 'confidence': 0.1
             }
 
-    # ── health & lifecycle ───────────────────────────────────
 
     def _start_monitoring(self):
-        """Background daemon that posts health + manages circuit breaker resets."""
         if self._monitor_thread and self._monitor_thread.is_alive():
             return
 
@@ -1033,10 +969,10 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
             self.logger.info("[MONITOR] ActiveTradeMonitor health monitor started.")
             while not self._monitor_stop.is_set():
                 try:
-                    # breaker auto-reset
+
                     self._maybe_reset_breaker()
 
-                    # health snapshot
+
                     health = self.get_health_metrics()
                     status = {
                         'initialized': True,
@@ -1047,7 +983,7 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
                         'breaker_state': self._breaker_state,
                         'ts': datetime.datetime.now().isoformat()
                     }
-                    # Namespaced keys to avoid collisions with other modules
+
                     self.smart_bus.set(self._cfg.status_key, status, module='ActiveTradeMonitor',
                                        thesis="ActiveTradeMonitor status heartbeat")
                     self.smart_bus.set(self._cfg.health_key, health, module='ActiveTradeMonitor',
@@ -1062,33 +998,29 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
         self._monitor_thread.start()
 
     def stop_monitoring(self):
-        """Stop background monitor."""
         self._monitor_stop.set()
         if self._monitor_thread:
             self._monitor_thread.join(timeout=2.0)
 
     def _maybe_reset_breaker(self):
-        """Reset OPEN breaker to HALF_OPEN after cooldown; close after a successful cycle."""
         if self._breaker_state == "OPEN":
             if (time.time() - self._last_failure_ts) >= self._cfg.breaker_cooldown_sec:
                 self._breaker_state = "HALF_OPEN"
-        # If HALF_OPEN and recent failures are not growing, close it optimistically
+
         if self._breaker_state == "HALF_OPEN":
-            # If last N entries show mostly success (<=1 failure), close
+
             if list(self._recent_failures).count(True) <= 1:
                 self._breaker_state = "CLOSED"
 
     def _update_breaker_state_on_failure(self):
-        """Open breaker when repeated failures in the sliding window exceed threshold."""
         if list(self._recent_failures).count(True) >= self._cfg.breaker_open_threshold:
             self._breaker_state = "OPEN"
 
     def _initialize(self):
-        """Initialize module-specific state (called by BaseModule.__init__)."""
         if not getattr(self, '_fully_initialized', False):
             return
         self.logger.info("[RELOAD] ActiveTradeMonitor async initialization")
-        # Initial status post (namespaced)
+
         try:
             self.smart_bus.set(
                 self._cfg.status_key,
@@ -1107,10 +1039,8 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
         except Exception as e:
             self.logger.warning(f"Initial status bus write failed: {e}")
 
-    # ── state, health, utils ─────────────────────────────────
 
     def get_state(self) -> Dict[str, Any]:
-        """Get complete module state for hot-reload (serialization-safe)."""
         with self._lock:
             return {
                 'position_durations': {k: int(v) for k, v in self.position_durations.items()},
@@ -1126,7 +1056,6 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
             }
 
     def set_state(self, state: Dict[str, Any]) -> None:
-        """Set module state for hot-reload (defensive)."""
         with self._lock:
             self.position_durations = {k: int(v) for k, v in state.get('position_durations', {}).items()}
             self.position_first_seen = dict(state.get('position_first_seen', {}))
@@ -1140,7 +1069,6 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
             self._breaker_state = str(state.get('breaker_state', 'CLOSED'))
 
     def get_health_metrics(self) -> Dict[str, Any]:
-        """Health metrics for monitoring (serialization-safe)."""
         with self._lock:
             total_closures = max(1, sum(self.closure_analytics.values()))
             avg_dur = np.mean(list(self.position_durations.values())) if self.position_durations else 0.0
@@ -1153,10 +1081,8 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
                 'enabled': bool(self.enabled)
             }
 
-    # ── error + fallback payloads ────────────────────────────
 
     def _generate_disabled_response(self) -> Dict[str, Any]:
-        """Return payload when module is disabled (contract-conform)."""
         thesis = "Active Trade Monitor is disabled"
         return {
             'position_duration_risk': {
@@ -1195,7 +1121,6 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
         }
 
     def _fallback_payload(self, thesis: str) -> Dict[str, Any]:
-        """Return a safe payload used when breaker is OPEN."""
         return {
             'position_duration_risk': {
                 'risk_score': float(self.risk_score),
@@ -1236,7 +1161,6 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
         }
 
     def _generate_error_response(self, error_context: str) -> Dict[str, Any]:
-        """Return payload on processing failure (contract-conform)."""
         thesis = f"Position monitoring failed: {error_context}"
         return {
             'position_duration_risk': {
@@ -1274,7 +1198,6 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
             '_thesis': thesis
         }
 
-    # ── utils: inputs & normalization ────────────────────────
 
     def _safe_get_bus_any(self, key: str, default: Any = None) -> Any:
         try:
@@ -1288,12 +1211,6 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
         return v if isinstance(v, dict) else {}
 
     def _normalize_positions(self, raw: Union[List[Dict[str, Any]], Dict[str, Dict[str, Any]]]) -> Dict[str, Dict[str, Any]]:
-        """
-        Accepts:
-            - list of position dicts (must contain an id if available or we synthesize one)
-            - dict mapping id -> position dict
-        Returns dict: id -> position dict (with at least 'symbol'/'instrument' if available)
-        """
         positions: Dict[str, Dict[str, Any]] = {}
         if isinstance(raw, dict):
             for k, v in raw.items():
@@ -1306,16 +1223,15 @@ class ActiveTradeMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMix
                 pid = str(p.get('id') or p.get('ticket') or p.get('order_id') or p.get('symbol') or f"pos_{i}")
                 positions[pid] = p
         else:
-            # unknown shape; return empty
+
             pass
         return positions
 
     @staticmethod
     def _safe_position_snapshot(position: Dict[str, Any]) -> Dict[str, Any]:
-        """Small snapshot to avoid dumping the whole position structure to alerts."""
         keys = ('symbol', 'instrument', 'volume', 'side', 'unrealised_pnl', 'pnl', 'entry_step', 'duration', 'bars_held')
         snap = {k: position.get(k) for k in keys if k in position}
-        # cast numpy
+
         for k, v in list(snap.items()):
             if isinstance(v, np.generic):
                 snap[k] = v.item()

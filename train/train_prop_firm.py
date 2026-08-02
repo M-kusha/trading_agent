@@ -1,15 +1,4 @@
 #!/usr/bin/env python3
-"""
-train/train_prop_firm.py
-
-PropFirm PPO Training Script (10/10) with:
-- Discrete action space + Action Masking (sb3-contrib MaskablePPO)
-- Domain randomization (robustness)
-- Walk-forward evaluation / Optuna objective scoring
-- Frame-stacked memory (keeps masking compatible)
-- Adversarial eval (worse execution params)
-- VecEnv-correct episode tracking + cleanup
-"""
 
 from __future__ import annotations
 
@@ -33,7 +22,6 @@ import pandas as pd
 import torch
 import torch.nn as nn
 
-# Ensure repository root on sys.path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -45,10 +33,8 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.utils import set_random_seed
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecEnv, VecFrameStack
 
-# Environment
 from envs.prop_firm_env import PropFirmConfig, PropFirmTradingEnv
 
-# Curriculum system (optional)
 try:
     from envs.curriculum import (
         CurriculumManager,
@@ -66,7 +52,7 @@ except ImportError:
     get_stage_config = None  # type: ignore
     get_stage_progression = None  # type: ignore
 
-# Optuna
+
 try:
     import optuna
     from optuna.exceptions import TrialPruned
@@ -80,7 +66,7 @@ except Exception:
     TrialPruned = Exception  # type: ignore
     OPTUNA_AVAILABLE = False
 
-# sb3-contrib (MaskablePPO + ActionMasker + MaskableEvalCallback)
+
 try:
     from sb3_contrib import MaskablePPO
     from sb3_contrib.common.wrappers import ActionMasker
@@ -98,7 +84,7 @@ except Exception:
     MASKABLE_EVAL_AVAILABLE = False
     MASKABLE_AVAILABLE = False
 
-# AUDIT FIX: Import official mask extraction helper (more robust than custom unwrapping)
+
 try:
     from sb3_contrib.common.maskable.utils import get_action_masks as sb3_get_action_masks
     SB3_MASK_UTILS_AVAILABLE = True
@@ -106,7 +92,7 @@ except Exception:
     sb3_get_action_masks = None  # type: ignore
     SB3_MASK_UTILS_AVAILABLE = False
 
-# Dashboard server (optional)
+
 try:
     from dashboard.server import WEB_AVAILABLE as DASHBOARD_AVAILABLE
     from dashboard.server import start_dashboard_server
@@ -114,13 +100,10 @@ except ImportError:
     DASHBOARD_AVAILABLE = False
     start_dashboard_server = None  # type: ignore
 
-# Extracted controllers and callbacks (Phase 1 modularization)
+
 from modules.utils import simulation_time as simclock
 from train.callbacks import CurriculumCheckpointCallback, CurriculumTrainingCallback, VecEpisodeTradingCallback
 
-# =============================================================================
-# LOGGING
-# =============================================================================
 
 def configure_logging(log_dir: str = "logs", level: int = logging.INFO) -> logging.Logger:
     Path(log_dir).mkdir(parents=True, exist_ok=True)
@@ -147,10 +130,6 @@ def configure_logging(log_dir: str = "logs", level: int = logging.INFO) -> loggi
 logger = configure_logging()
 
 
-# =============================================================================
-# SEEDING / START METHOD
-# =============================================================================
-
 def seed_everything(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
@@ -158,20 +137,13 @@ def seed_everything(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
     set_random_seed(seed)
 
-    # Determinism is not only about RNG. Any module that reads the wall clock
-    # makes a run depend on when it was started - session logic differs between
-    # a 02:00 and a 14:00 launch, and second-based cooldowns behave differently
-    # under load. Declaring simulation mode here makes "now" a function of the
-    # replayed bar instead, so a seeded run is genuinely reproducible.
+
     simclock.set_mode(simclock.TimeMode.SIMULATION)
     simclock.reset()
     logger.info("[CLOCK] simulation mode enabled - modules read bar time, not wall clock")
 
 
 def pick_subproc_start_method() -> Optional[str]:
-    """
-    fork is fast but unsafe with CUDA and often problematic on macOS.
-    """
     sysname = platform.system()
     cuda = torch.cuda.is_available()
 
@@ -184,21 +156,13 @@ def pick_subproc_start_method() -> Optional[str]:
     return "fork"
 
 
-# =============================================================================
-# CONFIG CONSTRUCTION (ROBUST OVERRIDES)
-# =============================================================================
-
 def _safe_propfirm_config_init_kwargs(overrides: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Filter overrides to only those accepted by PropFirmConfig.__init__.
-    This prevents silent/late crashes when CLI includes legacy keys.
-    """
     try:
         valid = {f.name for f in fields(PropFirmConfig)}
         return {k: v for k, v in overrides.items() if k in valid}
     except Exception:
-        # PropFirmConfig may not be a dataclass in some versions; fall back conservatively
-        # Keep only keys that are commonly present in the config.
+
+
         allow = {
             "initial_balance",
             "daily_drawdown_limit",
@@ -218,16 +182,10 @@ def _safe_propfirm_config_init_kwargs(overrides: Dict[str, Any]) -> Dict[str, An
 
 
 def build_propfirm_config(config_overrides: Dict[str, Any]) -> PropFirmConfig:
-    """
-    Build PropFirmConfig robustly:
-    - pass only supported keys to the constructor
-    - apply reward overrides explicitly to nested config.reward fields
-    """
     init_kwargs = _safe_propfirm_config_init_kwargs(config_overrides)
     cfg = PropFirmConfig(**init_kwargs)
 
-    # Apply reward overrides via nested RewardConfig when present
-    # (These are frequently NOT constructor args and can be legacy CLI keys.)
+
     if "reward_scale" in config_overrides:
         try:
             cfg.reward.reward_scale = float(config_overrides["reward_scale"])
@@ -242,15 +200,6 @@ def build_propfirm_config(config_overrides: Dict[str, Any]) -> PropFirmConfig:
     return cfg
 
 
-# =============================================================================
-# DATA LOADING
-# =============================================================================
-
-# Timeframe-aware minimum bars (based on ~1 year of data as baseline)
-# M15: 96 bars/day * 252 trading days ≈ 24,000 → require 5000 (reasonable subset)
-# H1:  24 bars/day * 252 ≈ 6,000 → require 2000
-# H4:   6 bars/day * 252 ≈ 1,500 → require 500
-# D1:   1 bar/day  * 252 ≈ 252   → require 200
 TIMEFRAME_MIN_BARS = {
     "M1": 10000,
     "M5": 8000,
@@ -301,7 +250,7 @@ def load_market_data(
 
             df = pd.read_csv(filepath)
 
-            # F-8 FIX: Normalize column names to lowercase for case-insensitive OHLC detection
+
             df.columns = df.columns.str.lower()
 
             required = {"open", "high", "low", "close"}
@@ -312,7 +261,7 @@ def load_market_data(
             if "volume" not in df.columns:
                 df["volume"] = 1.0
 
-            # Parse time if present
+
             for tcol in ("time", "timestamp", "datetime", "date"):
                 if tcol in df.columns:
                     ts = pd.to_datetime(df[tcol], errors="coerce")
@@ -327,7 +276,7 @@ def load_market_data(
             df["high"] = df[["open", "high", "close"]].max(axis=1)
             df["low"] = df[["open", "low", "close"]].min(axis=1)
 
-            # Use timeframe-specific minimum bars requirement
+
             tf_min_bars = TIMEFRAME_MIN_BARS.get(timeframe, min_bars)
             if len(df) < tf_min_bars:
                 logger.info(f"Skipping {file}: only {len(df)} bars (need {tf_min_bars}+ for {timeframe})")
@@ -402,10 +351,6 @@ def _create_synthetic_data(instruments: List[str], n_bars: int = 50000) -> Dict[
     return data
 
 
-# =============================================================================
-# DATA SPLITS (WALK-FORWARD)
-# =============================================================================
-
 def _min_len_across(data: Dict[str, Dict[str, pd.DataFrame]]) -> int:
     m = None
     for _, tfs in data.items():
@@ -426,7 +371,7 @@ def slice_data_by_index(
         for tf, df in tfs.items():
             s = max(0, int(start))
             e = min(int(end), len(df))
-            # IMPORTANT: Use .copy() to prevent data leakage between folds
+
             out[inst][tf] = df.iloc[s:e].copy().reset_index(drop=True)
     return out
 
@@ -437,11 +382,6 @@ def build_walk_forward_folds(
     val_ratio: float = 0.12,
     min_train_ratio: float = 0.55,
 ) -> List[Tuple[Dict[str, Dict[str, pd.DataFrame]], Dict[str, Dict[str, pd.DataFrame]]]]:
-    """
-    Expanding-window walk-forward folds:
-      train: [0 .. train_end)
-      val:   [train_end .. train_end+val_len)
-    """
     n = _min_len_across(data)
     if n <= 0:
         return []
@@ -451,12 +391,12 @@ def build_walk_forward_folds(
 
     max_train_end = n - val_len
     if max_train_end <= min_train + 100:
-        # Not enough length; single split
+
         train = slice_data_by_index(data, 0, max_train_end)
         val = slice_data_by_index(data, max_train_end, n)
         return [(train, val)]
 
-    # Choose train_end positions
+
     step = max(500, int((max_train_end - min_train) / max(n_folds, 1)))
     folds: List[Tuple[Dict[str, Dict[str, pd.DataFrame]], Dict[str, Dict[str, pd.DataFrame]]]] = []
     train_end = min_train
@@ -472,10 +412,6 @@ def build_walk_forward_folds(
     return folds or []
 
 
-# =============================================================================
-# ENV FACTORY (+ MASKING + FRAME STACK)
-# =============================================================================
-
 def create_prop_firm_env(data: Dict[str, Dict[str, pd.DataFrame]], config: PropFirmConfig) -> PropFirmTradingEnv:
     return PropFirmTradingEnv(data, config)
 
@@ -487,17 +423,13 @@ def create_eval_vec_env(
     use_action_masking: bool = True,
     frame_stack: int = 1,
 ) -> VecEnv:
-    """
-    Create a single-env VecEnv for evaluation with the same wrappers as training.
-    This ensures observation shape matches between train and eval.
-    """
     def make_env() -> Callable[[], Any]:
         def _init():
             env = create_prop_firm_env(data, config)
-            # Note: No Monitor wrapper for eval (we don't need logging)
+
             if use_action_masking and MASKABLE_AVAILABLE and ActionMasker is not None:
                 env = ActionMasker(env, _mask_fn)
-            # Seed the environment
+
             try:
                 env.reset(seed=seed)
             except Exception as e:
@@ -514,17 +446,13 @@ def create_eval_vec_env(
 
 
 def _mask_fn(env: Any) -> np.ndarray:
-    """
-    sb3-contrib ActionMasker callback.
-    Must unwrap through Monitor/other wrappers to reach PropFirmTradingEnv.
-    """
-    # Unwrap to find the env that has action_masks()
+
     current = env
     while hasattr(current, 'env'):
         if hasattr(current, 'action_masks') and callable(current.action_masks):
             return current.action_masks()
         current = current.env
-    # Final unwrapped env should have action_masks
+
     if hasattr(current, 'action_masks') and callable(current.action_masks):
         return current.action_masks()
     raise AttributeError(f"Could not find action_masks() on env or wrapped envs: {type(env)}")
@@ -546,11 +474,11 @@ def create_vec_envs(
             env = create_prop_firm_env(data, config)
             env = Monitor(env, filename=str(Path(monitor_dir) / f"monitor_{rank}.csv"))
 
-            # Masking wrapper (only if sb3-contrib is available)
+
             if use_action_masking and MASKABLE_AVAILABLE and ActionMasker is not None:
                 env = ActionMasker(env, _mask_fn)
 
-            # Seed
+
             try:
                 env.reset(seed=seed + rank)
             except Exception as e:
@@ -597,10 +525,6 @@ def test_environment(data: Dict[str, Dict[str, pd.DataFrame]], config: PropFirmC
     logger.info("✓ Environment test passed")
 
 
-# =============================================================================
-# EVALUATION (CUSTOM METRICS)
-# =============================================================================
-
 def evaluate_agent_trading(
     model: BaseAlgorithm,
     env: VecEnv,
@@ -609,15 +533,6 @@ def evaluate_agent_trading(
     max_steps: Optional[int] = None,
     use_action_masks: bool = True,
 ) -> Dict[str, float]:
-    """
-    Mask-aware evaluation for MaskablePPO with VecEnv.
-
-    When using MaskablePPO, action_masks are passed to predict() so the agent
-    only considers legal actions during evaluation.
-
-    NOTE: env must be a VecEnv (wrapped with same wrappers as training, including
-    VecFrameStack if used during training) to ensure observation shapes match.
-    """
     rewards: List[float] = []
     pnls: List[float] = []
     win_rates: List[float] = []
@@ -625,21 +540,19 @@ def evaluate_agent_trading(
     trade_counts: List[int] = []
     dd_breaches = 0
 
-    # Check if model is MaskablePPO
+
     is_maskable = MASKABLE_AVAILABLE and MaskablePPO is not None and isinstance(model, MaskablePPO)
 
-    # AUDIT FIX: Use official sb3_contrib helper when available (more robust across wrappers)
-    # Falls back to custom extraction for older sb3_contrib versions
+
     def get_action_masks_from_vec_env(venv: VecEnv) -> Optional[np.ndarray]:
-        """Extract action masks from a VecEnv."""
-        # Try official helper first (works across Dummy/Subproc/FrameStack)
+
         if SB3_MASK_UTILS_AVAILABLE and sb3_get_action_masks is not None:
             try:
                 return sb3_get_action_masks(venv)
             except Exception as e:
                 logger.debug(f"sb3_get_action_masks failed, falling back: {e}")
 
-        # Fallback: manual unwrapping (for DummyVecEnv only)
+
         try:
             current: Any = venv
             while hasattr(current, 'venv'):
@@ -659,7 +572,7 @@ def evaluate_agent_trading(
         return None
 
     for _ in range(n_episodes):
-        obs = env.reset()  # VecEnv.reset() returns just obs (no info)
+        obs = env.reset()
         done = False
         ep_reward = 0.0
         steps = 0
@@ -668,7 +581,7 @@ def evaluate_agent_trading(
         while not done:
             obs_array: np.ndarray = np.asarray(obs)
 
-            # Build kwargs to keep Pylance happy (SB3 BaseAlgorithm.predict is not typed with action_masks)
+
             predict_kwargs: Dict[str, Any] = {"deterministic": deterministic}
 
             if is_maskable and use_action_masks:
@@ -676,13 +589,13 @@ def evaluate_agent_trading(
                 if action_masks is not None:
                     predict_kwargs["action_masks"] = action_masks
 
-            # Predict action (with safe fallback if some algo rejects unknown kwargs)
+
             try:
                 action, _ = model.predict(obs_array, **predict_kwargs)
             except TypeError:
                 action, _ = model.predict(obs_array, deterministic=deterministic)
 
-            # VecEnv.step returns (obs, rewards, dones, infos)
+
             obs, r, dones, infos = env.step(action)
             ep_reward += float(r[0])
             done = bool(dones[0])
@@ -692,7 +605,6 @@ def evaluate_agent_trading(
                 done = True
 
 
-        # IMPORTANT: many envs place episode-final stats into terminal_info
         finfo = info.get("terminal_info", info) if isinstance(info, dict) else {}
 
         pnl = float(finfo.get("total_pnl", 0.0))
@@ -700,7 +612,7 @@ def evaluate_agent_trading(
         dd = float(finfo.get("drawdown", 0.0))
         trades = int(finfo.get("trade_count", 0))
 
-        # Normalize (some envs report percentages)
+
         if wr > 1.0:
             wr /= 100.0
         wr = float(np.clip(wr, 0.0, 1.0))
@@ -724,7 +636,7 @@ def evaluate_agent_trading(
         "reward_std": float(np.std(rewards)) if rewards else 0.0,
         "mean_pnl": float(np.mean(pnls)) if pnls else 0.0,
         "pnl_std": float(np.std(pnls)) if pnls else 0.0,
-        "mean_win_rate": float(np.mean(win_rates)) if win_rates else 0.0,  # 0..1
+        "mean_win_rate": float(np.mean(win_rates)) if win_rates else 0.0,
         "mean_drawdown": float(np.mean(drawdowns)) if drawdowns else 0.0,
         "max_drawdown": float(np.max(drawdowns)) if drawdowns else 0.0,
         "mean_trades": float(np.mean(trade_counts)) if trade_counts else 0.0,
@@ -800,23 +712,7 @@ def score_trading_metrics(m: Dict[str, float], eval_episodes: int) -> float:
     return float(score)
 
 
-# =============================================================================
-# OPTUNA (WALK-FORWARD + EVAL-BASED PRUNING)
-# =============================================================================
-# NOTE: This Optuna setup is for finding PPO hyperparameters (not curriculum/stage params).
-# It does NOT use curriculum stages - it runs on a fixed PropFirmConfig.
-# For curriculum training, use --curriculum flag instead.
-#
-# IMPORTANT: ent_coef is FIXED at 0.10 (not tuned) because:
-# 1. Curriculum training uses adaptive entropy that overrides ent_coef
-# 2. Tuning ent_coef here would find values incompatible with adaptive entropy
-# 3. 0.10 is a good baseline that curriculum can adjust from
-# =============================================================================
-
 def sample_ppo_hyperparams(trial: Any) -> Dict[str, Any]:
-    """
-    PPO hyperparameter search space for NON-CURRICULUM training.
-    """
     return {
         "learning_rate": trial.suggest_float("learning_rate", 5e-6, 5e-4, log=True),
         "n_steps": trial.suggest_categorical("n_steps", [2048, 4096, 8192]),
@@ -825,7 +721,7 @@ def sample_ppo_hyperparams(trial: Any) -> Dict[str, Any]:
         "gamma": trial.suggest_float("gamma", 0.93, 0.995),
         "gae_lambda": trial.suggest_float("gae_lambda", 0.94, 0.99),
         "clip_range": trial.suggest_float("clip_range", 0.15, 0.30),
-        # Fixed: curriculum uses adaptive entropy
+
         "ent_coef": 0.10,
         "vf_coef": trial.suggest_float("vf_coef", 0.5, 1.0),
         "max_grad_norm": trial.suggest_float("max_grad_norm", 0.4, 0.8),
@@ -836,11 +732,6 @@ def sample_ppo_hyperparams(trial: Any) -> Dict[str, Any]:
 
 
 def sample_env_hyperparams(trial: Any) -> Dict[str, Any]:
-    """
-    Optimized env params based on Trial 12.
-
-    NOTE: Legacy fields have been removed. Use config.reward.* settings instead.
-    """
     return {
         "reward_scale": trial.suggest_float("reward_scale", 5.0, 15.0),
         "entry_quality_threshold": trial.suggest_float("entry_quality_threshold", 0.35, 0.65),
@@ -858,9 +749,6 @@ def _sanity_adjust_ppo_params(n_envs: int, ppo_params: Dict[str, Any]) -> Dict[s
 
 
 def _make_eval_config_adversarial(base: PropFirmConfig, adversity: float) -> PropFirmConfig:
-    """
-    adversity in [0..1]: increases execution harshness without touching prop limits.
-    """
     cfg = copy.deepcopy(base)
 
     cfg.domain_randomization_enabled = True
@@ -1096,10 +984,6 @@ def run_optuna_optimization(
     return study
 
 
-# =============================================================================
-# MAIN TRAINING (PRODUCTION)
-# =============================================================================
-
 def train_prop_firm_agent(
     data: Dict[str, Dict[str, pd.DataFrame]],
     total_timesteps: int,
@@ -1132,7 +1016,7 @@ def train_prop_firm_agent(
 
     use_masking = bool(MASKABLE_AVAILABLE)
 
-    # COUPLING FIX: Use separate monitor directories to avoid collisions
+
     train_monitor_dir = "logs/propfirm/training"
 
     train_env = create_vec_envs(
@@ -1147,7 +1031,7 @@ def train_prop_firm_agent(
     except Exception as e:
         logger.debug(f"Could not seed train_env: {e}")
 
-    # Single eval env for best-model saving + SB3 EvalCallback
+
     eval_cfg = copy.deepcopy(config)
     try:
         eval_cfg.domain_randomization_enabled = False
@@ -1166,7 +1050,7 @@ def train_prop_firm_agent(
         frame_stack=frame_stack,
     )
 
-    # Adversarial single-env eval for *real trading score logging*
+
     eval_cfg_adv = _make_eval_config_adversarial(config, adversity=0.8)
     eval_env_single = create_eval_vec_env(
         data, eval_cfg_adv,
@@ -1199,7 +1083,7 @@ def train_prop_firm_agent(
         logger.info(f"Loading pretrained model: {pretrained_path}")
         model = Algo.load(pretrained_path, env=train_env, device=device)  # type: ignore[attr-defined]
 
-        # AUDIT FIX (CRIT-4): Validate observation version before continuing training
+
         try:
             from envs.prop_firm_env import PPO_OBS_VERSION, validate_observation_version
             model_obs_size: int = model.observation_space.shape[0]  # type: ignore[union-attr]
@@ -1264,7 +1148,7 @@ def train_prop_firm_agent(
         VecEpisodeTradingCallback(
             total_timesteps=total_timesteps,
             log_interval_steps=50_000,
-            # Unify dashboard path to prevent “dashboard looks dead” surprises:
+
             metrics_file="logs/training/live_metrics.json",
         ),
         CheckpointCallback(
@@ -1370,14 +1254,11 @@ def train_prop_firm_agent(
 
 def create_curriculum_env(
     data: Dict[str, Dict[str, pd.DataFrame]],
-    curriculum_manager: Any,  # CurriculumManager
+    curriculum_manager: Any,
     seed: int = 0,
     monitor_dir: Optional[str] = None,
     use_action_masking: bool = True,
 ) -> Any:
-    """
-    Create a curriculum environment using PropFirmTradingEnv's native curriculum support.
-    """
     if not CURRICULUM_AVAILABLE:
         raise RuntimeError("Curriculum system not available")
 
@@ -1413,18 +1294,13 @@ def create_curriculum_env(
 
 def create_curriculum_vec_envs(
     data: Dict[str, Dict[str, pd.DataFrame]],
-    curriculum_manager: Any,  # CurriculumManager
+    curriculum_manager: Any,
     n_envs: int,
     seed: int,
     monitor_dir: str = "logs/curriculum/training",
     use_action_masking: bool = True,
     frame_stack: int = 1,
 ) -> VecEnv:
-    """
-    Create vectorized curriculum environments.
-
-    AUDIT FIX: Force DummyVecEnv to keep CurriculumManager truly shared.
-    """
     Path(monitor_dir).mkdir(parents=True, exist_ok=True)
 
     def make_env(rank: int) -> Callable[[], Any]:
@@ -1486,9 +1362,6 @@ def train_curriculum_agent(
     seed: int = 42,
     holdout_ratio: float = 0.15,
 ) -> BaseAlgorithm:
-    """
-    Train with curriculum learning - progressive difficulty stages.
-    """
     if not CURRICULUM_AVAILABLE or CurriculumStage is None or CurriculumManager is None:
         raise RuntimeError("Curriculum system not available. Check imports.")
 
@@ -1518,9 +1391,7 @@ def train_curriculum_agent(
     if get_stage_progression is not None:
         logger.info(f"Stage progression: {' → '.join(s.name for s in get_stage_progression())}")
 
-    # ---------------------------------------------------------------------
-    # Holdout split (unseen tail of data) for real validation/stress gating
-    # ---------------------------------------------------------------------
+
     n_bars = _min_len_across(data)
     if n_bars <= 0:
         raise ValueError("No bars available for curriculum training")
@@ -1533,8 +1404,7 @@ def train_curriculum_agent(
         holdout_ratio = 0.0
     holdout_ratio = float(np.clip(holdout_ratio, 0.0, 0.50))
 
-    # Use the maximum stage episode length so holdout remains valid all the way
-    # to LIVE_READY (later stages have longer episodes).
+
     stage_max_steps = int(getattr(curriculum_manager.stage_config, "max_steps_per_episode", 0) or 0)
     max_steps_required = stage_max_steps
     if get_stage_progression is not None and get_stage_config is not None:
@@ -1544,7 +1414,7 @@ def train_curriculum_agent(
             )
         except Exception:
             max_steps_required = stage_max_steps
-    # Heuristic: ensure holdout can support buffer + varied start indices.
+
     min_holdout_len = max(1500, max_steps_required + 800)
     holdout_len = int(max(min_holdout_len, int(n_bars * holdout_ratio))) if holdout_ratio > 0 else 0
 
@@ -1579,9 +1449,7 @@ def train_curriculum_agent(
         frame_stack=frame_stack,
     )
 
-    # Evaluation environments on HOLDOUT data:
-    # - eval_env: used by SB3 EvalCallback for model selection tracking
-    # - holdout_validation_env: dedicated for curriculum validation/stress gates
+
     eval_env = create_curriculum_vec_envs(
         data=holdout_data,
         curriculum_manager=curriculum_manager,
@@ -1634,22 +1502,21 @@ def train_curriculum_agent(
                 f"Keeping loaded value."
             )
 
-        # PRESERVE saved model hyperparameters instead of overwriting
-        # The model's learned entropy/lr state should be continued, not reset
+
         saved_lr = getattr(model, 'learning_rate', learning_rate)
         if callable(saved_lr):
-            saved_lr = saved_lr(1.0)  # Get current value from schedule
+            saved_lr = saved_lr(1.0)
         saved_ent_coef = getattr(model, 'ent_coef', ent_coef)
         saved_clip_range = getattr(model, 'clip_range', clip_range)
         if callable(saved_clip_range):
             saved_clip_range = saved_clip_range(1.0)
-        
-        # Get optimizer lr for logging
+
+
         try:
             optimizer_lr = model.policy.optimizer.param_groups[0]["lr"]
         except Exception:
             optimizer_lr = saved_lr
-        
+
         logger.info(
             f"PRESERVING saved model state: lr={saved_lr:.2e} (optimizer: {optimizer_lr:.2e}), "
             f"ent_coef={saved_ent_coef:.4f}, clip_range={saved_clip_range:.3f}"
@@ -1711,17 +1578,16 @@ def train_curriculum_agent(
         max_demotions_from_same_stage=max_demotions_from_same_stage,
         mastery_confirmation_episodes=mastery_confirmation_episodes,
     )
-    
-    # Load controller states if resuming
+
+
     if load_controllers_path and Path(load_controllers_path).exists():
         curriculum_training_callback.load_controller_states(Path(load_controllers_path))
-    
-    # Load metrics state (episode history) if resuming
+
+
     if load_metrics_path and Path(load_metrics_path).exists():
         curriculum_training_callback.load_metrics_state(Path(load_metrics_path))
 
-    # Use a dedicated holdout env for promotion gates (validation + stress),
-    # so scenario overrides do not interfere with EvalCallback's environment.
+
     curriculum_training_callback._eval_env = holdout_validation_env
 
     callbacks: List[BaseCallback] = [
@@ -1827,25 +1693,21 @@ def train_curriculum_agent(
     return model
 
 
-# =============================================================================
-# CLI
-# =============================================================================
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="PropFirm PPO Training (10/10) with Walk-Forward Optuna")
 
-    # Training mode selection
+
     parser.add_argument("--optuna", action="store_true", help="Run Optuna hyperparameter optimization")
     parser.add_argument("--curriculum", action="store_true", help="Run curriculum learning (progressive difficulty)")
 
-    # Optuna options
+
     parser.add_argument("--trials", type=int, default=25, help="Optuna trials")
     parser.add_argument("--trial-timesteps", type=int, default=750_000, help="Steps per Optuna trial")
     parser.add_argument("--optuna-storage", type=str, default=None, help="Optuna storage URL (optional)")
     parser.add_argument("--study-name", type=str, default="propfirm_ppo", help="Optuna study name")
     parser.add_argument("--walk-forward-folds", type=int, default=2, help="Walk-forward folds (Optuna)")
 
-    # Curriculum options
+
     parser.add_argument(
         "--start-stage",
         type=str,
@@ -1948,15 +1810,14 @@ def main() -> None:
         args.eval_freq = 10_000
         logger.info("TEST MODE enabled: reduced timesteps and frequencies")
 
-    # Resolve seed: -1 means time-based random seed for exploration variance
+
     if args.seed == -1:
         args.seed = int(time.time() * 1000) % (2**31)
         logger.info(f"Using time-based random seed: {args.seed}")
     else:
         logger.info(f"Using fixed seed: {args.seed} (reproducible)")
 
-    # Start dashboard server if available and not disabled
-    # Unify to one metrics path for both training modes.
+
     metrics_path_for_dashboard = "logs/training/live_metrics.json"
     if DASHBOARD_AVAILABLE and not args.no_dashboard and start_dashboard_server is not None:
         try:

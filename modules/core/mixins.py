@@ -1,9 +1,4 @@
-# ─────────────────────────────────────────────────────────────
-# File: modules/core/mixins.py
-# [CLEANED] SmartInfoBus Core Mixins - Infrastructure Only
-# Removed: Unused orchestration methods (1500+ lines of dead code)
-# Kept: State management, contracts, utilities actually used by modules
-# ─────────────────────────────────────────────────────────────
+
 
 from __future__ import annotations
 
@@ -20,15 +15,11 @@ from modules.utils.info_bus import InfoBusManager, SmartInfoBus
 if TYPE_CHECKING:
     pass
 
-# ═══════════════════════════════════════════════════════════════════
-# MIXIN STATE MANAGEMENT
-# ═══════════════════════════════════════════════════════════════════
 
 HealthStatus = Literal["OK", "DEGRADED", "FAILED"]
 
 @dataclass
 class MixinPerformanceMetrics:
-    """Performance metrics for mixin operations"""
     operation_count: int = 0
     success_count: int = 0
     failure_count: int = 0
@@ -38,7 +29,6 @@ class MixinPerformanceMetrics:
 
 
 class MixinStateManager:
-    """State management for mixins with hot-reload support"""
 
     def __init__(self, mixin_instance: Any):
         self.mixin_instance = mixin_instance
@@ -46,7 +36,6 @@ class MixinStateManager:
         self.performance_metrics = MixinPerformanceMetrics()
 
     def get_state(self) -> Dict[str, Any]:
-        """Get complete mixin state for persistence."""
         with self.state_lock:
             return {
                 'performance_metrics': {
@@ -60,7 +49,6 @@ class MixinStateManager:
             }
 
     def set_state(self, state: Dict[str, Any]):
-        """Restore mixin state."""
         with self.state_lock:
             metrics = state.get('performance_metrics', {})
             self.performance_metrics.operation_count = metrics.get('operation_count', 0)
@@ -71,7 +59,6 @@ class MixinStateManager:
             self.performance_metrics.health_status = metrics.get('health_status', 'OK')  # type: ignore[assignment]
 
     def record_operation(self, operation_name: str, duration_ms: float, success: bool):
-        """Record operation performance (thread-safe)."""
         with self.state_lock:
             self.performance_metrics.operation_count += 1
             self.performance_metrics.last_execution = time.time()
@@ -90,43 +77,24 @@ class MixinStateManager:
                 elif failure_rate > 0.3:
                     self.performance_metrics.health_status = "DEGRADED"
 
-            # Online average latency
+
             total_ops = self.performance_metrics.operation_count
             current_avg = self.performance_metrics.avg_latency_ms
             self.performance_metrics.avg_latency_ms = ((current_avg * (total_ops - 1)) + duration_ms) / total_ops
 
 
-# ═══════════════════════════════════════════════════════════════════
-# SMARTINFOBUS TRADING MIXIN
-# ═══════════════════════════════════════════════════════════════════
-
 class SmartInfoBusTradingMixin(ABC):
-    """
-    Trading mixin providing state management and abstract contracts.
-
-    FEATURES:
-    - Trading state initialization and persistence
-    - Abstract method contracts for propose_action and calculate_confidence
-    - Performance metrics tracking
-    - Helper utilities for metrics updates
-
-    USAGE:
-    - Modules inherit this and implement propose_action() and calculate_confidence()
-    - Modules call _initialize_trading_state() in their __init__
-    - Modules use helper methods like _update_trading_metrics() as needed
-    """
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._initialize_trading_state()
 
     def _initialize_trading_state(self):
-        """Initialize trading state (idempotent)."""
         max_history = getattr(getattr(self, "config", None), "max_history", 100)
         self._trade_history = deque(maxlen=max_history)
         self._trade_theses = deque(maxlen=max_history)
 
-        # Trading metrics
+
         self._total_pnl = getattr(self, "_total_pnl", 0.0)
         self._trades_processed = getattr(self, "_trades_processed", 0)
         self._winning_trades = getattr(self, "_winning_trades", 0)
@@ -135,14 +103,14 @@ class SmartInfoBusTradingMixin(ABC):
         self._current_drawdown = getattr(self, "_current_drawdown", 0.0)
         self._peak_equity = getattr(self, "_peak_equity", 0.0)
 
-        # State management
+
         if not hasattr(self, 'state_manager'):
             self.state_manager = MixinStateManager(self)
 
-        # Smart bus
+
         self.smart_bus: SmartInfoBus = getattr(self, 'smart_bus', InfoBusManager.get_instance())
 
-        # Logger setup
+
         if not getattr(self, 'logger', None):
             self.logger = RotatingLogger(
                 name=f"{self.__class__.__name__}_Trading",
@@ -157,26 +125,13 @@ class SmartInfoBusTradingMixin(ABC):
 
     @abstractmethod
     async def propose_action(self, **inputs) -> Optional[Dict[str, Any]]:
-        """
-        ABSTRACT: Propose a trading action based on inputs.
-        Modules MUST implement this method.
-
-        Returns:
-            Dict with action details or None
-        """
+        pass
 
     @abstractmethod
     async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> Optional[float]:
-        """
-        ABSTRACT: Calculate confidence for a proposed action.
-        Modules MUST implement this method.
-
-        Returns:
-            Float confidence score (0.0-1.0) or None
-        """
+        pass
 
     def _update_trading_metrics(self, trade: Dict[str, Any]):
-        """Helper: Update comprehensive trading metrics"""
         pnl = float(trade.get('pnl', 0) or 0)
 
         self._trades_processed += 1
@@ -187,18 +142,17 @@ class SmartInfoBusTradingMixin(ABC):
         elif pnl < 0:
             self._losing_trades += 1
 
-        # Update drawdown tracking
+
         self._peak_equity = max(self._peak_equity, self._total_pnl)
         self._current_drawdown = (self._peak_equity - self._total_pnl) / max(self._peak_equity, 1)
         self._max_drawdown = max(self._max_drawdown, self._current_drawdown)
 
-        # Store in history
+
         self._trade_history.append(trade)
         if 'thesis' in trade:
             self._trade_theses.append(trade['thesis'])
 
     def _get_trading_summary(self) -> Dict[str, Any]:
-        """Helper: Get comprehensive trading summary"""
         return {
             'trades_processed': self._trades_processed,
             'total_pnl': self._total_pnl,
@@ -213,12 +167,10 @@ class SmartInfoBusTradingMixin(ABC):
         }
 
     def _get_win_rate(self) -> float:
-        """Helper: Calculate win rate"""
         total = self._winning_trades + self._losing_trades
         return self._winning_trades / max(total, 1)
 
     def get_state(self) -> Dict[str, Any]:
-        """Get trading mixin state for persistence"""
         base_state = self.state_manager.get_state()
         base_state.update({
             'total_pnl': self._total_pnl,
@@ -234,7 +186,6 @@ class SmartInfoBusTradingMixin(ABC):
         return base_state
 
     def set_state(self, state: Dict[str, Any]):
-        """Restore trading mixin state"""
         self.state_manager.set_state(state)
 
         self._total_pnl = state.get('total_pnl', 0.0)
@@ -252,50 +203,32 @@ class SmartInfoBusTradingMixin(ABC):
             self._trade_theses = deque(state['trade_theses'], maxlen=self._trade_theses.maxlen)
 
 
-# ═══════════════════════════════════════════════════════════════════
-# SMARTINFOBUS RISK MIXIN
-# ═══════════════════════════════════════════════════════════════════
-
 class SmartInfoBusRiskMixin(ABC):
-    """
-    Risk management mixin providing state management and abstract contracts.
-
-    FEATURES:
-    - Risk state initialization and persistence
-    - Risk limits and threshold management
-    - Performance metrics tracking
-
-    USAGE:
-    - Modules inherit this and implement their own risk assessment logic
-    - Modules call _initialize_risk_state() in their __init__
-    - Modules manage their own risk calculations in process()
-    """
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._initialize_risk_state()
 
     def _initialize_risk_state(self):
-        """Initialize risk management state (idempotent)."""
-        # Core risk state
+
         self._risk_alerts = deque(maxlen=100)
         self._risk_violations = getattr(self, "_risk_violations", 0)
         self._last_risk_check = getattr(self, "_last_risk_check", None)
         self._risk_theses = deque(maxlen=50)
         self._risk_history = deque(maxlen=1000)
 
-        # Load risk limits from risk_policy.yaml
+
         defaults = self._load_risk_limits_from_yaml()
         self._risk_limits = {**defaults, **getattr(self, "_risk_limits", {})}
 
-        # State manager
+
         if not hasattr(self, 'state_manager'):
             self.state_manager = MixinStateManager(self)
 
-        # Smart bus
+
         self.smart_bus: SmartInfoBus = getattr(self, 'smart_bus', InfoBusManager.get_instance())
 
-        # Logger
+
         if not getattr(self, 'logger', None):
             self.logger = RotatingLogger(
                 name=f"{self.__class__.__name__}_Risk",
@@ -307,14 +240,13 @@ class SmartInfoBusRiskMixin(ABC):
         self.logger.info(
             format_operator_message("[SAFE]", "RISK MIXIN INITIALIZED", context="mixin_init")
         )
-    
+
     def _load_risk_limits_from_yaml(self) -> Dict[str, Any]:
-        """Load risk limits from risk_policy.yaml with hardcoded fallbacks."""
         import os
 
         import yaml
-        
-        # Hardcoded fallbacks (prop firm safe)
+
+
         defaults = {
             'max_drawdown': 0.085,
             'max_position_size': 0.05,
@@ -323,28 +255,27 @@ class SmartInfoBusRiskMixin(ABC):
             'var_limit': 0.015,
             'stress_test_limit': 0.05
         }
-        
+
         try:
             config_path = os.path.join(os.path.dirname(__file__), "..", "..", "config", "risk_policy.yaml")
             if os.path.exists(config_path):
                 with open(config_path, "r", encoding="utf-8") as f:
                     policy = yaml.safe_load(f) or {}
-                
+
                 limits = policy.get("limits", {})
                 lot_sizing = policy.get("lot_sizing", {})
-                
+
                 defaults['max_drawdown'] = float(limits.get("max_drawdown", defaults['max_drawdown']))
                 defaults['max_position_size'] = float(limits.get("max_position_size", defaults['max_position_size']))
                 defaults['max_sector_exposure'] = float(limits.get("max_exposure_pct", defaults['max_sector_exposure']) * 2)
                 defaults['max_leverage'] = float(limits.get("max_leverage", defaults['max_leverage']))
                 defaults['var_limit'] = float(limits.get("max_portfolio_var", defaults['var_limit']))
         except Exception:
-            pass  # Use fallback defaults
-        
+            pass
+
         return defaults
 
     def get_state(self) -> Dict[str, Any]:
-        """Get risk mixin state for persistence"""
         base_state = self.state_manager.get_state()
         base_state.update({
             'risk_violations': self._risk_violations,
@@ -357,7 +288,6 @@ class SmartInfoBusRiskMixin(ABC):
         return base_state
 
     def set_state(self, state: Dict[str, Any]):
-        """Restore risk mixin state"""
         self.state_manager.set_state(state)
 
         self._risk_violations = state.get('risk_violations', 0)
@@ -376,31 +306,13 @@ class SmartInfoBusRiskMixin(ABC):
             self._risk_history = deque(state['risk_history'], maxlen=self._risk_history.maxlen)
 
 
-# ═══════════════════════════════════════════════════════════════════
-# SMARTINFOBUS VOTING MIXIN
-# ═══════════════════════════════════════════════════════════════════
-
 class SmartInfoBusVotingMixin(ABC):
-    """
-    Voting mixin providing state management and abstract contracts.
-
-    FEATURES:
-    - Voting state initialization and persistence
-    - Vote history and confidence tracking
-    - Performance analytics
-
-    USAGE:
-    - Modules inherit this and implement propose_action and calculate_confidence
-    - Modules call _initialize_voting_state() in their __init__
-    - Modules manage their own voting logic in process()
-    """
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._initialize_voting_state()
 
     def _initialize_voting_state(self):
-        """Initialize voting state (idempotent)."""
         max_history = getattr(getattr(self, "config", None), "max_history", 100)
         self._votes_cast = getattr(self, "_votes_cast", 0)
         self._vote_history = deque(maxlen=max_history)
@@ -431,26 +343,13 @@ class SmartInfoBusVotingMixin(ABC):
 
     @abstractmethod
     async def propose_action(self, **inputs) -> Optional[Dict[str, Any]]:
-        """
-        ABSTRACT: Propose voting action based on inputs.
-        Modules MUST implement this method.
-
-        Returns:
-            Dict with 'action', 'confidence', 'reasoning' or None
-        """
+        pass
 
     @abstractmethod
     async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> Optional[float]:
-        """
-        ABSTRACT: Calculate confidence for proposed action.
-        Modules MUST implement this method.
-
-        Returns:
-            Float confidence (0.0-1.0) or None
-        """
+        pass
 
     def _record_vote(self, vote: Dict[str, Any]):
-        """Helper: Record vote with enhanced tracking"""
         self._votes_cast += 1
         self._vote_history.append(vote)
         self._confidence_history.append(float(vote.get('confidence', 0.0) or 0.0))
@@ -465,7 +364,6 @@ class SmartInfoBusVotingMixin(ABC):
             self._vote_accuracy = self._successful_votes / self._votes_cast
 
     def get_state(self) -> Dict[str, Any]:
-        """Get voting mixin state for persistence"""
         base_state = self.state_manager.get_state()
         base_state.update({
             'votes_cast': self._votes_cast,
@@ -480,7 +378,6 @@ class SmartInfoBusVotingMixin(ABC):
         return base_state
 
     def set_state(self, state: Dict[str, Any]):
-        """Restore voting mixin state"""
         self.state_manager.set_state(state)
 
         self._votes_cast = state.get('votes_cast', 0)
@@ -501,31 +398,13 @@ class SmartInfoBusVotingMixin(ABC):
             self._consensus_history = deque(state['consensus_history'], maxlen=self._consensus_history.maxlen)
 
 
-# ═══════════════════════════════════════════════════════════════════
-# STATE MIXIN
-# ═══════════════════════════════════════════════════════════════════
-
 class SmartInfoBusStateMixin(ABC):
-    """
-    State management mixin for hot-reload support.
-
-    FEATURES:
-    - Complete state persistence and restoration
-    - State validation and integrity checking
-    - Version compatibility management
-
-    USAGE:
-    - Modules inherit this for state management capabilities
-    - Modules call _initialize_state_management() in their __init__
-    - Modules can use get_complete_state() and set_complete_state() for persistence
-    """
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._initialize_state_management()
 
     def _initialize_state_management(self):
-        """Initialize state management infrastructure (non-destructive)."""
         if not hasattr(self, 'state_manager'):
             self.state_manager = MixinStateManager(self)
         self._state_version = getattr(self, "_state_version", 1)
@@ -543,7 +422,6 @@ class SmartInfoBusStateMixin(ABC):
             )
 
     def get_complete_state(self) -> Dict[str, Any]:
-        """Get complete state including all mixin states"""
         import datetime
         import hashlib
         import json
@@ -567,14 +445,13 @@ class SmartInfoBusStateMixin(ABC):
         if hasattr(self, '_initialize_voting_state'):
             state['voting_state'] = self._get_voting_state()
 
-        # Calculate integrity hash
+
         state_json = json.dumps(state, sort_keys=True, default=str)
         state['integrity_hash'] = hashlib.sha256(state_json.encode()).hexdigest()
 
         return state
 
     def set_complete_state(self, state: Dict[str, Any]) -> bool:
-        """Restore complete state with validation"""
         import hashlib
         import json
 
@@ -621,7 +498,6 @@ class SmartInfoBusStateMixin(ABC):
             return False
 
     def _get_trading_state(self) -> Dict[str, Any]:
-        """Get trading-specific state"""
         if not hasattr(self, '_total_pnl'):
             return {}
         return {
@@ -632,14 +508,12 @@ class SmartInfoBusStateMixin(ABC):
         }
 
     def _set_trading_state(self, state: Dict[str, Any]):
-        """Set trading-specific state"""
         for base in self.__class__.__mro__:
             if base.__name__ == "SmartInfoBusTradingMixin":
                 base.set_state(self, state)
                 break
 
     def _get_risk_state(self) -> Dict[str, Any]:
-        """Get risk-specific state"""
         if not hasattr(self, '_risk_violations'):
             return {}
         return {
@@ -648,14 +522,12 @@ class SmartInfoBusStateMixin(ABC):
         }
 
     def _set_risk_state(self, state: Dict[str, Any]):
-        """Set risk-specific state"""
         for base in self.__class__.__mro__:
             if base.__name__ == "SmartInfoBusRiskMixin":
                 base.set_state(self, state)
                 break
 
     def _get_voting_state(self) -> Dict[str, Any]:
-        """Get voting-specific state"""
         if not hasattr(self, '_votes_cast'):
             return {}
         return {
@@ -664,16 +536,11 @@ class SmartInfoBusStateMixin(ABC):
         }
 
     def _set_voting_state(self, state: Dict[str, Any]):
-        """Set voting-specific state"""
         for base in self.__class__.__mro__:
             if base.__name__ == "SmartInfoBusVotingMixin":
                 base.set_state(self, state)
                 break
 
-
-# ═══════════════════════════════════════════════════════════════════
-# COMPOSITE MIXIN
-# ═══════════════════════════════════════════════════════════════════
 
 class InfoBusFullIntegrationMixin(
     SmartInfoBusTradingMixin,
@@ -681,24 +548,11 @@ class InfoBusFullIntegrationMixin(
     SmartInfoBusVotingMixin,
     SmartInfoBusStateMixin
 ):
-    """
-    Complete SmartInfoBus integration combining all mixin features.
-
-    Provides:
-    - Trading state and metrics
-    - Risk management state
-    - Voting state and tracking
-    - State persistence for hot-reload
-
-    USAGE:
-    - Modules can inherit this single class to get all mixin features
-    - Equivalent to inheriting all four mixins individually
-    """
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        # Consolidated logger if not already set
+
         if not getattr(self, 'logger', None):
             self.logger = RotatingLogger(
                 name=f"{self.__class__.__name__}_FullIntegration",

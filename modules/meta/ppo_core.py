@@ -1,21 +1,4 @@
 #!/usr/bin/env python3
-"""
-PPO Core - Pure RL Engine
-=========================
-
-This module contains the pure reinforcement learning components of PPO,
-completely decoupled from SmartInfoBus, voting, and instrument logic.
-
-Responsibilities:
-- EnhancedPPONetwork: Neural network architecture
-- PPOCore: Experience buffer, GAE, PPO update, action selection
-- MaskablePPO discrete action support for live trading
-
-Input: obs: np.ndarray
-Output: actions: np.ndarray, value: float, log_prob: float
-
-Version: 3.2.0 (MaskablePPO discrete action support for training/live parity)
-"""
 
 from __future__ import annotations
 
@@ -30,7 +13,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
-# MaskablePPO support
 try:
     from sb3_contrib import MaskablePPO
     MASKABLE_PPO_AVAILABLE = True
@@ -39,144 +21,83 @@ except ImportError:
     MASKABLE_PPO_AVAILABLE = False
 
 
-# ═══════════════════════════════════════════════════════════════════
-# CONFIGURATION
-# ═══════════════════════════════════════════════════════════════════
-
-
 @dataclass
 class PPOCoreConfig:
-    """
-    Configuration for PPOCore (pure RL engine).
 
-    Note: obs_size should be set to match your observation builder.
-    The default of 64 matches PPO_OBS_SIZE v4.0 from ppo_observation_builder
-    (includes world_model and trading_mode features).
-    
-    ACTION SEMANTICS (v4.1 - Autonomous PPO):
-    ===========================================
-    PPO outputs a 2D continuous action in [-1, 1]:
-    
-    action[0] = direction_score ∈ [-1.0, 1.0]
-        - > +0.3 ⇒ LONG signal
-        - < -0.3 ⇒ SHORT signal  
-        - |score| ≤ 0.3 ⇒ FLAT (uncertain/no position)
-        - Magnitude indicates conviction strength
-    
-    action[1] = size_score ∈ [-1.0, 1.0]
-        - Mapped to [0.0, 1.0] for position sizing
-        - Then scaled by risk/memory/mode gates
-    
-    The direction_score is the PRIMARY autonomous signal from PPO.
-    In training, PPO learns direction entirely from market observations.
-    In live trading, direction is blended with experts based on autonomy phase.
-    """
 
-    # Network dimensions
-    obs_size: int = 84  # Updated for v5.5 Governor expansion
-    act_size: int = 2  # (direction_score, size_score)
+    obs_size: int = 84
+    act_size: int = 2
     hidden_size: int = 128
 
-    # Device
+
     device: str = "cpu"
 
-    # Learning rate
+
     learning_rate: float = 3e-4
 
-    # PPO hyperparameters
+
     clip_eps: float = 0.2
     value_coeff: float = 0.5
     entropy_coeff: float = 0.01
     gae_lambda: float = 0.95
-    gamma: float = 0.95  # SHORT-TERM: ~5h horizon matches M15 + ExitEngine timeouts
+    gamma: float = 0.95
     max_grad_norm: float = 0.5
     ppo_epochs: int = 4
 
-    # Buffer / update settings
-    batch_size: int = 64  # Minimum samples before update AND mini-batch size
-    buffer_size: int = 2048  # Soft cap on buffer length
 
-    # Direction thresholds (for interpreting direction_score)
-    direction_long_threshold: float = 0.3   # score > this = LONG
-    direction_short_threshold: float = -0.3  # score < this = SHORT
+    batch_size: int = 64
+    buffer_size: int = 2048
 
-    # ═══════════════════════════════════════════════════════════════
-    # DISCRETE ACTION SPACE (MaskablePPO training/live parity)
-    # ═══════════════════════════════════════════════════════════════
-    # These MUST match prop_firm_env.py for training/live consistency!
-    # Action layout: [HOLD, LONG×K, SHORT×K, CLOSE] = 2K+2 actions
-    size_buckets: Tuple[float, ...] = (0.35, 0.60, 0.85, 1.10)  # K=4
-    
-    # Computed from size_buckets (do not set manually)
+
+    direction_long_threshold: float = 0.3
+    direction_short_threshold: float = -0.3
+
+
+    size_buckets: Tuple[float, ...] = (0.35, 0.60, 0.85, 1.10)
+
+
     @property
     def n_discrete_actions(self) -> int:
-        """Total discrete actions: HOLD + LONG×K + SHORT×K + CLOSE = 2K+2"""
         return 2 * len(self.size_buckets) + 2
 
-    # Debug
+
     debug: bool = False
 
 
-# ═══════════════════════════════════════════════════════════════════
-# DISCRETE ACTION DECODER (for MaskablePPO parity)
-# ═══════════════════════════════════════════════════════════════════
-
 @dataclass
 class DiscreteActionDecoded:
-    """Decoded discrete action from MaskablePPO."""
-    intent: str  # "hold", "long", "short", "close"
-    size_mult: float  # Position size multiplier (0.0 for hold/close)
-    action_id: int  # Original action ID
-    
+    intent: str
+    size_mult: float
+    action_id: int
+
     def to_continuous(self) -> Tuple[float, float]:
-        """
-        Convert to continuous (direction_score, size_score) for arbiter compatibility.
-        
-        Maps discrete intent to direction_score:
-        - hold → 0.0 (flat)
-        - long → +0.7 (strong long)
-        - short → -0.7 (strong short)
-        - close → 0.0 (flat/exit)
-        
-        Maps size_mult to size_score:
-        - size_mult in [0.35, 1.10] → size_score in [-1, 1]
-        """
         if self.intent == "long":
             direction_score = 0.7
         elif self.intent == "short":
             direction_score = -0.7
         else:
             direction_score = 0.0
-        
-        # Map size_mult [0.35, 1.10] → size_score [-1, 1]
+
+
         if self.size_mult > 0:
-            # Linear mapping: 0.35→-1, 0.725→0, 1.10→1
+
             size_score = (self.size_mult - 0.725) / 0.375
             size_score = float(np.clip(size_score, -1.0, 1.0))
         else:
             size_score = 0.0
-        
+
         return direction_score, size_score
 
 
 def decode_discrete_action(action_id: int, size_buckets: Tuple[float, ...]) -> DiscreteActionDecoded:
-    """
-    Decode a discrete action ID to intent and size.
-    
-    Action layout (matching prop_firm_env.py):
-    - 0: HOLD
-    - 1 to K: LONG with size_buckets[i-1]
-    - K+1 to 2K: SHORT with size_buckets[i-K-1]
-    - 2K+1: CLOSE
-    """
     K = len(size_buckets)
     ACTION_HOLD = 0
     ACTION_LONG_START = 1
     ACTION_SHORT_START = 1 + K
     ACTION_CLOSE = 1 + 2 * K
-    
+
     a = int(action_id)
-    
+
     if a == ACTION_HOLD:
         return DiscreteActionDecoded("hold", 0.0, a)
     elif a == ACTION_CLOSE:
@@ -191,20 +112,7 @@ def decode_discrete_action(action_id: int, size_buckets: Tuple[float, ...]) -> D
         return DiscreteActionDecoded("hold", 0.0, a)
 
 
-# ═══════════════════════════════════════════════════════════════════
-# NEURAL NETWORK
-# ═══════════════════════════════════════════════════════════════════
-
-
 class EnhancedPPONetwork(nn.Module):
-    """
-    Enhanced PPO network with actor-critic architecture.
-
-    Architecture:
-    - Shared feature extractor (2 hidden layers with dropout)
-    - Policy head (actor) - outputs mean and log_std for Gaussian policy
-    - Value head (critic) - outputs state value estimate
-    """
 
     def __init__(
         self,
@@ -218,7 +126,7 @@ class EnhancedPPONetwork(nn.Module):
         self.act_size = act_size
         self.hidden_size = hidden_size
 
-        # Shared feature extractor
+
         self.feature_extractor = nn.Sequential(
             nn.Linear(obs_size, hidden_size),
             nn.ReLU(),
@@ -228,14 +136,14 @@ class EnhancedPPONetwork(nn.Module):
             nn.Dropout(0.1),
         )
 
-        # Policy head (actor) - outputs mean and log_std
+
         self.policy_head = nn.Sequential(
             nn.Linear(hidden_size, hidden_size // 2),
             nn.ReLU(),
-            nn.Linear(hidden_size // 2, act_size * 2),  # mean and log_std
+            nn.Linear(hidden_size // 2, act_size * 2),
         )
 
-        # Value head (critic)
+
         self.value_head = nn.Sequential(
             nn.Linear(hidden_size, hidden_size // 2),
             nn.ReLU(),
@@ -245,13 +153,12 @@ class EnhancedPPONetwork(nn.Module):
         self._initialize_weights()
 
     def _initialize_weights(self) -> None:
-        """Initialize network weights using orthogonal initialization."""
         for mod in self.modules():
             if isinstance(mod, nn.Linear):
                 nn.init.orthogonal_(mod.weight, gain=2)
                 nn.init.zeros_(mod.bias)
 
-        # Special initialization for policy output (smaller scale for stability)
+
         last = self.policy_head[-1]
         if isinstance(last, nn.Linear):
             nn.init.orthogonal_(last.weight, gain=1)
@@ -260,46 +167,28 @@ class EnhancedPPONetwork(nn.Module):
         self,
         obs: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Forward pass.
-
-        Args:
-            obs: Observation tensor of shape (batch, obs_size)
-
-        Returns:
-            action_mean: (batch, act_size) - mean of Gaussian policy
-            action_log_std: (batch, act_size) - log std of Gaussian policy
-            value: (batch, 1) - state value estimate
-        """
         features = self.feature_extractor(obs)
 
-        # Policy output
+
         policy_out = self.policy_head(features)
         half = policy_out.size(-1) // 2
         action_mean = policy_out[..., :half]
         action_log_std = policy_out[..., half:]
         action_log_std = torch.clamp(action_log_std, -20.0, 2.0)
 
-        # Value output
+
         value = self.value_head(features)
 
         return action_mean, action_log_std, value
 
     def get_action_distribution(self, obs: torch.Tensor) -> torch.distributions.Normal:
-        """Get the action distribution for given observations."""
         action_mean, action_log_std, _ = self.forward(obs)
         action_std = torch.exp(action_log_std)
         return torch.distributions.Normal(action_mean, action_std)
 
 
-# ═══════════════════════════════════════════════════════════════════
-# PPO CORE ENGINE
-# ═══════════════════════════════════════════════════════════════════
-
-
 @dataclass
 class PPOCoreStats:
-    """High-level statistics from PPO training."""
     total_updates: int = 0
     episodes_completed: int = 0
     best_episode_reward: float = -np.inf
@@ -313,45 +202,19 @@ class PPOCoreStats:
 
 
 class PPOCore:
-    """
-    Pure PPO RL engine - no SmartInfoBus, no voting, no instruments.
-
-    This class handles:
-    - Neural network management
-    - Experience buffer
-    - GAE advantage computation
-    - PPO policy updates (mini-batch, multi-epoch)
-    - Action selection (forward pass)
-
-    Usage:
-        core = PPOCore(config)
-
-        # Action selection
-        action, log_prob, value = core.select_action(obs)
-
-        # Record experience
-        core.record_step(obs, action, reward, done, log_prob, value)
-
-        # Mark episode end (for stats only)
-        if done:
-            core.end_episode()
-
-        # Update policy
-        stats = core.update()
-    """
 
     def __init__(self, config: Optional[PPOCoreConfig] = None) -> None:
         self.config: PPOCoreConfig = config or PPOCoreConfig()
         self.device = torch.device(self.config.device)
 
-        # Initialize network
+
         self.network = EnhancedPPONetwork(
             obs_size=self.config.obs_size,
             act_size=self.config.act_size,
             hidden_size=self.config.hidden_size,
         ).to(self.device)
 
-        # Optimizer
+
         self.optimizer = optim.Adam(
             self.network.parameters(),
             lr=self.config.learning_rate,
@@ -359,7 +222,7 @@ class PPOCore:
             weight_decay=1e-4,
         )
 
-        # Learning rate scheduler (Reduce on plateau of episode reward)
+
         self.lr_scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer,
             mode="max",
@@ -367,7 +230,7 @@ class PPOCore:
             patience=50,
         )
 
-        # Experience buffer
+
         self.buffer: Dict[str, List[Any]] = {
             "observations": [],
             "actions": [],
@@ -379,17 +242,17 @@ class PPOCore:
             "returns": [],
         }
 
-        # Statistics
+
         self.stats: PPOCoreStats = PPOCoreStats(
             learning_rate=self.config.learning_rate
         )
         self.episode_rewards: Deque[float] = deque(maxlen=100)
         self.episode_lengths: Deque[int] = deque(maxlen=100)
 
-        # Episode segmentation within the buffer
+
         self._episode_start_index: int = 0
 
-        # Action / value tracking (for record_step defaults)
+
         self.last_action: np.ndarray = np.zeros(
             self.config.act_size,
             dtype=np.float32,
@@ -397,18 +260,17 @@ class PPOCore:
         self._last_log_prob: float = 0.0
         self._last_value: float = 0.0
 
-        # Training diagnostics for external shells (e.g. PPOAgentShell)
+
         self._training_stats: Dict[str, Any] = {}
         self._recent_rewards: Deque[float] = deque(maxlen=1000)
         self._total_steps: int = 0
 
-        # Optional SB3 policy backend (inference-only).
-        # When loaded, select_action() uses SB3 PPO.predict() instead of the internal torch network.
+
         self._sb3_model: Optional[Any] = None
         self._sb3_model_path: Optional[str] = None
         self._sb3_instruments: List[str] = []
-        
-        # MaskablePPO specific state
+
+
         self._is_maskable_ppo: bool = False
         self._action_mask_fn: Optional[Callable[[], np.ndarray]] = None
         self._last_discrete_action: Optional[DiscreteActionDecoded] = None
@@ -420,21 +282,13 @@ class PPOCore:
         return sym.upper().replace("/", "").replace("_", "").replace("-", "")
 
     def set_instruments(self, instruments: List[str]) -> None:
-        """Set instrument ordering for multi-instrument SB3 action slicing."""
         try:
             self._sb3_instruments = [self._norm_symbol(s) for s in (instruments or []) if s]
         except Exception:
             self._sb3_instruments = []
 
-    # ─────────────────────────────────────────────────────────────
-    # Action Selection
-    # ─────────────────────────────────────────────────────────────
 
     def _normalize_obs(self, obs: np.ndarray) -> np.ndarray:
-        """
-        Make sure observation is 1D float32 of correct length,
-        padding/truncating as needed.
-        """
         arr = np.asarray(obs, dtype=np.float32).reshape(-1)
         if arr.shape[0] != self.config.obs_size:
             new_obs = np.zeros(self.config.obs_size, dtype=np.float32)
@@ -444,7 +298,6 @@ class PPOCore:
         return arr
 
     def _action_name(self, action_id: int) -> str:
-        """Get human-readable name for action ID."""
         names = ["HOLD", "L35%", "L60%", "L85%", "L110%", "S35%", "S60%", "S85%", "S110%", "CLOSE"]
         if 0 <= action_id < len(names):
             return names[action_id]
@@ -457,50 +310,23 @@ class PPOCore:
         instrument: Optional[str] = None,
         action_mask: Optional[np.ndarray] = None,
     ) -> Tuple[np.ndarray, float, float]:
-        """
-        Select action given observation.
-        
-        ACTION SEMANTICS (v4.2 - MaskablePPO Discrete + Continuous support):
-        =====================================================================
-        
-        For MaskablePPO (discrete actions):
-            Returns action array converted from discrete to continuous format:
-            - Discrete action ID → (direction_score, size_score) in [-1, 1]
-            - Use self.last_discrete_action for the decoded action details
-        
-        For PPO (continuous actions):
-            Returns action array of shape (2,) with values in [-1, 1]:
-            action[0] = direction_score: > +0.3 ⇒ LONG, < -0.3 ⇒ SHORT, else FLAT
-            action[1] = size_score: mapped to [0,1] by caller
-
-        Args:
-            obs: Observation array of shape (obs_size,) or compatible
-            deterministic: If True, use mean action instead of sampling
-            instrument: Optional instrument name for multi-instrument models
-            action_mask: Optional action mask for MaskablePPO (bool array)
-
-        Returns:
-            action: Action array of shape (act_size,) with values in [-1, 1]
-            log_prob: Log probability of the action
-            value: State value estimate
-        """
         self._last_discrete_action = None
-        
-        # SB3 backend (inference-only)
+
+
         if self._sb3_model is not None:
             try:
                 obs_arr = np.asarray(obs, dtype=np.float32).reshape(-1)
-                
-                # Check model's expected observation size
+
+
                 try:
                     shape = getattr(self._sb3_model.observation_space, "shape", None)
                     expected = int(shape[0]) if shape and len(shape) == 1 else None
                 except Exception:
                     expected = None
 
-                # Handle observation size mismatch
+
                 if expected is not None and obs_arr.shape[0] != expected:
-                    # Log warning - this shouldn't happen with proper frame stacking
+
                     logging.warning(
                         f"[PPOCore] Obs size mismatch: got {obs_arr.shape[0]}, "
                         f"expected {expected}. Padding/truncating (may affect predictions!)"
@@ -510,11 +336,9 @@ class PPOCore:
                     fixed[:copy_size] = obs_arr[:copy_size]
                     obs_arr = fixed
 
-                # ═══════════════════════════════════════════════════════════════
-                # MaskablePPO: Discrete action with masking
-                # ═══════════════════════════════════════════════════════════════
+
                 if self._is_maskable_ppo:
-                    # Get action mask
+
                     mask = action_mask
                     if mask is None and self._action_mask_fn is not None:
                         try:
@@ -522,47 +346,47 @@ class PPOCore:
                         except Exception as e:
                             logging.debug(f"[PPOCore] Action mask function failed: {e}")
                             mask = None
-                    
-                    # Predict with mask (MaskablePPO signature)
+
+
                     if mask is not None:
                         action_id, _ = self._sb3_model.predict(
-                            obs_arr, 
+                            obs_arr,
                             deterministic=deterministic,
                             action_masks=mask.reshape(1, -1) if mask.ndim == 1 else mask
                         )
                     else:
-                        # No mask provided - all actions allowed
+
                         action_id, _ = self._sb3_model.predict(obs_arr, deterministic=deterministic)
-                    
-                    # Get action probabilities for diagnostics (every 50 steps)
+
+
                     self._inference_count = getattr(self, '_inference_count', 0) + 1
                     if self._inference_count % 50 == 1:
                         try:
-                            # Get raw action probabilities from the policy
+
                             obs_tensor = self._sb3_model.policy.obs_to_tensor(obs_arr.reshape(1, -1))[0]
                             with torch.no_grad():
                                 dist = self._sb3_model.policy.get_distribution(obs_tensor)
                                 probs = dist.distribution.probs.cpu().numpy().flatten()
-                                # Log top 3 actions by probability
+
                                 top_indices = probs.argsort()[-3:][::-1]
                                 prob_str = ", ".join([
-                                    f"{self._action_name(i)}:{probs[i]:.1%}" 
+                                    f"{self._action_name(i)}:{probs[i]:.1%}"
                                     for i in top_indices
                                 ])
                                 logging.info(f"[PPO] 🧠 Model thinking: {prob_str}")
                         except Exception as e:
                             logging.debug(f"[PPO] Couldn't get action probs: {e}")
-                    
-                    # Decode discrete action
+
+
                     action_id_int = int(action_id.item() if hasattr(action_id, 'item') else action_id)
                     decoded = decode_discrete_action(action_id_int, self.config.size_buckets)
                     self._last_discrete_action = decoded
-                    
-                    # Convert to continuous format for arbiter compatibility
+
+
                     direction_score, size_score = decoded.to_continuous()
                     action_np = np.array([direction_score, size_score], dtype=np.float32)
-                    
-                    # Log ALL model outputs (not just non-HOLD) so user can see decisions
+
+
                     if decoded.intent == "hold":
                         logging.debug(
                             f"[PPO] {instrument or 'MULTI'}: HOLD (waiting for better setup)"
@@ -572,17 +396,15 @@ class PPOCore:
                             f"[PPO] 🎯 {instrument or 'MULTI'}: {decoded.intent.upper()} "
                             f"(size={decoded.size_mult:.0%}) → action_id={action_id_int}"
                         )
-                
-                # ═══════════════════════════════════════════════════════════════
-                # Standard PPO: Continuous action
-                # ═══════════════════════════════════════════════════════════════
+
+
                 else:
                     action_full, _ = self._sb3_model.predict(obs_arr, deterministic=deterministic)
                     action_full_arr = np.asarray(action_full, dtype=np.float32).reshape(-1)
                     action_np = self._slice_sb3_action(action_full_arr, instrument=instrument)
                     action_np = np.clip(action_np, -1.0, 1.0).astype(np.float32)
 
-                # SB3 predict() doesn't expose log_prob/value; keep placeholders.
+
                 log_prob_np = 0.0
                 value_np = 0.0
 
@@ -590,14 +412,11 @@ class PPOCore:
                 self._last_log_prob = log_prob_np
                 self._last_value = value_np
                 return action_np, log_prob_np, value_np
-                
+
             except Exception as e:
                 logging.warning(f"[PPOCore] SB3 predict failed: {e}, falling back to torch network")
-                # Fall back to the internal torch policy if SB3 predict fails.
 
-        # ═══════════════════════════════════════════════════════════════
-        # Native PyTorch network (continuous only)
-        # ═══════════════════════════════════════════════════════════════
+
         obs_arr = self._normalize_obs(obs)
 
         obs_tensor = torch.from_numpy(obs_arr).to(self.device).unsqueeze(0)
@@ -614,16 +433,16 @@ class PPOCore:
 
             log_prob_tensor = dist.log_prob(action_tensor).sum(dim=-1)
 
-            # Convert to numpy / scalars
+
             action_np = action_tensor.squeeze(0).cpu().numpy().astype(np.float32)
-            
-            # CRITICAL: Clip actions to [-1, 1] range
+
+
             action_np = np.clip(action_np, -1.0, 1.0)
-            
+
             log_prob_np = float(log_prob_tensor.item())
             value_np = float(value.squeeze().item())
 
-        # Store for record_step fallback
+
         self.last_action = action_np
         self._last_log_prob = log_prob_np
         self._last_value = value_np
@@ -631,10 +450,6 @@ class PPOCore:
         return action_np, log_prob_np, value_np
 
     def _slice_sb3_action(self, action: np.ndarray, instrument: Optional[str]) -> np.ndarray:
-        """
-        Convert an SB3 multi-instrument action vector into the 2D (direction_score, size_score)
-        slice expected by ArbiterLogic for a single instrument.
-        """
         try:
             arr = np.asarray(action, dtype=np.float32).reshape(-1)
         except Exception:
@@ -643,7 +458,7 @@ class PPOCore:
         if arr.size <= 0:
             return np.zeros(self.config.act_size, dtype=np.float32)
 
-        # If already a single-instrument action, trim/pad to act_size.
+
         if arr.size <= self.config.act_size:
             out = np.zeros(self.config.act_size, dtype=np.float32)
             out[: min(arr.size, self.config.act_size)] = arr[: self.config.act_size]
@@ -663,11 +478,10 @@ class PPOCore:
             if start + 2 <= arr.size:
                 return arr[start : start + 2]
 
-        # Fallback: treat first two dims as (direction, size)
+
         return arr[:2]
 
     def get_value(self, obs: np.ndarray) -> float:
-        """Get value estimate for observation without selecting action."""
         obs_arr = self._normalize_obs(obs)
         obs_tensor = torch.from_numpy(obs_arr).to(self.device).unsqueeze(0)
 
@@ -675,9 +489,6 @@ class PPOCore:
             _, _, value = self.network(obs_tensor)
             return float(value.squeeze().item())
 
-    # ─────────────────────────────────────────────────────────────
-    # Experience Recording
-    # ─────────────────────────────────────────────────────────────
 
     def record_step(
         self,
@@ -688,25 +499,13 @@ class PPOCore:
         log_prob: Optional[float] = None,
         value: Optional[float] = None,
     ) -> None:
-        """
-        Record a single step of experience.
 
-        Args:
-            obs: Observation
-            action: Action taken
-            reward: Reward received
-            done: Episode terminated?
-            log_prob: Log probability (uses stored value if None)
-            value: Value estimate (uses stored value if None)
-        """
-        # Soft capacity guard to avoid unbounded growth
         if len(self.buffer["observations"]) >= self.config.buffer_size:
-            # Drop oldest experience across all keys
+
             for key in ("observations", "actions", "rewards", "dones", "log_probs", "values"):
                 if self.buffer[key]:
                     self.buffer[key].pop(0)
-            # Episode indexing remains conservative: _episode_start_index
-            # may point earlier than actual start, but that is harmless.
+
 
         obs_norm = self._normalize_obs(obs)
 
@@ -725,21 +524,11 @@ class PPOCore:
         self._total_steps += 1
 
     def end_episode(self, final_reward: Optional[float] = None) -> None:
-        """
-        Mark end of episode and record statistics.
-
-        This uses the portion of the buffer **since the last episode end**
-        (tracked by _episode_start_index) so that episode stats are not
-        contaminated by previous episodes.
-
-        Args:
-            final_reward: Optional final episode reward (if precomputed).
-        """
         start_idx = self._episode_start_index
         end_idx = len(self.buffer["rewards"])
 
         if end_idx <= start_idx:
-            return  # no new steps since last episode
+            return
 
         rewards_segment = self.buffer["rewards"][start_idx:end_idx]
 
@@ -761,31 +550,21 @@ class PPOCore:
             recent = list(self.episode_rewards)[-10:]
             self.stats.avg_episode_reward = float(np.mean(recent))
 
-        # Next episode starts at current buffer end
+
         self._episode_start_index = end_idx
 
-    # ─────────────────────────────────────────────────────────────
-    # Policy Update
-    # ─────────────────────────────────────────────────────────────
 
     def should_update(self) -> bool:
-        """Check if buffer has enough samples for policy update."""
         return len(self.buffer["observations"]) >= self.config.batch_size
 
     def update(self) -> Optional[Dict[str, float]]:
-        """
-        Perform PPO policy update (mini-batch, multi-epoch).
-
-        Returns:
-            Dictionary with training statistics, or None if not enough samples.
-        """
         if not self.should_update():
-            return None  # Not enough samples
+            return None
 
-        # Compute GAE advantages and returns
+
         self._compute_gae()
 
-        # Convert buffer to tensors (full batch)
+
         observations = torch.as_tensor(
             np.array(self.buffer["observations"], dtype=np.float32),
             dtype=torch.float32,
@@ -812,7 +591,7 @@ class PPOCore:
             device=self.device,
         )
 
-        # Normalize advantages
+
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         num_samples = observations.size(0)
@@ -824,7 +603,7 @@ class PPOCore:
         total_grad_norm = 0.0
         num_updates = 0
 
-        # PPO update loop with mini-batches
+
         indices = torch.arange(num_samples, device=self.device)
 
         for _ in range(self.config.ppo_epochs):
@@ -847,7 +626,7 @@ class PPOCore:
                 new_log_probs = dist.log_prob(act_b).sum(dim=-1)
                 entropy = dist.entropy().sum(dim=-1)
 
-                # PPO clipped surrogate loss
+
                 ratio = torch.exp(new_log_probs - old_log_b)
                 surr1 = ratio * adv_b
                 surr2 = torch.clamp(
@@ -859,7 +638,7 @@ class PPOCore:
 
                 value_loss = F.mse_loss(values_b.squeeze(), ret_b)
 
-                # Entropy loss (negative because we want to maximize entropy)
+
                 entropy_loss = -entropy.mean()
 
                 loss = (
@@ -885,14 +664,14 @@ class PPOCore:
                 total_grad_norm += grad_norm
                 num_updates += 1
 
-        # Averages across all mini-batches and epochs
+
         denom = max(num_updates, 1)
         avg_policy_loss = total_policy_loss / denom
         avg_value_loss = total_value_loss / denom
         avg_entropy_loss = total_entropy_loss / denom
         avg_grad_norm = total_grad_norm / denom
 
-        # Explained variance: fresh forward pass on full batch
+
         with torch.no_grad():
             _, _, values_eval = self.network(observations)
             v_pred = values_eval.squeeze()
@@ -900,7 +679,7 @@ class PPOCore:
             var_diff = torch.var(returns - v_pred)
             explained_var = float(1.0 - var_diff / (var_y + 1e-8))
 
-        # Update stats
+
         self.stats.total_updates += 1
         self.stats.policy_loss = avg_policy_loss
         self.stats.value_loss = avg_value_loss
@@ -909,11 +688,11 @@ class PPOCore:
         self.stats.explained_variance = explained_var
         self.stats.learning_rate = float(self.optimizer.param_groups[0]["lr"])
 
-        # Update learning rate scheduler
+
         if self.episode_rewards:
             self.lr_scheduler.step(self.stats.avg_episode_reward)
 
-        # Build training_stats snapshot for external consumers (e.g. PPOAgentShell)
+
         avg_episode_length = (
             int(float(np.mean(self.episode_lengths)))
             if self.episode_lengths
@@ -935,7 +714,7 @@ class PPOCore:
             "learning_rate": self.stats.learning_rate,
         }
 
-        # Clear buffer after update
+
         self._clear_buffer()
 
         return {
@@ -948,7 +727,6 @@ class PPOCore:
         }
 
     def _compute_gae(self) -> None:
-        """Compute Generalized Advantage Estimation over the current buffer."""
         rewards = np.array(self.buffer["rewards"], dtype=np.float32)
         values = np.array(self.buffer["values"], dtype=np.float32)
         dones = np.array(self.buffer["dones"], dtype=np.float32)
@@ -962,11 +740,11 @@ class PPOCore:
         advantages = np.zeros(n, dtype=np.float32)
         last_gae = 0.0
 
-        # We treat non-terminal last state as bootstrapped from itself
+
         for t in reversed(range(n)):
             non_terminal = 1.0 - dones[t]
             if t == n - 1:
-                next_value = values[t]  # bootstrap when trajectory is truncated
+                next_value = values[t]
             else:
                 next_value = values[t + 1]
 
@@ -983,18 +761,13 @@ class PPOCore:
         self.buffer["returns"] = returns.tolist()
 
     def _clear_buffer(self) -> None:
-        """Clear experience buffer (keeps episode stats and counters)."""
         for key in self.buffer:
             self.buffer[key] = []
-        # When buffer is cleared, next episode (for end_episode) starts at 0
+
         self._episode_start_index = 0
 
-    # ─────────────────────────────────────────────────────────────
-    # State Management
-    # ─────────────────────────────────────────────────────────────
 
     def get_state(self) -> Dict[str, Any]:
-        """Get full state for persistence."""
         return {
             "network_state": self.network.state_dict(),
             "optimizer_state": self.optimizer.state_dict(),
@@ -1009,7 +782,7 @@ class PPOCore:
             "counters": {
                 "total_steps": self._total_steps,
             },
-            # Keep config export minimal and stable
+
             "config": {
                 "obs_size": self.config.obs_size,
                 "act_size": self.config.act_size,
@@ -1018,12 +791,11 @@ class PPOCore:
         }
 
     def set_state(self, state: Dict[str, Any]) -> None:
-        """Restore state from persistence."""
         if "network_state" in state:
             try:
                 self.network.load_state_dict(state["network_state"])
             except Exception:
-                # Shape mismatch or partial load; skip silently
+
                 pass
 
         if "optimizer_state" in state:
@@ -1054,30 +826,21 @@ class PPOCore:
             self._total_steps = counters.get("total_steps", self._total_steps)
 
     def save(self, path: str) -> None:
-        """Save model to file."""
         torch.save(self.get_state(), path)
 
     def load(self, path: str) -> None:
-        """
-        Load model from file.
-        
-        Supports:
-        - .zip files: SB3 PPO or MaskablePPO models
-        - .pt/.pth files: Native PyTorch PPOCore checkpoints
-        """
         if str(path).lower().endswith(".zip"):
-            # Try MaskablePPO first (training uses this), fall back to PPO
+
             self._is_maskable_ppo = False
-            
-            # Pylance: MASKABLE_PPO_AVAILABLE does not narrow MaskablePPO from Optional,
-            # so guard on the symbol as well.
+
+
             if MASKABLE_PPO_AVAILABLE and MaskablePPO is not None:
                 try:
-                    self._sb3_model = MaskablePPO.load(path, device="cpu")      
+                    self._sb3_model = MaskablePPO.load(path, device="cpu")
                     self._sb3_model_path = str(path)
                     self._is_maskable_ppo = True
-                    
-                    # Check if it's actually a discrete action space
+
+
                     action_space = getattr(self._sb3_model, "action_space", None)
                     if action_space is not None:
                         space_type = type(action_space).__name__
@@ -1093,8 +856,8 @@ class PPOCore:
                     return
                 except Exception as e:
                     logging.debug(f"[PPOCore] MaskablePPO.load failed: {e}, trying PPO.load")
-            
-            # Fall back to standard PPO
+
+
             from stable_baselines3 import PPO as SB3PPO  # type: ignore[import-not-found]
             self._sb3_model = SB3PPO.load(path, device="cpu")
             self._sb3_model_path = str(path)
@@ -1102,31 +865,21 @@ class PPOCore:
             logging.info(f"[PPOCore] Loaded PPO (continuous) from {path}")
             return
 
-        # Native torch PPOCore checkpoint
+
         self._sb3_model = None
         self._sb3_model_path = None
         self._is_maskable_ppo = False
         state = torch.load(path, map_location=self.device)
         self.set_state(state)
         logging.info(f"[PPOCore] Loaded native PyTorch checkpoint from {path}")
-    
+
     def set_action_mask_fn(self, fn: Callable[[], np.ndarray]) -> None:
-        """
-        Set a callback function that returns action masks for MaskablePPO.
-        
-        The function should return a boolean numpy array of shape (n_actions,)
-        where True = action allowed, False = action masked.
-        
-        This enables live trading to use the same masking logic as training.
-        """
         self._action_mask_fn = fn
-    
+
     @property
     def is_discrete_action_space(self) -> bool:
-        """Check if the loaded model uses discrete actions (MaskablePPO)."""
         return self._is_maskable_ppo
-    
+
     @property
     def last_discrete_action(self) -> Optional[DiscreteActionDecoded]:
-        """Get the last decoded discrete action (only valid for MaskablePPO)."""
         return self._last_discrete_action

@@ -1,20 +1,3 @@
-"""
-Unified base class for all voting modules.
-Eliminates duplicated boilerplate across voting files.
-
-Responsibilities:
-- SmartInfoBus integration (get/set with thesis)
-- Rotating logger setup
-- Error handling with pinpointing
-- Performance tracking
-- Standard initialization pattern
-- Decision ID coordination helpers
-- Basic health & circuit-breaker semantics
-- Thin convenience layer for instrument-aware thresholds
-- Typed config accessors (clamp/validate once, reuse everywhere)
-- Optional structured forensic debug (JSONL), safe-by-default
-- Canonical instrument normalization helpers (single-source behavior)
-"""
 
 from __future__ import annotations
 
@@ -30,11 +13,8 @@ from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, cast
 import numpy as np
 
 from modules.core.mixins import SmartInfoBusStateMixin, SmartInfoBusTradingMixin
-
-# Core module system
 from modules.core.module_base import BaseModule, module  # noqa: F401
 
-# Utilities (optional, degrade gracefully if missing)
 try:
     from modules.utils.audit_utils import RotatingLogger, format_operator_message
     from modules.utils.info_bus import InfoBusManager
@@ -78,67 +58,41 @@ if TYPE_CHECKING:  # pragma: no cover
 
 
 class VotingModuleBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
-    """
-    Unified base class for all voting system modules.
 
-    Provides:
-    - SmartInfoBus integration (get/set with thesis)
-    - Rotating logger setup
-    - Error handling with pinpointing
-    - Performance tracking
-    - Standard initialization pattern
-    - Decision ID coordination helpers
-    - Basic health & circuit-breaker semantics
-    - Typed config accessors (safe defaults + clamping)
-    - Canonical instrument normalization helpers
-    - Optional structured debug trace (JSONL)
 
-    Subclasses must implement:
-    - _module_specific_init(): one-time setup
-    - process(): main processing logic
-    """
-
-    # Smart bus & infrastructure
-    smart_bus: "SmartInfoBus"   # set in _setup_smart_bus
-    logger: Any                 # RotatingLogger or std logging.Logger
+    smart_bus: "SmartInfoBus"
+    logger: Any
     error_pinpointer: Optional[Any]
     error_handler: Optional[Any]
     performance_tracker: Any
 
-    # Internal state
+
     _module_name: str
     _voting_defaults: Dict[str, Any]
 
-    # Debug trace
+
     _debug_enabled: bool
     _debug_level: str
     _debug_logger_fp: Optional[Any]
     _debug_path: Optional[str]
     _debug_flush: bool
 
-    # Circuit breaker (enhanced)
+
     _consecutive_failures: int
     _health_status: str
     _last_error: Optional[str]
     _circuit_open_until: Optional[datetime]
     _circuit_open_reason: Optional[str]
 
-    # ═══════════════════════════════════════════════════════════════
-    # Initialization
-    # ═══════════════════════════════════════════════════════════════
 
     def _initialize(self) -> None:
-        """
-        Standard initialization – called by BaseModule.
-        Sets up all common infrastructure, then delegates to subclass.
-        """
         self._init_start_time = time.perf_counter()
 
-        # Core references
+
         self._module_name = self.__class__.__name__
         self._voting_defaults = VOTING_DEFAULTS.copy()
 
-        # Setup infrastructure in order
+
         self._setup_smart_bus()
         self._setup_logging()
         self._setup_error_handling()
@@ -146,15 +100,14 @@ class VotingModuleBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
         self._setup_state_tracking()
         self._setup_debug_trace()
 
-        # Delegate to subclass for module-specific init
+
         self._module_specific_init()
 
-        # Log successful initialization
+
         init_time_ms = (time.perf_counter() - self._init_start_time) * 1000.0
         self._log_info(f"Initialized in {init_time_ms:.1f}ms")
 
     def _setup_smart_bus(self) -> None:
-        """Initialize SmartInfoBus connection (or a safe sentinel)."""
         self.smart_bus_enabled = False
 
         if SMARTINFOBUS_AVAILABLE and InfoBusManager is not None:
@@ -168,7 +121,6 @@ class VotingModuleBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
             self.smart_bus = cast("SmartInfoBus", _UnavailableSmartBus())
 
     def _setup_logging(self) -> None:
-        """Initialize rotating logger (with console fallback)."""
         self.logger = None
 
         log_dir = Path("logs/voting")
@@ -197,7 +149,6 @@ class VotingModuleBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
                 self.logger.setLevel(logging.INFO)
 
     def _setup_error_handling(self) -> None:
-        """Initialize error pinpointer and error handler callback."""
         self.error_pinpointer = None
         self.error_handler = None
 
@@ -213,7 +164,6 @@ class VotingModuleBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
                 self._fallback_log(f"Error handler init failed: {e}")
 
     def _setup_performance_tracking(self) -> None:
-        """Initialize performance tracker (or a no-op stub)."""
         self.performance_tracker = None
 
         if PERFORMANCE_TRACKING_AVAILABLE and PerformanceTracker is not None:
@@ -226,7 +176,6 @@ class VotingModuleBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
             self.performance_tracker = _NullPerformanceTracker()
 
     def _setup_state_tracking(self) -> None:
-        """Initialize internal health and state tracking."""
         self._process_count: int = 0
         self._last_process_time: Optional[str] = None
 
@@ -237,22 +186,11 @@ class VotingModuleBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
         self._last_decision_id: Optional[str] = None
         self._cached_data: Dict[str, Any] = {}
 
-        # Enhanced circuit semantics
+
         self._circuit_open_until = None
         self._circuit_open_reason = None
 
     def _setup_debug_trace(self) -> None:
-        """
-        Optional structured JSONL debug trace.
-
-        Config keys (all optional):
-          - debug.enabled: bool (default False)
-          - debug.level: "light"|"standard"|"forensic" (default "standard")
-          - debug.dir: str (default "logs/voting_debug")
-          - debug.flush: bool (default True)
-          - debug.max_bytes: int (default 10MB)  [best-effort, rotation only if stdlib RotatingFileHandler is available]
-          - debug.backups: int (default 5)
-        """
         cfg = self.config if isinstance(getattr(self, "config", None), dict) else {}
 
         debug_block = cfg.get("debug", cfg.get("debug_config", {}))
@@ -275,7 +213,7 @@ class VotingModuleBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
         filename = os.path.join(debug_dir, f"{self._module_name}.trace.jsonl")
         self._debug_path = filename
 
-        # Prefer stdlib rotating handler if available; otherwise simple append.
+
         try:
             import logging
             from logging.handlers import RotatingFileHandler
@@ -287,7 +225,7 @@ class VotingModuleBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
             max_bytes = int(debug_block.get("max_bytes", 10 * 1024 * 1024))
             backups = int(debug_block.get("backups", 5))
 
-            # avoid duplicate handlers
+
             if not any(
                 isinstance(h, RotatingFileHandler) and getattr(h, "baseFilename", "") == filename
                 for h in logger.handlers
@@ -302,7 +240,7 @@ class VotingModuleBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
             self._debug_logger_fp = logger
             self._debug_log(event="debug_trace_initialized", path=filename, level=self._debug_level)
         except Exception:
-            # Last resort: raw file append on each event (safe, but no rotation)
+
             try:
                 self._debug_logger_fp = open(filename, "a", encoding="utf-8")
                 self._debug_log(event="debug_trace_initialized_fallback", path=filename, level=self._debug_level)
@@ -313,15 +251,8 @@ class VotingModuleBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
 
     @abstractmethod
     def _module_specific_init(self) -> None:
-        """
-        Override in subclasses for module-specific initialization.
-        Called after all base infrastructure is set up.
-        """
         raise NotImplementedError
 
-    # ═══════════════════════════════════════════════════════════════
-    # Typed Config Helpers (centralized validation/clamping)
-    # ═══════════════════════════════════════════════════════════════
 
     def conf_bool(self, key: str, default: bool = False) -> bool:
         cfg = self.config if isinstance(getattr(self, "config", None), dict) else {}
@@ -387,9 +318,6 @@ class VotingModuleBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
             return list(v)
         return [v]
 
-    # ═══════════════════════════════════════════════════════════════
-    # Logging Helpers
-    # ═══════════════════════════════════════════════════════════════
 
     def log_info(self, message: str, **kwargs: Any) -> None:
         self._log_info(message, **kwargs)
@@ -466,9 +394,6 @@ class VotingModuleBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
     def _fallback_log(self, message: str) -> None:
         print(f"[{self._module_name}] {message}")
 
-    # ═══════════════════════════════════════════════════════════════
-    # Structured Debug Trace (JSONL)
-    # ═══════════════════════════════════════════════════════════════
 
     def _debug_log(self, event: str, **payload: Any) -> None:
         if not getattr(self, "_debug_enabled", False):
@@ -504,7 +429,7 @@ class VotingModuleBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
             return
 
         try:
-            # logging.Logger path
+
             if hasattr(fp, "debug"):
                 fp.debug(line)
                 if self._debug_flush and hasattr(fp, "handlers"):
@@ -515,16 +440,13 @@ class VotingModuleBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
                             pass
                 return
 
-            # raw file handle path
+
             fp.write(line + "\n")
             if self._debug_flush:
                 fp.flush()
         except Exception:
             pass
 
-    # ═══════════════════════════════════════════════════════════════
-    # SmartInfoBus Helpers
-    # ═══════════════════════════════════════════════════════════════
 
     def bus_get(self, key: str, default: Any = None) -> Any:
         return self._bus_get(key, default)
@@ -562,12 +484,8 @@ class VotingModuleBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
     def _bus_get_multi(self, keys: List[str], default: Any = None) -> Dict[str, Any]:
         return {key: self._bus_get(key, default) for key in keys}
 
-    # ═══════════════════════════════════════════════════════════════
-    # Instrument Helpers (canonicalization + convenience)
-    # ═══════════════════════════════════════════════════════════════
 
     def canon(self, instrument: str) -> str:
-        """Canonical symbol normalization (single behavior)."""
         return normalize_instrument(instrument)
 
     def canon_list(self, instruments: Iterable[Any]) -> List[str]:
@@ -581,9 +499,6 @@ class VotingModuleBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
         return out
 
     def get_active_instruments(self, default: Optional[List[str]] = None) -> List[str]:
-        """
-        Prefer bus (watched_instruments) then config ('instruments'), else default.
-        """
         default = default or ["XAUUSD"]
         bus_list = self._bus_get(VotingBusKeys.ACTIVE_INSTRUMENTS, default=None)
         if isinstance(bus_list, list) and bus_list:
@@ -592,9 +507,6 @@ class VotingModuleBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
         cfg_list = self.conf_list("instruments", default=default)
         return self.canon_list(cfg_list) if cfg_list else self.canon_list(default)
 
-    # ═══════════════════════════════════════════════════════════════
-    # Instrument Threshold Convenience
-    # ═══════════════════════════════════════════════════════════════
 
     def get_instrument_thresholds(self, instrument: str) -> Dict[str, Any]:
         try:
@@ -610,9 +522,6 @@ class VotingModuleBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
                 pass
         return float(self._voting_defaults.get("confidence_threshold", 0.5))
 
-    # ═══════════════════════════════════════════════════════════════
-    # Decision Coordination Helpers
-    # ═══════════════════════════════════════════════════════════════
 
     def _get_current_decision_id(self) -> Optional[str]:
         decision_id = self._bus_get(VotingBusKeys.DECISION_ID)
@@ -672,9 +581,6 @@ class VotingModuleBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
         self._debug_log(event="decision_context", **context)
         return context
 
-    # ═══════════════════════════════════════════════════════════════
-    # Performance Tracking
-    # ═══════════════════════════════════════════════════════════════
 
     def _record_performance(self, metric_name: str, value: float, success: bool = True) -> None:
         if self.performance_tracker:
@@ -686,9 +592,6 @@ class VotingModuleBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
     def _time_operation(self, operation_name: str) -> "_OperationTimer":
         return _OperationTimer(self, operation_name)
 
-    # ═══════════════════════════════════════════════════════════════
-    # Health & Status / Circuit Breaker
-    # ═══════════════════════════════════════════════════════════════
 
     def get_health_status(self) -> Dict[str, Any]:
         return {
@@ -706,15 +609,10 @@ class VotingModuleBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
 
     @property
     def circuit_open(self) -> bool:
-        """
-        Circuit breaker considers:
-        - consecutive failure threshold
-        - optional cooldown window (_circuit_open_until)
-        """
         if self._circuit_open_until is not None:
             if datetime.now() < self._circuit_open_until:
                 return True
-            # cooldown expired: clear it
+
             self._circuit_open_until = None
             self._circuit_open_reason = None
         return self._consecutive_failures >= int(CIRCUIT_BREAKER_THRESHOLD)
@@ -758,9 +656,6 @@ class VotingModuleBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
             cooldown_seconds=cooldown_seconds,
         )
 
-    # ═══════════════════════════════════════════════════════════════
-    # Utilities
-    # ═══════════════════════════════════════════════════════════════
 
     @staticmethod
     def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -781,14 +676,8 @@ class VotingModuleBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
     def _utcnow() -> str:
         return datetime.utcnow().isoformat() + "Z"
 
-    # ═══════════════════════════════════════════════════════════════
-    # Safe wrapper for subclass process implementations (optional use)
-    # ═══════════════════════════════════════════════════════════════
 
     def _safe_process_wrapper(self, fn_name: str, exc: Exception) -> str:
-        """
-        Produce a stable, operator-friendly error message while capturing forensic info.
-        """
         msg = str(exc)
         try:
             if self.error_pinpointer is not None:
@@ -807,7 +696,6 @@ class VotingModuleBase(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMi
 
 
 class _NullPerformanceTracker:
-    """Stub performance tracker when the real one is unavailable."""
 
     def record_metric(self, module: str, metric: str, value: float, success: bool = True) -> None:
         return
@@ -817,18 +705,12 @@ class _NullPerformanceTracker:
 
 
 class _UnavailableSmartBus:
-    """
-    Sentinel SmartInfoBus replacement when the real bus is unavailable.
-
-    Any attempt to use it raises loudly to avoid silent data corruption.
-    """
 
     def __getattr__(self, item: str) -> Any:
         raise RuntimeError("SmartInfoBus is unavailable in this context")
 
 
 class _OperationTimer:
-    """Context manager for timing operations in a module."""
 
     def __init__(self, module: VotingModuleBase, operation_name: str):
         self.module = module

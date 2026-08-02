@@ -1,4 +1,4 @@
-# modules/executor/adapters/mt5_adapter.py
+
 from __future__ import annotations
 
 import math
@@ -12,7 +12,6 @@ from modules.utils.audit_utils import RotatingLogger
 
 from .base_adapter import BaseLiveAdapter, LiveAdapterConfig
 
-# Treat MetaTrader5 as `Any` so Pylance/pyright doesn't complain about attrs.
 try:
     import MetaTrader5 as _mt5_mod  # type: ignore
     mt5 = cast(Any, _mt5_mod)
@@ -23,7 +22,6 @@ except Exception:
 
 
 def _sf(v: Any, default: float = 0.0) -> float:
-    """Safe float with finite check."""
     try:
         f = float(v)
         return f if math.isfinite(f) else default
@@ -32,7 +30,6 @@ def _sf(v: Any, default: float = 0.0) -> float:
 
 
 def _load_sl_tp_config() -> Dict[str, Any]:
-    """Load SL/TP configuration from risk_policy.yaml."""
     try:
         config_path = Path("config/risk_policy.yaml")
         if config_path.exists():
@@ -45,7 +42,6 @@ def _load_sl_tp_config() -> Dict[str, Any]:
 
 
 def _load_risk_config() -> Dict[str, Any]:
-    """Load risk configuration from risk_policy.yaml."""
     try:
         config_path = Path("config/risk_policy.yaml")
         if config_path.exists():
@@ -64,58 +60,40 @@ def _calculate_adaptive_sl_tp_prices(
     atr_multiplier_sl: float = 2.5,
     atr_multiplier_tp: float = 4.0,
 ) -> Tuple[Optional[float], Optional[float]]:
-    """
-    Calculate adaptive SL/TP prices based on ATR.
-    
-    Args:
-        symbol: Trading symbol
-        side: +1 for BUY, -1 for SELL
-        entry_price: Entry price
-        atr_multiplier_sl: ATR multiplier for stop loss
-        atr_multiplier_tp: ATR multiplier for take profit
-        
-    Returns:
-        Tuple of (sl_price, tp_price), either can be None if calculation fails
-    """
     atr = _get_current_atr(symbol)
     if not atr or atr <= 0:
         return None, None
-    
+
     sl_distance = atr * atr_multiplier_sl
     tp_distance = atr * atr_multiplier_tp
-    
-    # Sanity bounds: min 0.1% of price, max 3% of price for SL
+
+
     min_sl = entry_price * 0.001
     max_sl = entry_price * 0.03
     sl_distance = max(min_sl, min(max_sl, sl_distance))
-    
-    # TP bounds: min 0.2% of price, max 5% of price
+
+
     min_tp = entry_price * 0.002
     max_tp = entry_price * 0.05
     tp_distance = max(min_tp, min(max_tp, tp_distance))
-    
-    if side > 0:  # BUY
+
+    if side > 0:
         sl_price = entry_price - sl_distance
         tp_price = entry_price + tp_distance
-    else:  # SELL
+    else:
         sl_price = entry_price + sl_distance
         tp_price = entry_price - tp_distance
-    
+
     return sl_price, tp_price
 
 
 def _get_current_atr(symbol: str) -> Optional[float]:
-    """
-    Get current ATR from InfoBus or calculate from recent bars.
-    
-    Returns ATR in PRICE units (e.g., $15.50 for gold, 0.0080 for EURUSD).
-    """
     try:
-        # Try to get ATR from InfoBus first
+
         from modules.utils.info_bus import InfoBusManager
         bus = InfoBusManager.get_instance()
-        
-        # Check multiple possible bus keys
+
+
         for key in ["price_data", "technical_indicators", "indicators"]:
             data = bus.get(key, "MT5Adapter", default=None)
             if isinstance(data, dict):
@@ -124,17 +102,17 @@ def _get_current_atr(symbol: str) -> Optional[float]:
                     atr = sym_data.get("atr") or sym_data.get("ATR") or sym_data.get("atr_14")
                     if atr and isinstance(atr, (int, float)) and atr > 0:
                         return float(atr)
-        
-        # Fallback: Calculate ATR from MT5 bars directly
+
+
         if _MT5 and mt5:
             bars = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M15, 0, 20)
             if bars is not None and len(bars) >= 14:
                 import numpy as np
-                highs = np.array([b[2] for b in bars])  # high
-                lows = np.array([b[3] for b in bars])   # low
-                closes = np.array([b[4] for b in bars]) # close
-                
-                # True Range calculation
+                highs = np.array([b[2] for b in bars])
+                lows = np.array([b[3] for b in bars])
+                closes = np.array([b[4] for b in bars])
+
+
                 tr = np.maximum(
                     highs[1:] - lows[1:],
                     np.maximum(
@@ -142,70 +120,50 @@ def _get_current_atr(symbol: str) -> Optional[float]:
                         np.abs(lows[1:] - closes[:-1])
                     )
                 )
-                atr = float(np.mean(tr[-14:]))  # 14-period ATR
+                atr = float(np.mean(tr[-14:]))
                 return atr
-                
+
     except Exception:
         pass
-    
+
     return None
 
 
 def _get_adaptive_sl_distance(symbol: str, side: int, current_price: float) -> float:
-    """
-    Calculate adaptive SL distance based on ATR.
-    
-    Uses 2.5x ATR as SL distance (gives room for normal volatility).
-    Falls back to fixed pip-based SL if ATR unavailable.
-    
-    Args:
-        symbol: Trading symbol
-        side: +1 for BUY, -1 for SELL
-        current_price: Current entry price
-        
-    Returns:
-        SL distance in price units
-    """
     atr = _get_current_atr(symbol)
-    
+
     if atr and atr > 0:
-        # ATR-based SL: 2.5x ATR gives room for normal volatility
-        # This is still an EMERGENCY SL - ExitEngine handles normal exits
+
+
         sl_distance = atr * 2.5
-        
-        # Sanity bounds: min 0.1% of price, max 2% of price
+
+
         min_sl = current_price * 0.001
         max_sl = current_price * 0.02
         sl_distance = max(min_sl, min(max_sl, sl_distance))
-        
+
         return sl_distance
-    
-    # Fallback to fixed pips if ATR not available
+
+
     config = _load_sl_tp_config()
     symbol_config = config.get(symbol, config.get("default", {}))
     sl_pips = float(symbol_config.get("stop_loss_pips", 2500))
     sl_distance = _pips_to_price(symbol, sl_pips)
-    
+
     return sl_distance
 
 
 def _get_sl_tp_pips(symbol: str) -> Tuple[float, float]:
-    """
-    Get SL/TP pips for a symbol from config.
-
-    NOTE: These are EMERGENCY safety nets only.
-    Real exit logic is handled by SmartPositionManager based on voting signals.
-    """
     config = _load_sl_tp_config()
 
-    # SL
+
     if not config.get("auto_sl_enabled", True):
         sl_pips = 0
     else:
         symbol_config = config.get(symbol, config.get("default", {}))
-        sl_pips = symbol_config.get("stop_loss_pips", 200)  # wide emergency SL
+        sl_pips = symbol_config.get("stop_loss_pips", 200)
 
-    # TP (default off — SmartPositionManager handles exits)
+
     if not config.get("auto_tp_enabled", False):
         tp_pips = 0
     else:
@@ -216,38 +174,33 @@ def _get_sl_tp_pips(symbol: str) -> Tuple[float, float]:
 
 
 def _pips_to_price(symbol: str, pips: float) -> float:
-    """Convert pips to price distance based on symbol."""
     sym_upper = symbol.upper()
-    # Gold (XAU) uses 0.01 per pip; Forex typically 0.0001 (or 0.01 for JPY pairs)
+
     if "XAU" in sym_upper or "GOLD" in sym_upper:
-        return pips * 0.01  # 1 pip = $0.01 for gold
+        return pips * 0.01
     if "XAG" in sym_upper or "SILVER" in sym_upper:
-        return pips * 0.01  # treat similarly for simplicity
+        return pips * 0.01
     if "JPY" in sym_upper:
-        return pips * 0.01  # 1 pip = 0.01 for JPY pairs
-    return pips * 0.0001  # default: 1 pip = 0.0001
+        return pips * 0.01
+    return pips * 0.0001
 
 
 class MT5Adapter(BaseLiveAdapter):
-    """
-    MT5 adapter wired to BaseLiveAdapter's robust wrappers.
-    Only *_impl methods below talk to MT5 directly.
-    """
 
-    # Optional explicit overrides (units per 1.0 lot)
+
     SYMBOL_CONTRACT_SIZES: Dict[str, float] = {
-        "XAUUSD": 100.0,   # 100 oz per lot
+        "XAUUSD": 100.0,
         "XAUEUR": 100.0,
-        "XAGUSD": 5000.0,  # 5000 oz per lot for silver
+        "XAGUSD": 5000.0,
         "XAGEUR": 5000.0,
-        "BTCUSD": 1.0,     # 1 BTC per lot
-        "ETHUSD": 1.0,     # 1 ETH per lot
-        # Forex pairs fall back to default FX contract size in BaseLiveAdapter
+        "BTCUSD": 1.0,
+        "ETHUSD": 1.0,
+
     }
 
     def __init__(self, cfg: LiveAdapterConfig):
         super().__init__(cfg)
-        self._working_fill_mode: Dict[str, int] = {}  # Cache working fill modes per symbol
+        self._working_fill_mode: Dict[str, int] = {}
         try:
             self.log = RotatingLogger(
                 "MT5Adapter",
@@ -270,41 +223,26 @@ class MT5Adapter(BaseLiveAdapter):
 
             self.log = _Dummy()
 
-    # ─────────────────────────────────────────────────────
-    # Contract sizing override (aligned with Executor)
-    # ─────────────────────────────────────────────────────
-    def contract_size_for(self, instrument: str) -> float:
-        """
-        Symbol-specific contract size override.
 
-        Keeps MT5 adapter aligned with Executor._get_contract_size and
-        BaseLiveAdapter defaults, but allows explicit per-symbol overrides.
-        """
+    def contract_size_for(self, instrument: str) -> float:
         sym_upper = (instrument or "").upper().replace("_", "").replace("/", "")
         if sym_upper in self.SYMBOL_CONTRACT_SIZES:
             return float(self.SYMBOL_CONTRACT_SIZES[sym_upper])
-        # Fall back to base logic (XAU/XAG/BTC/ETH/FX)
+
         return super().contract_size_for(instrument)
 
     def _get_contract_size(self, symbol: str, default: float = 100_000.0) -> float:
-        """
-        Backwards-compatible helper used internally in this adapter.
-
-        Delegates to contract_size_for() and falls back to provided default.
-        """
         cs = self.contract_size_for(symbol)
         if cs > 0:
             return cs
         return float(default)
 
-    # ─────────────────────────────────────────────────────
-    # Connection
-    # ─────────────────────────────────────────────────────
+
     def _connect_impl(self) -> bool:
         if not _MT5:
             return False
         try:
-            # Load credentials from environment or config
+
             from live.mt5_credentials import MT5Credentials
 
             max_retries = 5
@@ -312,7 +250,7 @@ class MT5Adapter(BaseLiveAdapter):
 
             for attempt in range(max_retries):
                 try:
-                    # Ensure clean state
+
                     try:
                         mt5.shutdown()
                     except Exception:
@@ -337,7 +275,7 @@ class MT5Adapter(BaseLiveAdapter):
                                 pass
                             return True
 
-                    # Failed, optional retry
+
                     if attempt < max_retries - 1:
                         try:
                             self.log.warning(
@@ -370,9 +308,7 @@ class MT5Adapter(BaseLiveAdapter):
         except Exception:
             pass
 
-    # ─────────────────────────────────────────────────────
-    # Account & market
-    # ─────────────────────────────────────────────────────
+
     def _get_account_info_impl(self) -> Dict[str, float | str]:
         if not (_MT5 and self.connected):
             return {}
@@ -386,7 +322,7 @@ class MT5Adapter(BaseLiveAdapter):
                 "margin": _sf(getattr(ai, "margin", 0.0)),
                 "free_margin": _sf(getattr(ai, "margin_free", 0.0)),
                 "margin_level": _sf(getattr(ai, "margin_level", 0.0)),
-                "leverage": _sf(getattr(ai, "leverage", 100.0)),  # Fetch from MT5
+                "leverage": _sf(getattr(ai, "leverage", 100.0)),
                 "currency": str(getattr(ai, "currency", "EUR")),
             }
         except Exception:
@@ -415,10 +351,6 @@ class MT5Adapter(BaseLiveAdapter):
             return False
 
     def _get_prices_impl(self, instrument: str) -> Dict[str, float]:
-        """
-        Return floats only: {'bid': float, 'ask': float, 'mid': float, 'ts': float}.
-        On error, returns a zeroed snapshot with current timestamp.
-        """
         now_ts = float(time.time())
         if not (_MT5 and self.connected):
             return {"bid": 0.0, "ask": 0.0, "mid": 0.0, "ts": now_ts}
@@ -457,11 +389,8 @@ class MT5Adapter(BaseLiveAdapter):
         except Exception:
             return {"bid": 0.0, "ask": 0.0, "mid": 0.0, "ts": now_ts}
 
-    # ─────────────────────────────────────────────────────
-    # Execution helpers
-    # ─────────────────────────────────────────────────────
+
     def _pick_filling_mode(self, sym: str) -> int:
-        """Pick a reasonable fill mode; fallback to IOC."""
         try:
             info = mt5.symbol_info(sym)
             fm = int(getattr(info, "filling_mode", -1))
@@ -494,7 +423,7 @@ class MT5Adapter(BaseLiveAdapter):
         try:
             order_type = mt5.ORDER_TYPE_BUY if side > 0 else mt5.ORDER_TYPE_SELL
 
-            # Get current price for SL/TP calculation
+
             tick = mt5.symbol_info_tick(sym)
             if tick is None:
                 self.log.warning(f"[MT5] Could not get tick for {sym}")
@@ -502,52 +431,52 @@ class MT5Adapter(BaseLiveAdapter):
 
             current_price = tick.ask if side > 0 else tick.bid
 
-            # Calculate SL/TP if not provided
+
             if sl_price is None or tp_price is None:
-                # Try adaptive ATR-based SL/TP first (if enabled and ATR available)
-                use_adaptive = _load_risk_config().get("use_adaptive_sl_tp", True)  # Default to adaptive
+
+                use_adaptive = _load_risk_config().get("use_adaptive_sl_tp", True)
                 adaptive_sl, adaptive_tp = None, None
-                
+
                 if use_adaptive:
                     try:
                         adaptive_sl, adaptive_tp = _calculate_adaptive_sl_tp_prices(
                             symbol=sym,
                             side=side,
                             entry_price=current_price,
-                            atr_multiplier_sl=2.5,  # 2.5x ATR for SL (emergency backup)
-                            atr_multiplier_tp=4.0   # 4x ATR for TP (disabled anyway, ExitEngine handles)
+                            atr_multiplier_sl=2.5,
+                            atr_multiplier_tp=4.0
                         )
                         if adaptive_sl:
                             self.log.info(f"[MT5] Using ADAPTIVE SL for {sym}: {adaptive_sl:.5f} (ATR-based)")
                     except Exception as e:
                         self.log.warning(f"[MT5] Adaptive SL calculation failed for {sym}: {e}, falling back to fixed pips")
-                
-                # Use adaptive SL/TP if available, otherwise fall back to fixed pips
+
+
                 if adaptive_sl and sl_price is None:
                     sl_price = adaptive_sl
                 if adaptive_tp and tp_price is None:
                     tp_price = adaptive_tp
-                
-                # Fallback to fixed pip-based SL/TP if adaptive didn't work
+
+
                 if sl_price is None or tp_price is None:
                     sl_pips, tp_pips = _get_sl_tp_pips(sym)
                     sl_distance = _pips_to_price(sym, sl_pips)
                     tp_distance = _pips_to_price(sym, tp_pips)
 
-                    if side > 0:  # BUY
+                    if side > 0:
                         if sl_price is None and sl_pips > 0:
                             sl_price = current_price - sl_distance
                             self.log.info(f"[MT5] Using FIXED SL for {sym}: {sl_price:.5f} ({sl_pips} pips)")
                         if tp_price is None and tp_pips > 0:
                             tp_price = current_price + tp_distance
-                    else:  # SELL
+                    else:
                         if sl_price is None and sl_pips > 0:
                             sl_price = current_price + sl_distance
                             self.log.info(f"[MT5] Using FIXED SL for {sym}: {sl_price:.5f} ({sl_pips} pips)")
                         if tp_price is None and tp_pips > 0:
                             tp_price = current_price - tp_distance
 
-            # Round prices to symbol's digits
+
             symbol_info = mt5.symbol_info(sym)
             digits = getattr(symbol_info, "digits", 5) if symbol_info else 5
 
@@ -561,7 +490,7 @@ class MT5Adapter(BaseLiveAdapter):
                 "symbol": sym,
                 "volume": float(lots),
                 "type": order_type,
-                "deviation": 20,  # points
+                "deviation": 20,
                 "magic": 424242,
                 "comment": "executor",
                 "type_filling": (
@@ -572,7 +501,7 @@ class MT5Adapter(BaseLiveAdapter):
                 "type_time": mt5.ORDER_TIME_GTC,
             }
 
-            # Add SL/TP to request if valid
+
             if sl_price and sl_price > 0:
                 req["sl"] = sl_price
             if tp_price and tp_price > 0:
@@ -609,7 +538,7 @@ class MT5Adapter(BaseLiveAdapter):
             if r.retcode in (ret_ok, ret_placed, ret_partial):
                 ticket = getattr(r, 'order', getattr(r, 'deal', 0))
                 try:
-                    # Log successful order WITH SL/TP confirmation
+
                     sl_status = f"SL={sl_price:.5f}" if sl_price else "SL=NONE⚠️"
                     tp_status = f"TP={tp_price:.5f}" if tp_price else "TP=NONE"
                     self.log.info(
@@ -617,7 +546,7 @@ class MT5Adapter(BaseLiveAdapter):
                         f"ticket={ticket} price={_sf(getattr(r, 'price', 0.0)):.5f} | "
                         f"{sl_status} {tp_status}"
                     )
-                    # CRITICAL: Warn if SL was not set
+
                     if not sl_price:
                         self.log.warning(
                             f"[MT5] ⚠️ WARNING: Order {ticket} has NO STOP-LOSS! "
@@ -635,7 +564,7 @@ class MT5Adapter(BaseLiveAdapter):
                     "tp": tp_price,
                 }
 
-            # One retry with alternate filling mode if fill mode invalid
+
             if r.retcode in (
                 ret_invalid_fill,
                 getattr(mt5, "TRADE_RETCODE_INVALID", 10006),
@@ -681,9 +610,7 @@ class MT5Adapter(BaseLiveAdapter):
                 pass
             return {"ok": False, "error": str(e)}
 
-    # ─────────────────────────────────────────────────────
-    # Execution impls used by BaseLiveAdapter wrappers
-    # ─────────────────────────────────────────────────────
+
     def _market_order_impl(
         self,
         instrument: str,
@@ -692,7 +619,7 @@ class MT5Adapter(BaseLiveAdapter):
     ) -> Dict[str, Any]:
         if not (_MT5 and self.connected):
             return {"ok": False, "error": "mt5_not_connected"}
-        # side follows BaseLiveAdapter semantics: +1 = BUY, -1 = SELL
+
         return self._send_deal(instrument, side, lots)
 
     def _reduce_position_impl(
@@ -701,23 +628,11 @@ class MT5Adapter(BaseLiveAdapter):
         lots: float,
         side: int,
     ) -> Dict[str, Any]:
-        """
-        Reduce (partially close) a position by sending a market order.
-
-        The `side` argument is interpreted exactly like _market_order_impl:
-        +1 => BUY, -1 => SELL. The caller is responsible for choosing the
-        correct direction (typically opposite to the net position).
-        """
         if not (_MT5 and self.connected):
             return {"ok": False, "error": "mt5_not_connected"}
         return self._send_deal(instrument, side, lots)
 
     def _close_position_impl(self, instrument: str) -> Dict[str, Any]:
-        """
-        Close all positions for instrument BY TICKET (required for hedging accounts).
-        On hedging accounts, sending opposite-side orders creates hedges instead of closing.
-        We MUST specify the position ticket to properly close.
-        """
         if not (_MT5 and self.connected):
             return {"ok": False, "error": "mt5_not_connected"}
         try:
@@ -736,14 +651,14 @@ class MT5Adapter(BaseLiveAdapter):
                 if lots <= 0.0 or ticket == 0:
                     continue
 
-                # Determine close order type (opposite of position)
+
                 close_type = (
                     mt5.ORDER_TYPE_SELL
                     if pos_type == getattr(mt5, "POSITION_TYPE_BUY", 0)
                     else mt5.ORDER_TYPE_BUY
                 )
 
-                # Get current price
+
                 tick = mt5.symbol_info_tick(instrument)
                 if tick is None:
                     self.log.warning(f"[MT5] close_position: No tick for {instrument}")
@@ -751,7 +666,7 @@ class MT5Adapter(BaseLiveAdapter):
 
                 price = tick.bid if close_type == mt5.ORDER_TYPE_SELL else tick.ask
 
-                # Use cached filling mode first, then try others
+
                 all_modes = [
                     getattr(mt5, "ORDER_FILLING_IOC", 1),
                     getattr(mt5, "ORDER_FILLING_FOK", 0),
@@ -764,21 +679,21 @@ class MT5Adapter(BaseLiveAdapter):
                     filling_modes = all_modes
 
                 ret_ok = getattr(mt5, "TRADE_RETCODE_DONE", 10009)
-                ret_no_prices = 10021  # Market closed / no quotes
+                ret_no_prices = 10021
                 ret_market_closed = 10018
-                ret_invalid_fill = 10030  # Unsupported filling mode
+                ret_invalid_fill = 10030
 
                 success = False
                 last_error = None
 
                 for fill_mode in filling_modes:
-                    # Build close request WITH position ticket (required for hedging accounts)
+
                     request = {
                         "action": mt5.TRADE_ACTION_DEAL,
                         "symbol": instrument,
                         "volume": float(lots),
                         "type": close_type,
-                        "position": ticket,  # CRITICAL: specify ticket for hedging accounts
+                        "position": ticket,
                         "price": price,
                         "deviation": 20,
                         "magic": 424242,
@@ -801,16 +716,16 @@ class MT5Adapter(BaseLiveAdapter):
                     if r.retcode == ret_ok:
                         last_px = _sf(getattr(r, "price", 0.0), last_px)
                         self.log.info(f"[MT5] close_position: ✅ Closed ticket {ticket} @ {last_px:.5f}")
-                        self._working_fill_mode[instrument] = fill_mode  # Cache working mode
+                        self._working_fill_mode[instrument] = fill_mode
                         success = True
                         break
                     elif r.retcode == ret_invalid_fill:
-                        # Try next filling mode
+
                         self.log.debug(f"[MT5] close_position: fill_mode={fill_mode} not supported, trying next")
                         last_error = f"retcode_{r.retcode}"
                         continue
                     elif r.retcode in (ret_no_prices, ret_market_closed):
-                        # Market closed - don't spam errors
+
                         self.log.warning(
                             f"[MT5] close_position: Market closed for {instrument} "
                             f"(retcode={r.retcode}). Will retry when market opens."
@@ -819,7 +734,7 @@ class MT5Adapter(BaseLiveAdapter):
                     else:
                         last_error = f"retcode_{r.retcode}: {getattr(r, 'comment', '')}"
                         self.log.error(f"[MT5] close_position: ❌ Failed ticket {ticket}: {last_error}")
-                        break  # Don't try other fill modes for non-fill errors
+                        break
 
                 if not success:
                     self.log.error(f"[MT5] close_position: All filling modes failed for ticket {ticket}")
@@ -836,19 +751,11 @@ class MT5Adapter(BaseLiveAdapter):
         sl: Optional[float] = None,
         tp: Optional[float] = None,
     ) -> Dict[str, Any]:
-        """
-        Concrete implementation for BaseLiveAdapter.modify_position wrapper.
-
-        Args:
-            ticket: Position ticket to modify
-            sl: New stop loss price (None = don't change)
-            tp: New take profit price (None = don't change)
-        """
         if not (_MT5 and self.connected):
             return {"ok": False, "error": "mt5_not_connected"}
 
         try:
-            # Get current position
+
             positions = mt5.positions_get(ticket=ticket)
             if not positions:
                 return {"ok": False, "error": f"position_not_found: {ticket}"}
@@ -858,11 +765,11 @@ class MT5Adapter(BaseLiveAdapter):
             current_sl = float(getattr(pos, "sl", 0.0) or 0.0)
             current_tp = float(getattr(pos, "tp", 0.0) or 0.0)
 
-            # Ensure symbol is selected (required for symbol_info metadata)
+
             if not self._ensure_symbol(symbol):
                 return {"ok": False, "error": "symbol_not_available"}
 
-            # Determine precision/tick-size so micro-adjustments don't spam "NO_CHANGES".
+
             digits = 5
             tick_size = 0.0
             try:
@@ -882,24 +789,24 @@ class MT5Adapter(BaseLiveAdapter):
                 except Exception:
                     tick_size = 0.00001
 
-            # Use current values if not changing
+
             new_sl = sl if sl is not None else current_sl
             new_tp = tp if tp is not None else current_tp
 
-            # Round to symbol precision (broker-normalized values)
+
             cur_sl_r = round(current_sl, digits) if current_sl else 0.0
             cur_tp_r = round(current_tp, digits) if current_tp else 0.0
             new_sl_r = round(float(new_sl), digits) if new_sl else 0.0
             new_tp_r = round(float(new_tp), digits) if new_tp else 0.0
 
-            # Skip if there is no effective change after rounding.
+
             min_delta = (float(tick_size) * 0.5) if tick_size > 0 else 0.0
             sl_changes = (sl is not None) and (abs(new_sl_r - cur_sl_r) > min_delta)
             tp_changes = (tp is not None) and (abs(new_tp_r - cur_tp_r) > min_delta)
             if not sl_changes and not tp_changes:
                 return {"ok": True, "message": "no_effective_change", "sl": cur_sl_r, "tp": cur_tp_r}
 
-            # Build modify request
+
             request = {
                 "action": mt5.TRADE_ACTION_SLTP,
                 "symbol": symbol,
@@ -929,7 +836,7 @@ class MT5Adapter(BaseLiveAdapter):
             else:
                 ret_no_changes = getattr(mt5, "TRADE_RETCODE_NO_CHANGES", 10025)
                 if result.retcode == ret_no_changes:
-                    # Treat as success/no-op to avoid BaseLiveAdapter retries and log spam.
+
                     return {"ok": True, "message": "no_changes", "sl": cur_sl_r, "tp": cur_tp_r}
                 error_msg = f"retcode={result.retcode}: {result.comment}"
                 self.log.error(f"[MT5] modify_position: ❌ {error_msg}")
@@ -940,13 +847,6 @@ class MT5Adapter(BaseLiveAdapter):
             return {"ok": False, "error": str(e)}
 
     def _sync_positions_impl(self) -> Dict[str, Dict[str, Any]]:
-        """
-        Net positions per symbol:
-
-            side = sign(buy_lots - sell_lots)
-            units = abs(net_lots) * contract_size_for(symbol)
-            entry_price = VWAP of net side
-        """
         if not (_MT5 and self.connected):
             return {}
 
@@ -960,7 +860,7 @@ class MT5Adapter(BaseLiveAdapter):
             except Exception:
                 pass
 
-            # group by symbol
+
             by_sym: Dict[str, List[Any]] = {}
             for p in ps:
                 sym = str(getattr(p, "symbol", "") or "")
@@ -969,7 +869,7 @@ class MT5Adapter(BaseLiveAdapter):
                 by_sym.setdefault(sym, []).append(p)
 
             for sym, plist in by_sym.items():
-                # Use unified contract size logic
+
                 cs = self.contract_size_for(sym)
 
                 buy_lots = sum(
@@ -1024,28 +924,28 @@ class MT5Adapter(BaseLiveAdapter):
                 primary_lots = 0.0
                 position_sl = 0.0
                 position_tp = 0.0
-                
+
                 for q in plist:
                     t = getattr(q, "time", None)
                     if isinstance(t, (int, float)) and math.isfinite(t):
                         times.append(float(t))
-                    
-                    # Sum up profit from all positions for this symbol
+
+
                     profit = _sf(getattr(q, "profit", 0.0))
                     total_profit += profit
-                    
-                    # Get current price from any position
+
+
                     if current_price == 0.0:
                         current_price = _sf(getattr(q, "price_current", 0.0))
-                    
-                    # Track the largest ticket for SL/TP modifications
+
+
                     vol = _sf(getattr(q, "volume", 0.0))
                     if vol > primary_lots:
                         primary_lots = vol
                         primary_ticket = int(getattr(q, "ticket", 0) or 0)
                         position_sl = _sf(getattr(q, "sl", 0.0))
                         position_tp = _sf(getattr(q, "tp", 0.0))
-                
+
                 open_time = min(times) if times else 0.0
 
                 out[sym] = {
@@ -1055,32 +955,23 @@ class MT5Adapter(BaseLiveAdapter):
                     "entry_price": float(entry_price),
                     "notional_eur": float(notional_eur),
                     "open_time": open_time,
-                    # NEW: Add P&L and price data for experts/PPO
+
                     "unrealized_pnl": float(total_profit),
-                    "profit": float(total_profit),  # alias for compatibility
+                    "profit": float(total_profit),
                     "current_price": float(current_price),
-                    "price_current": float(current_price),  # alias
+                    "price_current": float(current_price),
                     "ticket": primary_ticket,
                     "sl": float(position_sl),
                     "tp": float(position_tp),
-                    "lots": float(abs(net_lots)),  # for convenience
+                    "lots": float(abs(net_lots)),
                 }
 
             return out
         except Exception:
             return {}
 
-    # ─────────────────────────────────────────────────────
-    # SL/TP fixer (optional hard safety belt)
-    # ─────────────────────────────────────────────────────
-    def fix_positions_without_sl_tp(self) -> Dict[str, Any]:
-        """
-        Check all open positions and add SL/TP if missing,
-        based on risk_policy.yaml sl_tp_settings.
 
-        This is a last-resort safety belt in case of disconnects,
-        not the primary exit logic.
-        """
+    def fix_positions_without_sl_tp(self) -> Dict[str, Any]:
         if not (_MT5 and self.connected):
             return {"ok": False, "error": "mt5_not_connected", "fixed": 0}
 
@@ -1104,19 +995,19 @@ class MT5Adapter(BaseLiveAdapter):
                 open_price = _sf(getattr(pos, "price_open", 0.0))
                 pos_type = getattr(pos, "type", 0)
 
-                # Check if SL or TP is missing
+
                 needs_sl = current_sl <= 0 and config.get("auto_sl_enabled", True)
                 needs_tp = current_tp <= 0 and config.get("auto_tp_enabled", True)
 
                 if not needs_sl and not needs_tp:
                     continue
 
-                # Get SL/TP pips for this symbol
+
                 sl_pips, tp_pips = _get_sl_tp_pips(symbol)
                 sl_distance = _pips_to_price(symbol, sl_pips)
                 tp_distance = _pips_to_price(symbol, tp_pips)
 
-                # Get symbol info for rounding
+
                 symbol_info = mt5.symbol_info(symbol)
                 digits = getattr(symbol_info, "digits", 5) if symbol_info else 5
 
@@ -1129,7 +1020,7 @@ class MT5Adapter(BaseLiveAdapter):
                         new_sl = round(open_price - sl_distance, digits)
                     if needs_tp and tp_pips > 0:
                         new_tp = round(open_price + tp_distance, digits)
-                else:  # SELL
+                else:
                     if needs_sl and sl_pips > 0:
                         new_sl = round(open_price + sl_distance, digits)
                     if needs_tp and tp_pips > 0:

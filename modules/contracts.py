@@ -7,24 +7,14 @@ from typing import Any, Dict, List, Tuple
 @dataclass
 class ModuleContract:
     name: str
-    file: str = ""  # path relative to modules/
+    file: str = ""
     provides: List[str] = field(default_factory=list)
     requires: List[str] = field(default_factory=list)
     meta: Dict[str, Any] = field(default_factory=dict)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# SINGLE-WRITER OWNERSHIP (canonical selections)
-# - trading_result      → Executor
-# - performance_data    → SessionManager (aggregate), NOT TradingModeManager
-# - market_regime       → UnifiedMarket
-# - training_metrics    → PPOAgent
-# - quality_metrics     → ExecutionQualityMonitor
-# - consensus_quality_metrics → ConsensusDetector
-# ──────────────────────────────────────────────────────────────────────────────
-
 CONTRACTS: Dict[str, ModuleContract] = {
-    # ═════════════════════════════════ RISK ══════════════════════════════════
+
     'ActiveTradeMonitor': ModuleContract(
         name='ActiveTradeMonitor',
         file='risk/active_trade_monitor.py',
@@ -67,15 +57,11 @@ CONTRACTS: Dict[str, ModuleContract] = {
         provides=['risk_alerts', 'risk_analytics', 'risk_factors', 'risk_scaling',
                   'risk_level', 'risk_scale', 'risk_assessment',
                   'DynamicRiskController_voting_proposal', 'DynamicRiskController_confidence'],
-        # NOTE: 'position_data' is provided by PositionManager
-        # NOTE: Memory signals (memory_gate, danger_zones, etc.) used for risk factor adjustment
-        # FIX v4.3.0: Removed risk sub-module dependencies to break circular deps.
-        #             DynamicRiskController can function with basic inputs.
-        #             Optional signals (anomaly_detection, execution_quality, drawdown_risk, etc.)
-        #             are consumed via bus.get() with defaults in the module itself.
+
+
         requires=['market_context', 'market_data', 'market_regime', 'position_data',
                   'memory_gate', 'danger_zones'],
-        # NOTE: is_voting_member=False - provides risk gate actions (proceed/caution/halt), not directional votes
+
         meta={'is_voting_member': False, 'thesis_required': True, 'health_monitoring': True,
               'performance_tracking': True, 'category': 'risk', 'version': '4.2.0'}
     ),
@@ -86,44 +72,41 @@ CONTRACTS: Dict[str, ModuleContract] = {
         provides=['anomaly_alerts', 'anomaly_detection', 'anomaly_score', 'detection_analytics', 'anomaly_detector',
                   'EnhancedAnomalyDetector_voting_proposal', 'EnhancedAnomalyDetector_confidence'],
         requires=['market_context', 'market_data', 'performance_data', 'risk_data', 'trading_data'],
-        # NOTE: is_voting_member=False - provides anomaly gate actions, not directional votes
+
         meta={'is_voting_member': False, 'thesis_required': True, 'health_monitoring': True,
               'performance_tracking': True, 'category': 'risk', 'version': '4.0.0'}
     ),
 
     'ExecutionQualityMonitor': ModuleContract(
         name='ExecutionQualityMonitor',
-        file='risk/execution_quality_monitor.py',  # fixed path (was incorrectly under voting/)
+        file='risk/execution_quality_monitor.py',
         provides=['execution_alerts', 'execution_analytics', 'execution_quality', 'quality_metrics',
                   'ExecutionQualityMonitor_voting_proposal', 'ExecutionQualityMonitor_confidence'],
-        # FIX v4.1.0: Removed Executor-dependent inputs (execution_data, order_data, trade_data)
-        #             to break circular dependency. Module gets these via bus.get() with defaults.
+
+
         requires=['market_context', 'market_data'],
-        # NOTE: is_voting_member=False - provides execution gate actions, not directional votes
+
         meta={'is_voting_member': False, 'thesis_required': True, 'health_monitoring': True,
               'performance_tracking': True, 'category': 'risk', 'version': '4.0.0'}
     ),
 
     'PortfolioRiskSystem': ModuleContract(
         name='PortfolioRiskSystem',
-        file='risk/portfolio_risk_system.py',  # fixed path spelling
+        file='risk/portfolio_risk_system.py',
         provides=['portfolio_risk', 'portfolio_risk_proposal', 'position_limits', 'risk_data', 'risk_metrics',
                   'risk_score', 'risk_signals', 'portfolio_trade_data', 'trading_data',
                   'PortfolioRiskSystem_voting_proposal', 'PortfolioRiskSystem_confidence'],
-        # NOTE: v4.1.0 - Added correlation_matrix, correlation_risk, diversification_score from CorrelatedRiskController
-        #       to remove correlation calculation duplication and use single source of truth
+
+
         requires=['market_context', 'market_data', 'positions',
-                  # Correlation data from CorrelatedRiskController (v4.1.0)
+
                   'correlation_matrix', 'correlation_risk', 'diversification_score'],
-        # NOTE: is_voting_member=False - provides risk gate actions, not directional votes
+
         meta={'is_voting_member': False, 'thesis_required': True, 'health_monitoring': True,
               'performance_tracking': True, 'category': 'risk', 'version': '4.1.0'}
     ),
 
-    # ═══════════════════════════════ FEATURES ════════════════════════════════
 
-
-    # ═════════════════════════════════ META ══════════════════════════════════
     'MetaCognitivePlanner': ModuleContract(
         name='MetaCognitivePlanner',
         file='meta/metacognitive_planner.py',
@@ -131,11 +114,10 @@ CONTRACTS: Dict[str, ModuleContract] = {
         requires=['actions', 'market_context', 'market_data', 'market_regime', 'performance_metrics',
                   'regime_data', 'trades', 'volatility_adjustment'],
         meta={'thesis_required': True, 'health_monitoring': True, 'performance_tracking': True,
-              'category': 'meta', 'version': '3.0.1', 'disabled': True}  # DISABLED - Zero consumers
+              'category': 'meta', 'version': '3.0.1', 'disabled': True}
     ),
 
-    # NOTE: MetaRLController file is meta_rl_controller.py (typo in filename)
-    # DEPRECATED: Moved to legacy folder - functionality replaced by PPOAgentShell
+
     'MetaRLController': ModuleContract(
         name='MetaRLController',
         file='meta/legacy/meta_rl_controller.py',
@@ -143,65 +125,51 @@ CONTRACTS: Dict[str, ModuleContract] = {
                   'controller_training_overview', 'meta_signals', 'trading_signal', 'trading_signals'],
         requires=['actions', 'market_data', 'trades', 'training_signals'],
         meta={'thesis_required': True, 'health_monitoring': True, 'performance_tracking': True,
-              'category': 'meta', 'version': '3.0.0', 'disabled': True}  # DISABLED - Moved to legacy
+              'category': 'meta', 'version': '3.0.0', 'disabled': True}
     ),
 
-    # DEPRECATED: Moved to legacy folder - functionality replaced by PPOAgentShell + TradingModeManager
+
     'MetaAgent': ModuleContract(
         name='MetaAgent',
         file='meta/legacy/meta_agent.py',
         provides=['automation_decisions', 'automation_metrics', 'meta_performance', 'system_mode',
                   'MetaAgent_voting_proposal', 'MetaAgent_confidence',
-                  # FIX: Add active_strategy and auto_mode for BackendAPI
+
                   'active_strategy', 'auto_mode'],
         requires=['market_context', 'risk_signals', 'system_performance', 'time_risk_analysis', 'training_metrics'],
-        # NOTE: is_voting_member=False - MetaAgent outputs risk gate signals (proceed/caution/halt),
-        # NOT directional trading signals (long/short). It monitors system health, not market direction.
+
+
         meta={'is_voting_member': False, 'thesis_required': True, 'health_monitoring': True,
-              'performance_tracking': True, 'category': 'meta', 'version': '3.0.0', 'disabled': True}  # DISABLED - Moved to legacy
+              'performance_tracking': True, 'category': 'meta', 'version': '3.0.0', 'disabled': True}
     ),
 
     'PPOAgent': ModuleContract(
         name='PPOAgent',
-        file='meta/ppo_agent_shell.py',  # Updated to new shell architecture
-        # PPOAgent v4.0 is the INTELLIGENT ARBITER - makes final trading decisions
-        # It uses a 3-layer architecture:
-        # - PPOCore: Pure RL engine (no bus knowledge)
-        # - ArbiterLogic: Domain logic for per-instrument decisions
-        # - PPOAgentShell: SmartInfoBus gateway (this file)
-        #
-        # It consumes committee consensus, expert signals, risk, memory, trading mode,
-        # world model predictions, and strategy constraints to decide:
-        # 1. Whether to trade (GO/NO-GO) per instrument
-        # 2. Position sizing based on confidence
-        # 3. Override committee when it detects danger
-        #
-        # PPO AUTONOMY: Leadership transitions automatically from experts to PPO
-        # based on performance (win rate, consistency, override success rate).
-        # Phases: EXPERT_LED -> BLENDED -> PPO_LED -> FULL_AUTONOMY
+        file='meta/ppo_agent_shell.py',
+
+
         provides=['agent_performance', 'policy_actions', 'policy_gradients', 'rewards',
               'training_data', 'training_metrics', 'training_signals',
-                  # Final decision outputs (consumed by Executor)
+
                   'ppo_final_decision', 'ppo_gate_passed', 'ppo_position_size',
-                  # Multi-instrument outputs (v3.0)
-                  'ppo_multi_decision',      # Dict with per-instrument decisions
-                  'ppo_instrument_stats',    # Per-instrument statistics
-                  # PPO Autonomy state (v3.1.0)
-                  'ppo_autonomy_state',      # Adaptive leadership: phase, level, weights, metrics
-                  # Legacy voting outputs (for committee, but with low weight)
+
+                  'ppo_multi_decision',
+                  'ppo_instrument_stats',
+
+                  'ppo_autonomy_state',
+
                   'PPOAgent_voting_proposal', 'PPOAgent_confidence'],
-        # Runs AFTER committee consensus to make informed final decision
-        # FIX v5.1.0: Removed strategy/thesis inputs that may not be available on first cycle.
-        #             PPOAgentShell gets these via bus.get() with defaults.
+
+
         requires=['market_data', 'market_regime',
-                  # Committee consensus (aggregated expert votes)
+
                   'committee_decision', 'committee_confidence', 'consensus_score',
-                  # Risk signals
+
                   'fragility',
-                  # Memory signals
+
                   'memory_gate', 'danger_zones'],
-        meta={'is_voting_member': False,  # No longer a voter - it's the arbiter
-              'is_final_arbiter': True,   # New role: intelligent final decision maker
+        meta={'is_voting_member': False,
+              'is_final_arbiter': True,
               'thesis_required': True, 'health_monitoring': True,
               'performance_tracking': True, 'category': 'meta', 'version': '5.0.0'}
     ),
@@ -212,10 +180,10 @@ CONTRACTS: Dict[str, ModuleContract] = {
         provides=['agent_status', 'market_adaptation', 'position_metrics', 'ppo_lag_training_metrics'],
         requires=['actions', 'market_data', 'trades', 'training_signals'],
         meta={'thesis_required': True, 'health_monitoring': True, 'performance_tracking': True,
-              'category': 'meta', 'version': '3.0.0', 'disabled': True}  # DISABLED - Zero consumers, redundant with PPOAgent
+              'category': 'meta', 'version': '3.0.0', 'disabled': True}
     ),
 
-    # ═══════════════════════════════ STRATEGY ════════════════════════════════
+
     'BiasAuditor': ModuleContract(
         name='BiasAuditor',
         file='strategy/bias_auditor.py',
@@ -227,41 +195,6 @@ CONTRACTS: Dict[str, ModuleContract] = {
               'category': 'strategy', 'version': '3.0.0'}
     ),
 
-    # DISABLED - Zero consumers
-    # 'OpponentModeEnhancer': ModuleContract(
-    #     name='OpponentModeEnhancer',
-    #     file='strategy/opponent_mode_enhancer.py',
-    #     provides=['market_mode_detection', 'mode_analysis', 'mode_performance', 'mode_recommendations',
-    #               'mode_weights', 'opponent_mode_enhancer_initialization', 'strategy_adaptation'],
-    #     requires=['market_context', 'market_data', 'market_regime', 'price_data', 'recent_trades', 'session_metrics',
-    #               'technical_indicators', 'trading_performance', 'volatility_data'],
-    #     meta={'thesis_required': True, 'explainable': True, 'health_monitoring': True, 'performance_tracking': True,
-    #           'category': 'strategy', 'version': '3.0.0', 'disabled': True}
-    # ),
-
-    # DISABLED - Zero consumers  
-    # 'PlaybookClusterer': ModuleContract(
-    #     name='PlaybookClusterer',
-    #     file='strategy/playbook_clusterer.py',
-    #     provides=['cluster_analysis', 'cluster_effectiveness', 'cluster_recommendations', 'cluster_weights',
-    #               'clustering_health', 'clustering_thesis', 'playbook_clusterer_initialization', 'playbook_patterns'],
-    #     requires=['market_context', 'market_data', 'market_regime', 'playbook_memory', 'recent_trades',
-    #               'session_metrics', 'trading_performance', 'volatility_data'],
-    #     meta={'thesis_required': True, 'explainable': True, 'health_monitoring': True, 'performance_tracking': True,
-    #           'category': 'strategy', 'version': '3.0.0', 'disabled': True}
-    # ),
-
-    # DISABLED - Zero consumers
-    # 'StrategyGenomePool': ModuleContract(
-    #     name='StrategyGenomePool',
-    #     file='strategy/strategy_genome_pool.py',
-    #     provides=['best_genome', 'evolution_analytics', 'genome_analysis', 'genome_recommendations',
-    #               'genome_weights', 'population_metrics', 'strategy_genome_pool_initialization'],
-    #     requires=['market_context', 'market_data', 'market_regime', 'recent_trades', 'risk_data',
-    #               'session_metrics', 'trading_performance', 'volatility_data'],
-    #     meta={'thesis_required': True, 'explainable': True, 'health_monitoring': True, 'performance_tracking': True,
-    #           'category': 'strategy', 'version': '3.0.0', 'disabled': True}
-    # ),
 
     'StrategyIntrospector': ModuleContract(
         name='StrategyIntrospector',
@@ -269,7 +202,7 @@ CONTRACTS: Dict[str, ModuleContract] = {
         provides=['adaptation_recommendations', 'behavior_patterns', 'introspection_metrics', 'module_data',
                   'strategy_analysis', 'strategy_introspector_initialization', 'strategy_performance',
                   'strategy_profiles', 'trading_performance',
-                  # FIX: Add trade_performance for BackendAPI
+
                   'trade_performance'],
         requires=['market_context', 'market_regime', 'recent_trades', 'risk_data', 'volatility_data'],
         meta={'thesis_required': True, 'explainable': True, 'health_monitoring': True, 'performance_tracking': True,
@@ -314,157 +247,13 @@ CONTRACTS: Dict[str, ModuleContract] = {
         name='EntryTimingController',
         file='strategy/entry_timing_controller.py',
         provides=['entry_timing', 'entry_timing_array', 'entry_timing_allowed'],
-        # v5.2: position_state_summary is optional - code handles missing gracefully with defaults
+
         requires=['market_data_latest', 'multi_timeframe_data', 'atr_values', 'session_info'],
         meta={'thesis_required': False, 'health_monitoring': True, 'performance_tracking': False,
               'category': 'strategy', 'version': '1.0.0'}
     ),
 
-    # ═══════════════════════════════ VOTING ══════════════════════════════════
-    # LEGACY VOTING MODULES - DEPRECATED (code in voting/legacy/, commented out)
-    # These contracts are preserved for reference but modules are disabled.
-    # Use the new UNIFIED VOTING (v5.0) modules below instead.
-    
-    # 'EnhancedThemeExpert': ModuleContract(
-    #     name='EnhancedThemeExpert',
-    #     file='voting/legacy/voting_wrappers.py',  # DEPRECATED
-    #     provides=[
-    #         'agreement_score', 'consensus_direction', 'member_confidences', 'raw_proposals',
-    #         'theme_voting_proposal', 'theme_confidence',
-    #         'EnhancedThemeExpert_voting_proposal', 'EnhancedThemeExpert_confidence'
-    #     ],
-    #     requires=['market_data', 'price_data', 'technical_indicators', 'market_regime', 'market_open'],
-    #     meta={'is_voting_member': True, 'thesis_required': True, 'explainable': True, 'health_monitoring': True,
-    #           'performance_tracking': True, 'category': 'voting', 'version': '4.0.0'}
-    # ),
 
-    # 'EnhancedSeasonalityRiskExpert': ModuleContract(
-    #     name='EnhancedSeasonalityRiskExpert',
-    #     file='voting/legacy/voting_wrappers.py',  # DEPRECATED
-    #     provides=['seasonality_risk_analysis', 'seasonal_voting_proposal', 'seasonal_confidence',
-    #               'seasonality_analysis', 'seasonality_voting_proposal', 'seasonality_confidence',
-    #               'EnhancedSeasonalityRiskExpert_confidence', 'EnhancedSeasonalityRiskExpert_voting_proposal'],
-    #     requires=['market_data', 'price_data', 'technical_indicators', 'market_regime', 'market_open'],
-    #     meta={'is_voting_member': False, 'thesis_required': True, 'explainable': True, 'health_monitoring': True,
-    #           'performance_tracking': True, 'category': 'voting', 'version': '4.0.0'}
-    # ),
-
-    # 'EnhancedVotingCommitteeCoordinator': ModuleContract(
-    #     name='EnhancedVotingCommitteeCoordinator',
-    #     file='voting/legacy/voting_wrappers.py',  # DEPRECATED
-    #     provides=['committee_decision', 'committee_confidence', 'member_proposals', 'performance_feedback',
-    #               'time_of_day', 'votes', 'committee_votes', 'voting_summary', 'voting_weights',
-    #               'strategy_arbiter_weights', 'committee_consensus', 'member_confidences_ordered',
-    #               'expert_votes', 'committee_members', 'proposal_vectors', 'signals', 'committee_decision_id'],
-    #     requires=['emergency_mode', 'market_context', 'market_open', 'market_regime', 'portfolio_state',
-    #               'recent_trades', 'risk_data', 'risk_score', 'session_type', 'system_health',
-    #               'theme_detection', 'volatility_data',
-    #               'memory_vote', 'playbook_recall', 'intuition_vector',
-    #               'DynamicRiskController_voting_proposal', 'DynamicRiskController_confidence',
-    #               'EnhancedAnomalyDetector_voting_proposal', 'EnhancedAnomalyDetector_confidence',
-    #               'EnhancedSeasonalityRiskExpert_voting_proposal', 'EnhancedSeasonalityRiskExpert_confidence',
-    #               'EnhancedThemeExpert_voting_proposal', 'EnhancedThemeExpert_confidence',
-    #               'ExecutionQualityMonitor_voting_proposal', 'ExecutionQualityMonitor_confidence',
-    #               'MetaAgent_voting_proposal', 'MetaAgent_confidence',
-    #               'PortfolioRiskSystem_voting_proposal', 'PortfolioRiskSystem_confidence',
-    #               'PPOAgent_voting_proposal', 'PPOAgent_confidence'],
-    #     meta={'thesis_required': True, 'explainable': True, 'health_monitoring': True, 'performance_tracking': True,
-    #           'category': 'voting', 'version': '4.0.0'}
-    # ),
-
-    # 'ConsensusDetector': ModuleContract(
-    #     name='ConsensusDetector',
-    #     file='voting/legacy/consensus_detector.py',  # DEPRECATED
-    #     provides=['confidence_consensus', 'consensus_components', 'consensus_detector_initialization',
-    #               'consensus_quality', 'consensus_recommendations', 'consensus_score', 'consensus_trends',
-    #               'directional_consensus', 'magnitude_consensus', 'member_contributions',
-    #               'consensus_quality_metrics', 'consensus_decision_id'],
-    #     requires=['agreement_score', 'consensus_direction', 'market_context', 'market_regime', 'member_confidences',
-    #               'raw_proposals', 'volatility_data'],
-    #     meta={'thesis_required': True, 'explainable': True, 'health_monitoring': True, 'performance_tracking': True,
-    #           'category': 'voting', 'version': '3.0.0'}
-    # ),
-
-    # 'AlternativeRealitySampler': ModuleContract(
-    #     name='AlternativeRealitySampler',
-    #     file='voting/legacy/alternative_reality_sampler.py',  # DEPRECATED
-    #     provides=['alternative_reality_sampler_initialization', 'alternative_samples', 'confidence_bounds',
-    #               'diversity_score', 'effective_samples', 'sampling_recommendations', 'sampling_stats',
-    #               'sampling_uncertainty', 'sampling_decision_id', 'sampling_fragility'],
-    #     requires=['agreement_score', 'consensus_direction', 'market_context', 'market_regime', 'recent_trades',
-    #               'session_metrics', 'strategy_arbiter_weights', 'volatility_data', 'votes', 'voting_summary'],
-    #     meta={'thesis_required': True, 'explainable': True, 'health_monitoring': True, 'performance_tracking': True,
-    #           'category': 'voting', 'version': '3.0.0'}
-    # ),
-
-    # 'TimeHorizonAligner': ModuleContract(
-    #     name='TimeHorizonAligner',
-    #     file='voting/legacy/time_horizon_aligner.py',  # DEPRECATED
-    #     provides=['aligned_weights', 'horizon_distances', 'horizon_multipliers', 'horizon_alignment',
-    #               'alignment_quality', 'adaptation_status', 'horizon_decision_id', 'horizon_alignment_meta'],
-    #     requires=['voting_weights', 'market_regime', 'session_type', 'volatility_data', 'market_context'],
-    #     meta={'thesis_required': True, 'explainable': True, 'health_monitoring': True, 'performance_tracking': True,
-    #           'category': 'voting', 'version': '3.0.0'}
-    # ),
-
-    # 'StrategyArbiter': ModuleContract(
-    #     name='StrategyArbiter',
-    #     file='voting/legacy/strategy_arbiter.py',  # DEPRECATED
-    #     provides=['alpha_weights', 'arbiter_recommendations', 'decision_statistics', 'gate_decision',
-    #               'instrument_signals', 'instruments',
-    #               'member_performance', 'member_weights', 'proposal_analysis',
-    #               'strategy_arbiter_initialization', 'strategy_weights', 'voting_quality',
-    #               'expert_performance', 'arbiter_decision_id'],
-    #     requires=['collusion_score', 'consensus_score', 'horizon_alignment', 'market_context', 'market_regime',
-    #               'member_confidences', 'member_proposals', 'recent_trades', 'session_data', 'volatility_data',
-    #               'universe', 'watched_instruments',
-    #               'memory_gate', 'danger_zones', 'mistake_avoidance', 'playbook_recall'],
-    #     meta={'category': 'voting', 'version': '3.0.0'}
-    # ),
-
-    # 'VotingKernel': ModuleContract(
-    #     name='VotingKernel',
-    #     file='voting/legacy/voting_kernel.py',  # DEPRECATED
-    #     provides=['decision_coordination', 'voting_consensus', 'consensus_summary',
-    #               'voting_metrics', 'decision_bundle', 'trade_vote_v2', 'fragility',
-    #               'decision_id', 'tick_ts', 'kernel_decision_id', 'kernel_tick_ts'],
-    #     requires=['market_data', 'price_data', 'technical_indicators', 'market_regime', 'portfolio_state'],
-    #     meta={'thesis_required': True, 'explainable': True, 'health_monitoring': True, 'performance_tracking': True,
-    #           'category': 'voting', 'version': '1.0.0'}
-    # ),
-
-    # 'CollusionAuditor': ModuleContract(
-    #     name='CollusionAuditor',
-    #     file='voting/legacy/collusion_auditor.py',  # DEPRECATED
-    #     provides=['audit_recommendations', 'behavioral_profiles', 'collusion_alerts', 'collusion_auditor_initialization',
-    #               'collusion_score', 'coordination_events', 'detection_statistics', 'member_independence_scores',
-    #               'suspicious_pairs', 'collusion_decision_id'],
-    #     requires=['agreement_score', 'consensus_direction', 'market_context', 'market_regime', 'member_confidences',
-    #               'raw_proposals', 'recent_trades', 'strategy_arbiter_weights', 'volatility_data', 'votes',
-    #               'voting_summary'],
-    #     meta={'thesis_required': True, 'explainable': True, 'health_monitoring': True, 'performance_tracking': True,
-    #           'category': 'voting', 'version': '3.0.0'}
-    # ),
-
-    # ════════════════════════ UNIFIED VOTING (v5.0) ══════════════════════════
-    # NEW modular voting architecture - self-contained, replaces all legacy voting modules
-    # See modules/voting/core/, experts/, stages/, pipeline/, utils/
-
-
-
-
-
-
-
-
-
-
-
-
-
-    # ═══════════════════════════════ MARKET ══════════════════════════════════
-
-    # ═════════════════════════════ EXTERNAL / IO ═════════════════════════════
     'MarketDataProvider': ModuleContract(
         name='MarketDataProvider',
         file='external/market_data_provider.py',
@@ -474,12 +263,12 @@ CONTRACTS: Dict[str, ModuleContract] = {
             "module_insights", "multi_timeframe_data", "ohlcv_data", "price_data", "prices",
             "session_type", "step_idx", "symbols",
             "technical_indicators", "timestamp", "trading_session",
-            # required by downstream
+
             "volatility", "volatility_data", "volatility_level",
             "volume_data", "liquidity_data",
             "volatility_level_by_instrument", "volatility_by_instrument",
             "market_data_latest", "atr_values", "session_info",
-            # XAUUSD aliases only
+
             "market_data_XAUUSD_M15", "market_data_XAUUSD_H1", "market_data_XAUUSD_H4", "market_data_XAUUSD_D1",
             "universe", "watched_instruments",
         ],
@@ -496,15 +285,15 @@ CONTRACTS: Dict[str, ModuleContract] = {
         provides=[
             'consensus_data', 'emergency_mode', 'episode_data', 'episode_summary',
             'market_open', 'memory_usage', 'mistakes', 'module_performance', 'performance_metrics',
-            'performance_data',  # canonical owner selected
+            'performance_data',
             'playbook_entries', 'playbook_memory', 'session_pnl_data', 'session_context', 'session_metrics',
-            'system_alerts', 'session_health', 'system_performance', 'system_health',  # FIX #3: Added system_health
-            'environment_config', 'execution_mode',    # fills gap for PM/Executor; may be moved to a dedicated Environment module
-            # FIX: Per-instrument session for HorizonAligner
+            'system_alerts', 'session_health', 'system_performance', 'system_health',
+            'environment_config', 'execution_mode',
+
             'session_canonical_by_instrument',
-            # FIX: Add daily_pnl for PositionManager daily loss tracking
+
             'daily_pnl',
-            # FIX: Add prop_firm keys for LotCalculator and Environment
+
             'prop_firm_status', 'prop_firm_state'
         ],
         requires=[],
@@ -512,26 +301,21 @@ CONTRACTS: Dict[str, ModuleContract] = {
               'category': 'external', 'version': '3.0.0'}
     ),
 
-    # ═════════════════════════════ EXECUTION / POSITION ══════════════════════
+
     'PositionManager': ModuleContract(
         name='PositionManager',
         file='position/position_logic.py',
-        # FIX: Renamed position_data → position_manager_data to avoid conflict with Executor's canonical position_data
-        # NOTE: Memory signals used for veto gate and position sizing intelligence
-        # FIX: Uses instrument_signals (per-instrument) from FinalArbiter as primary signal source
-        # FIX: Falls back to trade_vote_v2 from SlimVotingKernel if no per-instrument signal
-        # FIX: Checks ppo_gate_passed for final GO/NO-GO from intelligent arbiter
-        # NOTE: Removed market_conditions - uses market_context fallback
-        # FIX: Added position_limits - ensures PortfolioRiskSystem runs first so dynamic limits are available
+
+
         provides=['position_decisions', 'position_health', 'portfolio_state', 'order_queue', 'position_manager_data'],
         requires=['instrument_signals', 'trade_vote_v2', 'kernel_decision', 'environment_config', 'indicators', 'liquidity_capabilities', 'liquidity_score',
                   'market_context', 'market_data', 'market_liquidity',
                   'market_regime', 'price_data', 'prices', 'technical_indicators',
                   'time_risk_analysis', 'volatility_data',
                   'memory_gate', 'playbook_recall', 'intuition_vector', 'danger_zones', 'mistake_avoidance',
-                  # PPOAgent intelligent arbiter outputs (final gate)
+
                   'ppo_final_decision', 'ppo_gate_passed', 'ppo_position_size',
-                  # Risk limits from PortfolioRiskSystem (ensures proper execution order)
+
                   'position_limits'],
         meta={'is_voting_member': False, 'thesis_required': True, 'explainable': True,
               'health_monitoring': True, 'performance_tracking': True,
@@ -541,28 +325,17 @@ CONTRACTS: Dict[str, ModuleContract] = {
     'Executor': ModuleContract(
         name='Executor',
         file='executor/executor.py',
-        # FIX: Added position_data as canonical provider (actual executed positions)
-        # FIX: Added closed_positions (consumed by TrainingVisualizer for win rate tracking)
-        # FIX v4.5: Added position_focus_context for position management mode
-        # NOTE: Memory gate used for final safety veto on order execution
-        # NOTE: order_queue is consumed but NOT required - Executor handles empty queue gracefully
-        # This allows Executor to run in parallel with PositionManager (order_queue comes next cycle)
-        # NOTE: Strategy modules (bias, curriculum) are consumed for position sizing and trade limits
-        # NOTE: Trading mode (v4.0) consumed for position scaling and risk constraints
+
+
         provides=['positions', 'trades', 'recent_trades',
                   'order_data', 'execution_data', 'execution_reports',
                   'portfolio_metrics', 'trading_result', 'current_pnl',
                   'trade_data', 'market_state', 'position_data',
                   'current_positions', 'pnl_data', 'closed_positions',
                   'live_adapter_status', 'pending_orders', 'account_state',
-                  'position_focus_context'],  # NEW: Signals position management mode to all modules
-        # NOTE: trade_outcome_for_autonomy is published opportunistically when trades close
-        # It's not in provides[] because it's event-driven, not every-cycle
-        # FIX v5.1.0: Removed optional dependencies that caused circular deps:
-        #   - bias_adjustments, learning_constraints, curriculum_stage (from BiasAuditor/CurriculumPlanner)
-        #   - risk_assessment, risk_level (from DynamicRiskController)
-        #   - trading_mode, mode_config, mode_effectiveness (from TradingModeManager)
-        # These are enhancement signals consumed via bus.get() with defaults in Executor.
+                  'position_focus_context'],
+
+
         requires=['prices', 'price_data', 'environment_config', 'step_idx', 'execution_mode'],
         meta={'is_voting_member': False, 'thesis_required': False, 'explainable': True,
               'health_monitoring': True, 'performance_tracking': True,
@@ -572,30 +345,30 @@ CONTRACTS: Dict[str, ModuleContract] = {
     'TradingModeManager': ModuleContract(
         name='TradingModeManager',
         file='trading_modes/trading_mode.py',
-        # removed 'performance_data' to avoid duplicate writer with SessionManager
-        # NOTE: Removed 'economic_calendar' - no longer provided by MarketDataProvider
+
+
         provides=['decision_factors', 'mode_config', 'mode_effectiveness', 'mode_stats', 'mode_thresholds',
                   'trading_mode', 'trading_mode_manager_initialization'],
         requires=[
-            # Original required keys
+
             'market_context', 'market_regime', 'positions', 'recent_trades', 'risk_metrics',
             'session_metrics', 'strategy_performance', 'trading_performance', 'volatility_data', 'votes',
-            # CRITICAL: closed_positions for accurate win rate (not recent_trades which double-counts)
+
             'closed_positions',
-            # Enhanced integrations (optional but beneficial)
+
             'execution_quality', 'risk_alerts', 'anomaly_detection', 'portfolio_risk', 'drawdown_risk',
             'risk_scaling', 'anomaly_score', 'consensus_score', 'consensus_quality', 'committee_confidence',
             'committee_decision', 'collusion_score', 'member_confidences', 'market_predictions',
-            # shadow_predictions is optional; defaults are set to avoid readiness failures
+
             'theme_detection', 'liquidity_score', 'regime_prediction',
             'prediction_confidence', 'bias_analysis', 'adaptation_recommendations', 'market_thesis'
-            # Note: 'best_thesis' removed from required - it's optional with fallback logic in code
+
         ],
         meta={'thesis_required': True, 'explainable': True, 'health_monitoring': True, 'performance_tracking': True,
               'category': 'trading_modes', 'version': '3.1.0'}
     ),
 
-    # ═══════════════════════════════ REWARD ══════════════════════════════════
+
     'RiskAdjustedReward': ModuleContract(
         name='RiskAdjustedReward',
         file='reward/risk_adjusted_reward.py',
@@ -606,71 +379,7 @@ CONTRACTS: Dict[str, ModuleContract] = {
               'category': 'reward', 'version': '4.0.0'}
     ),
 
-    # ═══════════════════════════════ AUDITING ════════════════════════════════
-    # DISABLED - All auditing modules have zero consumers
-    # These are pure logging modules that don't contribute to trading decisions
-    # 'AuditingCoordinator': ModuleContract(
-    #     name='AuditingCoordinator',
-    #     file='auditing/auditing_coordinator.py',
-    #     provides=['audit_metrics', 'audit_report', 'audit_status'],
-    #     requires=['market_data', 'trades'],
-    #     meta={'is_voting_member': False, 'explainable': True, 'category': 'auditing', 'version': '2.0.0', 'disabled': True}
-    # ),
 
-    # 'TradeExplanationAuditor': ModuleContract(
-    #     name='TradeExplanationAuditor',
-    #     file='auditing/trade_explanation_auditor.py',
-    #     provides=['audit_alerts', 'explanation_metrics', 'trade_explanations'],
-    #     requires=['market_data', 'trades'],
-    #     meta={'is_voting_member': False, 'explainable': True, 'category': 'auditing', 'version': '2.0.0', 'disabled': True}
-    # ),
-
-    # 'TradeThesisTracker': ModuleContract(
-    #     name='TradeThesisTracker',
-    #     file='auditing/trade_thesis_tracker.py',
-    #     provides=['thesis_alerts', 'thesis_analysis'],
-    #     requires=['market_data', 'trades'],
-    #     meta={'is_voting_member': False, 'explainable': True, 'category': 'auditing', 'version': '2.0.0', 'disabled': True}
-    # ),
-
-    # ═══════════════════════════ SIMULATION / MODELS ════════════════════════
-    # DISABLED - All simulation modules have zero consumers
-    # 'OpponentSimulator': ModuleContract(
-    #     name='OpponentSimulator',
-    #     file='simulation/opponent_simulator.py',
-    #     provides=['adversarial_scenarios', 'market_noise', 'market_perturbations', 'opponent_analysis',
-    #               'opponent_simulation', 'perturbation_history', 'simulated_prices', 'simulation_effects',
-    #               'simulation_statistics'],
-    #     requires=['historical_prices', 'market_context', 'market_data', 'positions', 'prices',
-    #               'regime_data', 'session_data', 'volatility'],
-    #     meta={'thesis_required': True, 'explainable': True, 'health_monitoring': True, 'performance_tracking': True,
-    #           'category': 'simulation', 'version': '3.0.0', 'disabled': True}
-    # ),
-
-    # 'RoleCoach': ModuleContract(
-    #     name='RoleCoach',
-    #     file='simulation/role_coach.py',
-    #     provides=['coaching_penalties', 'coaching_recommendations', 'coaching_results', 'coaching_statistics', 
-    #               'compliance_tracking', 'discipline_assessment', 'discipline_penalty', 'performance_scoring', 'trade_limits'],
-    #     requires=['market_context', 'pending_orders', 'positions', 'recent_trades', 'regime_data', 
-    #               'risk_metrics', 'session_data', 'trading_performance'],
-    #     meta={'thesis_required': True, 'explainable': True, 'health_monitoring': True, 'performance_tracking': True,
-    #           'category': 'simulation', 'version': '3.0.0', 'disabled': True}
-    # ),
-
-    # 'ShadowSimulator': ModuleContract(
-    #     name='ShadowSimulator',
-    #     file='simulation/shadow_simulator.py',
-    #     provides=['forward_projections', 'scenario_analysis', 'scenario_recommendations', 'shadow_predictions',
-    #               'shadow_simulation', 'simulation_confidence', 'simulation_predictions', 'strategy_simulations'],
-    #     requires=['votes', 'market_context', 'market_data', 'pending_orders', 'positions', 'prices',
-    #               'recent_trades', 'risk_metrics', 'trading_performance'],
-    #     meta={'thesis_required': True, 'explainable': True, 'health_monitoring': True, 'performance_tracking': True,
-    #           'category': 'simulation', 'version': '3.0.0', 'disabled': True}
-    # ),
-
-
-    # ═══════════════════════════ VISUALIZATION ═══════════════════════════════
     'VisualizationInterface': ModuleContract(
         name='VisualizationInterface',
         file='visualization/visualization_interface.py',
@@ -693,13 +402,9 @@ CONTRACTS: Dict[str, ModuleContract] = {
               'category': 'visualization', 'version': '3.0.0'}
     ),
 
-    # ═════════════════════════════ MEMORY (Unified) ══════════════════════════
+
 }
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Decorator helpers
-# ──────────────────────────────────────────────────────────────────────────────
 
 def contract_params(name: str) -> Dict[str, Any]:
     mc = CONTRACTS.get(name)
@@ -734,7 +439,6 @@ def _as_int(v, default: int = 0) -> int:
 
 
 def module_args(name: str, **overrides: Any) -> Dict[str, Any]:
-    """Return normalized kwargs for the @module decorator from registry."""
     raw = contract_params(name)
     out: Dict[str, Any] = {
         "name": raw.get("name", name),
@@ -752,14 +456,6 @@ def module_args(name: str, **overrides: Any) -> Dict[str, Any]:
     out.update(overrides)
     return out
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Lightweight in-registry auditor
-#   - duplicate providers per key
-#   - missing providers for required keys
-#   - provided but unused keys
-# Returns a dict of lists so tests can assert.
-# ──────────────────────────────────────────────────────────────────────────────
 
 def _indexes() -> Tuple[Dict[str, List[str]], Dict[str, List[str]]]:
     providers: Dict[str, List[str]] = {}

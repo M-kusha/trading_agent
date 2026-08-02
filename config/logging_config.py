@@ -12,10 +12,6 @@ _active_config: Optional[LoggingConfig] = None
 
 
 def setup_logging(cfg: Optional[LoggingConfig] = None) -> None:
-    """
-    Configure global logging using a shared schema.
-    Uses a rotating file handler plus console output with a global debug switch.
-    """
     global _configured, _active_config
 
     cfg = cfg or LoggingConfig()
@@ -68,7 +64,6 @@ def setup_logging(cfg: Optional[LoggingConfig] = None) -> None:
 
 
 def get_logger(name: str) -> logging.Logger:
-    """Return a logger configured via the shared logging setup."""
     if not _configured:
         setup_logging()
     return logging.getLogger(name)

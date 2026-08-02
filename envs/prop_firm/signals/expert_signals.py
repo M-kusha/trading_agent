@@ -1,24 +1,5 @@
-# envs/prop_firm/signals/expert_signals.py
+
 # pyright: reportAttributeAccessIssue=false
-"""
-Expert signal computation mixin for PropFirmTradingEnv.
-
-UPGRADED (Jan 2026+):
-- TrendExpert: Triple EMA (8/21/90), ADX (+DI/-DI) Wilder, Parabolic SAR, regression slope,
-               and institutional market-structure integration (S/R, BOS, liquidity, OB)
-- MomentumExpert: Multi-period ROC, RSI + pivot divergence, MACD histogram, Stochastic %K/%D,
-                  acceleration + volume confirmation
-- ThemeExpert: ATR volatility percentile (efficient), breadth score, risk regime, composite scoring
-
-Key architectural rule:
-- Market structure is computed ONLY via MarketStructureMixin to avoid drift/duplication.
-
-Expected attributes from PropFirmTradingEnv:
-- config: PropFirmConfig
-- data: Dict[str, Dict[str, pd.DataFrame]]
-- current_step: int
-- _get_ohlcv(instrument: str, lookback: int, timeframe: Optional[str] = None) -> Dict[str, np.ndarray]
-"""
 
 from __future__ import annotations
 
@@ -33,92 +14,74 @@ if TYPE_CHECKING:
 
 
 class ExpertSignalsMixin(MarketStructureMixin):
-    """Sophisticated expert signal computation with training/live parity."""
 
-    # ═══════════════════════════════════════════════════════════════════
-    # CONFIGURATION
-    # ═══════════════════════════════════════════════════════════════════
 
-    # Triple EMA periods
     _FAST_MA_PERIOD = 8
     _MEDIUM_MA_PERIOD = 21
     _SLOW_MA_PERIOD = 90
 
-    # ADX configuration
+
     _ADX_PERIOD = 14
     _ADX_TRENDING_THRESHOLD = 25.0
     _ADX_STRONG_THRESHOLD = 40.0
 
-    # SAR configuration
+
     _SAR_AF_START = 0.02
     _SAR_AF_STEP = 0.02
     _SAR_AF_MAX = 0.2
-    _SAR_LOOKBACK = 140  # bound compute cost
+    _SAR_LOOKBACK = 140
 
-    # RSI configuration
+
     _RSI_PERIOD = 14
     _RSI_OVERBOUGHT = 70.0
     _RSI_OVERSOLD = 30.0
     _RSI_EXTREME_OVERBOUGHT = 80.0
     _RSI_EXTREME_OVERSOLD = 20.0
 
-    # MACD configuration
+
     _MACD_FAST = 12
     _MACD_SLOW = 26
     _MACD_SIGNAL = 9
 
-    # Stochastic configuration
+
     _STOCH_K_PERIOD = 14
     _STOCH_D_PERIOD = 3
     _STOCH_OVERBOUGHT = 80.0
     _STOCH_OVERSOLD = 20.0
 
-    # ROC configuration
+
     _ROC_PERIODS = [5, 10, 20, 50]
     _ROC_WEIGHTS = [0.35, 0.30, 0.20, 0.15]
 
-    # Divergence configuration (pivot-based)
+
     _DIVERGENCE_LOOKBACK = 80
     _DIVERGENCE_MIN_RSI_DELTA = 5.0
     _DIVERGENCE_SIGNIFICANCE = 0.02
     _PIVOT_LEFT = 3
     _PIVOT_RIGHT = 3
 
-    # Theme / volatility configuration
+
     _ATR_PERIOD = 20
     _VOL_LOOKBACK = 80
     _VOL_THRESHOLD_LOW = 0.30
     _VOL_THRESHOLD_HIGH = 0.70
 
-    # Confluence thresholds
+
     _MIN_NET_TREND = 0.02
     _MIN_CONFLUENCE = 0.15
     _STRONG_CONFLUENCE = 0.65
 
-    # Cache sizing
-    _MIN_LOOKBACK = 260  # enough for slow EMA + MACD/ATR windows
 
-    # HTF timeframes for multi-timeframe analysis
+    _MIN_LOOKBACK = 260
+
+
     _HTF_TIMEFRAMES = ["H1", "H4", "D1"]
 
-    # ═══════════════════════════════════════════════════════════════════
-    # PUBLIC API
-    # ═══════════════════════════════════════════════════════════════════
 
     def _prepare_expert_signals(self, instrument: str) -> Dict[str, Any]:
-        """
-        Prepare expert signals with per-step, per-instrument caching.
-        
-        UPGRADED (Jan 2026): Now computes signals for EACH timeframe (M15, H1, H4, D1)
-        and includes HTF expert signals in the output for multi-timeframe confluence.
-
-        Correctness rule:
-        - Cache MUST reset when current_step changes (prevents stale signals).
-        - Cache MUST be keyed by instrument (prevents cross-instrument bleed).
-        """
         step = int(getattr(self, "current_step", -1))
 
-        # Reset cache per step (critical)
+
         if getattr(self, "_expert_cache_step", None) != step:
             self._step_expert_signals_cache = {}
             self._expert_cache_step = step
@@ -131,7 +94,7 @@ class ExpertSignalsMixin(MarketStructureMixin):
         if instrument in cache:
             return cache[instrument]
 
-        # Compute PRIMARY timeframe signals (M15)
+
         o = self._get_ohlcv(instrument, lookback=max(self._MIN_LOOKBACK, self._SLOW_MA_PERIOD + 60))
         if not o or len(o.get("close", [])) < self._SLOW_MA_PERIOD + 5:
             result = {"experts": {}, "htf_experts": {}, "market": {"regime": "unknown", "regime_strength": 0.5}}
@@ -156,16 +119,16 @@ class ExpertSignalsMixin(MarketStructureMixin):
 
         current_price = float(close[-1])
 
-        # Market structure (single source of truth)
+
         near_support, near_resistance = self._compute_market_structure_signals(high, low, close)
         adv_struct = self._compute_advanced_market_structure(high, low, close, open_)
 
-        # Primary TF Experts
+
         trend_result = self._compute_trend_signals(high, low, close, current_price)
         momentum_result = self._compute_momentum_signals_advanced(high, low, close, volume)
         theme_result = self._compute_theme_signals_advanced(high, low, close, trend_result, momentum_result)
 
-        # Compute HTF expert signals
+
         htf_experts = self._compute_htf_expert_signals(instrument)
 
         result: Dict[str, Any] = {
@@ -175,7 +138,7 @@ class ExpertSignalsMixin(MarketStructureMixin):
                     "score": trend_result["strength"],
                     "confidence": trend_result["confidence"],
                     "proposal": {
-                        # S/R + structure (from MarketStructureMixin)
+
                         "near_support": float(near_support),
                         "near_resistance": float(near_resistance),
                         "structure_trend": float(adv_struct["structure_trend"]),
@@ -185,14 +148,8 @@ class ExpertSignalsMixin(MarketStructureMixin):
                         "liquidity_below": float(adv_struct["liquidity_below"]),
                         "order_block_bull": float(adv_struct["order_block_bull"]),
                         "order_block_bear": float(adv_struct["order_block_bear"]),
-                        # Trend indicators
-                        # "adx" duplicates "adx_value" under the key the
-                        # observation builder's expert_raw block actually reads.
-                        # That block (obs dims 90..105) was written against the
-                        # modules/voting/experts proposal schema, not this one, so
-                        # 15 of its 16 dims currently fall back to constants. This
-                        # alias recovers one of them; the rest need the train/live
-                        # expert unification, not more aliases.
+
+
                         "adx": float(trend_result["adx"]),
                         "adx_value": float(trend_result["adx"]),
                         "plus_di": float(trend_result["plus_di"]),
@@ -234,14 +191,8 @@ class ExpertSignalsMixin(MarketStructureMixin):
                         "composite_score": theme_result["composite_score"],
                     },
                 },
-                # NOTE: this is an explicit stub, not a computed signal.
-                # Measured over 1,600 bars it emits a non-neutral direction 0.0% of
-                # the time, so its four expert_raw dims are constant and carry no
-                # information. The real implementation lives in
-                # modules/voting/experts/seasonality.py but costs ~192 ms/step,
-                # far over the training budget. Left as a stub deliberately until
-                # the seasonality ablation decides whether to port a cheap version.
-                # The 'proposal' key is required by the observation contract.
+
+
                 "seasonality": {
                     "direction": "neutral",
                     "score": 0.0,
@@ -249,7 +200,7 @@ class ExpertSignalsMixin(MarketStructureMixin):
                     "proposal": {},
                 },
             },
-            "htf_experts": htf_experts,  # NEW: HTF signals for each timeframe
+            "htf_experts": htf_experts,
             "market": {
                 "regime": theme_result["volatility_regime"],
                 "regime_strength": theme_result["vol_percentile"],
@@ -260,64 +211,57 @@ class ExpertSignalsMixin(MarketStructureMixin):
         return result
 
     def _compute_htf_expert_signals(self, instrument: str) -> Dict[str, Dict[str, Any]]:
-        """
-        Compute expert signals for each higher timeframe (H1, H4, D1).
-        
-        Returns a dict keyed by timeframe with trend/momentum signals for each.
-        This allows the agent to see multi-timeframe confluence.
-        """
         htf_signals: Dict[str, Dict[str, Any]] = {}
-        
+
         for tf in self._HTF_TIMEFRAMES:
             htf_signals[tf] = self._compute_single_htf_signals(instrument, tf)
-        
+
         return htf_signals
-    
+
     def _compute_single_htf_signals(self, instrument: str, timeframe: str) -> Dict[str, Any]:
-        """Compute simplified expert signals for a single higher timeframe."""
         o = self._get_ohlcv(instrument, lookback=100, timeframe=timeframe)
-        
-        # Default neutral signals
+
+
         default = {
             "trend_direction": "neutral",
             "trend_strength": 0.0,
             "momentum_direction": "neutral",
             "momentum_strength": 0.0,
             "rsi": 50.0,
-            "rsi_signal": "neutral",  # overbought, oversold, neutral
-            "ma_alignment": 0,  # +1 bullish, -1 bearish, 0 mixed
+            "rsi_signal": "neutral",
+            "ma_alignment": 0,
             "adx": 0.0,
-            "structure_bias": 0.0,  # +1 HH/HL, -1 LH/LL
+            "structure_bias": 0.0,
         }
-        
+
         if not o or len(o.get("close", [])) < 30:
             return default
-            
+
         close = np.asarray(o["close"], dtype=np.float64)
         high = np.asarray(o.get("high", close), dtype=np.float64)
         low = np.asarray(o.get("low", close), dtype=np.float64)
-        
+
         if close.size < 30:
             return default
-        
+
         current_price = float(close[-1])
-        
-        # Compute trend signals
+
+
         trend_result = self._compute_trend_signals(high, low, close, current_price)
-        
-        # Compute simplified momentum - use _rsi_series and take last value
+
+
         rsi_arr = self._rsi_series(close, min(14, close.size - 1))
         rsi = float(rsi_arr[-1]) if len(rsi_arr) > 0 else 50.0
-        
-        # Determine RSI signal
+
+
         if rsi > self._RSI_OVERBOUGHT:
             rsi_signal = "overbought"
         elif rsi < self._RSI_OVERSOLD:
             rsi_signal = "oversold"
         else:
             rsi_signal = "neutral"
-        
-        # Compute structure bias (HH/HL vs LH/LL)
+
+
         structure_bias = 0.0
         if close.size >= 20:
             mid = close.size // 2
@@ -325,19 +269,19 @@ class ExpertSignalsMixin(MarketStructureMixin):
             first_low = float(np.min(low[:mid]))
             second_high = float(np.max(high[mid:]))
             second_low = float(np.min(low[mid:]))
-            
-            # Higher high and higher low = bullish structure
+
+
             if second_high > first_high:
                 structure_bias += 0.5
             elif second_high < first_high:
                 structure_bias -= 0.5
-            
+
             if second_low > first_low:
                 structure_bias += 0.5
             elif second_low < first_low:
                 structure_bias -= 0.5
-        
-        # Momentum direction based on ROC
+
+
         if close.size >= 10:
             roc = (close[-1] - close[-10]) / max(abs(close[-10]), 1e-8) * 100
             if roc > 1.0:
@@ -352,7 +296,7 @@ class ExpertSignalsMixin(MarketStructureMixin):
         else:
             mom_dir = "neutral"
             mom_str = 0.0
-        
+
         return {
             "trend_direction": trend_result["direction"],
             "trend_strength": float(trend_result["strength"]),
@@ -365,9 +309,6 @@ class ExpertSignalsMixin(MarketStructureMixin):
             "structure_bias": float(structure_bias),
         }
 
-    # ═══════════════════════════════════════════════════════════════════
-    # TREND EXPERT
-    # ═══════════════════════════════════════════════════════════════════
 
     def _compute_trend_signals(
         self, high: np.ndarray, low: np.ndarray, close: np.ndarray, current_price: float
@@ -401,7 +342,6 @@ class ExpertSignalsMixin(MarketStructureMixin):
         }
 
     def _ema_last(self, x: np.ndarray, period: int) -> float:
-        """Last EMA value (stable + fast)."""
         x = np.asarray(x, dtype=np.float64)
         n = int(x.size)
         p = int(period)
@@ -419,7 +359,6 @@ class ExpertSignalsMixin(MarketStructureMixin):
         return float(ema)
 
     def _ema_series(self, x: np.ndarray, period: int) -> np.ndarray:
-        """EMA series with SMA seed placed at (p-1) to avoid early-series distortion."""
         x = np.asarray(x, dtype=np.float64)
         n = int(x.size)
         p = int(period)
@@ -458,13 +397,6 @@ class ExpertSignalsMixin(MarketStructureMixin):
     def _calculate_adx_wilder(
         self, high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int = 14
     ) -> Tuple[float, float, float]:
-        """
-        True ADX (+DI/-DI) using Wilder methodology.
-
-        Key fix:
-        - ATR/DM can be represented as Wilder "sums" (common implementation),
-          but ADX must be Wilder-smoothed *average* of DX, not a sum.
-        """
         h = np.asarray(high, dtype=np.float64)
         l = np.asarray(low, dtype=np.float64)
         c = np.asarray(close, dtype=np.float64)
@@ -495,7 +427,7 @@ class ExpertSignalsMixin(MarketStructureMixin):
             out[p_ - 1] = float(np.sum(x[:p_]))
             for i in range(p_, x.size):
                 out[i] = out[i - 1] - (out[i - 1] / p_) + x[i]
-            out[: p_ - 1] = out[p_ - 1]  # avoid meaningless early zeros
+            out[: p_ - 1] = out[p_ - 1]
             return out
 
         atr_s = wilder_sum(tr, p)
@@ -510,7 +442,7 @@ class ExpertSignalsMixin(MarketStructureMixin):
         di_sum = plus_di + minus_di
         dx = 100.0 * (np.abs(plus_di - minus_di) / np.maximum(di_sum, eps))
 
-        # ADX = Wilder-smoothed average of DX (NOT sum)
+
         adx = np.zeros_like(dx, dtype=np.float64)
         if dx.size < p:
             adx[:] = float(np.mean(dx)) if dx.size else 20.0
@@ -528,10 +460,6 @@ class ExpertSignalsMixin(MarketStructureMixin):
     def _calculate_parabolic_sar(
         self, high: np.ndarray, low: np.ndarray, close: np.ndarray
     ) -> Tuple[float, int]:
-        """
-        Parabolic SAR (classic), bounded by lookback to control cost.
-        Returns (sar_value, direction): 1 bullish, -1 bearish, 0 unknown.
-        """
         h = np.asarray(high, dtype=np.float64)
         l = np.asarray(low, dtype=np.float64)
         c = np.asarray(close, dtype=np.float64)
@@ -610,21 +538,21 @@ class ExpertSignalsMixin(MarketStructureMixin):
         bear = 0.0
         total = 0.0
 
-        # MA alignment (0.25)
+
         if ma_alignment == 1:
             bull += 0.25
         elif ma_alignment == -1:
             bear += 0.25
         total += 0.25
 
-        # Price vs slow MA (0.15)
+
         if current_price > slow_ma:
             bull += 0.15
         elif current_price < slow_ma:
             bear += 0.15
         total += 0.15
 
-        # ADX + DI (0.20)
+
         if adx > self._ADX_TRENDING_THRESHOLD:
             scale = float(np.clip(adx / 50.0, 0.0, 1.0))
             if plus_di > minus_di:
@@ -633,14 +561,14 @@ class ExpertSignalsMixin(MarketStructureMixin):
                 bear += 0.20 * scale
         total += 0.20
 
-        # SAR (0.15)
+
         if sar_direction == 1:
             bull += 0.15
         elif sar_direction == -1:
             bear += 0.15
         total += 0.15
 
-        # Slope (0.25)
+
         if trend_slope > 0.001:
             bull += 0.25 * min(abs(trend_slope) * 50.0, 1.0)
         elif trend_slope < -0.001:
@@ -677,9 +605,6 @@ class ExpertSignalsMixin(MarketStructureMixin):
         base += 0.05 * float(np.clip(strength, 0.0, 1.0))
         return float(np.clip(base, 0.10, 0.95))
 
-    # ═══════════════════════════════════════════════════════════════════
-    # MOMENTUM EXPERT
-    # ═══════════════════════════════════════════════════════════════════
 
     def _compute_momentum_signals_advanced(
         self, high: np.ndarray, low: np.ndarray, close: np.ndarray, volume: np.ndarray
@@ -731,7 +656,6 @@ class ExpertSignalsMixin(MarketStructureMixin):
         }
 
     def _rsi_series(self, prices: np.ndarray, period: int) -> np.ndarray:
-        """RSI series using Wilder smoothing (fast enough for per-step)."""
         c = np.asarray(prices, dtype=np.float64)
         p = int(period)
         if c.size < p + 2:
@@ -808,7 +732,7 @@ class ExpertSignalsMixin(MarketStructureMixin):
             past = float(prices[-(int(p) + 1)])
             denom = max(abs(past), 1e-12)
             roc = (cur - past) / denom
-            roc_b = float(np.clip(roc * 5.0, -1.0, 1.0))  # bound per-horizon
+            roc_b = float(np.clip(roc * 5.0, -1.0, 1.0))
             comp += float(w) * roc_b
 
         return float(np.clip(comp, -1.0, 1.0))
@@ -854,53 +778,46 @@ class ExpertSignalsMixin(MarketStructureMixin):
         return 0.20
 
     def _pivot_lows(self, x: np.ndarray, left: int, right: int) -> List[int]:
-        """Vectorized pivot low detection."""
         n = int(x.size)
         if n < left + right + 1:
             return []
-        
-        # Use stride tricks for rolling windows
+
+
         window_size = left + right + 1
         shape = (n - window_size + 1, window_size)
         strides = (x.strides[0], x.strides[0])
         windows = np.lib.stride_tricks.as_strided(x, shape=shape, strides=strides)
-        
+
         center = windows[:, left]
         is_min = center == np.min(windows, axis=1)
-        
-        # Check strict less than on both sides
+
+
         left_ok = np.all(windows[:, :left] > center[:, None], axis=1)
         right_ok = np.all(windows[:, left+1:] > center[:, None], axis=1)
-        
+
         valid = is_min & left_ok & right_ok
         return (np.where(valid)[0] + left).tolist()
 
     def _pivot_highs(self, x: np.ndarray, left: int, right: int) -> List[int]:
-        """Vectorized pivot high detection."""
         n = int(x.size)
         if n < left + right + 1:
             return []
-        
+
         window_size = left + right + 1
         shape = (n - window_size + 1, window_size)
         strides = (x.strides[0], x.strides[0])
         windows = np.lib.stride_tricks.as_strided(x, shape=shape, strides=strides)
-        
+
         center = windows[:, left]
         is_max = center == np.max(windows, axis=1)
-        
+
         left_ok = np.all(windows[:, :left] < center[:, None], axis=1)
         right_ok = np.all(windows[:, left+1:] < center[:, None], axis=1)
-        
+
         valid = is_max & left_ok & right_ok
         return (np.where(valid)[0] + left).tolist()
 
     def _detect_divergence_pivot(self, prices: np.ndarray, rsi_series: np.ndarray) -> Optional[str]:
-        """
-        Pivot-based divergence (stable + efficient):
-        - Bullish: price lower low, RSI higher low
-        - Bearish: price higher high, RSI lower high
-        """
         c = np.asarray(prices, dtype=np.float64)
         r = np.asarray(rsi_series, dtype=np.float64)
         n = int(min(c.size, r.size, int(self._DIVERGENCE_LOOKBACK)))
@@ -942,46 +859,46 @@ class ExpertSignalsMixin(MarketStructureMixin):
         bull = 0.0
         bear = 0.0
 
-        # RSI (0.20)
+
         if rsi >= 50:
             bull += 0.20 * ((rsi - 50.0) / 50.0)
         else:
             bear += 0.20 * ((50.0 - rsi) / 50.0)
 
-        # MACD histogram (0.20)
+
         hist_mag = min(abs(macd_histogram) * 50.0, 1.0)
         if macd_direction > 0:
             bull += 0.20 * hist_mag
         elif macd_direction < 0:
             bear += 0.20 * hist_mag
 
-        # Stochastic (0.15)
+
         st = (stoch_k - 50.0) / 50.0
         if st >= 0:
             bull += 0.15 * st
         else:
             bear += 0.15 * (-st)
 
-        # ROC composite (0.25)
+
         if roc_composite >= 0:
             bull += 0.25 * min(abs(roc_composite) * 1.5, 1.0)
         else:
             bear += 0.25 * min(abs(roc_composite) * 1.5, 1.0)
 
-        # Acceleration (0.10)
+
         if acceleration >= 0:
             bull += 0.10 * min(abs(acceleration) * 1.2, 1.0)
         else:
             bear += 0.10 * min(abs(acceleration) * 1.2, 1.0)
 
-        # Volume confirmation (0.10 as bias)
+
         vol_bias = (float(volume_confirmation) - 0.5) * 0.10
         if bull >= bear:
             bull += vol_bias
         else:
             bear += vol_bias
 
-        # Divergence bonus (context)
+
         if divergence == "bullish":
             bull += 0.15
         elif divergence == "bearish":
@@ -1009,9 +926,6 @@ class ExpertSignalsMixin(MarketStructureMixin):
         confidence = 0.30 + (agrees / 4.0) * 0.50 + (float(volume_confirmation) - 0.5) * 0.20
         return direction, strength, float(np.clip(confidence, 0.10, 0.95))
 
-    # ═══════════════════════════════════════════════════════════════════
-    # THEME EXPERT
-    # ═══════════════════════════════════════════════════════════════════
 
     def _compute_theme_signals_advanced(
         self,
@@ -1053,7 +967,7 @@ class ExpertSignalsMixin(MarketStructureMixin):
 
         direction, strength = self._determine_theme_direction(volatility_regime, risk_regime, trend_dir, composite)
 
-        # Confidence increases with clarity and ADX
+
         clarity = abs(composite - 0.5) * 2.0
         confidence = 0.40 + 0.30 * float(np.clip(clarity, 0.0, 1.0)) + 0.20 * float(np.clip(adx / 50.0, 0.0, 1.0))
 
@@ -1070,7 +984,6 @@ class ExpertSignalsMixin(MarketStructureMixin):
         }
 
     def _atr_series(self, high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int) -> np.ndarray:
-        """ATR series (Wilder average) for percentile work."""
         h = np.asarray(high, dtype=np.float64)
         l = np.asarray(low, dtype=np.float64)
         c = np.asarray(close, dtype=np.float64)
@@ -1163,7 +1076,7 @@ class ExpertSignalsMixin(MarketStructureMixin):
         trend_strength: float,
         momentum_strength: float,
     ) -> float:
-        vol_score = 1.0 - float(np.clip(vol_percentile, 0.0, 1.0))  # lower vol => higher score
+        vol_score = 1.0 - float(np.clip(vol_percentile, 0.0, 1.0))
         trend_score = float(np.clip(adx / 50.0, 0.0, 1.0))
         br = float(np.clip(breadth, 0.0, 1.0))
         ts = float(np.clip(trend_strength, 0.0, 1.0))
@@ -1180,12 +1093,9 @@ class ExpertSignalsMixin(MarketStructureMixin):
             return "bearish", 1.0 - comp
         return "neutral", float(np.clip(0.5 - abs(comp - 0.5), 0.0, 1.0))
 
-    # ═══════════════════════════════════════════════════════════════════
-    # LEGACY COMPATIBILITY
-    # ═══════════════════════════════════════════════════════════════════
 
     def _compute_momentum_signals(self, close: np.ndarray, rsi: float) -> Tuple[Optional[str], float, float]:
-        # Maintain previous signature: divergence, overbought, oversold
+
         prices = np.asarray(close, dtype=np.float64)
         rsi_series = self._rsi_series(prices, int(self._RSI_PERIOD))
         divergence = self._detect_divergence_pivot(prices, rsi_series)

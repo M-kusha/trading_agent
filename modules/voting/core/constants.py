@@ -1,21 +1,8 @@
-"""
-Voting system constants and enumerations.
-Single source of truth for thresholds, defaults, configuration values, and canonical normalization.
-
-MODE-AWARE:
-- Thresholds automatically switch between LIVE (conservative) and TRAINING (exploratory)
-- Use get_thresholds() / *_F() helpers instead of hard-coded constants
-- Per-instrument thresholds go through DynamicThresholdManager in LIVE mode
-"""
 
 from __future__ import annotations
 
 from enum import Enum
 from typing import Any, Dict, Optional
-
-# ═══════════════════════════════════════════════════════════════════
-# Canonical Normalization (Single Source of Truth)
-# ═══════════════════════════════════════════════════════════════════
 
 _SYMBOL_ALIASES: Dict[str, str] = {
     "XAU/USD": "XAUUSD",
@@ -27,12 +14,6 @@ _SYMBOL_ALIASES: Dict[str, str] = {
 }
 
 def normalize_instrument(symbol: Any) -> str:
-    """
-    Canonical instrument normalization:
-    - uppercase
-    - remove separators: / _ -
-    - apply alias mapping (e.g., GOLD -> XAUUSD)
-    """
     if symbol is None:
         return ""
     try:
@@ -56,20 +37,7 @@ def normalize_timeframe(tf: Any) -> str:
     return s
 
 
-# ═══════════════════════════════════════════════════════════════════
-# Voting Actions / Pipeline Stages / Quality
-# ═══════════════════════════════════════════════════════════════════
-
 class VotingAction(str, Enum):
-    """
-    Possible voting actions.
-
-    NOTE:
-    - LONG/SHORT/HOLD/ABSTAIN are the classic pipeline actions.
-    - EXIT/TIGHTEN are preserved for position-focus / position-management semantics.
-      Downstream stages that do not support them can explicitly map them if desired,
-      but they should NOT be silently collapsed at the type layer.
-    """
     LONG = "long"
     SHORT = "short"
     HOLD = "hold"
@@ -79,21 +47,6 @@ class VotingAction(str, Enum):
 
     @classmethod
     def from_string(cls, value: Any) -> "VotingAction":
-        """
-        Parse arbitrary input into a VotingAction.
-
-        Accepts:
-        - VotingAction enums (idempotent)
-        - Strings with legacy aliases:
-          - 'buy', 'bull', 'bullish'    -> LONG
-          - 'sell', 'bear', 'bearish'   -> SHORT
-          - 'flat', 'neutral', 'wait'   -> HOLD
-          - 'abstain', 'skip', 'ignore' -> ABSTAIN
-          - 'close', 'exit'             -> EXIT
-          - 'tighten', 'reduce'         -> TIGHTEN
-
-        Unknown values fall back to ABSTAIN.
-        """
         if isinstance(value, cls):
             return value
 
@@ -145,10 +98,6 @@ class VotingQuality(str, Enum):
     INVALID = "invalid"
 
 
-# ═══════════════════════════════════════════════════════════════════
-# TIMEFRAME CONFIGURATION – SINGLE SOURCE OF TRUTH
-# ═══════════════════════════════════════════════════════════════════
-
 PRIMARY_TIMEFRAME: str = "M15"
 CONTEXT_TIMEFRAMES: tuple = ("H1", "H4", "D1")
 SUPPORTED_TIMEFRAMES: tuple = ("M15", "H1", "H4", "D1")
@@ -167,11 +116,7 @@ def is_context_timeframe(tf: str) -> bool:
     return normalize_timeframe(tf) in CONTEXT_TIMEFRAMES
 
 
-# ═══════════════════════════════════════════════════════════════════
-# MODE-AWARE THRESHOLD SYSTEM
-# ═══════════════════════════════════════════════════════════════════
-
-_VOTING_MODE: str = "TRAINING"  # "LIVE" or "TRAINING"
+_VOTING_MODE: str = "TRAINING"
 
 _LIVE_THRESHOLDS: Dict[str, float] = {
     "CONFIDENCE_THRESHOLD": 0.45,
@@ -223,15 +168,6 @@ def get_thresholds() -> Dict[str, float]:
     return _TRAINING_THRESHOLDS.copy()
 
 def get_adaptive_thresholds_for_instrument(instrument: str) -> Dict[str, Any]:
-    """
-    LIVE mode:
-        Uses DynamicThresholdManager for intelligent per-instrument thresholds.
-    TRAINING mode:
-        Returns static training thresholds.
-
-    Returns:
-        Dict with threshold values plus diagnostic metadata when available.
-    """
     instrument = normalize_instrument(instrument)
 
     if _VOTING_MODE != "LIVE":
@@ -268,7 +204,7 @@ def get_adaptive_thresholds_for_instrument(instrument: str) -> Dict[str, Any]:
         )
         return _LIVE_THRESHOLDS.copy()
 
-_threshold_manager = None  # DynamicThresholdManager singleton
+_threshold_manager = None
 
 def _get_threshold_manager():
     global _threshold_manager
@@ -324,10 +260,6 @@ def get_instrument_threshold(
         return 0.65
 
 
-# ═══════════════════════════════════════════════════════════════════
-# Mode-Aware Threshold Accessors (backward compatible)
-# ═══════════════════════════════════════════════════════════════════
-
 def CONFIDENCE_THRESHOLD_F() -> float:
     return get_thresholds()["CONFIDENCE_THRESHOLD"]
 
@@ -352,10 +284,6 @@ def ARBITER_CONFIDENCE_FLOOR_F() -> float:
 def ARBITER_INTENSITY_FLOOR_F() -> float:
     return get_thresholds()["ARBITER_INTENSITY_FLOOR"]
 
-
-# ═══════════════════════════════════════════════════════════════════
-# Static Constants (import-time defaults – mostly for legacy code)
-# ═══════════════════════════════════════════════════════════════════
 
 CONFIDENCE_THRESHOLD = 0.30
 HIGH_CONFIDENCE_THRESHOLD = 0.70
@@ -444,15 +372,7 @@ VOTING_DEFAULTS: Dict[str, Any] = {
 }
 
 
-# ═══════════════════════════════════════════════════════════════════
-# Bus Key Names (Single Source of Truth)
-# ═══════════════════════════════════════════════════════════════════
-
 class VotingBusKeys:
-    """
-    Standard bus key names for voting system.
-    Use these constants instead of hardcoded strings.
-    """
 
     DECISION_ID = "decision_id"
     KERNEL_DECISION_ID = "kernel_decision_id"

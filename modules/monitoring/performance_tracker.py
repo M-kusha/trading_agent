@@ -1,8 +1,4 @@
-# ─────────────────────────────────────────────────────────────
-# File: modules/monitoring/performance_tracker.py
-# [ROCKET] Performance tracking for SmartInfoBus with plain English reports
-# v2.3 — config-driven thresholds, contract-aware helpers, bus-safe publishing
-# ─────────────────────────────────────────────────────────────
+
 
 from __future__ import annotations
 
@@ -15,13 +11,12 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
-# numpy is optional — degrade gracefully
 try:
     import numpy as np  # type: ignore
 except Exception:  # pragma: no cover
     np = None  # type: ignore
 
-# psutil is optional for memory sampling
+
 try:
     import psutil  # type: ignore
 except Exception:  # pragma: no cover
@@ -33,15 +28,11 @@ from modules.utils.audit_utils import RotatingLogger, format_operator_message
 from modules.utils.info_bus import InfoBusManager
 from modules.utils.system_utilities import EnglishExplainer
 
-# ─────────────────────────────────────────────────────────────
-# Data models
-# ─────────────────────────────────────────────────────────────
 
 @dataclass
 class PerformanceMetric:
-    """Single performance measurement."""
-    timestamp: float            # wall-clock epoch seconds
-    monotonic_ns: int           # monotonic for stable ordering
+    timestamp: float
+    monotonic_ns: int
     module: str
     operation: str
     duration_ms: float
@@ -74,33 +65,24 @@ class PerformanceReport:
     summary: str
 
 
-# ─────────────────────────────────────────────────────────────
-# Tracker (singleton, thread-safe)
-# ─────────────────────────────────────────────────────────────
-
 class PerformanceTracker:
-    """
-    Tracks and analyzes system performance with plain English reporting.
-    **Singleton** to prevent duplicate SmartInfoBus subscriptions/log spam.
-    Config-driven: pulls monitoring knobs from ConfigurationManager when available.
-    """
 
     _singleton: Optional["PerformanceTracker"] = None
     _singleton_lock = threading.Lock()
 
-    # default thresholds (overridden by ConfigurationManager.get_monitoring_config())
+
     _DEFAULTS = {
         'response_time_ms': {'excellent': 50, 'good': 100, 'acceptable': 200, 'poor': 500},
         'error_rate': {'excellent': 0.001, 'good': 0.01, 'acceptable': 0.05, 'poor': 0.10},
         'throughput_per_min': {'excellent': 100, 'good': 50, 'acceptable': 20, 'poor': 10},
         'trend_window': 100,
         'anomaly_threshold': 3.0,
-        'min_ms_for_anomaly': 100.0,   # Only check ops >= 100ms for anomalies (was 10ms - too noisy)
-        'publish_interval_s': 15,      # bus publishing interval
-        'alert_cooldown_s': 15,        # suppress repeated alerts
-        'bus_namespace': 'perf',       # root namespace on SmartInfoBus
-        'max_metrics': 10_000,         # global ring size
-        'per_module_max': 1_000,       # per-module ring size
+        'min_ms_for_anomaly': 100.0,
+        'publish_interval_s': 15,
+        'alert_cooldown_s': 15,
+        'bus_namespace': 'perf',
+        'max_metrics': 10_000,
+        'per_module_max': 1_000,
     }
 
     def __new__(cls, *args, **kwargs):
@@ -111,33 +93,33 @@ class PerformanceTracker:
         return cls._singleton
 
     def __init__(self, orchestrator: Optional[ModuleOrchestrator] = None):
-        # prevent re-initialization
+
         if getattr(self, "_initialized", False):
             return
         self._initialized = True
 
-        # wiring
+
         self.orchestrator = orchestrator
         self.smart_bus = InfoBusManager.get_instance()
         self.explainer = EnglishExplainer()
 
-        # configuration (pull from ConfigurationManager if present)
+
         self._config = self._load_runtime_config()
 
-        # Thread-safety
+
         self._lock = threading.RLock()
 
-        # Storage
+
         self.metrics: Deque[PerformanceMetric] = deque(maxlen=int(self._config['max_metrics']))
         self.module_metrics: Dict[str, Deque[PerformanceMetric]] = defaultdict(
             lambda: deque(maxlen=int(self._config['per_module_max']))
         )
 
-        # Aggregates
+
         self.hourly_stats: Dict[str, Dict[str, Dict[str, Any]]] = defaultdict(dict)
         self.daily_stats: Dict[str, Dict[str, Dict[str, Any]]] = defaultdict(dict)
 
-        # thresholds + analysis settings
+
         self.thresholds = {
             'response_time_ms': dict(self._config['response_time_ms']),
             'error_rate': dict(self._config['error_rate']),
@@ -147,7 +129,7 @@ class PerformanceTracker:
         self.anomaly_threshold: float = float(self._config['anomaly_threshold'])
         self._min_ms_for_anomaly: float = float(self._config['min_ms_for_anomaly'])
 
-        # operator logging (rotating)
+
         self.logger = RotatingLogger(
             name="PerformanceTracker",
             log_path="logs/monitoring/performance.log",
@@ -156,29 +138,27 @@ class PerformanceTracker:
             plain_english=True
         )
 
-        # subscriptions & cooldown anti-spam
+
         self._subscribed = False
         self._event_cooldowns: Dict[Tuple[str, str], float] = {}
         self._event_cooldown_seconds = float(self._config['alert_cooldown_s'])
         self._subscribe_to_events()
 
-        # background publisher to SmartInfoBus (debounced)
+
         self._publisher_shutdown = False
         self._publisher_thread = threading.Thread(
             target=self._publisher_loop, daemon=True, name="PerfPublisher"
         )
         self._publisher_thread.start()
 
-    # ─────────────────────────────────────────────────────────
-    # Config
-    # ─────────────────────────────────────────────────────────
+
     def _load_runtime_config(self) -> Dict[str, Any]:
         cfg = dict(self._DEFAULTS)
         if ConfigurationManager is not None:
             try:
                 cm = ConfigurationManager.get_instance()
-                mon = cm.get_monitoring_config()  # new helper in upgraded CM
-                # overlay known keys (shallow merge for simple structure)
+                mon = cm.get_monitoring_config()
+
                 for k in ('response_time_ms', 'error_rate', 'throughput_per_min',
                           'trend_window', 'anomaly_threshold', 'min_ms_for_anomaly',
                           'publish_interval_s', 'alert_cooldown_s',
@@ -189,9 +169,7 @@ class PerformanceTracker:
                 pass
         return cfg
 
-    # ─────────────────────────────────────────────────────────
-    # Helpers
-    # ─────────────────────────────────────────────────────────
+
     def _snapshot_deque(self, dq: Deque) -> List[Any]:
         with self._lock:
             return list(dq)
@@ -208,21 +186,14 @@ class PerformanceTracker:
                 return float(np.percentile(values, pct))
         except Exception:
             pass
-        # fallback
+
         sorted_vals = sorted(values)
         idx = int(round((pct / 100.0) * (len(sorted_vals) - 1)))
         return float(sorted_vals[max(0, min(idx, len(sorted_vals) - 1))])
 
-    # ─────────────────────────────────────────────────────────
-    # Instrumentation helpers (zero-boilerplate)
-    # ─────────────────────────────────────────────────────────
+
     @contextlib.contextmanager
     def track(self, module: str, operation: str, *, capture_memory: bool = False):
-        """
-        Context manager to measure a code block:
-            with tracker.track("PPOAgent", "step"):
-                agent.step(obs)
-        """
         t0 = time.perf_counter()
         mem0 = self._memory_mb() if (capture_memory and psutil) else None
         success = True
@@ -243,11 +214,6 @@ class PerformanceTracker:
             self.record_metric(module, operation, dt_ms, success=success, error=err, memory_mb=mem_mb)
 
     def wrap(self, module: str, operation: str, *, capture_memory: bool = False) -> Callable:
-        """
-        Decorator to time a function:
-            @tracker.wrap("PPOAgent", "step")
-            def step(...): ...
-        """
         def decorator(fn: Callable):
             def inner(*args, **kwargs):
                 with self.track(module, operation, capture_memory=capture_memory):
@@ -266,9 +232,7 @@ class PerformanceTracker:
         except Exception:
             return None
 
-    # ─────────────────────────────────────────────────────────
-    # Public API
-    # ─────────────────────────────────────────────────────────
+
     def record_metric(
         self,
         module: str,
@@ -278,13 +242,12 @@ class PerformanceTracker:
         error: Optional[str] = None,
         memory_mb: Optional[float] = None
     ):
-        """Record a metric (thread-safe, clamps small negative jitter)."""
         try:
             d = float(duration_ms)
         except Exception:
             d = 0.0
         if -1.0 < d < 0.0:
-            d = 0.0  # clamp tiny negative jitter
+            d = 0.0
 
         metric = PerformanceMetric(
             timestamp=time.time(),
@@ -301,7 +264,7 @@ class PerformanceTracker:
             self.metrics.append(metric)
             self.module_metrics[module].append(metric)
 
-        # Best-effort SmartInfoBus timing record (if provided by your bus)
+
         try:
             if hasattr(self.smart_bus, "record_module_timing"):
                 self.smart_bus.record_module_timing(module, d)
@@ -327,7 +290,7 @@ class PerformanceTracker:
         durations = [m.duration_ms for m in metrics_list]
         total = len(metrics_list)
         errors = sum(1 for m in metrics_list if not m.success)
-        # use actual time span to compute throughput; guard against tiny windows
+
         span_min = max((metrics_list[-1].timestamp - metrics_list[0].timestamp) / 60.0, 1.0)
         throughput = total / span_min
 
@@ -399,7 +362,7 @@ class PerformanceTracker:
             json.dump(metrics_data, f, indent=2, ensure_ascii=False, default=str)
 
     def get_realtime_dashboard_data(self) -> Dict[str, Any]:
-        cutoff = time.time() - 300  # 5 minutes
+        cutoff = time.time() - 300
         with self._lock:
             recent_metrics = [m for m in self.metrics if m.timestamp > cutoff]
             module_keys = list(self.module_metrics.keys())
@@ -439,9 +402,7 @@ class PerformanceTracker:
             'recent_errors': recent_errors
         }
 
-    # ─────────────────────────────────────────────────────────
-    # SmartInfoBus subscriptions (one-time + cooldown)
-    # ─────────────────────────────────────────────────────────
+
     def _subscribe_to_events(self):
         if self._subscribed:
             return
@@ -450,7 +411,7 @@ class PerformanceTracker:
             self.smart_bus.subscribe('module_disabled', self._handle_module_disabled)
             self._subscribed = True
         except Exception:
-            # Bus might not be ready; avoid crashing
+
             pass
 
     def _cooldown_allows(self, key: Tuple[str, str]) -> bool:
@@ -491,9 +452,7 @@ class PerformanceTracker:
             )
         )
 
-    # ─────────────────────────────────────────────────────────
-    # Internals: analysis & aggregation
-    # ─────────────────────────────────────────────────────────
+
     def _check_performance_issues(self, module: str, metric: PerformanceMetric):
         if metric.duration_ms > self.thresholds['response_time_ms']['poor']:
             self.logger.warning(
@@ -511,7 +470,7 @@ class PerformanceTracker:
             )
 
     def _is_anomaly(self, module: str, duration_ms: float) -> bool:
-        # ignore ultra-fast ops to avoid noisy spam
+
         if duration_ms < self._min_ms_for_anomaly:
             return False
         with self._lock:
@@ -521,7 +480,7 @@ class PerformanceTracker:
         baseline = recent[:-1] if len(recent) > 1 else recent
         if not baseline:
             return False
-        # stats
+
         if np is not None:
             mean = float(np.mean(baseline))
             std = float(np.std(baseline))
@@ -531,10 +490,10 @@ class PerformanceTracker:
             std = var ** 0.5
         if std == 0.0:
             return False
-        # Only flag SLOW anomalies (above baseline), not fast ones
-        # Fast is good, slow is bad - only warn about slow
+
+
         if duration_ms <= mean:
-            return False  # Faster than average = good, don't flag
+            return False
         z = (duration_ms - mean) / std
         return bool(z > self.anomaly_threshold)
 
@@ -599,7 +558,7 @@ class PerformanceTracker:
             if np is not None:
                 slope, _ = np.polyfit(np.arange(len(window), dtype=float), window, 1)
             else:
-                # simple least-squares slope without numpy
+
                 n = float(len(window))
                 sum_x = sum(x)
                 sum_y = sum(window)
@@ -709,16 +668,14 @@ class PerformanceTracker:
                 lines.append(f"• {module}: {trend} {symbol}")
         return "\n".join(lines)
 
-    # ─────────────────────────────────────────────────────────
-    # SmartInfoBus publisher (debounced)
-    # ─────────────────────────────────────────────────────────
+
     def _publisher_loop(self):
-        ns = str(self._config.get('bus_namespace', 'perf')).strip('/')  # e.g., 'perf'
+        ns = str(self._config.get('bus_namespace', 'perf')).strip('/')
         interval = max(5, int(self._config.get('publish_interval_s', 15)))
         while not self._publisher_shutdown:
             try:
                 dashboard = self.get_realtime_dashboard_data()
-                # Top-level summary
+
                 self.smart_bus.set(
                     f"{ns}/summary",
                     {
@@ -730,16 +687,16 @@ class PerformanceTracker:
                     module="PerformanceTracker",
                     thesis="Realtime performance summary"
                 )
-                # Per-module snapshots (lightweight)
+
                 per_mod = dashboard.get('module_performance', {})
-                for mod, m in list(per_mod.items())[:50]:  # cap fanout
+                for mod, m in list(per_mod.items())[:50]:
                     self.smart_bus.set(
                         f"{ns}/modules/{mod}",
                         m,
                         module="PerformanceTracker",
                         thesis=f"Realtime performance for {mod}"
                     )
-                # Recent errors list
+
                 recent_errors = dashboard.get('recent_errors', [])
                 if recent_errors:
                     self.smart_bus.set(
@@ -749,15 +706,12 @@ class PerformanceTracker:
                         thesis="Recent performance errors"
                     )
             except Exception:
-                # never let bus issues crash the publisher
+
                 pass
             time.sleep(interval)
 
-    # ─────────────────────────────────────────────────────────
-    # Lifecycle
-    # ─────────────────────────────────────────────────────────
+
     def shutdown(self):
-        """Graceful shutdown for publisher thread."""
         self._publisher_shutdown = True
         try:
             if self._publisher_thread.is_alive():
@@ -765,24 +719,18 @@ class PerformanceTracker:
         except Exception:
             pass
 
-    # ─────────────────────────────────────────────────────────────
-    # Health monitoring interface (for HealthMonitor integration)
-    # ─────────────────────────────────────────────────────────────
+
     def get_health_status(self) -> Dict[str, Any]:
-        """
-        Returns health status compatible with HealthMonitor.
-        Reports on tracker's own operational health.
-        """
         try:
-            # Get recent dashboard data
+
             dashboard = self.get_realtime_dashboard_data()
 
-            # Calculate tracker's own metrics
+
             with self._lock:
                 total_metrics = len(self.metrics)
                 module_count = len(self.module_metrics)
 
-            # Determine status based on tracker's operational metrics
+
             current_error_rate = dashboard.get('current_error_rate', 0.0)
             current_throughput = dashboard.get('current_throughput', 0.0)
 
@@ -790,19 +738,19 @@ class PerformanceTracker:
             is_healthy = True
             issues = []
 
-            # Check if tracker is experiencing issues
+
             if current_error_rate > 0.10:
                 status = 'DEGRADED'
                 is_healthy = False
                 issues.append(f"High system error rate: {current_error_rate:.1%}")
 
-            # Check if tracker thread is alive
+
             if not self._publisher_thread or not self._publisher_thread.is_alive():
                 status = 'DEGRADED'
                 is_healthy = False
                 issues.append("Publisher thread not running")
 
-            # Check if tracking any modules
+
             if module_count == 0:
                 status = 'WARNING'
                 issues.append("No modules being tracked")

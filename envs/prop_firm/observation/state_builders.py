@@ -1,10 +1,5 @@
-# envs/prop_firm/observation/state_builders.py
-# pyright: reportAttributeAccessIssue=false
-"""
-Observation state builder mixin for PropFirmTradingEnv.
 
-Contains methods for preparing state dictionaries for observation building.
-"""
+# pyright: reportAttributeAccessIssue=false
 
 from __future__ import annotations
 
@@ -17,25 +12,9 @@ if TYPE_CHECKING:
 
 
 class ObservationBuildersMixin:
-    """Mixin providing observation state building methods.
-    
-    Expected attributes from PropFirmTradingEnv:
-    - config: PropFirmConfig
-    - total_trades: int
-    - winning_trades: int
-    - total_pnl: float
-    - consecutive_losses: int
-    - balance: float
-    - equity: float
-    - daily_trades: int
-    - position: Optional[PropPosition]
-    - episode_bars: int
-    - _episode_trade_results: List
-    """
 
     @staticmethod
     def _dir_sign(direction_str: str) -> float:
-        """Convert direction string to numerical sign: +1 (long/bull), -1 (short/bear), 0 (neutral)."""
         d = str(direction_str).lower().strip()
         if d in ("long", "buy", "bull", "bullish", "up"):
             return 1.0
@@ -45,7 +24,6 @@ class ObservationBuildersMixin:
 
     @staticmethod
     def _compute_rsi(close: np.ndarray, period: int = 14) -> float:
-        """Compute RSI from close prices."""
         if len(close) < period + 1:
             return 50.0
         deltas = np.diff(close[-(period + 1):])
@@ -57,7 +35,7 @@ class ObservationBuildersMixin:
             return 100.0 if avg_gain > 0 else 50.0
         rs = avg_gain / avg_loss
         return float(100.0 - (100.0 / (1.0 + rs)))
-    # Type hints for attributes provided by PropFirmTradingEnv
+
     config: "PropFirmConfig"
     total_trades: int
     winning_trades: int
@@ -71,7 +49,6 @@ class ObservationBuildersMixin:
     _episode_trade_results: List
 
     def _prepare_committee_state(self, expert_signals: Dict[str, Any]) -> Dict[str, Any]:
-        """Prepare committee consensus state from expert signals."""
         experts = expert_signals.get("experts", {}) if isinstance(expert_signals, dict) else {}
         dirs: List[float] = []
         wts: List[float] = []
@@ -88,7 +65,7 @@ class ObservationBuildersMixin:
         action_str = "long" if signed_score > 0.1 else ("short" if signed_score < -0.1 else "flat")
 
         nonzero_signs = [int(np.sign(d)) for d in dirs if abs(d) > 0.1]
-        # When no meaningful signals exist, use 0.5 (uncertain), not 1.0 (full agreement)
+
         if not nonzero_signs:
             agreement = 0.5
         else:
@@ -106,23 +83,15 @@ class ObservationBuildersMixin:
         }
 
     def _prepare_risk_state(self) -> Dict[str, Any]:
-        """Prepare risk state for observation.
-
-        `portfolio_risk` and `risk_budget` are required by the observation
-        contract and were previously absent, which made every observation build
-        fail. Both are derived from live account state so they actually vary --
-        four of the seven original keys were static config echoes.
-        """
         current_dd, daily_dd = self._calc_dds()
 
-        # Capital currently at risk if the open position hits its hard stop,
-        # expressed as a fraction of equity. Zero when flat.
+
         exposure = 0.0
         if self.position is not None:
             risk_eur = float(self.position.lot_size) * float(self.config.hard_stop_loss_eur)
             exposure = risk_eur / max(float(self.equity), 1.0)
 
-        # Fraction of the daily drawdown allowance still unused.
+
         daily_limit = max(float(self.config.daily_drawdown_limit), 1e-9)
         risk_budget = 1.0 - (float(daily_dd) / daily_limit)
 
@@ -141,7 +110,6 @@ class ObservationBuildersMixin:
         }
 
     def _prepare_memory_state(self, instrument: str) -> Dict[str, Any]:
-        """Prepare memory/performance state for observation."""
         recent_pnl = float(self.total_pnl)
         recent_trades = int(self.total_trades)
         recent_losses = int(self.total_trades - self.winning_trades)
@@ -175,21 +143,13 @@ class ObservationBuildersMixin:
         }
 
     def _prepare_account_state(self, instrument: str) -> Dict[str, Any]:
-        """Prepare account state for observation.
-
-        `current_step`, `max_steps`, `pnl_trend` and `episode_return` are all
-        required by the observation contract and were missing (episode_return was
-        not even listed in the builder's own validator, so it surfaced only as a
-        None-coercion error deeper in the build).
-        """
         cur_dd, _ = self._calc_dds()
 
-        # Episode return as a percentage of starting balance.
+
         initial = max(float(self.config.initial_balance), 1.0)
         episode_return = (float(self.equity) - initial) / initial * 100.0
 
-        # Direction of recent realised PnL in [-1, 1]: the sign of the last few
-        # closed trades, so the agent can distinguish a rough patch from a good one.
+
         pnl_trend = 0.0
         if self._episode_trade_results:
             recent = self._episode_trade_results[-5:]
@@ -244,61 +204,44 @@ class ObservationBuildersMixin:
         return state
 
     def _get_governor_state(self) -> Dict[str, float]:
-        """
-        Prepare governor/budget state for observation (v5.5).
-        
-        This state is ALWAYS computed (even in early curriculum stages with loose limits)
-        to ensure observation features are meaningful from day one and avoid distribution shift.
-        
-        Returns 8 normalized values for the governor observation block:
-        - loss_layer_ratio: consecutive_losses / loss_layer_stop [0, 1]
-        - loss_layer_level: clamped loss layer / 5.0 [0, 1]
-        - win_streak_ratio: consecutive_wins / 5.0 [0, 1]
-        - session_pnl_headroom: remaining headroom before session loss limit [0, 2]
-        - session_trade_budget: remaining session trade capacity [0, 1]
-        - session_consec_loss_ratio: session_consecutive_losses / limit [0, 1]
-        - session_progress: bars into session / estimated session duration [0, 1]
-        - pending_order_progress: bars until pending order fills / max latency [0, 1]
-        """
-        # Get config limits with safe defaults
+
         loss_layer_stop = getattr(self.config, "loss_layer_stop", 5)
         session_loss_limit = getattr(self.config, "session_loss_limit_pct", 0.99)
         session_consec_limit = getattr(self.config, "session_consecutive_loss_limit", 99)
         max_session_trades = getattr(self.config, "max_trades_per_session", 99)
-        
-        # Loss layer features (always computed)
+
+
         consecutive_losses = getattr(self, "consecutive_losses", 0)
         consecutive_wins = getattr(self, "consecutive_wins", 0)
-        loss_layer = min(consecutive_losses, 5)  # Clamped to 0-5
-        
-        # Session budget features
+        loss_layer = min(consecutive_losses, 5)
+
+
         session_pnl = getattr(self, "session_pnl", 0.0)
         session_start_balance = getattr(self, "session_start_balance", 0.0)
         session_consecutive_losses = getattr(self, "session_consecutive_losses", 0)
         session_trades = getattr(self, "_session_trades", 0)
         session_start_step = getattr(self, "session_start_step", 0)
         current_step = getattr(self, "current_step", 0)
-        
-        # Compute session pnl headroom: (limit + current_pnl%) / limit
-        # Positive headroom = safe, approaching 0 = danger
+
+
         if session_start_balance > 0:
             session_pnl_pct = session_pnl / session_start_balance
         else:
             session_pnl_pct = 0.0
-        # headroom = how much of the limit is remaining (1.0 = full limit available)
+
         headroom = (session_loss_limit + session_pnl_pct) / max(session_loss_limit, 0.001)
-        
-        # Estimate session duration in bars (use bars_per_day / 3 as rough estimate for 3 sessions)
-        bars_per_day = getattr(self, "_bars_per_day", lambda: 96)()  # M15 = 96 bars/day
-        session_duration_bars = max(bars_per_day // 3, 1)  # ~32 bars per session for M15
+
+
+        bars_per_day = getattr(self, "_bars_per_day", lambda: 96)()
+        session_duration_bars = max(bars_per_day // 3, 1)
         session_progress = (current_step - session_start_step) / max(session_duration_bars, 1)
-        
-        # Pending order progress
+
+
         pending_entry = getattr(self, "pending_entry", None)
         pending_exit = getattr(self, "pending_exit", None)
         episode_latency = getattr(self, "_episode_latency_bars", 1)
         max_latency = max(episode_latency, 1)
-        
+
         pending_bars = 0
         if pending_entry and isinstance(pending_entry, dict):
             fill_step = pending_entry.get("fill_step", current_step)
@@ -306,7 +249,7 @@ class ObservationBuildersMixin:
         elif pending_exit and isinstance(pending_exit, dict):
             fill_step = pending_exit.get("fill_step", current_step)
             pending_bars = max(0, fill_step - current_step)
-        
+
         return {
             "loss_layer_ratio": float(np.clip(consecutive_losses / max(loss_layer_stop, 1), 0.0, 1.0)),
             "loss_layer_level": float(np.clip(loss_layer / 5.0, 0.0, 1.0)),
@@ -319,7 +262,6 @@ class ObservationBuildersMixin:
         }
 
     def _prepare_trading_mode_state(self, instrument: str) -> Dict[str, Any]:
-        """Prepare trading mode state for observation."""
         cur_dd, _ = self._calc_dds()
         if cur_dd > 0.05:
             mode = "safe"
@@ -344,7 +286,7 @@ class ObservationBuildersMixin:
         vol_state = "low" if vol_proxy < 0.3 else ("high" if vol_proxy > 0.7 else "normal")
         zone_type = "good" if vol_state == "normal" else ("bad" if vol_state == "high" else "hot")
 
-        # Use step cache if available (called from step()), fallback to direct compute
+
         q_long = self._get_step_entry_quality(instrument, "long")
         q_short = self._get_step_entry_quality(instrument, "short")
         cert_long = self._get_step_entry_certainty(instrument, "long")
@@ -386,7 +328,6 @@ class ObservationBuildersMixin:
         }
 
     def _prepare_world_model_state(self, instrument: str, expert_signals: Dict[str, Any], committee_state: Dict[str, Any]) -> Dict[str, Any]:
-        """Prepare world model predictions state for observation."""
         o = self._get_ohlcv(instrument, lookback=120)
         if not o or len(o.get("close", [])) < 60:
             return self._default_world_model_state()
@@ -490,16 +431,14 @@ class ObservationBuildersMixin:
         else:
             stability = 0.5
 
-        _ = expert_signals  # reserved for future use
+        _ = expert_signals
 
         return {
             "model_confidence": confidence,
             "is_trained": True,
             "stability_score": stability,
-            # `model_confidence` and `is_trained` must live INSIDE market_predictions:
-            # the builder reads world_model_state["market_predictions"]["model_confidence"],
-            # not the top-level copies. Publishing them only at the top level made
-            # every build fail with "market_predictions.model_confidence ... Got None".
+
+
             "market_predictions": {
                 "model_confidence": confidence,
                 "is_trained": True,
@@ -523,7 +462,6 @@ class ObservationBuildersMixin:
         }
 
     def _default_world_model_state(self) -> Dict[str, Any]:
-        """Return default world model state when data unavailable."""
         return {
             "model_confidence": 0.5,
             "is_trained": True,

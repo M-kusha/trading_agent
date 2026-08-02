@@ -1,10 +1,4 @@
-# ─────────────────────────────────────────────────────────────
-# File: modules/utils/system_utilities.py
-# Unified, production-ready System Utilities & Analysis Framework
-# - Consolidates plain-English explanations and integration validation access
-# - Robust schema normalization and defensive error handling
-# - No placeholders, no dummy data paths
-# ─────────────────────────────────────────────────────────────
+
 
 from __future__ import annotations
 
@@ -23,54 +17,46 @@ if TYPE_CHECKING:
     from modules.core.module_system import ModuleOrchestrator
 
 
-# ═══════════════════════════════════════════════════════════════════
-# CONFIGURATION
-# ═══════════════════════════════════════════════════════════════════
-
 @dataclass
 class SystemUtilitiesConfig:
-    """
-    Hardened configuration for SystemUtilities & EnglishExplainer.
-    Validated ranges guard against misconfiguration.
-    """
-    # Core settings
+
     enabled: bool = True
     debug_mode: bool = True
     log_level: str = "DEBUG"
     max_cache_size: int = 10_000
     cache_ttl_seconds: int = 3600
 
-    # Performance settings
+
     max_parallel_operations: int = 10
     default_timeout_ms: int = 5000
     health_check_interval_ms: int = 60_000
     metrics_retention_hours: int = 24
 
-    # Validation settings
+
     strict_validation: bool = True
     auto_fix_enabled: bool = False
     validation_timeout_ms: int = 30_000
     max_validation_retries: int = 3
 
-    # Explanation settings
+
     plain_english_enabled: bool = True
     detailed_explanations: bool = True
     include_technical_details: bool = True
     max_explanation_length: int = 2000
 
-    # Integration settings
+
     smart_bus_integration: bool = True
     audit_system_integration: bool = True
     auto_publish_reports: bool = True
     publish_interval_seconds: int = 300
 
-    # Error handling
+
     circuit_breaker_threshold: int = 5
     recovery_time_seconds: int = 60
     emergency_mode_enabled: bool = True
     error_escalation_enabled: bool = True
 
-    # File paths
+
     config_paths: List[str] = field(default_factory=lambda: [
         "config/system_config.yaml",
         "config/risk_policy.yaml",
@@ -104,7 +90,7 @@ class SystemUtilitiesConfig:
     def _validate_config(self) -> None:
         errors: List[str] = []
 
-        # Ranges
+
         if not (1 <= self.default_timeout_ms <= 60_000):
             errors.append("default_timeout_ms must be 1..60000")
         if not (1 <= self.validation_timeout_ms <= 120_000):
@@ -135,7 +121,7 @@ class SystemUtilitiesConfig:
         try:
             self._validate_config()
         except Exception:
-            # rollback
+
             for k, v in old.items():
                 setattr(self, k, v)
             raise
@@ -143,10 +129,6 @@ class SystemUtilitiesConfig:
     def to_dict(self) -> Dict[str, Any]:
         return {k: v for k, v in self.__dict__.items() if not k.startswith("_")}
 
-
-# ═══════════════════════════════════════════════════════════════════
-# REPORTING & VALIDATION DATA CLASSES
-# ═══════════════════════════════════════════════════════════════════
 
 @dataclass
 class ExplanationTemplate:
@@ -169,7 +151,7 @@ class ExplanationTemplate:
 class ValidationIssue:
     module: str
     issue_type: str
-    severity: str  # 'critical'|'error'|'warning'|'info'
+    severity: str
     message: str
     file_path: Optional[str] = None
     line_number: Optional[int] = None
@@ -321,15 +303,11 @@ Generated: {datetime.fromtimestamp(self.timestamp).strftime('%Y-%m-%d %H:%M:%S')
 Report ID: {str(uuid.uuid4())[:8].upper()}""".strip()
 
 
-# ═══════════════════════════════════════════════════════════════════
-# CIRCUIT BREAKER
-# ═══════════════════════════════════════════════════════════════════
-
 @dataclass
 class CircuitBreakerState:
     failure_count: int = 0
     last_failure_time: float = 0.0
-    state: str = "CLOSED"  # CLOSED | OPEN | HALF_OPEN
+    state: str = "CLOSED"
     successful_calls: int = 0
     total_calls: int = 0
     last_success_time: float = 0.0
@@ -355,21 +333,13 @@ class CircuitBreakerState:
                 self.state = "HALF_OPEN"
                 return True
             return False
-        return True  # HALF_OPEN
+        return True
 
     def trip(self) -> None:
         self.state = "OPEN"
 
 
-# ═══════════════════════════════════════════════════════════════════
-# ENGLISH EXPLAINER
-# ═══════════════════════════════════════════════════════════════════
-
 class EnglishExplainer:
-    """
-    Plain-English explanations for SmartInfoBus components.
-    Strong input validation, bounded length, and circuit-breaker resilience.
-    """
 
     def __init__(self, config: Optional[SystemUtilitiesConfig] = None) -> None:
         self.config = config or SystemUtilitiesConfig()
@@ -389,7 +359,7 @@ class EnglishExplainer:
             )
         )
 
-    # ---------- logging helper ----------
+
     def _log_debug(self, msg: str) -> None:
         if getattr(self.config, "debug_mode", False):
             if hasattr(self.logger, "debug"):
@@ -397,7 +367,7 @@ class EnglishExplainer:
             else:
                 self.logger.info(f"[DEBUG] {msg}")
 
-    # ---------- templates ----------
+
     def _load_templates(self) -> Dict[str, ExplanationTemplate]:
         return {
             "module_decision": ExplanationTemplate(
@@ -544,7 +514,7 @@ class EnglishExplainer:
             ),
         }
 
-    # ---------- public explainers ----------
+
     def explain_module_decision(
         self,
         module_name: str,
@@ -586,13 +556,9 @@ class EnglishExplainer:
             self._circuit_breaker.record_failure()
             self.logger.error(f"explain_module_decision error: {e}")
             return self._generate_fallback_explanation(f"Error generating explanation: {e}")
-        
+
 
     def _format_system_resources(self, metrics: Dict[str, float]) -> str:
-        """
-        Render CPU/memory/disk with simple status thresholds.
-        Expects percentages in [0, 100]. Unknowns default to 0.
-        """
         cpu = float(metrics.get("cpu_percent", 0.0))
         mem = float(metrics.get("memory_percent", 0.0))
         dsk = float(metrics.get("disk_percent", 0.0))
@@ -610,12 +576,8 @@ class EnglishExplainer:
             f"  {badge(dsk)} Disk Usage: {dsk:.1f}%",
         ]
         return "\n".join(lines)
-    
+
     def _format_module_health(self, module_health: Dict[str, str]) -> str:
-        """
-        Group modules by health status and render a compact summary.
-        module_health: {module_name: 'healthy'|'warning'|'critical'|...}
-        """
         if not module_health:
             return "  • No modules reported"
 
@@ -642,24 +604,20 @@ class EnglishExplainer:
                 tail = f", +{len(mods)-3} more" if len(mods) > 3 else ""
                 out.append(f"    └─ {sample}{tail}")
         return "\n".join(out)
-    
+
 
     def _generate_predictive_insights(
         self,
         system_metrics: Dict[str, float],
         module_health: Dict[str, str]
     ) -> str:
-        """
-        Lightweight predictive hints based on current resource levels and
-        module health ratios. Purely heuristic, deterministic output.
-        """
         insights: List[str] = []
 
         cpu = float(system_metrics.get("cpu_percent", 0.0))
         mem = float(system_metrics.get("memory_percent", 0.0))
         dsk = float(system_metrics.get("disk_percent", 0.0))
 
-        # Resource trend hints
+
         if cpu >= 80.0:
             insights.append("[CHART] CPU sustained high; consider scaling or load shedding")
         elif cpu >= 60.0:
@@ -675,7 +633,7 @@ class EnglishExplainer:
         elif dsk >= 70.0:
             insights.append("[WARN] Disk usage rising; plan housekeeping")
 
-        # Module health ratio
+
         total = max(1, len(module_health))
         healthy = sum(1 for s in module_health.values() if str(s).lower() == "healthy")
         ratio = healthy / total
@@ -693,21 +651,15 @@ class EnglishExplainer:
         return "\n".join(f"  {line}" for line in insights)
 
 
-
-        
     def _determine_error_cause(
         self,
         error_type: str,
         error_message: str,
         context: Dict[str, Any]
     ) -> str:
-        """
-        Heuristically infer a likely root cause from error type/message/context.
-        Returns a short, plain-English sentence.
-        """
         emsg = (error_message or "").lower()
 
-        # Quick message heuristics first
+
         if "nonetype" in emsg:
             return "A function returned no value (None) where a value was expected"
         if "list index out of range" in emsg:
@@ -723,7 +675,7 @@ class EnglishExplainer:
         if "not found" in emsg or "no such file" in emsg:
             return "A required file or resource path does not exist"
 
-        # By error type
+
         if error_type == "KeyError":
             missing_key = context.get("missing_key")
             if missing_key:
@@ -748,13 +700,13 @@ class EnglishExplainer:
         if error_type == "PermissionError":
             return "An operation failed due to insufficient OS-level permissions"
 
-        # Context-based hints
+
         if context.get("upstream_unavailable"):
             return "An upstream dependency is unavailable or unhealthy"
         if context.get("bad_payload"):
             return "An upstream dependency returned an unexpected or malformed payload"
 
-        # Fallback
+
         return "The system encountered an unexpected condition in its execution path"
 
 
@@ -1005,7 +957,7 @@ class EnglishExplainer:
 
         return "\n".join(lines).strip()
 
-    # ---------- helpers ----------
+
     def _fill_template(self, name: str, values: Dict[str, Any]) -> str:
         t = self.templates.get(name)
         if not t:
@@ -1330,22 +1282,13 @@ class EnglishExplainer:
         return "\n".join(actions)
 
 
-# ═══════════════════════════════════════════════════════════════════
-# SYSTEM UTILITIES (Unified façade)
-# ═══════════════════════════════════════════════════════════════════
-
 class SystemUtilities:
-    """
-    Unified System Utilities combining explanation and validation access.
-    Uses SystemIntegritySuite for validation & dependency auditing; provides
-    robust normalization to match legacy IntegrationValidator expectations.
-    """
 
     def __init__(self, orchestrator: Optional[ModuleOrchestrator] = None) -> None:
         self.explainer = EnglishExplainer()
         self.logger = RotatingLogger(name="SystemUtilities", log_path="logs/utils/system_utilities.log", max_lines=8000)
 
-        # Load the integrity suite defensively
+
         suite = None
         try:
             from modules.monitoring.system_integrity_suite import SystemIntegritySuite  # type: ignore
@@ -1355,7 +1298,7 @@ class SystemUtilities:
             self.logger.error(f"[SystemUtilities] Failed to import SystemIntegritySuite: {e}")
         self._suite = suite
 
-    # ---- explainer passthroughs ----
+
     def explain_module_decision(self, *args, **kwargs) -> str:
         return self.explainer.explain_module_decision(*args, **kwargs)
 
@@ -1377,26 +1320,8 @@ class SystemUtilities:
     def explain_execution_results(self, *args, **kwargs) -> str:
         return self.explainer.explain_execution_results(*args, **kwargs)
 
-    # ---- validation access (robust normalization) ----
-    def validate_system(self):
-        """
-        Backward-compat: return a report-like wrapper from SystemIntegritySuite
-        with defensive schema normalisation.
 
-        Guarantees attributes:
-          - integration_score: float
-          - total_modules: int
-          - validated_modules: int
-          - issues: list
-          - missing_decorators: list
-          - missing_thesis: list
-          - config_issues: list
-          - duplicate_writers: dict
-          - missing_writers: dict
-          - cycles: list
-          - manifest: dict
-          - severity counters: critical_count, error_count, warning_count, info_count
-        """
+    def validate_system(self):
         if self._suite is None:
             self.logger.error("[SystemUtilities.validate_system] Suite unavailable")
             raw = {}
@@ -1412,20 +1337,20 @@ class SystemUtilities:
             self.logger.warning("[SystemUtilities.validate_system] 'validation' payload missing or not a dict; using defaults")
             validation = {}
 
-        # coercers
-        def _f(x, d=0.0):  # float
+
+        def _f(x, d=0.0):
             try:
                 return float(x)
             except Exception:
                 return d
 
-        def _i(x, d=0):  # int
+        def _i(x, d=0):
             try:
                 return int(x)
             except Exception:
                 return d
 
-        def _l(x, d=None):  # list
+        def _l(x, d=None):
             if isinstance(x, list):
                 return x
             if x is None:
@@ -1437,7 +1362,7 @@ class SystemUtilities:
                     pass
             return [] if d is None else d
 
-        def _d(x, d=None):  # dict
+        def _d(x, d=None):
             return x if isinstance(x, dict) else ({} if d is None else d)
 
         normalized = {
@@ -1454,7 +1379,7 @@ class SystemUtilities:
             "manifest": _d(validation.get("manifest", {})),
         }
 
-        # severity counts
+
         def _sev_counts(items: List[Any]) -> Dict[str, int]:
             c = {"critical": 0, "error": 0, "warning": 0, "info": 0}
             for it in items:
@@ -1473,7 +1398,7 @@ class SystemUtilities:
         if missing_essentials:
             self.logger.warning(f"[SystemUtilities.validate_system] Missing essentials {missing_essentials}; defaults applied")
 
-        # concise summary log
+
         self.logger.info(
             format_operator_message(
                 icon="📊",
@@ -1493,7 +1418,7 @@ class SystemUtilities:
                 self._data = data
                 self._sev = sev_counts
 
-            # expected properties
+
             @property
             def integration_score(self) -> float:
                 return float(self._data.get("integration_score", 0.0))
@@ -1538,7 +1463,7 @@ class SystemUtilities:
             def manifest(self) -> Dict[str, Any]:
                 return dict(self._data.get("manifest", {}))
 
-            # severity convenience
+
             @property
             def critical_count(self) -> int:
                 return int(self._sev.get("critical", 0))
@@ -1558,7 +1483,7 @@ class SystemUtilities:
             def to_dict(self) -> Dict[str, Any]:
                 return {**self._data, "severity_counts": dict(self._sev)}
 
-            # dotted access passthrough for any stored field
+
             def __getattr__(self, item: str):
                 if item in self._data:
                     return self._data[item]
@@ -1566,7 +1491,7 @@ class SystemUtilities:
 
         return _ReportWrapper(normalized, sev)
 
-    # Back-compat helpers (kept minimal and explicit)
+
     def generate_migration_guide(self) -> str:
         return (
             "Migration Guide\n"
@@ -1577,5 +1502,5 @@ class SystemUtilities:
         )
 
     def fix_common_issues(self, *_: Any, **__: Any) -> List[str]:
-        # Explicitly no auto-fix actions are taken in this facade.
+
         return []

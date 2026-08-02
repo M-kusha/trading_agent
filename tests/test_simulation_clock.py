@@ -1,11 +1,3 @@
-"""Tests for the unified time source.
-
-The property that matters: with simulation mode on, module behaviour must
-depend on the timestamp of the replayed bar and NOT on when the training run
-happens to be launched. Before this clock existed, training overnight made
-session logic believe the market was closed, and second-based cooldowns never
-expired because thousands of bars replay inside one real second.
-"""
 
 from __future__ import annotations
 
@@ -15,23 +7,18 @@ import pytest
 
 from modules.utils import simulation_time as simclock
 
-LONDON = datetime(2024, 3, 11, 9, 30, tzinfo=timezone.utc)   # Monday
-TOKYO = datetime(2024, 3, 11, 2, 0, tzinfo=timezone.utc)     # Monday
+LONDON = datetime(2024, 3, 11, 9, 30, tzinfo=timezone.utc)
+TOKYO = datetime(2024, 3, 11, 2, 0, tzinfo=timezone.utc)
 SATURDAY = datetime(2024, 3, 16, 12, 0, tzinfo=timezone.utc)
 
 
 @pytest.fixture(autouse=True)
 def _restore_clock():
-    """Never leak clock state between tests."""
     previous = simclock.get_mode()
     yield
     simclock.set_mode(previous)
     simclock.reset()
 
-
-# ─────────────────────────────────────────────────────────────
-# Mode behaviour
-# ─────────────────────────────────────────────────────────────
 
 def test_live_mode_returns_wall_clock():
     simclock.set_mode(simclock.TimeMode.LIVE)
@@ -46,12 +33,11 @@ def test_simulation_mode_returns_bar_time():
 
 
 def test_simulation_time_is_independent_of_wall_clock():
-    """The core property. Same bar, two different real instants, same answer."""
     with simclock.simulation_mode(LONDON):
         first = simclock.now(timezone.utc)
         first_session = simclock.get_session_info()
 
-    # ... real time passes between the two reads ...
+
     with simclock.simulation_mode(LONDON):
         second = simclock.now(timezone.utc)
         second_session = simclock.get_session_info()
@@ -76,15 +62,10 @@ def test_weekend_detection_uses_bar_time():
 
 
 def test_naive_timestamps_are_accepted():
-    """Bar timestamps from CSV are naive; they must not raise on comparison."""
     with simclock.simulation_mode():
         simclock.set_bar_time(datetime(2024, 3, 11, 9, 30), step=0)  # noqa: DTZ001 - naive on purpose
         assert simclock.now(timezone.utc).hour == 9
 
-
-# ─────────────────────────────────────────────────────────────
-# Step-based cooldowns
-# ─────────────────────────────────────────────────────────────
 
 def test_cooldown_counts_steps_not_seconds():
     with simclock.simulation_mode(LONDON):
@@ -108,13 +89,7 @@ def test_cooldowns_reset_between_episodes():
         assert simclock.cooldown_elapsed("entry", min_steps=10)
 
 
-# ─────────────────────────────────────────────────────────────
-# Namespace injection
-# ─────────────────────────────────────────────────────────────
-
 def test_install_clock_redirects_datetime_now():
-    """Modules keep their existing datetime.now() calls; only the name they
-    resolve changes. Rewriting 362 inline call sites was never viable."""
     import types
 
     victim = types.ModuleType("victim")
@@ -141,8 +116,6 @@ def test_install_clock_handles_module_style_import():
 
 
 def test_install_clock_makes_sleep_a_noop_under_simulation():
-    """A module that sleeps cannot take part in a replay loop.
-    execution_quality_monitor issued 139 million suppressed sleep() calls."""
     import types
 
     victim = types.ModuleType("victim3")
@@ -156,12 +129,7 @@ def test_install_clock_makes_sleep_a_noop_under_simulation():
     assert elapsed < 1.0, "sleep() was not suppressed under simulation"
 
 
-# ─────────────────────────────────────────────────────────────
-# Environment integration
-# ─────────────────────────────────────────────────────────────
-
 def test_env_publishes_bar_time_on_step(env):
-    """The env is the clock's only writer during training."""
     simclock.set_mode(simclock.TimeMode.SIMULATION)
     env.reset(seed=0)
 

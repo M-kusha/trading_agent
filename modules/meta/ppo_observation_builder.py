@@ -1,30 +1,5 @@
 #!/usr/bin/env python3
-# ─────────────────────────────────────────────────────────────
-# File: modules/meta/ppo_observation_builder.py
-# Unified PPO Observation Builder (v5.6 - STRICT XAUUSD + Deep Debug Trace)
-#
-# Single source of truth for PPO observation construction.
-# Used identically in TRAINING (ModernTradingEnv) and LIVE (PPOAgent).
-#
-# v5.6 CHANGES (this refactor):
-# - STRICT contracts: no silent defaults, no "fallback to zeros", no cross-symbol leakage.
-# - Single instrument only (XAUUSD). Any other symbol raises.
-# - Debug mode writes ONE dedicated JSONL file with full input/output trace.
-# - True MACD histogram (EMA12-EMA26 minus EMA9 of MACD line).
-# - Forming-bar integration is explicitly gated by config.use_forming_bar (default False).
-# - HTF trend is now real EMA-slope normalized (matches schema comments).
-# - Observation output is validated: NaN/Inf -> hard error (logged in debug file).
-#
-# v5.6 DEBUG ENHANCEMENTS (requested):
-# - FULL dump mode (no truncation) by default.
-# - Records EVERY SmartBus get() as an event (key + returned payload).
-# - Correlates events with build_id for end-to-end tracing.
-#
-# CONTRACT NOTE:
-# Training and Live MUST publish/provide the same schema for each state input.
-# If something is missing, this module will raise an ObservationContractError.
-# That is deliberate: it prevents distribution shift caused by hidden defaults.
-# ─────────────────────────────────────────────────────────────
+
 
 from __future__ import annotations
 
@@ -39,74 +14,23 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-# Canonical timeframe constants.
-#
-# These were imported from modules.voting.core.constants behind a try/except
-# that silently substituted these exact same values on failure. Two problems:
-# the fallback made a broken import invisible, and importing one constant from
-# the voting package pulled in its eager __init__ -> the whole voting tree ->
-# module_system -> SmartInfoBus: 40 modules loaded to read three strings.
-# Declared here instead. The observation path now depends on numpy alone.
 PRIMARY_TIMEFRAME: str = "M15"
 CONTEXT_TIMEFRAMES: tuple = ("H1", "H4", "D1")
 SUPPORTED_TIMEFRAMES: tuple = ("M15", "H1", "H4", "D1")
 
-# Import centralized trade limits
+
 try:
     from config import get_trade_limits
     _TRADE_LIMITS = get_trade_limits()
 except Exception:
-    # STRICT mode: we do not "fallback" at runtime. We only keep a compile-time
-    # safe default for module import viability, but config should provide it.
+
+
     _TRADE_LIMITS = {"max_trades_per_day": 20}
 
 
-# ═══════════════════════════════════════════════════════════════════
-# OBSERVATION SCHEMA (v5.8) - 106 dims (XAUUSD only)
-# ═══════════════════════════════════════════════════════════════════
-#
-# [0-9]   M15 Price Features (PRIMARY) - 10 dims
-#         [3] = S/R Proximity Signal (SIGNED: +support/-resistance)
-#
-# [10-27] Higher TF Context (H1/H4/D1 EXPANDED) - 18 dims (6 per TF)
-#         Per TF: [trend, momentum, RSI, ATR_norm, S/R_proximity, HH/HL_bias]
-#         H1:  [10-15]
-#         H4:  [16-21]
-#         D1:  [22-27]
-#
-# [28-35] Expert ADVISOR Signals (SIGNED: +bull/-bear) - 8 dims
-#
-# [36-43] Committee Consensus (SIGNED + structure) - 8 dims
-#         [7] = Composite Market Structure
-#
-# [44-51] Risk/Memory Signals - 8 dims
-# [52-59] Account/Position State - 8 dims
-# [60-67] World Model Predictions - 8 dims
-# [68-81] Trading Mode State - 14 dims (includes setup/certainty context)
-# [82-89] Governor/Budget State - 8 dims
-# [90-105] Expert Raw Metrics - 16 dims (from expert analyses)
-#
-# ═══════════════════════════════════════════════════════════════════
-
 PPO_OBS_VERSION = "6.0"
-# Must equal len(_build_feature_names()) and max(FEATURE_GROUPS.values())[1].
-# tests/test_obs_contract.py pins all three to the same number.
-#
-# v6.0 removes the 16-dim expert_raw block that v5.8 added at indices 90..105.
-# Reasons, all measured:
-#   * It read proposal keys from the modules/voting/experts schema ("chop",
-#     "exhaustion_score", "hurst", "vol_ratio", "bias") while training feeds the
-#     envs/prop_firm/signals schema. Only "trend_slope" ever matched, so 15 of
-#     16 dims were constant - the block never functioned.
-#   * The signals behind it have no measured skill: every expert underperforms
-#     an always-long control at the daily horizon (theme +6.32 bp, committee
-#     +6.11, trend +4.50, momentum +0.64 vs always-long +10.18), hit rates sit
-#     at 49-52%, and the best information coefficient is +0.043 at p=0.089.
-#   * The dataset supports roughly 3,223 effectively independent samples, so
-#     every observation dimension that does not earn its place costs
-#     generalisation.
-# Re-add with a schema both paths produce if an ablation shows raw expert
-# metrics help.
+
+
 PPO_OBS_SIZE = 90
 
 DEFAULT_INSTRUMENT = "XAUUSD"
@@ -121,19 +45,19 @@ FEATURE_GROUPS: Dict[str, tuple[int, int]] = {
     "world_model": (60, 68),
     "trading_mode": (68, 82),
     "governor": (82, 90),
-    # "expert_raw": (90, 106) removed in v6.0 - never functioned (15/16 dims
-    # constant) and the signals behind it show no measured skill.
+
+
 }
 
 
 class ObservationContractError(RuntimeError):
-    """Raised when inputs violate the observation contract (strict mode)."""
+    pass
 
 
 def _build_feature_names() -> List[str]:
     names: List[str] = []
 
-    # 0..9: M15 primary price features (10)
+
     names += [
         "m15_price_vs_mean",
         "m15_range_pct",
@@ -147,7 +71,7 @@ def _build_feature_names() -> List[str]:
         "m15_volatility_std_x100",
     ]
 
-    # 10..27: HTF context (H1/H4/D1, 6 each = 18)
+
     for tf in ("H1", "H4", "D1"):
         names += [
             f"htf_{tf}_trend",
@@ -158,7 +82,7 @@ def _build_feature_names() -> List[str]:
             f"htf_{tf}_structure_bias",
         ]
 
-    # 28..35: expert voting features (8)
+
     names += [
         "expert_trend_signed_strength",
         "expert_trend_confidence",
@@ -170,7 +94,7 @@ def _build_feature_names() -> List[str]:
         "expert_seasonality_confidence",
     ]
 
-    # 36..43: committee/consensus features (8)
+
     names += [
         "committee_signed_consensus",
         "committee_confidence",
@@ -182,7 +106,7 @@ def _build_feature_names() -> List[str]:
         "committee_structure_composite",
     ]
 
-    # 44..51: risk/memory features (8)
+
     names += [
         "risk_memory_gate",
         "risk_danger_zone_count",
@@ -194,7 +118,7 @@ def _build_feature_names() -> List[str]:
         "risk_pnl_trend",
     ]
 
-    # 52..59: account/position features (8)
+
     names += [
         "account_step_ratio",
         "account_episode_return_norm",
@@ -206,7 +130,7 @@ def _build_feature_names() -> List[str]:
         "account_on_cooldown",
     ]
 
-    # 60..67: world model features (8)
+
     names += [
         "wm_model_confidence",
         "wm_m15_price_change",
@@ -218,7 +142,7 @@ def _build_feature_names() -> List[str]:
         "wm_stability_score",
     ]
 
-    # 68..81: trading mode features (14)
+
     names += [
         "mode_trading_mode",
         "mode_entry_allowed",
@@ -236,7 +160,7 @@ def _build_feature_names() -> List[str]:
         "mode_confluence_increasing",
     ]
 
-    # 82..89: governor/budget features (8)
+
     names += [
         "gov_loss_layer_ratio",
         "gov_loss_layer_level",
@@ -248,8 +172,7 @@ def _build_feature_names() -> List[str]:
         "gov_pending_order_progress",
     ]
 
-    # v6.0: the 16-dim expert_raw block that lived at 90..105 was removed.
-    # See the PPO_OBS_SIZE comment for the measurements behind that decision.
+
     if len(names) != PPO_OBS_SIZE:
         raise ValueError(f"Feature name list mismatch: {len(names)} != {PPO_OBS_SIZE}")
     return names
@@ -260,67 +183,60 @@ PPO_OBS_FEATURE_NAMES: List[str] = _build_feature_names()
 
 @dataclass
 class PPOObservationConfig:
-    """Configuration for PPO observation builder (STRICT)."""
 
     obs_size: int = PPO_OBS_SIZE
     version: str = PPO_OBS_VERSION
 
-    # Single instrument only
+
     instrument: str = DEFAULT_INSTRUMENT
 
-    # Normalization parameters
+
     price_lookback: int = 50
     rsi_period: int = 14
     atr_period: int = 14
     trend_lookback: int = 20
     momentum_lookback: int = 10
 
-    # Minimum history requirements (STRICT)
-    # - M15 must have enough bars for MACD(26+9) and volatility window and SR windows.
+
     min_bars_m15: int = 60
     min_bars_htf: int = 30
 
-    # Feature scaling
+
     max_drawdown_clip: float = 0.5
     max_danger_zones: int = 10
     max_trades_per_day: int = field(default_factory=lambda: int(_TRADE_LIMITS.get("max_trades_per_day", 20)))
 
-    # World model parameters
+
     prediction_confidence_threshold: float = 0.5
 
-    # S/R proximity thresholds
-    sr_threshold_pct_m15: float = 0.005  # 0.5%
-    sr_threshold_pct_htf: float = 0.006  # slightly wider on HTF
-    sr_cluster_tol_pct: float = 0.0015   # merge levels within 0.15%
 
-    # Forming bar tolerance (relative/absolute)
+    sr_threshold_pct_m15: float = 0.005
+    sr_threshold_pct_htf: float = 0.006
+    sr_cluster_tol_pct: float = 0.0015
+
+
     forming_bar_rtol: float = 1e-7
     forming_bar_atol: float = 1e-6
 
-    # Parity flag: closed bars by default
+
     use_forming_bar: bool = False
 
-    # STRICT debug trace (single JSONL file)
+
     debug: bool = True
     debug_output_path: str = "logs/ppo_obs_debug_xauusd.jsonl"
 
-    # FULL dump mode (requested): dump everything by default.
-    # If you ever need a safety limit, set debug_hard_cap_elems > 0.
-    debug_full_dump: bool = True
-    debug_hard_cap_elems: int = 0  # 0 => no cap (FULL)
 
-    # Also record SmartBus key fetches (inputs “coming in”)
+    debug_full_dump: bool = True
+    debug_hard_cap_elems: int = 0
+
+
     debug_record_bus_fetches: bool = True
 
-    # Depth guard (only relevant if debug_full_dump=False; kept for sanity)
+
     debug_max_depth: int = 64
 
 
 class _DebugTrace:
-    """
-    JSONL trace writer for strict debug.
-    Writes one record per build() call (and optional per-fetch events).
-    """
 
     def __init__(self, enabled: bool, path: str, cfg: PPOObservationConfig) -> None:
         self.enabled = bool(enabled)
@@ -369,33 +285,33 @@ class _DebugTrace:
             ) from e
 
     def _safe(self, v: Any, depth: int = 0) -> Any:
-        # FULL dump mode: do not truncate dicts/lists/arrays unless hard-cap triggers
+
         if not self.cfg.debug_full_dump and depth > self.cfg.debug_max_depth:
             return "<max_depth>"
 
         if v is None or isinstance(v, (bool, int, float, str)):
             return v
 
-        # numpy scalars
+
         if isinstance(v, (np.floating, np.integer)):
             return float(v)
 
-        # numpy arrays
+
         if isinstance(v, np.ndarray):
             return self._safe_array(v)
 
-        # lists / tuples
+
         if isinstance(v, (list, tuple)):
             return [self._safe(x, depth + 1) for x in v]
 
-        # dicts
+
         if isinstance(v, dict):
             out: Dict[str, Any] = {}
             for k, vv in v.items():
                 out[str(k)] = self._safe(vv, depth + 1)
             return out
 
-        # fallback
+
         try:
             return str(v)
         except Exception:
@@ -415,7 +331,7 @@ class _DebugTrace:
         if n == 0:
             return info
 
-        # stats
+
         try:
             finite = np.isfinite(flat)
             info["finite_ratio"] = float(np.mean(finite))
@@ -430,7 +346,7 @@ class _DebugTrace:
 
         cap = int(self.cfg.debug_hard_cap_elems) if int(self.cfg.debug_hard_cap_elems) > 0 else 0
         if cap > 0 and n > cap:
-            # Hard cap triggered: still gives you head+tail + stats.
+
             head_n = min(200, n)
             tail_n = min(200, n)
             info["truncated"] = True
@@ -439,9 +355,9 @@ class _DebugTrace:
             info["tail"] = [float(x) for x in flat[-tail_n:].astype(np.float64, copy=False)]
             return info
 
-        # FULL values
+
         try:
-            # Preserve shape for readability
+
             info["values"] = arr.astype(np.float64, copy=False).tolist()
         except Exception:
             info["values_flat"] = [float(x) for x in flat.astype(np.float64, copy=False)]
@@ -460,16 +376,10 @@ class _DebugTrace:
 
 
 class PPOObservationBuilder:
-    """
-    Unified PPO Observation Builder (STRICT).
-    - Single instrument only.
-    - Train/live parity enforced by design.
-    - Any missing/invalid data is a hard error.
-    """
 
     def __init__(self, config: Optional[PPOObservationConfig] = None) -> None:
         self.config = config or PPOObservationConfig()
-        self.config.obs_size = PPO_OBS_SIZE  # enforce
+        self.config.obs_size = PPO_OBS_SIZE
         self._eps: float = 1e-12
 
         self._instrument = self._norm_symbol(self.config.instrument)
@@ -511,9 +421,6 @@ class PPOObservationBuilder:
             "feature_names": self.feature_names,
         }
 
-    # ======================================================================
-    # Public Builders (STRICT)
-    # ======================================================================
 
     def build(
         self,
@@ -529,10 +436,6 @@ class PPOObservationBuilder:
         smart_bus: Optional[Any] = None,
         module_name: str = "PPOObservationBuilder",
     ) -> np.ndarray:
-        """
-        Build the unified PPO observation vector (STRICT).
-        If smart_bus is provided, required inputs are fetched strictly for XAUUSD.
-        """
 
         self._build_id += 1
         build_id = int(self._build_id)
@@ -579,7 +482,7 @@ class PPOObservationBuilder:
                 },
             )
 
-        # Contract validation (inputs)
+
         self._validate_inputs_strict(
             market_data=market_data,
             expert_signals=expert_signals,
@@ -592,7 +495,7 @@ class PPOObservationBuilder:
             governor_state=governor_state,
         )
 
-        # Narrow types for static checkers: validation above guarantees these are dicts.
+
         assert isinstance(market_data, dict)
         assert isinstance(expert_signals, dict)
         assert isinstance(committee_state, dict)
@@ -605,7 +508,7 @@ class PPOObservationBuilder:
 
         obs = np.zeros(self.config.obs_size, dtype=np.float32)
 
-        # Build feature groups (and log internals if debug)
+
         m15_feats, m15_dbg = self._build_m15_features(market_data)
         htf_feats, htf_dbg = self._build_htf_context(market_data, expert_signals)
         voting_feats, voting_dbg = self._build_voting_features(expert_signals)
@@ -626,7 +529,7 @@ class PPOObservationBuilder:
         obs[68:82] = mode_feats
         obs[82:90] = gov_feats
 
-        # Output validation (STRICT)
+
         self._validate_observation_strict(obs)
 
         if self.config.debug:
@@ -675,18 +578,12 @@ class PPOObservationBuilder:
         return obs
 
     def build_for_instrument(self, instrument: str, **kwargs: Any) -> np.ndarray:
-        """
-        Compatibility shim. Strict mode supports ONLY XAUUSD.
-        """
         if self._norm_symbol(instrument) != self._norm_symbol(DEFAULT_INSTRUMENT):
             raise ObservationContractError(
                 f"Only {DEFAULT_INSTRUMENT} is supported. Got instrument='{instrument}'."
             )
         return self.build(**kwargs)
 
-    # ─────────────────────────────────────────────────────────────
-    # Strict validators (inputs + outputs)
-    # ─────────────────────────────────────────────────────────────
 
     def _validate_inputs_strict(
         self,
@@ -786,9 +683,6 @@ class PPOObservationBuilder:
                 f"observation magnitude exploded (max abs={mx}). Contract likely broken."
             )
 
-    # ======================================================================
-    # Feature Builders (return (features, debug_dict))
-    # ======================================================================
 
     def _build_m15_features(self, market_data: Dict[str, Any]) -> Tuple[np.ndarray, Dict[str, Any]]:
         feats = np.zeros(10, dtype=np.float32)
@@ -866,7 +760,7 @@ class PPOObservationBuilder:
                 "roc": roc,
                 "vol_std": vol,
                 "feats": feats,
-                # FULL raw data (requested)
+
                 "raw": {
                     "close": close,
                     "high": high,
@@ -946,7 +840,7 @@ class PPOObservationBuilder:
                 "structure_bias": sb,
                 "htf_sig": htf_sig,
                 "feats": feats[base_idx : base_idx + 6],
-                # FULL raw data (requested)
+
                 "raw": {
                     "close": close,
                     "high": high,
@@ -1428,7 +1322,7 @@ class PPOObservationBuilder:
         time_quality = 0.5 + 0.3 * prime_bonus
         feats[7] = float(np.clip(mode_eff * 0.35 + regime_stability * 0.25 + time_quality * 0.40, 0.0, 1.0))
 
-        # ---- Setup / certainty context (new block, 6 dims) ----
+
         setup_long = float(np.clip(self._to_float_required(timing.get("setup_quality_long"), "entry_timing.setup_quality_long"), 0.0, 1.0))
         setup_short = float(np.clip(self._to_float_required(timing.get("setup_quality_short"), "entry_timing.setup_quality_short"), 0.0, 1.0))
         cert_long = float(np.clip(self._to_float_required(timing.get("entry_certainty_long"), "entry_timing.entry_certainty_long"), 0.0, 1.0))
@@ -1504,9 +1398,6 @@ class PPOObservationBuilder:
         dbg.update({"raw": governor_state, "feats": feats})
         return feats, dbg
 
-    # ======================================================================
-    # Strict SmartBus Fetchers (XAUUSD only) - NO fallbacks
-    # ======================================================================
 
     def _bus_get_required(self, bus: Any, key: str, module: str, *, build_id: int) -> Any:
         try:
@@ -1676,8 +1567,8 @@ class PPOObservationBuilder:
 
         mtf_analysis = inst.get("mtf_analysis")
         if not isinstance(mtf_analysis, dict):
-            # Backward/compat: some TrendExpert versions publish `mtf` with `details` but not `mtf_analysis`.
-            # Derive the strict `mtf_analysis` structure from `mtf.details` to avoid a hard observation failure.
+
+
             mtf = inst.get("mtf")
             details = mtf.get("details") if isinstance(mtf, dict) else None
             if isinstance(details, dict):
@@ -1958,9 +1849,6 @@ class PPOObservationBuilder:
         self._validate_governor_state(st)
         return st
 
-    # ======================================================================
-    # Strict schema validators (sub-structures)
-    # ======================================================================
 
     def _validate_ohlc_block(self, block: Dict[str, Any], tf: str, min_bars: int) -> None:
         if not isinstance(block, dict):
@@ -2046,9 +1934,6 @@ class PPOObservationBuilder:
             if k not in st:
                 raise ObservationContractError(f"governor_state missing '{k}' (strict).")
 
-    # ======================================================================
-    # Timeframe extraction + forming-bar integration (strict)
-    # ======================================================================
 
     def _is_timeframe_dict(self, d: Any) -> bool:
         return isinstance(d, dict) and all(tf in d and isinstance(d.get(tf), dict) for tf in SUPPORTED_TIMEFRAMES)
@@ -2100,9 +1985,6 @@ class PPOObservationBuilder:
 
         return result
 
-    # ======================================================================
-    # Market Structure helpers (S/R levels)
-    # ======================================================================
 
     def _find_sr_levels(self, highs: np.ndarray, lows: np.ndarray, window: int = 2) -> Tuple[List[float], List[float]]:
         highs = np.asarray(highs, dtype=np.float64)
@@ -2162,9 +2044,6 @@ class PPOObservationBuilder:
 
         return float(np.clip(near_support, 0.0, 1.0)), float(np.clip(near_resistance, 0.0, 1.0))
 
-    # ======================================================================
-    # Indicator helpers (STRICT)
-    # ======================================================================
 
     def _ema_series(self, data: np.ndarray, period: int) -> np.ndarray:
         data = np.asarray(data, dtype=np.float64)
@@ -2286,9 +2165,6 @@ class PPOObservationBuilder:
         blended = 0.65 * float(raw_mom) + 0.35 * float(expert)
         return float(np.clip(blended, -2.0, 2.0))
 
-    # ======================================================================
-    # Small utilities (STRICT conversions + checks)
-    # ======================================================================
 
     def _require_dict(self, v: Any, name: str) -> None:
         if not isinstance(v, dict):

@@ -1,7 +1,4 @@
-# ─────────────────────────────────────────────────────────────
-# File: modules/core/persistence.py
-# Production-ready SmartInfoBus Persistence & Replay System (fixed)
-# ─────────────────────────────────────────────────────────────
+
 
 from __future__ import annotations
 
@@ -36,10 +33,6 @@ if TYPE_CHECKING:
     from modules.core.module_base import BaseModule
     from modules.core.module_system import ModuleOrchestrator
 
-
-# ═════════════════════════════════════════════════════════════
-# Data classes
-# ═════════════════════════════════════════════════════════════
 
 @dataclass
 class StateValidation:
@@ -173,10 +166,6 @@ class ReplaySession:
         }
 
 
-# ═════════════════════════════════════════════════════════════
-# SmartInfoBus snapshot helpers
-# ═════════════════════════════════════════════════════════════
-
 def save_infobus_snapshot(path: str = "state/infobus.json") -> bool:
     try:
         from modules.utils.info_bus import InfoBusManager  # type: ignore
@@ -218,10 +207,6 @@ def load_infobus_snapshot(path: str = "state/infobus.json") -> bool:
         return False
 
 
-# ═════════════════════════════════════════════════════════════
-# StateManager
-# ═════════════════════════════════════════════════════════════
-
 class StateManager:
     def __init__(self, state_dir: str = "state/modules"):
         self.state_dir = Path(state_dir); self.state_dir.mkdir(parents=True, exist_ok=True)
@@ -252,7 +237,6 @@ class StateManager:
         self._initialize_version_compatibility()
         self.logger.info(format_operator_message("[SAVE]", "STATE MANAGER INITIALIZED", details=f"Dir: {self.state_dir}", context="startup"))
 
-    # ---------- validation & version ----------
 
     def _initialize_validation_rules(self) -> Dict[str, Callable]:
         return {
@@ -269,13 +253,12 @@ class StateManager:
             "default": ["1.0.0", "1.0.1", "1.1.0"],
         }
 
-    # ---------- public save/restore APIs ----------
 
     def save_module_state(self, module: "BaseModule") -> bytes:
         name = module.__class__.__name__
         with self._lock:
             try:
-                # extract state (robust)
+
                 state = None
                 if hasattr(module, "get_state"):
                     try:
@@ -316,7 +299,7 @@ class StateManager:
                     "serialization_method": method,
                 }
 
-                # checksum bound to chosen method over STATE
+
                 if method == "json":
                     payload = json.dumps(state, sort_keys=True, default=str).encode()
                 else:
@@ -352,11 +335,11 @@ class StateManager:
 
             results: Dict[str, bool] = {}
 
-            # gather files
+
             state_files: List[Path] = []
             for ext in (".json", ".json.gz", ".pkl", ".pkl.gz"):
                 state_files.extend(self.state_dir.glob(f"*{ext}"))
-            # unique by module using robust parser
+
             unique: Dict[str, Path] = {}
             for p in state_files:
                 mod = self._module_name_from_state_file(p)
@@ -394,30 +377,25 @@ class StateManager:
             self.logger.info(format_operator_message("[FOLDER]", "STATE RESTORATION COMPLETE", details=f"Restored {ok_count}/{len(results)} modules", context="startup"))
             return results
 
-    # ---------- helpers & validation ----------
 
     def _module_name_from_state_file(self, p: Path) -> str:
-        """
-        Robustly extract module name from files:
-        <Module>_state.json(.gz) | <Module>_state.pkl(.gz)
-        """
         name = p.name
         for suffix in ("_state.json.gz", "_state.pkl.gz", "_state.json", "_state.pkl", ".json.gz", ".pkl.gz", ".json", ".pkl"):
             if name.endswith(suffix):
                 name = name[: -len(suffix)]
                 break
-        # also handle accidental double-extensions already stripped
+
         if name.endswith("_state"):
             name = name[:-6]
         return name
 
     def _validate_state_for_save(self, state: Any, module: "BaseModule") -> StateValidation:
         v = StateValidation(is_valid=True)
-        # coerce to dict if needed
+
         if not isinstance(state, dict):
             v.warnings.append("State was not a dict; wrapping as {'value': ...}")
             state = {"value": state}
-        # probe serializer
+
         try:
             blob, _method = self._serialize_state({"state": state})
             if len(blob) > 50 * 1024 * 1024:
@@ -426,7 +404,7 @@ class StateManager:
             v.is_valid = False
             v.errors.append(f"Serialization failed: {e}")
             return v
-        # module-specific validation (optional)
+
         if hasattr(module, "validate_state"):
             try:
                 if not module.validate_state(state):
@@ -438,7 +416,7 @@ class StateManager:
 
     def _check_system_health_for_operation(self, orchestrator: "ModuleOrchestrator") -> bool:
         try:
-            # Allow restoration/saving during cold start when no metrics exist yet.
+
             metrics = orchestrator.get_execution_metrics() if hasattr(orchestrator, "get_execution_metrics") else {}
             if not metrics or metrics.get("total_executions", 0) == 0:
                 return True
@@ -482,8 +460,8 @@ class StateManager:
 
     def _validate_state_for_restore(self, env: Dict[str, Any], module: "BaseModule") -> StateValidation:
         v = StateValidation(is_valid=True)
-        # Run rules but tolerate checkpoint-only envelopes (which may lack metadata)
-        # If this looks like a bare checkpoint piece (only 'state' key), synthesize an envelope
+
+
         if "module_name" not in env or "timestamp" not in env or "version" not in env:
             synth = {
                 "module_name": module.__class__.__name__,
@@ -528,34 +506,28 @@ class StateManager:
     def _get_required_migrations(self, module_name: str, old: str, new: str) -> List[str]:
         migration_map: Dict[Tuple[str,str], List[str]] = {}
         return migration_map.get((old, new), [])
-    
+
     def _apply_state_migrations(
     self,
     state: Dict[str, Any],
     migrations: List[str],
     module_name: str
     ) -> Dict[str, Any]:
-        """
-        Apply in-place migrations to a module's state snapshot.
-
-        This is intentionally conservative: if you haven't defined
-        any real migrations yet, it safely returns the original state.
-        """
         migrated_state = dict(state)
 
         for migration in migrations:
             try:
                 if migration == "add_new_fields":
-                    # example: ensure new keys exist
+
                     migrated_state.setdefault("new_field", None)
 
                 elif migration == "restructure_data":
-                    # example: rename a key
+
                     if "old_structure" in migrated_state:
                         migrated_state["new_structure"] = migrated_state.pop("old_structure")
 
                 else:
-                    # Unknown migration – log and skip
+
                     self.logger.warning(
                         f"Unknown migration '{migration}' for {module_name}; skipping"
                     )
@@ -603,8 +575,8 @@ class StateManager:
                 payload = pickle.dumps(env["state"], protocol=pickle.HIGHEST_PROTOCOL)
             ok = hashlib.sha256(payload).hexdigest() == env["checksum"]
             if not ok and method == "pickle":
-                # Some large/complex states (e.g., RL agents with tensors) can re-pickle
-                # to different byte streams across sessions/versions. Accept known cases.
+
+
                 mod = env.get("module_name", "")
                 if mod in ("PPOAgent", "PPOLagAgent"):
                     self.logger.warning(f"Checksum mismatch tolerated for {mod} (pickle non-determinism)")
@@ -667,7 +639,6 @@ class StateManager:
                     pass
         return out
 
-    # ---------- disk IO ----------
 
     def _save_to_disk_with_backup(self, name: str, env: Dict[str, Any]):
         method = env.get("serialization_method", "pickle")
@@ -727,7 +698,6 @@ class StateManager:
                 continue
         return None
 
-    # ---------- hot reload (unchanged logic but safer fallbacks) ----------
 
     def reload_module(self, module_name: str, orchestrator: "ModuleOrchestrator") -> bool:
         with self._lock:
@@ -833,7 +803,6 @@ class StateManager:
             except Exception as e:
                 self.logger.warning(f"Failed to restore attribute {k}: {e}")
 
-    # ---------- checkpoints ----------
 
     def create_checkpoint(self, orchestrator: "ModuleOrchestrator", checkpoint_name: str = "manual") -> bool:
         with self._lock:
@@ -864,7 +833,7 @@ class StateManager:
                 ok = 0
                 for name, mod in orchestrator.modules.items():
                     try:
-                        # robust state acquisition
+
                         raw = None
                         if hasattr(mod, "get_state"):
                             try:
@@ -981,9 +950,9 @@ class StateManager:
 
     def list_checkpoints(self) -> List[Dict[str, Any]]:
         cps: List[Dict[str, Any]] = []
-        # archived
+
         for arch in self.checkpoint_dir.glob("*.tar.gz"):
-            checkpoint_id = Path(arch.stem).stem  # strip .gz then .tar
+            checkpoint_id = Path(arch.stem).stem
             try:
                 with tempfile.TemporaryDirectory() as tmp:
                     shutil.unpack_archive(str(arch), tmp)
@@ -996,7 +965,7 @@ class StateManager:
                         cps.append(d)
             except Exception as e:
                 self.logger.error(f"Failed to read archived checkpoint {arch.name}: {e}")
-        # folders
+
         for d in self.checkpoint_dir.iterdir():
             if d.is_dir():
                 meta = d / "checkpoint.json"
@@ -1034,10 +1003,6 @@ class StateManager:
         if cleaned:
             self.logger.info(f"🧹 Cleaned up {cleaned} old files")
 
-
-# ═════════════════════════════════════════════════════════════
-# ReplayEngine (with safe InfoBus subscriptions)
-# ═════════════════════════════════════════════════════════════
 
 class ReplayEngine:
     def __init__(self, orchestrator: Optional["ModuleOrchestrator"] = None):
@@ -1095,16 +1060,13 @@ class ReplayEngine:
             self.logger.warning(f"Bus subscription failed: {e}")
 
     def start_recording(self, session_id: Optional[str] = None) -> str:
-        """
-        Start recording a new session with system health tracking.
-        """
         with self._lock:
             if self.is_recording:
                 self.stop_recording()
-            
+
             if not session_id:
                 session_id = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            
+
             self.current_recording_id = session_id
             self.recorded_events.clear()
             self.health_snapshots.clear()
@@ -1112,12 +1074,12 @@ class ReplayEngine:
             self.sequence_counter = 0
             self.is_recording = True
             self.recording_start_time = time.time()
-            
-            # Record initial system state with health
+
+
             initial_state = self._capture_system_state()
             initial_health = self._capture_system_health()
-            
-            # Create initial event
+
+
             initial_event = ReplayEvent(
                 timestamp=time.time(),
                 event_type='recording_started',
@@ -1132,14 +1094,14 @@ class ReplayEngine:
                 sequence_number=self.sequence_counter,
                 metadata={'health_score': initial_health.get('overall_score', 0)}
             )
-            
+
             self.recorded_events.append(initial_event)
             self.health_snapshots.append(initial_health)
             self.sequence_counter += 1
-            
-            # Start health monitoring task
+
+
             self._start_health_monitoring()
-            
+
             self.logger.info(
                 format_operator_message(
                     "[RED]", "RECORDING STARTED",
@@ -1147,24 +1109,21 @@ class ReplayEngine:
                     context="replay_recording"
                 )
             )
-            
+
             return session_id
-    
+
     def stop_recording(self) -> Optional[ReplaySession]:
-        """
-        Stop recording and save session with validation.
-        """
         with self._lock:
             if not self.is_recording:
                 self.logger.warning("No recording in progress")
                 return None
-            
+
             try:
-                # Record final system state and health
+
                 final_state = self._capture_system_state()
                 final_health = self._capture_system_health()
-                
-                # Create final event
+
+
                 final_event = ReplayEvent(
                     timestamp=time.time(),
                     event_type='recording_stopped',
@@ -1181,14 +1140,14 @@ class ReplayEngine:
                     sequence_number=self.sequence_counter,
                     metadata={'health_score': final_health.get('overall_score', 0)}
                 )
-                
+
                 self.recorded_events.append(final_event)
                 self.health_snapshots.append(final_health)
-                
-                # Analyze health trends
+
+
                 health_analysis = self._analyze_health_trends()
-                
-                # Create session object
+
+
                 session = ReplaySession(
                     session_id=self.current_recording_id or "unknown",
                     start_time=datetime.fromtimestamp(self.recorded_events[0].timestamp),
@@ -1206,19 +1165,19 @@ class ReplayEngine:
                         'performance_summary': self._get_performance_summary()
                     }
                 )
-                
-                # Validate session integrity
+
+
                 if not session.validate_integrity():
                     self.logger.error("Session integrity validation failed")
                     return None
-                
-                # Save session to disk
+
+
                 self._save_session(session)
-                
-                # Reset recording state
+
+
                 self.is_recording = False
                 self.current_recording_id = None
-                
+
                 self.logger.info(
                     format_operator_message(
                         "⏹️", "RECORDING STOPPED",
@@ -1227,20 +1186,19 @@ class ReplayEngine:
                         context="replay_recording"
                     )
                 )
-                
+
                 return session
-                
+
             except Exception as e:
                 self.logger.error(f"[CRASH] Failed to stop recording: {e}")
                 self.is_recording = False
                 return None
-    
+
     def _start_health_monitoring(self):
-        """Start periodic health monitoring during recording (loop-safe)."""
         async def monitor_health():
             while self.is_recording:
                 try:
-                    await asyncio.sleep(10)  # Check every 10 seconds
+                    await asyncio.sleep(10)
                     if self.is_recording:
                         health = self._capture_system_health()
                         self.health_snapshots.append(health)
@@ -1251,77 +1209,74 @@ class ReplayEngine:
             loop = asyncio.get_running_loop()
             loop.create_task(monitor_health())
         except RuntimeError:
-            # No loop – health monitoring will start when a loop exists (recording still works)
+
             self.logger.info("Health monitoring deferred (no running event loop)")
 
-    
+
     def _capture_system_health(self) -> Dict[str, Any]:
-        """Capture comprehensive system health"""
         import psutil
-        
+
         health = {
             'timestamp': time.time(),
             'memory_usage_mb': psutil.Process().memory_info().rss / 1024 / 1024,
             'cpu_percent': psutil.cpu_percent(interval=0.1),
             'thread_count': threading.active_count()
         }
-        
+
         if self.orchestrator:
-            # Get orchestrator health
+
             health['emergency_mode'] = self.orchestrator.emergency_mode
             health['circuit_breakers_open'] = sum(
-                1 for cb in self.orchestrator.circuit_breakers.values() 
+                1 for cb in self.orchestrator.circuit_breakers.values()
                 if cb.state == 'OPEN'
             )
-            
-            # Get execution metrics
+
+
             metrics = self.orchestrator.get_execution_metrics()
             health['success_rate'] = metrics.get('success_rate', 0)
             health['avg_execution_time'] = metrics.get('avg_execution_time_ms', 0)
-            
-            # Calculate overall health score
+
+
             health['overall_score'] = self._calculate_health_score(health)
-        
+
         return health
-    
+
     def _calculate_health_score(self, health: Dict[str, Any]) -> float:
-        """Calculate overall system health score (0-1)"""
         score = 1.0
-        
-        # Memory usage penalty
+
+
         memory_mb = health.get('memory_usage_mb', 0)
         if memory_mb > 2000:
             score *= 0.7
         elif memory_mb > 1000:
             score *= 0.9
-        
-        # CPU usage penalty
+
+
         cpu = health.get('cpu_percent', 0)
         if cpu > 80:
             score *= 0.8
         elif cpu > 50:
             score *= 0.95
-        
-        # Emergency mode penalty
+
+
         if health.get('emergency_mode'):
             score *= 0.5
-        
-        # Circuit breaker penalty
+
+
         open_breakers = health.get('circuit_breakers_open', 0)
         if open_breakers > 0:
             score *= max(0.5, 1 - (open_breakers * 0.1))
-        
-        # Success rate factor
+
+
         success_rate = health.get('success_rate', 1.0)
         score *= success_rate
-        
+
         return max(0.0, min(1.0, score))
-    
+
     def _analyze_health_trends(self) -> Dict[str, Any]:
-        """Analyze health trends from snapshots"""
         if not self.health_snapshots:
             return {}
-        
+
         def _mean(vals):
             if not vals:
                 return 0.0
@@ -1338,20 +1293,17 @@ class ReplayEngine:
             'emergency_mode_activations': sum(1 for h in self.health_snapshots if h.get('emergency_mode')),
             'health_degradation_events': 0
         }
-        
-        # Check for health degradation
+
+
         for i in range(1, len(self.health_snapshots)):
             prev_score = self.health_snapshots[i-1].get('overall_score', 1)
             curr_score = self.health_snapshots[i].get('overall_score', 1)
-            if curr_score < prev_score * 0.8:  # 20% drop
+            if curr_score < prev_score * 0.8:
                 analysis['health_degradation_events'] += 1
-        
+
         return analysis
-    
+
     def _get_performance_summary(self) -> Dict[str, Any]:
-        """
-        Robust statistics helper – safe when NumPy is missing or data is absent.
-        """
         if not self.performance_metrics:
             return {
                 "status": "no_data",
@@ -1359,7 +1311,7 @@ class ReplayEngine:
                 "metrics_available": False
             }
 
-        # ---------- helpers ----------
+
         def _mean(vals):
             if not vals:
                 return 0.0
@@ -1380,7 +1332,7 @@ class ReplayEngine:
                 return float(v[int(len(v) * 0.95)])
             return max(vals)
 
-        # ---------- scaffold ----------
+
         summary: Dict[str, Any] = {
             "status": "data_available",
             "metrics_available": True,
@@ -1396,7 +1348,7 @@ class ReplayEngine:
             "health_indicators": {}
         }
 
-        # ---------- aggregate ----------
+
         for m_name, values in self.performance_metrics.items():
             if not values:
                 continue
@@ -1413,7 +1365,7 @@ class ReplayEngine:
         exec_times       = self.performance_metrics.get("execution_time", [])
         replay_exec      = self.performance_metrics.get("replayed_execution_time", [])
 
-        # ---------- module split ----------
+
         if exec_times or replay_exec:
             summary["module_breakdown"] = {
                 "original_execution": {
@@ -1428,7 +1380,7 @@ class ReplayEngine:
                 }
             }
 
-        # ---------- health indicators ----------
+
         error_rate: float = 0.0
         avg_latency: float = _mean(exec_times)
 
@@ -1481,7 +1433,7 @@ class ReplayEngine:
                     "metrics_collected": len(self.performance_metrics),
                     "total_samples": sum(len(v) for v in self.performance_metrics.values()),
                     "completeness_score":
-                        min(100.0, len(self.performance_metrics) * 20.0)   # 5 types → 100 %
+                        min(100.0, len(self.performance_metrics) * 20.0)
                 }
             }
 
@@ -1491,7 +1443,7 @@ class ReplayEngine:
                 "error": f"indicator calc failed: {e}"
             }
 
-        # ---------- trends ----------
+
         try:
             if exec_times and len(exec_times) >= 10 and NUMPY_AVAILABLE and np is not None:
                 recent = exec_times[-10:]
@@ -1504,9 +1456,9 @@ class ReplayEngine:
                     "samples_analyzed": len(recent)
                 }
         except Exception:
-            pass  # non-critical
+            pass
 
-        # ---------- actionable tips ----------
+
         rec_actions = []
         if error_rate > 0.05:
             rec_actions.append("Investigate high error rate")
@@ -1525,10 +1477,9 @@ class ReplayEngine:
         return summary
 
     def _record_data_update(self, event_data: Dict[str, Any]):
-        """Record data update event during recording"""
         if not self.is_recording:
             return
-        
+
         with self._lock:
             event = ReplayEvent(
                 timestamp=time.time(),
@@ -1542,15 +1493,14 @@ class ReplayEngine:
                     'confidence': event_data.get('confidence', 0)
                 }
             )
-            
+
             self.recorded_events.append(event)
             self.sequence_counter += 1
-    
+
     def _record_module_event(self, event_data: Dict[str, Any]):
-        """Record module-related event during recording"""
         if not self.is_recording:
             return
-        
+
         with self._lock:
             event = ReplayEvent(
                 timestamp=time.time(),
@@ -1563,22 +1513,21 @@ class ReplayEngine:
                     'severity': event_data.get('severity', 'info')
                 }
             )
-            
+
             self.recorded_events.append(event)
             self.sequence_counter += 1
-    
+
     def _record_execution_event(self, event_data: Dict[str, Any]):
-        """Record execution completion event"""
         if not self.is_recording:
             return
-        
+
         with self._lock:
-            # Record performance metrics
+
             if 'execution_time_ms' in event_data:
                 self.performance_metrics['execution_time'].append(
                     event_data['execution_time_ms']
                 )
-            
+
             event = ReplayEvent(
                 timestamp=time.time(),
                 event_type='execution_complete',
@@ -1587,41 +1536,40 @@ class ReplayEngine:
                 execution_id=event_data.get('execution_id', 'unknown'),
                 sequence_number=self.sequence_counter,
                 metadata={
-                    'success_rate': event_data.get('success_count', 0) / 
+                    'success_rate': event_data.get('success_count', 0) /
                                   max(event_data.get('module_count', 1), 1)
                 }
             )
-            
+
             self.recorded_events.append(event)
             self.sequence_counter += 1
-    
+
     def _capture_system_state(self) -> Dict[str, Any]:
-        """Capture comprehensive system state"""
         state = {
             'timestamp': time.time(),
             'smartinfobus_metrics': self.smart_bus.get_performance_metrics(),
-            'data_keys': list(getattr(self.smart_bus, "_data_store", {}).keys())[:50],  # First 50 keys
+            'data_keys': list(getattr(self.smart_bus, "_data_store", {}).keys())[:50],
             'active_modules': []
         }
-        
+
         if self.orchestrator:
             state['orchestrator_metrics'] = self.orchestrator.get_execution_metrics()
             state['module_health'] = {}
             state['circuit_breaker_states'] = {}
-            
+
             for name, module in self.orchestrator.modules.items():
                 try:
                     state['module_health'][name] = module.get_health_status()
-                    
+
                     if name in self.orchestrator.circuit_breakers:
                         cb = self.orchestrator.circuit_breakers[name]
                         state['circuit_breaker_states'][name] = {
                             'state': getattr(cb, 'state', 'CLOSED'),
                             'failure_count': getattr(cb, 'failure_count', 0)
                         }
-                    
+
                     if hasattr(module, 'get_state'):
-                        # Store lightweight state snapshot
+
                         module_state = module.get_state()
                         state['active_modules'].append({
                             'name': name,
@@ -1631,123 +1579,120 @@ class ReplayEngine:
                         })
                 except Exception as e:
                     self.logger.warning(f"Failed to capture state for {name}: {e}")
-        
+
         return state
-    
-    async def play(self, 
-                   start_position: int = 0, 
-                   end_position: Optional[int] = None, 
+
+    async def play(self,
+                   start_position: int = 0,
+                   end_position: Optional[int] = None,
                    speed: float = 1.0,
                    validate_health: bool = True):
-        """
-        Play session with health monitoring.
-        """
         if not self.current_session:
             raise ValueError("No session loaded")
-        
+
         with self._lock:
             self.replay_position = start_position
             end_pos = end_position or len(self.current_session.events)
             self.replay_speed = speed
             self.is_playing = True
             self.is_paused = False
-        
+
         try:
-            # Restore initial state if starting from beginning
+
             if start_position == 0 and self.orchestrator:
                 await self._restore_system_state(self.current_session.initial_state)
-            
-            # Get initial health if validating
+
+
             if validate_health and self.orchestrator:
                 initial_health = self._capture_system_health()
                 if initial_health.get('overall_score', 1) < 0.5:
                     self.logger.warning("System health poor at replay start")
-            
-            # Calculate timing for replay
+
+
             if self.current_session.events:
                 first_timestamp = self.current_session.events[max(0, start_position)].timestamp
             else:
                 first_timestamp = time.time()
-            
+
             replay_start_time = time.time()
             events_replayed = 0
-            health_check_interval = 100  # Check health every 100 events
-            
+            health_check_interval = 100
+
             self.logger.info(
                 f"🎬 Starting replay from position {start_position} to {end_pos} (speed: {speed}x)"
             )
-            
+
             while self.replay_position < end_pos and self.is_playing:
-                # Handle pause
+
                 if self.is_paused:
                     await asyncio.sleep(0.1)
                     continue
-                
+
                 event = self.current_session.events[self.replay_position]
-                
-                # Apply filters
+
+
                 if not all(f(event) for f in self.event_filters):
                     self.replay_position += 1
                     continue
-                
-                # Apply modifiers
+
+
                 modified_event = event
                 for modifier in self.event_modifiers:
                     modified_event = modifier(modified_event)
-                
-                # Check breakpoints
+
+
                 for bp_name, bp_condition in self.breakpoints:
                     if bp_condition(modified_event):
                         self.logger.info(f"[SEARCH] Breakpoint hit: {bp_name} at position {self.replay_position}")
                         await self.pause()
                         break
-                
-                # Calculate timing for real-time replay
+
+
                 if self.replay_speed > 0:
                     event_offset = modified_event.timestamp - first_timestamp
                     target_replay_time = replay_start_time + (event_offset / self.replay_speed)
                     current_time = time.time()
-                    
-                    # Wait if needed
+
+
                     if current_time < target_replay_time:
                         await asyncio.sleep(target_replay_time - current_time)
-                
-                # Replay event
+
+
                 await self._replay_event(modified_event)
-                
-                # Trigger callbacks
+
+
                 await self._trigger_event_callbacks(modified_event)
-                
-                # Collect analysis data
+
+
                 if self.analysis_collectors:
                     self._collect_analysis_data(modified_event)
-                
+
                 self.replay_position += 1
                 events_replayed += 1
-                
-                # Periodic health check
+
+
                 if validate_health and events_replayed % health_check_interval == 0:
                     current_health = self._capture_system_health()
                     if current_health.get('overall_score', 1) < 0.3:
                         self.logger.warning("System health degraded during replay - pausing")
                         await self.pause()
-                
-                # Progress logging
+
+
                 if events_replayed % 100 == 0:
                     progress = (self.replay_position / end_pos) * 100
                     self.logger.debug(f"Replay progress: {progress:.1f}% ({events_replayed} events)")
-            
+
             self.is_playing = False
-            
+
             replay_duration = time.time() - replay_start_time
-            
-            # Final health check
+
+
             if validate_health and self.orchestrator:
                 final_health = self._capture_system_health()
                 health_summary = f", final health: {final_health.get('overall_score', 0):.1%}"
             else:
                 health_summary = ""
-            
+
             self.logger.info(
                 format_operator_message(
                     "[OK]", "REPLAY COMPLETED",
@@ -1755,17 +1700,16 @@ class ReplayEngine:
                     context="replay_playback"
                 )
             )
-            
+
         except Exception as e:
             self.is_playing = False
             self.logger.error(f"[CRASH] Replay failed: {e}")
             raise
-    
+
     async def _replay_event(self, event: ReplayEvent):
-        """Replay a single event with type-specific handling"""
         try:
             if event.event_type == 'data_update':
-                # Replay data update in SmartInfoBus
+
                 data = event.data
                 self.smart_bus.set(
                     key=data.get('key', 'unknown'),
@@ -1774,52 +1718,51 @@ class ReplayEngine:
                     thesis=data.get('thesis', f"Replayed from {event.execution_id}"),
                     confidence=data.get('confidence', 1.0)
                 )
-                
+
             elif event.event_type == 'module_disabled':
-                # Replay module disable
+
                 if self.orchestrator:
                     module_name = event.data.get('module')
                     if module_name and module_name in self.orchestrator.modules:
                         self.smart_bus.record_module_failure(module_name, "Replayed failure")
-                        
+
             elif event.event_type == 'module_enabled':
-                # Replay module enable
+
                 if self.orchestrator:
                     module_name = event.data.get('module')
                     if module_name and module_name in self.orchestrator.modules:
                         self.smart_bus.reset_module_failures(module_name)
-                        
+
             elif event.event_type == 'execution_complete':
-                # Track execution metrics
+
                 if 'execution_time_ms' in event.data:
                     self.performance_metrics['replayed_execution_time'].append(
                         event.data['execution_time_ms']
                     )
-                        
+
             elif event.event_type in ['recording_started', 'recording_stopped']:
-                # Skip meta events during replay
+
                 pass
             else:
-                # Generic event replay
+
                 self.logger.debug(f"Replaying generic event: {event.event_type} from {event.module}")
-                
+
         except Exception as e:
             self.logger.error(f"Failed to replay event {event.event_type}: {e}")
-    
+
     async def _restore_system_state(self, state: Dict[str, Any]):
-        """Restore system to captured state (defensive against API changes)."""
         if not self.orchestrator:
             return
 
         try:
-            # Clear current state (defensively)
+
             if hasattr(self.smart_bus, "_cleanup_old_data"):
                 try:
                     self.smart_bus._cleanup_old_data()
                 except Exception as e:
                     self.logger.warning(f"SmartInfoBus cleanup failed: {e}")
 
-            # Restore circuit breaker states
+
             cb_states = state.get('circuit_breaker_states', {})
             for module_name, cb_state in cb_states.items():
                 if module_name in self.orchestrator.circuit_breakers:
@@ -1827,7 +1770,7 @@ class ReplayEngine:
                     cb.state = cb_state.get('state', getattr(cb, 'state', 'CLOSED'))
                     cb.failure_count = cb_state.get('failure_count', getattr(cb, 'failure_count', 0))
 
-            # Restore module states if available
+
             active_modules = state.get('active_modules', [])
             for module_info in active_modules:
                 module_name = module_info.get('name')
@@ -1849,47 +1792,42 @@ class ReplayEngine:
             self.logger.error(f"Failed to restore system state: {e}")
 
     async def pause(self):
-        """Pause replay with state preservation"""
         self.is_paused = True
         self.logger.info(f"⏸️ Replay paused at position {self.replay_position}")
-    
+
     async def resume(self):
-        """Resume replay"""
         self.is_paused = False
         self.logger.info(f"▶️ Replay resumed at position {self.replay_position}")
-    
+
     def stop(self):
-        """Stop replay"""
         self.is_playing = False
         self.is_paused = False
         self.logger.info(f"⏹️ Replay stopped at position {self.replay_position}")
-    
+
     def seek(self, position: int):
-        """Seek to specific position with validation"""
         if not self.current_session:
             raise ValueError("No session loaded")
-        
+
         max_position = len(self.current_session.events) - 1
         self.replay_position = max(0, min(position, max_position))
-        
+
         self.logger.info(f"⏭️ Seeked to position {self.replay_position}")
-    
+
     def load_session(self, session_id: str) -> ReplaySession:
-        """Load session for replay with validation"""
         session_file = self.session_dir / f"{session_id}.replay"
-        
+
         if not session_file.exists():
             raise ValueError(f"Session not found: {session_id}")
-        
+
         try:
             with open(session_file, 'rb') as f:
                 session_data = pickle.load(f)
-            
-            # Handle different data formats
+
+
             if isinstance(session_data, dict):
-                # Convert from dictionary format
+
                 events = [ReplayEvent.from_dict(e) for e in session_data.get('events', [])]
-                
+
                 session = ReplaySession(
                     session_id=session_data['session_id'],
                     start_time=datetime.fromisoformat(session_data['start_time']),
@@ -1901,16 +1839,16 @@ class ReplayEngine:
                     system_health=session_data.get('system_health', {})
                 )
             else:
-                # Assume it's already a ReplaySession object
+
                 session = session_data
-            
-            # Validate session integrity
+
+
             if not session.validate_integrity():
                 raise ValueError(f"Session integrity validation failed: {session_id}")
-            
+
             self.current_session = session
             self.replay_position = 0
-            
+
             self.logger.info(
                 format_operator_message(
                     "[FOLDER]", "SESSION LOADED",
@@ -1919,22 +1857,21 @@ class ReplayEngine:
                     context="replay_loading"
                 )
             )
-            
+
             return session
-            
+
         except Exception as e:
             raise ValueError(f"Failed to load session {session_id}: {e}")
-    
+
     def _save_session(self, session: ReplaySession):
-        """Save session to disk with compression"""
         session_file = self.session_dir / f"{session.session_id}.replay"
-        
+
         try:
-            # Save as pickle for full fidelity
+
             with open(session_file, 'wb') as f:
                 pickle.dump(session, f)
-            
-            # Also save metadata as JSON for easy browsing
+
+
             metadata_file = self.session_dir / f"{session.session_id}.meta.json"
             metadata = {
                 'session_id': session.session_id,
@@ -1945,46 +1882,40 @@ class ReplayEngine:
                 'statistics': session.get_statistics(),
                 'system_health': session.system_health
             }
-            
+
             with open(metadata_file, 'w') as f:
                 json.dump(metadata, f, indent=2, default=str)
-            
+
             self.logger.info(f"Session saved: {session_file}")
-            
+
         except Exception as e:
             self.logger.error(f"Failed to save session: {e}")
             raise
-    
-    # Analysis and filtering methods
+
+
     def add_filter(self, filter_func: Callable[[ReplayEvent], bool], name: str = ""):
-        """Add event filter with optional name"""
         self.event_filters.append(filter_func)
         filter_name = name or f"filter_{len(self.event_filters)}"
         self.logger.info(f"Added filter: {filter_name}")
-    
+
     def add_modifier(self, modifier_func: Callable[[ReplayEvent], ReplayEvent], name: str = ""):
-        """Add event modifier for what-if analysis"""
         self.event_modifiers.append(modifier_func)
         modifier_name = name or f"modifier_{len(self.event_modifiers)}"
         self.logger.info(f"Added modifier: {modifier_name}")
-    
+
     def add_breakpoint(self, name: str, condition: Callable[[ReplayEvent], bool]):
-        """Add conditional breakpoint"""
         self.breakpoints.append((name, condition))
         self.logger.info(f"Added breakpoint: {name}")
-    
+
     def clear_breakpoint(self, name: str):
-        """Remove breakpoint by name"""
         self.breakpoints = [(n, c) for n, c in self.breakpoints if n != name]
         self.logger.info(f"Removed breakpoint: {name}")
-    
+
     def subscribe_to_event(self, event_type: str, callback: Callable):
-        """Subscribe to specific event type during replay"""
         self.event_callbacks[event_type].append(callback)
-    
+
     async def _trigger_event_callbacks(self, event: ReplayEvent):
-        """Trigger callbacks for replayed events"""
-        # General callbacks
+
         for callback in self.event_callbacks.get('*', []):
             try:
                 if asyncio.iscoroutinefunction(callback):
@@ -1993,8 +1924,8 @@ class ReplayEngine:
                     callback(event)
             except Exception as e:
                 self.logger.error(f"Event callback error: {e}")
-        
-        # Type-specific callbacks
+
+
         for callback in self.event_callbacks.get(event.event_type, []):
             try:
                 if asyncio.iscoroutinefunction(callback):
@@ -2003,17 +1934,15 @@ class ReplayEngine:
                     callback(event)
             except Exception as e:
                 self.logger.error(f"Event callback error: {e}")
-    
+
     def add_analysis_collector(self, name: str, extractor: Callable[[ReplayEvent], Any]):
-        """Add analysis data collector"""
         self.analysis_collectors.append({
             'name': name,
             'extractor': extractor,
             'data': []
         })
-    
+
     def _collect_analysis_data(self, event: ReplayEvent):
-        """Collect analysis data from replayed event"""
         for collector in self.analysis_collectors:
             try:
                 data = collector['extractor'](event)
@@ -2027,18 +1956,16 @@ class ReplayEngine:
                     })
             except Exception as e:
                 self.logger.error(f"Analysis collector error for {collector['name']}: {e}")
-    
+
     def get_analysis_results(self) -> Dict[str, List[Dict[str, Any]]]:
-        """Get collected analysis results"""
         return {
             collector['name']: collector['data']
             for collector in self.analysis_collectors
         }
-    
+
     def list_sessions(self) -> List[Dict[str, Any]]:
-        """List available replay sessions"""
         sessions = []
-        
+
         for meta_file in self.session_dir.glob("*.meta.json"):
             try:
                 with open(meta_file, 'r') as f:
@@ -2046,27 +1973,26 @@ class ReplayEngine:
                 sessions.append(metadata)
             except Exception as e:
                 self.logger.error(f"Failed to read {meta_file}: {e}")
-        
-        # Sort by start time (newest first)
+
+
         sessions.sort(key=lambda x: x.get('start_time', ''), reverse=True)
-        
+
         return sessions
-    
+
     def delete_session(self, session_id: str):
-        """Delete a replay session"""
         session_file = self.session_dir / f"{session_id}.replay"
         metadata_file = self.session_dir / f"{session_id}.meta.json"
-        
+
         removed_files = []
-        
+
         if session_file.exists():
             session_file.unlink()
             removed_files.append("replay")
-        
+
         if metadata_file.exists():
             metadata_file.unlink()
             removed_files.append("metadata")
-        
+
         if removed_files:
             self.logger.info(f"🗑️ Deleted session {session_id}: {', '.join(removed_files)}")
         else:
@@ -2200,7 +2126,6 @@ class PersistenceManager:
             except Exception as e: self.logger.error(f"Final checkpoint failed: {e}")
         self.logger.info("[OK] Persistence manager shutdown complete")
 
-    # --- reporting & utilities (unchanged APIs) ---
 
     def get_status_report(self) -> str:
         checkpoints = self.state_manager.list_checkpoints()
@@ -2411,10 +2336,6 @@ class PersistenceManager:
         out.sort(key=lambda x: x["timestamp"] or "", reverse=True)
         return out
 
-
-# ═════════════════════════════════════════════════════════════
-# Convenience functions
-# ═════════════════════════════════════════════════════════════
 
 def create_persistence_manager(orchestrator: Optional["ModuleOrchestrator"] = None) -> PersistenceManager:
     return PersistenceManager(orchestrator)

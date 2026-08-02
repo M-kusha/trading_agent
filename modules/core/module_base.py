@@ -1,14 +1,4 @@
-# ─────────────────────────────────────────────────────────────
-# File: modules/core/module_base.py
-# SmartInfoBus Module Base (V1.2, "Navigator+ Startup") — FIXED
-#
-# Key fixes vs your pasted version:
-# - Removed duplicated DI assignments (metrics/breaker/bus/orchestrator were set twice)
-# - Kept circuit breaker adapters ONLY in BaseModule (no duplicated/hidden variants)
-# - Made decorators safer (wraps, consistent missing-input handling, optional pinpointer hook)
-# - Reduced import-time coupling (decorator auto-registration is now explicitly gated)
-# - Tightened state/version compatibility checks while remaining tolerant
-# ─────────────────────────────────────────────────────────────
+
 
 from __future__ import annotations
 
@@ -44,12 +34,10 @@ __all__ = [
     "with_timeout",
 ]
 
-# Module-level cache for rotating loggers (keyed by name:pid)
+
 _ROTATING_LOGGER_CACHE: Dict[str, Any] = {}
 
-# ─────────────────────────────────────────────────────────────
-# Tunables / constants (avoid magic numbers)
-# ─────────────────────────────────────────────────────────────
+
 PERF_HISTORY_LIMIT = 100
 EXEC_TIMES_LIMIT = 100
 RECENT_SUCCESS_SAMPLE_SIZE = 20
@@ -60,9 +48,6 @@ VERSION_SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 NAME_VALID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
-# ─────────────────────────────────────────────────────────────
-# Optional exception imports (best-effort, no hard coupling)
-# ─────────────────────────────────────────────────────────────
 def _InputsNotReady_exc() -> type[Exception]:
     try:
         from modules.core.exceptions import InputsNotReady  # type: ignore
@@ -81,9 +66,6 @@ def _ExecutionSkipped_exc() -> type[Exception]:
         return RuntimeError
 
 
-# ─────────────────────────────────────────────────────────────
-# Module Metadata
-# ─────────────────────────────────────────────────────────────
 @dataclass
 class ModuleMetadata:
     name: str
@@ -105,9 +87,9 @@ class ModuleMetadata:
     health_monitoring: bool = False
     performance_tracking: bool = False
     error_handling: bool = False
-    # Optional role flags
+
     is_final_arbiter: bool = False
-    readiness_grace_s: float | None = None  # Optional per-module grace window
+    readiness_grace_s: float | None = None
 
     VALID_CATEGORIES = [
         "core",
@@ -152,7 +134,7 @@ class ModuleMetadata:
                 if not isinstance(r, str) or not r:
                     errors.append(f"invalid requires entry: {r!r}")
 
-        # de-dupe (preserve order)
+
         self.provides = list(dict.fromkeys(self.provides))
         self.requires = list(dict.fromkeys(self.requires))
         self.dependencies = list(dict.fromkeys(self.dependencies))
@@ -219,14 +201,7 @@ class ModuleMetadata:
         }
 
 
-# ─────────────────────────────────────────────────────────────
-# Decorator: @module(...)
-# ─────────────────────────────────────────────────────────────
 def module(**kwargs: Any):
-    """
-    Decorator to mark a class as a SmartInfoBus module and attach metadata.
-    Requires: provides=[...], requires=[...]
-    """
 
     def _decorator(cls: type):
         if not issubclass(cls, BaseModule):
@@ -241,7 +216,7 @@ def module(**kwargs: Any):
         cls.__module_metadata__ = metadata
         cls.__is_smartinfobus_module__ = True
 
-        # attach integrity signature (source hash)
+
         try:
             src = inspect.getsource(cls)
             cls.__module_signature__ = hashlib.sha256(src.encode("utf-8")).hexdigest()
@@ -250,11 +225,9 @@ def module(**kwargs: Any):
 
         _validate_module_implementation(cls)
 
-        # Optional import-time auto-registration is explicitly gated to avoid circular imports.
-        # Enable only if you truly want “import side effects”:
-        #   SMARTINFOBUS_DECORATOR_AUTOREGISTER=1
+
         if os.getenv("SMARTINFOBUS_DECORATOR_AUTOREGISTER", "0").strip().lower() in {"1", "true", "yes", "on"}:
-            # Best-effort: register with InfoBus for discovery
+
             try:
                 from modules.utils.info_bus import InfoBusManager  # type: ignore
 
@@ -283,16 +256,7 @@ def _validate_module_implementation(cls: type) -> None:
         raise TypeError(f"Module {cls.__name__} must implement abstract methods: {abstract_methods}")
 
 
-# ─────────────────────────────────────────────────────────────
-# Decorators: requires / provides / timeout / retry / confidence
-# ─────────────────────────────────────────────────────────────
 def _extract_context(args: tuple[Any, ...], kwargs: dict[str, Any]) -> Dict[str, Any]:
-    """
-    Best-effort extraction of the input context from either:
-    - process(inputs=...)
-    - process({..})
-    - process(**inputs)
-    """
     if "inputs" in kwargs and isinstance(kwargs["inputs"], dict):
         return cast(Dict[str, Any], kwargs["inputs"])
     if args and isinstance(args[0], dict):
@@ -386,7 +350,7 @@ def with_timeout(timeout_ms: Optional[int] = None):
                 try:
                     return await asyncio.wait_for(func(self, *args, **kwargs), timeout=to)
                 except asyncio.TimeoutError:
-                    # optional cleanup hook
+
                     try:
                         maybe = getattr(self, "cleanup_after_timeout", None)
                         if maybe:
@@ -402,7 +366,7 @@ def with_timeout(timeout_ms: Optional[int] = None):
 
         @wraps(func)
         def _sync(self, *args, **kwargs):
-            # Portable “best-effort” hard timeout using a worker thread.
+
             import concurrent.futures as _f
 
             to_sec = float((timeout_ms or self.metadata.timeout_ms)) / 1000.0
@@ -512,18 +476,7 @@ def _log_retry(self: Any, attempt: int, retries: int, fn_name: str) -> None:
         return
 
 
-# ─────────────────────────────────────────────────────────────
-# Base Module
-# ─────────────────────────────────────────────────────────────
 class BaseModule(ABC):
-    """
-    SmartInfoBus Base Module:
-    - Delegates to injected breaker (DI) to avoid duplication.
-    - Safe, bounded state (deques) + explicit sanitization/validation.
-    - Async lifecycle hooks (__aenter__/__aexit__) and timeout cleanup hooks.
-    - Pluggable dependencies: {"circuit_breaker": <obj>, "metrics": <obj>, "bus": <bus>, "orchestrator": <obj>}
-    - Startup-friendly: warmup(), probe(), self_test() are no-ops by default.
-    """
 
     def __init__(self, config: Optional[Dict[str, Any]] = None, dependencies: Optional[Dict[str, Any]] = None):
         if not hasattr(self.__class__, "__module_metadata__"):
@@ -533,16 +486,16 @@ class BaseModule(ABC):
         self.config: Dict[str, Any] = dict(config or {})
         self.dependencies: Dict[str, Any] = dict(dependencies or {})
 
-        # logging
+
         self.logger = self._setup_logger()
 
-        # DI (set exactly once)
+
         self.metrics: Any = self.dependencies.get("metrics")
         self.breaker: Any = self.dependencies.get("circuit_breaker")
         self.bus: Any = self.dependencies.get("bus")
         self.orchestrator: Any = self.dependencies.get("orchestrator")
 
-        # compute helpers
+
         self._mean: Callable[[List[float]], float]
         self._percentile: Callable[[List[float], float], float]
         if _HAVE_NP:
@@ -560,7 +513,7 @@ class BaseModule(ABC):
 
             self._percentile = _p
 
-        # state
+
         self._step_count = 0
         self._health_status = "OK"
         self._last_error: Optional[str] = None
@@ -571,7 +524,7 @@ class BaseModule(ABC):
         self._performance_history: deque = deque(maxlen=PERF_HISTORY_LIMIT)
         self._execution_times: deque = deque(maxlen=EXEC_TIMES_LIMIT)
 
-        # explainability helper (optional)
+
         self.explainer: Any = None
         if self.metadata.explainable:
             try:
@@ -581,7 +534,7 @@ class BaseModule(ABC):
             except Exception:
                 self.explainer = None
 
-        # pinpointer (optional)
+
         self.error_pinpointer: Any = None
         try:
             from modules.core.error_pinpointer import ErrorPinpointer  # type: ignore
@@ -590,15 +543,15 @@ class BaseModule(ABC):
         except Exception:
             self.error_pinpointer = None
 
-        # best-effort autowiring (optional)
+
         self._resolve_dependencies()
 
-        # module-specific init
+
         self._initialize()
 
         self.logger.info(f"[OK] MODULE INITIALIZED: {self.__class__.__name__} v{self.metadata.version} ({self.metadata.category})")
 
-    # ───── async lifecycle ─────
+
     async def __aenter__(self):
         await self.initialize_async_resources()
         return self
@@ -624,7 +577,7 @@ class BaseModule(ABC):
         except Exception:
             pass
 
-    # ───── DI breaker adapters (supports multiple breaker API shapes) ─────
+
     def breaker_allow(self) -> bool:
         b = self.breaker
         if not b:
@@ -666,7 +619,7 @@ class BaseModule(ABC):
         except Exception:
             return
 
-    # ───── config helpers ─────
+
     def set_config(self, config: Dict[str, Any]) -> None:
         self.config.update(config)
         self.logger.info(f"Configuration updated for {self.__class__.__name__}")
@@ -674,7 +627,7 @@ class BaseModule(ABC):
     def get_config(self, key: str, default: Any = None) -> Any:
         return self.config.get(key, default)
 
-    # ───── logger ─────
+
     def _setup_logger(self) -> logging.Logger:
         try:
             return cast(logging.Logger, BaseModule._get_rotating_logger_cached(self.__class__.__name__))
@@ -724,7 +677,7 @@ class BaseModule(ABC):
                 )
         return _ROTATING_LOGGER_CACHE[cache_key]
 
-    # ───── abstract API ─────
+
     @abstractmethod
     def _initialize(self) -> None:
         raise NotImplementedError
@@ -733,7 +686,7 @@ class BaseModule(ABC):
     async def process(self, **inputs) -> Dict[str, Any]:
         raise NotImplementedError
 
-    # ───── validation ─────
+
     def validate_inputs(self, inputs: Dict[str, Any]) -> bool:
         for k in inputs.keys():
             if not isinstance(k, str) or len(k) > MAX_INPUT_KEY_LEN or k.startswith("__"):
@@ -757,7 +710,7 @@ class BaseModule(ABC):
                 raise ValueError(f"invalid confidence value: {c!r}")
         return True
 
-    # ───── optional capabilities ─────
+
     async def propose_action(self, **inputs) -> Optional[Dict[str, Any]]:
         return None
 
@@ -777,7 +730,7 @@ class BaseModule(ABC):
         except Exception:
             return "Explanation unavailable."
 
-    # Startup hooks
+
     async def warmup(self) -> None:
         return None
 
@@ -790,7 +743,7 @@ class BaseModule(ABC):
     async def run_self_test(self) -> None:
         return await self.self_test()
 
-    # ───── state persistence ─────
+
     def get_state(self) -> Dict[str, Any]:
         return {
             "class_name": self.__class__.__name__,
@@ -826,11 +779,6 @@ class BaseModule(ABC):
         self.logger.info(f"STATE RESTORED: {self.__class__.__name__} step={self._step_count} health={self._health_status}")
 
     def validate_state_compatibility(self, state: Dict[str, Any]) -> bool:
-        """
-        Best-effort compatibility check:
-        - If a version exists, enforce MAJOR match.
-        - If no version exists, allow (outer persistence layer may enforce).
-        """
         try:
             version_value: Optional[str] = None
             if isinstance(state, dict):
@@ -866,14 +814,14 @@ class BaseModule(ABC):
         self._initialize()
         self.logger.info(f"MODULE RESET: {self.__class__.__name__}")
 
-    # hooks for custom state
+
     def _get_custom_state(self) -> Dict[str, Any]:
         return {}
 
     def _set_custom_state(self, state: Dict[str, Any]) -> None:
         return None
 
-    # ───── health & metrics ─────
+
     @property
     def is_healthy(self) -> bool:
         is_status_ok = self._health_status == "OK"
@@ -952,25 +900,16 @@ class BaseModule(ABC):
                     self.logger.warning(f"Module health degraded: {self.__class__.__name__}")
             self.breaker_on_failure()
 
-    # ───── load shedding ─────
+
     def reduce_load(self, factor: float = 0.5) -> None:
         self.logger.info(f"Load reduction requested for {self.__class__.__name__} (factor={factor})")
 
-    # ─────────────────────────────────────────────────────────
-    # Dependency resolution (best-effort, no hard coupling)
-    # ─────────────────────────────────────────────────────────
+
     def _resolve_dependencies(self) -> None:
-        """
-        Light-touch autowiring (optional):
-         - bus: modules.utils.info_bus.InfoBusManager instance (if available)
-         - orchestrator: modules.core.module_system.ModuleOrchestrator.get_instance() (if available)
-         - circuit_breaker: if orchestrator has a registry, adopt breaker for this module
-         - error_pinpointer: prefer orchestrator-aware instance
-        """
         if os.getenv("SMARTINFOBUS_AUTOWIRE", "1").strip().lower() in {"0", "false", "no", "off"}:
             return
 
-        # Bus
+
         if self.bus is None:
             try:
                 from modules.utils.info_bus import InfoBusManager  # type: ignore
@@ -979,7 +918,7 @@ class BaseModule(ABC):
             except Exception:
                 self.bus = None
 
-        # Orchestrator
+
         if self.orchestrator is None:
             try:
                 from modules.core.module_system import ModuleOrchestrator  # type: ignore
@@ -988,7 +927,7 @@ class BaseModule(ABC):
             except Exception:
                 self.orchestrator = None
 
-        # Circuit breaker from orchestrator registry (if exposed)
+
         if self.breaker is None and self.orchestrator is not None:
             try:
                 name = self.__class__.__name__
@@ -1000,7 +939,7 @@ class BaseModule(ABC):
             except Exception:
                 pass
 
-        # Error pinpointer with orchestrator context if possible
+
         if self.error_pinpointer is None:
             try:
                 from modules.core.error_pinpointer import ErrorPinpointer  # type: ignore

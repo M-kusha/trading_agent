@@ -1,10 +1,4 @@
-# -------------------------------------------------------------
-# File: modules/position/position_logger.py
-# Unified Position Manager Logging System
-#
-# Consolidates all position decision logging into clean,
-# professional, well-organized summaries with voting signals.
-# -------------------------------------------------------------
+
 
 from __future__ import annotations
 
@@ -14,50 +8,41 @@ from typing import Any, Dict, List, Optional
 
 from modules.utils.info_bus import InfoBusManager
 
-# =====================================================================
-# DATA MODEL
-# =====================================================================
 
 @dataclass
 class PositionLogEntry:
-    """
-    Complete position decision log entry with all important context.
 
-    This is what PositionManager passes in a single call, and the logger
-    turns it into a human-readable, structured summary.
-    """
 
-    # Core decision
     instrument: str
     decision: str
     intensity: float
     size_eur: float
     confidence: float
 
-    # Market context
+
     signal_strength: float
     volatility: float
     trend_strength: float
     current_price: float
 
-    # Portfolio state
+
     portfolio_health: float
     exposure_ratio: float
     balance: float
     drawdown: float
     risk_score: float
 
-    # Voting signals (optional)
+
     committee_consensus: Optional[Dict[str, Any]] = None
     trade_vote: Optional[Dict[str, Any]] = None
     consensus_strength: Optional[float] = None
 
-    # Decision rationale
+
     stage: str = "unknown"
     factors: Optional[List[str]] = None
     risk_factors: Optional[Dict[str, float]] = None
 
-    # Execution
+
     will_execute: bool = True
     blocked_reason: Optional[str] = None
 
@@ -68,55 +53,23 @@ class PositionLogEntry:
             self.risk_factors = {}
 
 
-# =====================================================================
-# UNIFIED POSITION LOGGER
-# =====================================================================
-
 class UnifiedPositionLogger:
-    """
-    Unified logging system for position decisions.
 
-    Produces one cohesive, operator-friendly block that covers:
-      - Decision overview
-      - Market context
-      - Voting signals (if any)
-      - Portfolio state
-      - Risk assessment
-      - Rationale and execution status
-    """
-
-    BOX_WIDTH = 78     # internal width used for top/bottom borders
-    PAD_WIDTH = 77     # width of text area inside borders (after leading space)
+    BOX_WIDTH = 78
+    PAD_WIDTH = 77
 
     def __init__(self, logger: Any, smart_bus: Optional[Any] = None) -> None:
-        """
-        Parameters:
-            logger:    RotatingLogger-like instance (info/debug available).
-            smart_bus: SmartInfoBus or InfoBusManager; if None, global instance.
-        """
         self.logger = logger
         self.smart_bus = smart_bus if smart_bus is not None else InfoBusManager.get_instance()
         self.session_start = dt.datetime.utcnow()
         self.decision_count = 0
 
-    # -----------------------------------------------------------------
-    # MAIN ENTRYPOINT
-    # -----------------------------------------------------------------
-    def log_decision_summary(self, entry: PositionLogEntry) -> None:
-        """
-        Log a complete, unified decision summary with all context.
 
-        Format (80 columns total):
-        ╔══════════════════════════════════════════════════════════════════╗
-        ║                    POSITION DECISION SUMMARY                     ║
-        ╠══════════════════════════════════════════════════════════════════╣
-        ║ [sections with clean formatting]                                 ║
-        ╚══════════════════════════════════════════════════════════════════╝
-        """
+    def log_decision_summary(self, entry: PositionLogEntry) -> None:
         self.decision_count += 1
         timestamp = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
 
-        # Enrich with current voting signals from SmartInfoBus if not provided
+
         voting = self.get_voting_signals()
         cc = entry.committee_consensus or voting.get("committee_consensus")
         tv = entry.trade_vote or voting.get("trade_vote")
@@ -130,13 +83,13 @@ class UnifiedPositionLogger:
         pad = self.PAD_WIDTH
         box = self.BOX_WIDTH
 
-        # Header
+
         lines.append("")
         lines.append("╔" + "═" * box + "╗")
         lines.append("║" + "POSITION DECISION SUMMARY".center(box) + "║")
         lines.append("╠" + "═" * box + "╣")
 
-        # Section 1: Decision Overview
+
         self._section_title(lines, "📊 DECISION OVERVIEW")
         lines.append("║ " + f"Instrument:  {entry.instrument}".ljust(pad) + "║")
         lines.append(
@@ -154,7 +107,7 @@ class UnifiedPositionLogger:
         lines.append("║ " + f"Timestamp:   {timestamp}".ljust(pad) + "║")
         self._section_blank(lines)
 
-        # Section 2: Market Analysis
+
         self._section_title(lines, "📈 MARKET ANALYSIS")
         lines.append(
             "║ "
@@ -178,7 +131,7 @@ class UnifiedPositionLogger:
         )
         self._section_blank(lines)
 
-        # Section 3: Voting Signals
+
         if cc or tv or cs is not None:
             self._section_title(lines, "🗳️  VOTING SIGNALS")
 
@@ -220,7 +173,7 @@ class UnifiedPositionLogger:
 
             self._section_blank(lines)
 
-        # Section 4: Portfolio State
+
         self._section_title(lines, "💼 PORTFOLIO STATE")
         lines.append(
             "║ "
@@ -244,7 +197,7 @@ class UnifiedPositionLogger:
         )
         self._section_blank(lines)
 
-        # Section 5: Risk Assessment
+
         self._section_title(lines, "⚠️  RISK ASSESSMENT")
         lines.append(
             "║ "
@@ -263,7 +216,7 @@ class UnifiedPositionLogger:
 
         self._section_blank(lines)
 
-        # Section 6: Decision Rationale
+
         self._section_title(lines, "💡 RATIONALE")
         lines.append(
             "║ "
@@ -279,7 +232,7 @@ class UnifiedPositionLogger:
 
         self._section_blank(lines)
 
-        # Section 7: Execution Status
+
         self._section_title(lines, "⚡ EXECUTION STATUS")
         if entry.will_execute:
             lines.append("║ " + "Status:           ✅ WILL EXECUTE".ljust(pad) + "║")
@@ -289,21 +242,14 @@ class UnifiedPositionLogger:
                 for rline in self._wrap_text(f"Reason: {entry.blocked_reason}", pad):
                     lines.append("║ " + rline.ljust(pad) + "║")
 
-        # Footer
+
         lines.append("╚" + "═" * box + "╝")
         lines.append("")
 
         self.logger.info("\n".join(lines))
 
-    # -----------------------------------------------------------------
-    # ADDITIONAL LOGGING HELPERS
-    # -----------------------------------------------------------------
-    def log_order_build(self, instrument: str, order: Dict[str, Any]) -> None:
-        """
-        Log the order that will be sent (or considered) by the executor.
 
-        Keeps it compact, human-readable, and aligned.
-        """
+    def log_order_build(self, instrument: str, order: Dict[str, Any]) -> None:
         side = self._format_side(int(order.get("side", 0) or 0))
         intent = str(order.get("intent", "N/A")).upper()
         size_eur = float(order.get("size_eur", 0.0) or 0.0)
@@ -328,14 +274,6 @@ class UnifiedPositionLogger:
         self.logger.info("\n".join(lines))
 
     def log_portfolio_stats(self, health: Dict[str, float]) -> None:
-        """
-        Log a compact portfolio statistics block.
-
-        Expects `health` to contain:
-          - overall_health, exposure_ratio, total_exposure, balance,
-            drawdown, drawdown_health, exposure_health,
-            streak_health, risk_health.
-        """
         def h(key: str, default: float = 0.0) -> float:
             return float(health.get(key, default) or 0.0)
 
@@ -358,19 +296,6 @@ class UnifiedPositionLogger:
         self.logger.info("\n".join(lines))
 
     def log_instrument_stats(self, instrument: str, stats: Dict[str, Any]) -> None:
-        """
-        Log a compact per-instrument statistics block, similar to the
-        portfolio statistics view but focused on a single instrument.
-
-        Expected (optional) keys in `stats`:
-          - side: int (1=LONG, -1=SHORT, 0=FLAT)
-          - lots: float
-          - size_eur or size: float (position notional)
-          - unrealized_pnl: float (EUR)
-          - age_hours: float
-          - exposure: float (ratio 0-?)
-          - drawdown: float (0-1)
-        """
 
         def f(key: str, default: float = 0.0) -> float:
             try:
@@ -425,10 +350,6 @@ class UnifiedPositionLogger:
         trend: float,
         momentum: float,
     ) -> None:
-        """
-        Log how raw signals (agent / arbiter / market) are mapped
-        into a unified intensity for an instrument.
-        """
         self.logger.debug(
             f"[SIGNAL] {instrument:10s} | "
             f"Src: {source:8s} | "
@@ -438,22 +359,17 @@ class UnifiedPositionLogger:
             f"Mom: {momentum:+.3f}"
         )
 
-    # -----------------------------------------------------------------
-    # FORMATTING HELPERS
-    # -----------------------------------------------------------------
+
     def _section_title(self, lines: List[str], title: str) -> None:
-        """Append a titled section header block."""
         pad = self.PAD_WIDTH
         lines.append("║ " + title.ljust(pad) + "║")
         lines.append("║ " + "─" * pad + "║")
 
     def _section_blank(self, lines: List[str]) -> None:
-        """Append a blank spacer line."""
         pad = self.PAD_WIDTH
         lines.append("║ " + " " * pad + "║")
 
     def _format_decision(self, decision: str) -> str:
-        """Format decision with emoji prefix (high-level meaning)."""
         mapping = {
             "open_long": "🟢 LONG",
             "open_short": "🔴 SHORT",
@@ -466,7 +382,6 @@ class UnifiedPositionLogger:
         return mapping.get(decision.lower(), decision.upper())
 
     def _format_side(self, side: int) -> str:
-        """Format order side with icon."""
         if side > 0:
             return "🟢 BUY"
         if side < 0:
@@ -474,13 +389,11 @@ class UnifiedPositionLogger:
         return "⚪ NEUTRAL"
 
     def _get_signal_bar(self, signal: float) -> str:
-        """Visual bar for signal strength (direction + bar length)."""
         bars = int(min(abs(signal), 1.0) * 10)
         direction = "🟢" if signal > 0 else "🔴" if signal < 0 else "⚪"
         return f"{direction} {'█' * bars}"
 
     def _health_indicator(self, health: float) -> str:
-        """Health indicator emoji + text."""
         if health >= 0.8:
             return "🟢 Excellent"
         if health >= 0.6:
@@ -490,7 +403,6 @@ class UnifiedPositionLogger:
         return "🔴 Poor"
 
     def _drawdown_indicator(self, drawdown: float) -> str:
-        """Drawdown severity indicator."""
         if drawdown < 0.05:
             return "🟢 Minimal"
         if drawdown < 0.10:
@@ -500,7 +412,6 @@ class UnifiedPositionLogger:
         return "🔴 Critical"
 
     def _risk_indicator(self, risk: float) -> str:
-        """Risk level indicator."""
         if risk < 0.3:
             return "🟢 Low"
         if risk < 0.6:
@@ -510,7 +421,6 @@ class UnifiedPositionLogger:
         return "🔴 Very High"
 
     def _volatility_level(self, vol: float) -> str:
-        """Simple volatility regime label."""
         if vol < 0.015:
             return "Low"
         if vol < 0.03:
@@ -520,11 +430,6 @@ class UnifiedPositionLogger:
         return "High"
 
     def _wrap_text(self, text: str, max_width: int) -> List[str]:
-        """
-        Wrap long text into multiple lines, indented where appropriate.
-
-        Used for rationale factors and blocked reasons.
-        """
         if len(text) <= max_width:
             return [text]
 
@@ -538,7 +443,7 @@ class UnifiedPositionLogger:
             else:
                 if current:
                     lines.append(current.rstrip())
-                # indent continuation lines slightly
+
                 current = "  " + word + " "
 
         if current:
@@ -546,18 +451,8 @@ class UnifiedPositionLogger:
 
         return lines or [text[:max_width]]
 
-    # -----------------------------------------------------------------
-    # BUS-INTEGRATED SIGNAL SNAPSHOT
-    # -----------------------------------------------------------------
-    def get_voting_signals(self) -> Dict[str, Any]:
-        """
-        Fetch current voting signals from the SmartInfoBus.
 
-        Returns a dict with (if present):
-          - committee_consensus
-          - trade_vote
-          - consensus_strength
-        """
+    def get_voting_signals(self) -> Dict[str, Any]:
         signals: Dict[str, Any] = {}
 
         try:
@@ -565,17 +460,17 @@ class UnifiedPositionLogger:
             if not hasattr(bus, "get"):
                 return signals
 
-            # Committee consensus
+
             cc = bus.get("committee_consensus", "PositionManager")
             if isinstance(cc, dict) and cc:
                 signals["committee_consensus"] = cc
 
-            # Trade vote (canonical: trade_vote_v2)
+
             tv = bus.get("trade_vote_v2", "PositionManager")
             if isinstance(tv, dict) and tv:
                 signals["trade_vote"] = tv
 
-            # Consensus strength (can be scalar or dict)
+
             cs = bus.get("consensus_score", "PositionManager")
             if cs is not None:
                 if isinstance(cs, dict):
@@ -586,7 +481,7 @@ class UnifiedPositionLogger:
                     signals["consensus_strength"] = float(cs)
 
         except Exception:
-            # Logging here would risk recursion; keep it silent.
+
             pass
 
         return signals

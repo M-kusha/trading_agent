@@ -1,7 +1,3 @@
-"""
-🧬 Enhanced Thesis Evolution Engine with SmartInfoBus Integration v3.0
-Advanced thesis development and evolution system with intelligent learning and adaptation
-"""
 
 import datetime
 import random
@@ -14,10 +10,6 @@ import numpy as np
 from modules.contracts import module_args
 from modules.core.error_pinpointer import ErrorPinpointer, create_error_handler
 from modules.core.mixins import SmartInfoBusStateMixin, SmartInfoBusTradingMixin
-
-# ═══════════════════════════════════════════════════════════════════
-# MODERN SMARTINFOBUS IMPORTS
-# ═══════════════════════════════════════════════════════════════════
 from modules.core.module_base import BaseModule, module
 from modules.monitoring.performance_tracker import PerformanceTracker
 from modules.utils.audit_utils import RotatingLogger, format_operator_message
@@ -33,36 +25,25 @@ from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
     timeout_ms=3000,
 ))
 class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
-    """
-    🧬 PRODUCTION-GRADE Thesis Evolution Engine v3.0
-    
-    Advanced thesis development and evolution system with:
-    - Intelligent thesis generation based on market conditions
-    - Adaptive evolution algorithms with performance-based learning
-    - Comprehensive performance tracking and analytics
-    - SmartInfoBus zero-wiring architecture
-    - Dynamic market adaptation and regime-specific optimization
-    """
 
     def _initialize(self):
-        """Initialize advanced thesis evolution and management systems"""
-        # Initialize base mixins
+
         self._initialize_trading_state()
         self._initialize_state_management()
         self._initialize_advanced_systems()
-        
-        # Enhanced thesis configuration
+
+
         self.capacity = self.config.get('capacity', 20)
         self.thesis_lifespan = self.config.get('thesis_lifespan', 100)
         self.performance_threshold = self.config.get('performance_threshold', 0.6)
         self.evolution_rate = self.config.get('evolution_rate', 0.15)
         self.diversity_target = self.config.get('diversity_target', 0.7)
         self.debug = self.config.get('debug', False)
-        
-        # Initialize comprehensive thesis categorization
+
+
         self.thesis_categories = self._initialize_thesis_categories()
-        
-        # Core thesis management state
+
+
         self.theses = []
         self.thesis_performance = defaultdict(lambda: {
             'pnls': [],
@@ -80,15 +61,15 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             'generation': 0,
             'effectiveness_score': 0.0
         })
-        
-        # Advanced evolution tracking
+
+
         self.evolution_history = deque(maxlen=100)
-        self.thesis_genealogy = defaultdict(lambda: deque(maxlen=50))  # FIX: prevent memory leak
-        self.successful_mutations = deque(maxlen=100)  # FIX: prevent memory leak
+        self.thesis_genealogy = defaultdict(lambda: deque(maxlen=50))
+        self.successful_mutations = deque(maxlen=100)
         self.failed_experiments = []
-        self.generation_count = 0  # Track number of evolution generations
-        
-        # Enhanced analytics system
+        self.generation_count = 0
+
+
         self.evolution_analytics = {
             'total_theses_created': 0,
             'successful_evolutions': 0,
@@ -103,8 +84,8 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             'crossover_success_rate': 0.0,
             'session_start': datetime.datetime.now().isoformat()
         }
-        
-        # Market adaptation intelligence
+
+
         self.market_adaptation = {
             'current_regime': 'unknown',
             'regime_performance': defaultdict(list),
@@ -114,11 +95,11 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             'regime_transition_count': 0,
             'adaptation_effectiveness': defaultdict(float)
         }
-        
-        # Advanced thesis generation templates
+
+
         self.thesis_templates = self._initialize_comprehensive_templates()
-        
-        # Performance assessment thresholds
+
+
         self.performance_thresholds = {
             'exceptional': 100.0,
             'excellent': 50.0,
@@ -128,13 +109,13 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             'very_poor': -35.0,
             'critical': -75.0
         }
-        
-        # Circuit breaker for error handling
+
+
         self.error_count = 0
         self.circuit_breaker_threshold = 5
         self.is_disabled = False
-        
-        # Evolution intelligence parameters
+
+
         self.evolution_intelligence = {
             'mutation_probability': 0.3,
             'crossover_probability': 0.2,
@@ -143,23 +124,23 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             'performance_memory': 0.85,
             'innovation_threshold': 0.7
         }
-        
-        # Generate initialization thesis
+
+
         self._generate_initialization_thesis()
-        
-        # Initialize with seed theses
+
+
         self._initialize_seed_theses()
 
-        # Publish a safe baseline market_thesis immediately for early consumers (TrainingScript)
+
         try:
             baseline_thesis = "Thesis evolution initialized; awaiting first market cycle."
             self.smart_bus.set('market_thesis', baseline_thesis,
                                module='ThesisEvolutionEngine',
                                thesis='Baseline market thesis published at initialization')
         except Exception:
-            # Non-fatal: first process() will publish a full thesis
+
             pass
-        
+
         version = getattr(self.metadata, 'version', '3.0.0') if self.metadata else '3.0.0'
         self.logger.info(format_operator_message(
             icon="🧬",
@@ -171,7 +152,6 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         ))
 
     def _initialize_advanced_systems(self):
-        """Initialize all modern system components"""
         self.smart_bus = InfoBusManager.get_instance()
         self.logger = RotatingLogger(
             name="ThesisEvolutionEngine",
@@ -187,7 +167,6 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         self.performance_tracker = PerformanceTracker()
 
     def _initialize_thesis_categories(self) -> Dict[str, Dict[str, Any]]:
-        """Initialize comprehensive thesis categorization system"""
         return {
             'trend_following': {
                 'description': 'Following market momentum and directional trends',
@@ -264,7 +243,6 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         }
 
     def _initialize_comprehensive_templates(self) -> Dict[str, List[str]]:
-        """Initialize comprehensive thesis generation templates"""
         return {
             'market_structure': [
                 "Market displays {pattern} structure across {timeframe} suggesting {direction} bias with {probability} probability",
@@ -311,41 +289,40 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         }
 
     def _generate_initialization_thesis(self):
-        """Generate comprehensive initialization thesis"""
         thesis = f"""
         Thesis Evolution Engine v3.0 Initialization Complete:
-        
+
         Advanced Evolution System:
         - Multi-category thesis framework: {len(self.thesis_categories)} distinct categories
         - Intelligent evolution algorithms with genetic programming concepts
         - Performance-based selection and adaptation mechanisms
         - Market regime-aware thesis generation and optimization
-        
+
         Current Configuration:
         - Thesis capacity: {self.capacity} concurrent theses
         - Evolution rate: {self.evolution_rate:.1%} for optimal adaptation speed
         - Performance threshold: {self.performance_threshold:.1%} for thesis retention
         - Diversity target: {self.diversity_target:.1%} for balanced exploration
-        
+
         Evolution Intelligence Features:
         - Genetic algorithm-inspired mutation and crossover operations
         - Performance-weighted selection with multi-generational tracking
         - Market adaptation with regime-specific optimization
         - Comprehensive genealogy tracking for evolution lineage analysis
-        
+
         Advanced Capabilities:
         - Real-time thesis performance evaluation and ranking
         - Intelligent thesis generation based on market conditions
         - Adaptive evolution strategies based on market regime
         - Comprehensive analytics and effectiveness measurement
-        
+
         Expected Outcomes:
         - Continuous improvement in thesis quality and performance
         - Adaptive learning that responds to changing market conditions
         - Diverse thesis portfolio optimized for different market regimes
         - Transparent evolution process with detailed tracking and analytics
         """
-        
+
         self.smart_bus.set('thesis_evolution_initialization', {
             'status': 'initialized',
             'thesis': thesis,
@@ -358,7 +335,6 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         }, module='ThesisEvolutionEngine', thesis=thesis)
 
     def _initialize_seed_theses(self):
-        """Initialize with diverse, high-quality seed theses"""
         seed_theses_by_category = {
             'trend_following': [
                 "USD strength momentum continues across major pairs with central bank policy divergence support",
@@ -381,13 +357,13 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 "Flag pattern completion in GBP/USD suggests trend continuation opportunity"
             ]
         }
-        
-        # Add seed theses ensuring category diversity
+
+
         for category, theses_list in seed_theses_by_category.items():
-            for thesis in theses_list[:2]:  # Max 2 per category
+            for thesis in theses_list[:2]:
                 if len(self.theses) < self.capacity // 2:
                     self._add_thesis_comprehensive(thesis, source='seed', category=category)
-        
+
         self.logger.info(format_operator_message(
             icon="🌱",
             message="Initialized with diverse seed theses",
@@ -396,50 +372,44 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         ))
 
     async def process(self, **inputs) -> Dict[str, Any]:
-        """
-        Modern async processing with comprehensive thesis evolution
-        
-        Returns:
-            Dict containing thesis data, evolution analytics, and recommendations
-        """
         start_time = time.time()
-        
+
         try:
-            # Circuit breaker check
+
             if self.is_disabled:
                 return self._generate_disabled_response()
-            
-            # Get comprehensive market data from SmartInfoBus
+
+
             market_data = await self._get_comprehensive_market_data()
-            
-            # Extract evolution context
+
+
             evolution_context = await self._extract_evolution_context_comprehensive(market_data)
-            
-            # Update market adaptation state
+
+
             await self._update_market_adaptation_comprehensive(evolution_context, market_data)
-            
-            # Perform thesis evolution if conditions are met
+
+
             evolution_results = await self._perform_intelligent_evolution(evolution_context, market_data)
-            
-            # Update thesis performance with recent trading results
+
+
             await self._update_thesis_performance_comprehensive(market_data, evolution_context)
-            
-            # Clean up underperforming theses
+
+
             cleanup_results = await self._cleanup_underperforming_theses_comprehensive()
-            
-            # Generate new theses if needed
+
+
             generation_results = await self._generate_new_theses_if_needed_comprehensive(evolution_context, market_data)
-            
-            # Calculate comprehensive analytics
+
+
             analytics_results = await self._calculate_comprehensive_analytics()
-            
-            # Generate thesis recommendations
+
+
             recommendations = await self._generate_intelligent_thesis_recommendations(evolution_context, analytics_results)
-            
-            # Generate comprehensive thesis
+
+
             thesis = await self._generate_comprehensive_evolution_thesis(evolution_results, analytics_results)
-            
-            # Create comprehensive results
+
+
             results = {
                 'active_theses': self.theses.copy(),
                 'thesis_performance': self._get_performance_summary_comprehensive(),
@@ -451,19 +421,19 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 'market_adaptation': self.market_adaptation.copy(),
                 'health_metrics': self._get_health_metrics(),
                 'thesis_evolution_initialization': self._get_tee_init_view(),
-                # Optional convenience for TrainingScript per contract notes
+
                 'market_thesis': thesis,
                 '_thesis': thesis
             }
-            
-            # Update SmartInfoBus with comprehensive thesis
+
+
             await self._update_smartinfobus_comprehensive(results, thesis)
-            
-            # Record performance metrics
+
+
             processing_time = (time.time() - start_time) * 1000
             self.performance_tracker.record_metric('ThesisEvolutionEngine', 'process_time', processing_time, True)
-            
-            # Periodic status logging (every 50 calls)
+
+
             self._process_count = getattr(self, '_process_count', 0) + 1
             if self._process_count % 50 == 0:
                 best = self._get_best_performing_thesis()
@@ -478,17 +448,16 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                     generations=self.generation_count,
                     calls=self._process_count,
                 ))
-            
-            # Reset error count on successful processing
+
+
             self.error_count = 0
-            
+
             return results
-            
+
         except Exception as e:
             return await self._handle_processing_error(e, start_time)
 
     async def _get_comprehensive_market_data(self) -> Dict[str, Any]:
-        """Get comprehensive market data using modern SmartInfoBus patterns"""
         try:
             return {
                 'market_data': self.smart_bus.get('market_data', 'ThesisEvolutionEngine') or {},
@@ -508,23 +477,22 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             return self._get_safe_market_defaults()
 
     async def _extract_evolution_context_comprehensive(self, market_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract comprehensive evolution context for intelligent decision making"""
         try:
             recent_trades = market_data.get('recent_trades', [])
             session_metrics = market_data.get('session_metrics', {})
             strategy_performance = market_data.get('strategy_performance', {})
             risk_metrics = market_data.get('risk_metrics', {})
-            
-            # Calculate session performance
+
+
             session_pnl = session_metrics.get('session_pnl', 0)
             if recent_trades:
                 recent_pnls = [t.get('pnl', 0) for t in recent_trades[-10:]]
                 session_pnl = sum(recent_pnls) if recent_pnls else session_pnl
-            
-            # Assess market conditions
+
+
             market_regime = market_data.get('market_regime', 'unknown')
             volatility_level = market_data.get('market_context', {}).get('volatility_level', 'medium')
-            
+
             evolution_context = {
                 'timestamp': datetime.datetime.now().isoformat(),
                 'market_regime': market_regime,
@@ -541,38 +509,36 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 'regime_stability': self._assess_regime_stability(market_data),
                 'performance_trend': self._calculate_performance_trend(recent_trades)
             }
-            
+
             return evolution_context
-            
+
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "evolution_context")
             self.logger.warning(f"Evolution context extraction failed: {error_context}")
             return {'timestamp': datetime.datetime.now().isoformat(), 'market_regime': 'unknown'}
 
     def _calculate_recent_win_rate(self, recent_trades: List[Dict[str, Any]]) -> float:
-        """Calculate recent win rate from trades"""
         try:
             if not recent_trades:
                 return 0.5
-            
+
             wins = len([t for t in recent_trades if t.get('pnl', 0) > 0])
             return wins / len(recent_trades)
         except Exception:
             return 0.5
 
     def _assess_market_stress_level_comprehensive(self, market_data: Dict[str, Any]) -> str:
-        """Assess comprehensive market stress level for evolution decisions"""
         try:
             stress_factors = 0
-            
-            # Volatility stress
+
+
             volatility_level = market_data.get('market_context', {}).get('volatility_level', 'medium')
             if volatility_level in ['high', 'extreme']:
                 stress_factors += 2
             elif volatility_level == 'very_high':
                 stress_factors += 3
-            
-            # Drawdown stress
+
+
             risk_metrics = market_data.get('risk_metrics', {})
             current_drawdown = risk_metrics.get('current_drawdown', 0)
             if current_drawdown > 0.1:
@@ -581,19 +547,19 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 stress_factors += 2
             elif current_drawdown > 0.02:
                 stress_factors += 1
-            
-            # Regime uncertainty stress
+
+
             if market_data.get('market_regime') == 'unknown':
                 stress_factors += 1
-            
-            # Performance stress
+
+
             session_pnl = market_data.get('session_metrics', {}).get('session_pnl', 0)
             if session_pnl < -100:
                 stress_factors += 2
             elif session_pnl < -50:
                 stress_factors += 1
-            
-            # Classify stress level
+
+
             if stress_factors <= 1:
                 return 'low'
             elif stress_factors <= 3:
@@ -602,17 +568,16 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 return 'high'
             else:
                 return 'extreme'
-                
+
         except Exception:
             return 'medium'
 
     def _calculate_innovation_pressure_comprehensive(self) -> float:
-        """Calculate comprehensive pressure to innovate new theses"""
         try:
             if not self.theses or not self.thesis_performance:
-                return 1.0  # Maximum pressure when no theses
-            
-            # Recent performance pressure
+                return 1.0
+
+
             recent_performance_scores = []
             for thesis in self.theses:
                 perf = self.thesis_performance.get(thesis, {})
@@ -621,14 +586,14 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                     total_pnl = self._safe_float_conversion(perf.get('total_pnl', 0))
                     avg_pnl = total_pnl / trade_count
                     recent_performance_scores.append(avg_pnl)
-            
+
             if not recent_performance_scores:
                 return 0.8
-            
+
             avg_performance = np.mean(recent_performance_scores)
             performance_pressure = max(0.0, min(1.0, float((-avg_performance + 20) / 40)))
-            
-            # Thesis age pressure
+
+
             current_time = datetime.datetime.now()
             age_pressures = []
             for thesis in self.theses:
@@ -638,37 +603,36 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                     try:
                         created = datetime.datetime.fromisoformat(creation_time)
                         age_hours = (current_time - created).total_seconds() / 3600
-                        age_pressure = min(1.0, age_hours / 48)  # 48 hours = max pressure
+                        age_pressure = min(1.0, age_hours / 48)
                         age_pressures.append(age_pressure)
                     except Exception:
                         age_pressures.append(0.5)
-            
+
             avg_age_pressure = np.mean(age_pressures) if age_pressures else 0.5
-            
-            # Diversity pressure
+
+
             diversity_score = self._calculate_diversity_gap_comprehensive()
-            
-            # Evolution success pressure
-            recent_evolutions = len([e for e in self.evolution_history 
+
+
+            recent_evolutions = len([e for e in self.evolution_history
                                    if (current_time - datetime.datetime.fromisoformat(e['timestamp'])).total_seconds() / 3600 <= 24])
             evolution_pressure = max(0.0, 1.0 - recent_evolutions / 10)
-            
-            # Combined pressure
+
+
             total_pressure = (
                 0.4 * performance_pressure +
                 0.25 * avg_age_pressure +
                 0.2 * diversity_score +
                 0.15 * evolution_pressure
             )
-            
+
             return np.clip(total_pressure, 0.0, 1.0)
-            
+
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "innovation_pressure")
             return 0.5
 
     def _calculate_diversity_gap_comprehensive(self) -> float:
-        """Calculate comprehensive gap between current and target diversity"""
         try:
             current_diversity = self._calculate_thesis_diversity_comprehensive()
             return max(0.0, self.diversity_target - current_diversity)
@@ -676,17 +640,16 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             return 0.5
 
     def _calculate_thesis_diversity_comprehensive(self) -> float:
-        """Calculate comprehensive thesis diversity score"""
         try:
             if len(self.theses) < 2:
                 return 0.0
-            
-            # Category diversity
+
+
             categories = [self._categorize_thesis_comprehensive(thesis) for thesis in self.theses]
             unique_categories = len(set(categories))
             category_diversity = unique_categories / len(self.thesis_categories)
-            
-            # Performance diversity
+
+
             performances = []
             for thesis in self.theses:
                 perf = self.thesis_performance.get(thesis, {})
@@ -695,51 +658,50 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                     total_pnl = self._safe_float_conversion(perf.get('total_pnl', 0))
                     avg_pnl = total_pnl / trade_count
                     performances.append(avg_pnl)
-            
+
             performance_diversity = 0.0
             if len(performances) > 1:
                 performance_std = np.std(performances)
                 performance_mean = abs(np.mean(performances))
                 if performance_mean > 0:
                     performance_diversity = min(1.0, float(performance_std / performance_mean))
-            
-            # Source diversity (different evolution sources)
+
+
             sources = [self.thesis_performance.get(thesis, {}).get('source', 'unknown') for thesis in self.theses]
             unique_sources = len(set(sources))
-            source_diversity = min(1.0, unique_sources / 5.0)  # Assume 5 possible sources
-            
-            # Generation diversity
+            source_diversity = min(1.0, unique_sources / 5.0)
+
+
             generations = [self.thesis_performance.get(thesis, {}).get('generation', 0) for thesis in self.theses]
-            generation_diversity = min(1.0, len(set(generations)) / 3.0)  # Target 3 different generations
-            
-            # Combined diversity score with weights
+            generation_diversity = min(1.0, len(set(generations)) / 3.0)
+
+
             total_diversity = (
                 0.4 * category_diversity +
                 0.3 * performance_diversity +
                 0.2 * source_diversity +
                 0.1 * generation_diversity
             )
-            
+
             return np.clip(total_diversity, 0.0, 1.0)
-            
+
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "diversity_calculation")
             return 0.0
 
     def _assess_regime_stability(self, market_data: Dict[str, Any]) -> str:
-        """Assess market regime stability for adaptation decisions"""
         try:
             current_regime = market_data.get('market_regime', 'unknown')
-            
-            # Check recent regime changes
+
+
             recent_adaptations = self.market_adaptation.get('adaptation_triggers', [])
-            recent_regime_changes = len([a for a in recent_adaptations 
+            recent_regime_changes = len([a for a in recent_adaptations
                                        if a.get('type') == 'regime_change' and
                                        (datetime.datetime.now() - datetime.datetime.fromisoformat(a.get('timestamp', datetime.datetime.now().isoformat()))).total_seconds() / 3600 <= 4])
-            
-            # Volatility factor
+
+
             volatility_level = market_data.get('market_context', {}).get('volatility_level', 'medium')
-            
+
             if recent_regime_changes >= 3:
                 return 'very_unstable'
             elif recent_regime_changes >= 2:
@@ -752,23 +714,22 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 return 'stable'
             else:
                 return 'moderate'
-                
+
         except Exception:
             return 'uncertain'
 
     def _calculate_performance_trend(self, recent_trades: List[Dict[str, Any]]) -> str:
-        """Calculate recent performance trend direction"""
         try:
             if len(recent_trades) < 5:
                 return 'insufficient_data'
-            
-            # Get last 10 trade PnLs
+
+
             recent_pnls = [t.get('pnl', 0) for t in recent_trades[-10:]]
-            
-            # Calculate trend using simple linear regression slope
+
+
             x = np.arange(len(recent_pnls))
             slope = np.polyfit(x, recent_pnls, 1)[0]
-            
+
             if slope > 5:
                 return 'improving'
             elif slope > 1:
@@ -779,18 +740,17 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 return 'slightly_declining'
             else:
                 return 'declining'
-                
+
         except Exception:
             return 'unknown'
 
-    async def _update_market_adaptation_comprehensive(self, evolution_context: Dict[str, Any], 
+    async def _update_market_adaptation_comprehensive(self, evolution_context: Dict[str, Any],
                                                     market_data: Dict[str, Any]):
-        """Update comprehensive market adaptation state"""
         try:
             current_regime = evolution_context.get('market_regime', 'unknown')
             previous_regime = self.market_adaptation.get('current_regime', 'unknown')
-            
-            # Detect regime changes
+
+
             if current_regime != previous_regime and previous_regime != 'unknown':
                 adaptation_trigger = {
                     'timestamp': evolution_context.get('timestamp'),
@@ -804,13 +764,13 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                         'stress_level': evolution_context.get('market_stress_level', 'medium')
                     }
                 }
-                
+
                 self.market_adaptation['adaptation_triggers'].append(adaptation_trigger)
                 self.market_adaptation['regime_transition_count'] += 1
-                
-                # Trigger adaptation if needed
+
+
                 await self._trigger_regime_adaptation(adaptation_trigger, evolution_context)
-                
+
                 self.logger.info(format_operator_message(
                     icon="🌊",
                     message="Market regime transition detected",
@@ -819,11 +779,11 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                     thesis_count=len(self.theses),
                     stress_level=evolution_context.get('market_stress_level', 'medium')
                 ))
-            
-            # Update current regime
+
+
             self.market_adaptation['current_regime'] = current_regime
-            
-            # Track regime performance
+
+
             regime_performance_record = {
                 'timestamp': evolution_context.get('timestamp'),
                 'pnl': evolution_context.get('session_pnl', 0),
@@ -832,33 +792,32 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 'diversity_score': self._calculate_thesis_diversity_comprehensive(),
                 'stress_level': evolution_context.get('market_stress_level', 'medium')
             }
-            
+
             self.market_adaptation['regime_performance'][current_regime].append(regime_performance_record)
-            
-            # Limit regime performance history
+
+
             for regime in self.market_adaptation['regime_performance']:
                 if len(self.market_adaptation['regime_performance'][regime]) > 50:
                     self.market_adaptation['regime_performance'][regime] = \
                         self.market_adaptation['regime_performance'][regime][-50:]
-            
-            # Clean old adaptation triggers
+
+
             cutoff_time = datetime.datetime.now() - datetime.timedelta(hours=24)
             self.market_adaptation['adaptation_triggers'] = [
                 trigger for trigger in self.market_adaptation['adaptation_triggers']
                 if datetime.datetime.fromisoformat(trigger.get('timestamp', '')) > cutoff_time
             ]
-            
+
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "market_adaptation")
             self.logger.warning(f"Market adaptation update failed: {error_context}")
 
-    async def _trigger_regime_adaptation(self, adaptation_trigger: Dict[str, Any], 
+    async def _trigger_regime_adaptation(self, adaptation_trigger: Dict[str, Any],
                                        evolution_context: Dict[str, Any]):
-        """Trigger adaptive evolution based on regime change"""
         try:
             to_regime = adaptation_trigger.get('to_regime', 'unknown')
-            
-            # Add regime-specific adaptation to pending
+
+
             regime_adaptation = {
                 'type': 'regime_adaptation',
                 'target_regime': to_regime,
@@ -866,10 +825,10 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 'priority': 'high' if evolution_context.get('market_stress_level') == 'high' else 'medium',
                 'adaptation_strategy': self._determine_adaptation_strategy(to_regime, evolution_context)
             }
-            
+
             self.market_adaptation['pending_adaptations'].append(regime_adaptation)
-            
-            # Log the adaptation trigger
+
+
             self.logger.info(format_operator_message(
                 icon="[FAST]",
                 message="Regime adaptation triggered",
@@ -877,12 +836,11 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 strategy=regime_adaptation['adaptation_strategy'],
                 priority=regime_adaptation['priority']
             ))
-            
+
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "regime_adaptation_trigger")
 
     def _determine_adaptation_strategy(self, regime: str, evolution_context: Dict[str, Any]) -> str:
-        """Determine optimal adaptation strategy for regime"""
         try:
             regime_strategies = {
                 'trending': 'trend_momentum_focus',
@@ -892,24 +850,23 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 'reversal': 'contrarian_opportunity_focus',
                 'unknown': 'diversified_exploration'
             }
-            
+
             base_strategy = regime_strategies.get(regime, 'diversified_exploration')
-            
-            # Modify based on stress level
+
+
             stress_level = evolution_context.get('market_stress_level', 'medium')
             if stress_level in ['high', 'extreme']:
                 base_strategy += '_conservative'
             elif stress_level == 'low':
                 base_strategy += '_aggressive'
-            
+
             return base_strategy
-            
+
         except Exception:
             return 'diversified_exploration'
 
-    async def _perform_intelligent_evolution(self, evolution_context: Dict[str, Any], 
+    async def _perform_intelligent_evolution(self, evolution_context: Dict[str, Any],
                                            market_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Perform intelligent thesis evolution based on comprehensive analysis"""
         try:
             evolution_results = {
                 'evolution_triggered': False,
@@ -920,49 +877,49 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 'adaptations_created': 0,
                 'evolution_effectiveness': 0.0
             }
-            
-            # Determine if evolution should occur
+
+
             should_evolve, evolution_reasons = self._should_evolve_theses_comprehensive(evolution_context)
-            
+
             if not should_evolve:
                 return evolution_results
-            
+
             evolution_results['evolution_triggered'] = True
-            
-            # Determine evolution strategies
+
+
             evolution_strategies = self._determine_evolution_strategies(evolution_context, evolution_reasons)
             evolution_results['strategies_used'] = evolution_strategies
-            
-            # Execute evolution strategies
+
+
             total_evolved = 0
-            
+
             for strategy in evolution_strategies:
                 if strategy == 'mutation':
                     mutations = await self._perform_intelligent_mutations(evolution_context)
                     evolution_results['mutations_created'] = mutations
                     total_evolved += mutations
-                    
+
                 elif strategy == 'crossover':
                     crossovers = await self._perform_intelligent_crossovers(evolution_context)
                     evolution_results['crossovers_created'] = crossovers
                     total_evolved += crossovers
-                    
+
                 elif strategy == 'adaptation':
                     adaptations = await self._perform_market_adaptations(evolution_context, market_data)
                     evolution_results['adaptations_created'] = adaptations
                     total_evolved += adaptations
-                    
+
                 elif strategy == 'refinement':
                     refinements = await self._perform_thesis_refinements(evolution_context)
                     total_evolved += refinements
-                    
+
                 elif strategy == 'diversification':
                     diversifications = await self._perform_diversity_enhancement(evolution_context)
                     total_evolved += diversifications
-            
+
             evolution_results['theses_evolved'] = total_evolved
-            
-            # Record evolution in history
+
+
             if total_evolved > 0:
                 evolution_record = {
                     'timestamp': evolution_context.get('timestamp'),
@@ -977,10 +934,10 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                     },
                     'reasons': evolution_reasons
                 }
-                
+
                 self.evolution_history.append(evolution_record)
                 self.evolution_analytics['successful_evolutions'] += 1
-                
+
                 self.logger.info(format_operator_message(
                     icon="🧬",
                     message="Intelligent thesis evolution completed",
@@ -989,9 +946,9 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                     total_theses=len(self.theses),
                     reasons=', '.join(evolution_reasons)
                 ))
-            
+
             return evolution_results
-            
+
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "intelligent_evolution")
             self.logger.error(f"Intelligent evolution failed: {error_context}")
@@ -999,59 +956,57 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             return {'evolution_triggered': False, 'error': str(error_context)}
 
     def _should_evolve_theses_comprehensive(self, evolution_context: Dict[str, Any]) -> Tuple[bool, List[str]]:
-        """Determine if comprehensive thesis evolution should occur"""
         try:
             reasons = []
-            
-            # Innovation pressure trigger
+
+
             innovation_pressure = evolution_context.get('innovation_pressure', 0.5)
             if innovation_pressure > 0.8:
                 reasons.append('high_innovation_pressure')
-            
-            # Diversity gap trigger
+
+
             diversity_gap = evolution_context.get('diversity_gap', 0.0)
             if diversity_gap > 0.3:
                 reasons.append('insufficient_diversity')
-            
-            # Market stress trigger
+
+
             market_stress = evolution_context.get('market_stress_level', 'medium')
             if market_stress in ['high', 'extreme'] and evolution_context.get('session_pnl', 0) < -50:
                 reasons.append('high_stress_poor_performance')
-            
-            # Regime instability trigger
+
+
             regime_stability = evolution_context.get('regime_stability', 'moderate')
             if regime_stability in ['unstable', 'very_unstable']:
                 reasons.append('regime_instability')
-            
-            # Performance trend trigger
+
+
             performance_trend = evolution_context.get('performance_trend', 'stable')
             if performance_trend in ['declining', 'slightly_declining']:
                 reasons.append('declining_performance')
-            
-            # Pending adaptations trigger
+
+
             if len(self.market_adaptation.get('pending_adaptations', [])) > 0:
                 reasons.append('pending_market_adaptations')
-            
-            # Periodic evolution trigger
+
+
             if len(self.evolution_history) == 0 or len(self.evolution_history) % 15 == 0:
                 reasons.append('periodic_evolution')
-            
-            # Thesis age trigger
+
+
             if self._has_stale_theses():
                 reasons.append('stale_theses_detected')
-            
+
             return len(reasons) > 0, reasons
-            
+
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "evolution_determination")
             return False, ['determination_error']
 
     def _has_stale_theses(self) -> bool:
-        """Check if there are stale theses that need evolution"""
         try:
             current_time = datetime.datetime.now()
             stale_count = 0
-            
+
             for thesis in self.theses:
                 perf = self.thesis_performance.get(thesis, {})
                 creation_time = perf.get('creation_time')
@@ -1059,23 +1014,22 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                     try:
                         created = datetime.datetime.fromisoformat(creation_time)
                         age_hours = (current_time - created).total_seconds() / 3600
-                        if age_hours > 36:  # 36 hours = stale
+                        if age_hours > 36:
                             stale_count += 1
                     except Exception:
                         continue
-            
-            return stale_count >= 3  # 3 or more stale theses trigger evolution
-            
+
+            return stale_count >= 3
+
         except Exception:
             return False
 
-    def _determine_evolution_strategies(self, evolution_context: Dict[str, Any], 
+    def _determine_evolution_strategies(self, evolution_context: Dict[str, Any],
                                       evolution_reasons: List[str]) -> List[str]:
-        """Determine optimal evolution strategies based on context and reasons"""
         try:
             strategies = []
-            
-            # Map reasons to strategies
+
+
             reason_strategy_map = {
                 'high_innovation_pressure': ['mutation', 'diversification'],
                 'insufficient_diversity': ['crossover', 'diversification'],
@@ -1086,54 +1040,53 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 'periodic_evolution': ['mutation', 'crossover'],
                 'stale_theses_detected': ['mutation', 'diversification']
             }
-            
-            # Collect strategies from reasons
+
+
             for reason in evolution_reasons:
                 strategies.extend(reason_strategy_map.get(reason, []))
-            
-            # Remove duplicates while preserving order
+
+
             unique_strategies = []
             for strategy in strategies:
                 if strategy not in unique_strategies:
                     unique_strategies.append(strategy)
-            
-            # Limit to maximum 3 strategies
+
+
             return unique_strategies[:3]
-            
+
         except Exception:
             return ['mutation']
 
     async def _perform_intelligent_mutations(self, evolution_context: Dict[str, Any]) -> int:
-        """Perform intelligent mutations on underperforming theses"""
         try:
             mutations_created = 0
-            
-            # Select theses for mutation
+
+
             mutation_candidates = self._select_mutation_candidates()
-            
-            # Determine mutation count based on innovation pressure
+
+
             innovation_pressure = evolution_context.get('innovation_pressure', 0.5)
             max_mutations = min(3, int(innovation_pressure * 5) + 1)
-            
+
             for _ in range(min(max_mutations, len(mutation_candidates))):
                 if random.random() < self.evolution_intelligence['mutation_probability']:
                     original_thesis = random.choice(mutation_candidates)
                     mutated_thesis = await self._create_intelligent_mutation(original_thesis, evolution_context)
-                    
+
                     if mutated_thesis and mutated_thesis not in self.theses:
                         category = self._categorize_thesis_comprehensive(mutated_thesis)
                         parent_generation = self.thesis_performance.get(original_thesis, {}).get('generation', 0)
-                        
+
                         self._add_thesis_comprehensive(
-                            mutated_thesis, 
-                            source='mutation', 
+                            mutated_thesis,
+                            source='mutation',
                             category=category,
                             parent=original_thesis,
                             generation=self._safe_int_conversion(parent_generation) + 1
                         )
-                        
+
                         mutations_created += 1
-                        
+
                         self.logger.info(format_operator_message(
                             icon="🧬",
                             message="Intelligent mutation created",
@@ -1141,56 +1094,54 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                             mutated=mutated_thesis[:40] + "...",
                             category=category
                         ))
-            
+
             return mutations_created
-            
+
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "intelligent_mutations")
             self.logger.warning(f"Intelligent mutations failed: {error_context}")
             return 0
 
     def _select_mutation_candidates(self) -> List[str]:
-        """Select theses that are good candidates for mutation"""
         try:
             candidates = []
-            
+
             for thesis in self.theses:
                 perf = self.thesis_performance.get(thesis, {})
                 trade_count = self._safe_int_conversion(perf.get('trade_count', 0))
-                
-                # Need sufficient data for assessment
+
+
                 if trade_count >= 3:
                     total_pnl = self._safe_float_conversion(perf.get('total_pnl', 0))
                     avg_pnl = total_pnl / trade_count
-                    
-                    # Select underperformers or mediocre performers
-                    if avg_pnl < 10:  # Below good performance threshold
+
+
+                    if avg_pnl < 10:
                         candidates.append(thesis)
-                
-                # Also select old theses regardless of performance
+
+
                 creation_time = perf.get('creation_time')
                 if creation_time and isinstance(creation_time, str):
                     try:
                         created = datetime.datetime.fromisoformat(creation_time)
                         age_hours = (datetime.datetime.now() - created).total_seconds() / 3600
-                        if age_hours > 30:  # 30+ hours old
+                        if age_hours > 30:
                             candidates.append(thesis)
                     except Exception:
                         continue
-            
-            return list(set(candidates))  # Remove duplicates
-            
+
+            return list(set(candidates))
+
         except Exception:
             return self.theses.copy()
 
-    async def _create_intelligent_mutation(self, original_thesis: str, 
+    async def _create_intelligent_mutation(self, original_thesis: str,
                                          evolution_context: Dict[str, Any]) -> Optional[str]:
-        """Create intelligent mutation based on market context"""
         try:
             market_regime = evolution_context.get('market_regime', 'unknown')
             stress_level = evolution_context.get('market_stress_level', 'medium')
-            
-            # Select mutation strategy based on context
+
+
             mutation_strategies = [
                 'sentiment_adjustment',
                 'timeframe_optimization',
@@ -1200,18 +1151,18 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 'regime_adaptation',
                 'volatility_adjustment'
             ]
-            
-            # Weight strategies based on context
+
+
             if stress_level in ['high', 'extreme']:
                 mutation_strategies = ['risk_adjustment', 'condition_enhancement', 'sentiment_adjustment']
             elif market_regime == 'volatile':
                 mutation_strategies = ['volatility_adjustment', 'risk_adjustment', 'timeframe_optimization']
             elif market_regime == 'trending':
                 mutation_strategies = ['sentiment_adjustment', 'timeframe_optimization', 'regime_adaptation']
-            
+
             strategy = random.choice(mutation_strategies)
-            
-            # Apply selected mutation strategy
+
+
             if strategy == 'sentiment_adjustment':
                 return self._mutate_sentiment(original_thesis, evolution_context)
             elif strategy == 'timeframe_optimization':
@@ -1226,15 +1177,14 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 return self._mutate_for_regime(original_thesis, evolution_context)
             elif strategy == 'volatility_adjustment':
                 return self._mutate_volatility_approach(original_thesis, evolution_context)
-            
+
             return None
-            
+
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "intelligent_mutation_creation")
             return None
 
     def _mutate_sentiment(self, original_thesis: str, evolution_context: Dict[str, Any]) -> Optional[str]:
-        """Mutate thesis sentiment/direction"""
         try:
             sentiment_replacements = {
                 'bullish': 'bearish', 'bearish': 'bullish',
@@ -1245,27 +1195,26 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 'rising': 'falling', 'falling': 'rising',
                 'support': 'resistance', 'resistance': 'support'
             }
-            
+
             mutated = original_thesis
             for old, new in sentiment_replacements.items():
                 if old in mutated.lower():
                     mutated = mutated.replace(old, new).replace(old.title(), new.title())
                     break
-            
+
             if mutated != original_thesis:
                 return f"{mutated} - Sentiment-adjusted mutation"
-            
+
             return None
-            
+
         except Exception:
             return None
 
     def _mutate_timeframe(self, original_thesis: str, evolution_context: Dict[str, Any]) -> Optional[str]:
-        """Mutate thesis timeframe perspective"""
         try:
             timeframe_replacements = {
                 'short-term': 'medium-term',
-                'medium-term': 'long-term', 
+                'medium-term': 'long-term',
                 'long-term': 'short-term',
                 'intraday': 'daily',
                 'daily': 'weekly',
@@ -1274,49 +1223,47 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 'swing': 'position',
                 'position': 'scalping'
             }
-            
+
             mutated = original_thesis
             for old, new in timeframe_replacements.items():
                 if old in mutated.lower():
                     mutated = mutated.replace(old, new)
                     return f"{mutated} - Timeframe-optimized mutation"
-            
-            # Add timeframe if none exists
+
+
             stress_level = evolution_context.get('market_stress_level', 'medium')
             if stress_level in ['high', 'extreme']:
                 timeframe_addition = 'with short-term focus'
             else:
                 timeframe_addition = 'with medium-term perspective'
-            
+
             return f"{original_thesis} {timeframe_addition}"
-            
+
         except Exception:
             return None
 
     def _mutate_instrument(self, original_thesis: str, evolution_context: Dict[str, Any]) -> Optional[str]:
-        """Mutate thesis instrument focus"""
         try:
             instrument_replacements = {
                 'EURUSD': 'GBPUSD',
 
             }
-            
+
             mutated = original_thesis
             for old, new in instrument_replacements.items():
                 if old in mutated:
                     mutated = mutated.replace(old, new)
                     return f"{mutated} - Instrument-diversified mutation"
-            
+
             return None
-            
+
         except Exception:
             return None
 
     def _mutate_conditions(self, original_thesis: str, evolution_context: Dict[str, Any]) -> Optional[str]:
-        """Mutate thesis conditions and triggers"""
         try:
             market_regime = evolution_context.get('market_regime', 'unknown')
-            
+
             condition_additions = {
                 'trending': ['with momentum confirmation', 'following trend continuation signals'],
                 'ranging': ['with range-bound confirmation', 'at key support/resistance levels'],
@@ -1324,20 +1271,19 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 'breakout': ['with volume surge confirmation', 'following pattern completion'],
                 'reversal': ['with divergence confirmation', 'at exhaustion levels']
             }
-            
+
             additions = condition_additions.get(market_regime, ['with technical confirmation'])
             selected_addition = random.choice(additions)
-            
+
             return f"{original_thesis} {selected_addition}"
-            
+
         except Exception:
             return None
 
     def _mutate_risk_parameters(self, original_thesis: str, evolution_context: Dict[str, Any]) -> Optional[str]:
-        """Mutate thesis risk management approach"""
         try:
             stress_level = evolution_context.get('market_stress_level', 'medium')
-            
+
             if stress_level in ['high', 'extreme']:
                 risk_additions = [
                     'with tight risk management',
@@ -1351,76 +1297,71 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                     'allowing for normal position sizing',
                     'with trend-following stops'
                 ]
-            
+
             selected_addition = random.choice(risk_additions)
             return f"{original_thesis} {selected_addition}"
-            
+
         except Exception:
             return None
 
     def _mutate_for_regime(self, original_thesis: str, evolution_context: Dict[str, Any]) -> Optional[str]:
-        """Mutate thesis for current market regime"""
         try:
             regime = evolution_context.get('market_regime', 'unknown')
-            
+
             regime_adaptations = {
                 'trending': 'optimized for trending conditions',
                 'ranging': 'adapted for range-bound markets',
                 'volatile': 'adjusted for high volatility environment',
-                'breakout': 'tailored for breakout scenarios', 
+                'breakout': 'tailored for breakout scenarios',
                 'reversal': 'configured for reversal opportunities'
             }
-            
+
             adaptation = regime_adaptations.get(regime, 'adapted for current market conditions')
             return f"{original_thesis} - {adaptation}"
-            
+
         except Exception:
             return None
 
     def _mutate_volatility_approach(self, original_thesis: str, evolution_context: Dict[str, Any]) -> Optional[str]:
-        """Mutate thesis volatility handling approach"""
         try:
             volatility_level = evolution_context.get('volatility_level', 'medium')
-            
+
             volatility_adaptations = {
                 'low': 'targeting volatility expansion opportunities',
                 'medium': 'with balanced volatility approach',
                 'high': 'managing high volatility risk',
                 'extreme': 'with extreme volatility protection'
             }
-            
+
             adaptation = volatility_adaptations.get(volatility_level, 'with volatility-aware approach')
             return f"{original_thesis} {adaptation}"
-            
+
         except Exception:
             return None
 
-    # Continue with additional methods following the same pattern...
-    # (I'll continue with the remaining methods in the next part due to length)
 
     def _categorize_thesis_comprehensive(self, thesis: str) -> str:
-        """Categorize thesis comprehensively based on content analysis"""
         try:
             thesis_lower = thesis.lower()
-            
-            # Score each category
+
+
             category_scores = {}
-            
+
             for category, info in self.thesis_categories.items():
                 score = 0
                 keywords = info.get('keywords', [])
-                
-                # Count keyword matches with weights
+
+
                 for keyword in keywords:
                     if keyword in thesis_lower:
-                        score += 2  # Base score for keyword match
-                        
-                        # Bonus for exact word boundaries
+                        score += 2
+
+
                         import re
                         if re.search(r'\b' + keyword + r'\b', thesis_lower):
                             score += 1
-                
-                # Bonus for category-specific phrases
+
+
                 category_phrases = {
                     'trend_following': ['following trend', 'momentum continues', 'trend continuation'],
                     'mean_reversion': ['mean reversion', 'bounce from', 'return to average'],
@@ -1428,40 +1369,39 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                     'momentum': ['momentum surge', 'acceleration', 'strong momentum'],
                     'pattern_recognition': ['chart pattern', 'technical formation', 'pattern completion']
                 }
-                
+
                 phrases = category_phrases.get(category, [])
                 for phrase in phrases:
                     if phrase in thesis_lower:
                         score += 3
-                
+
                 category_scores[category] = score
-            
-            # Return category with highest score
+
+
             if category_scores:
                 best_category = max(category_scores.items(), key=lambda x: x[1])
                 if best_category[1] > 0:
                     return best_category[0]
-            
+
             return 'general'
-            
+
         except Exception:
             return 'general'
 
-    def _add_thesis_comprehensive(self, thesis: str, source: str = 'unknown', 
+    def _add_thesis_comprehensive(self, thesis: str, source: str = 'unknown',
                                 category: Optional[str] = None, parent: Optional[str] = None,
                                 generation: int = 0) -> None:
-        """Add thesis with comprehensive tracking"""
         try:
-            # Check capacity and remove oldest if needed
+
             if len(self.theses) >= self.capacity:
                 oldest_thesis = self._find_oldest_thesis()
                 if oldest_thesis:
                     self._remove_thesis_comprehensive(oldest_thesis, reason="capacity_limit")
-            
-            # Add thesis
+
+
             self.theses.append(thesis)
-            
-            # Initialize comprehensive performance tracking
+
+
             perf = self.thesis_performance[thesis]
             perf.update({
                 'creation_time': datetime.datetime.now().isoformat(),
@@ -1472,8 +1412,8 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 'confidence_score': 0.5,
                 'effectiveness_score': 0.0
             })
-            
-            # Track genealogy
+
+
             if parent:
                 self.thesis_genealogy[thesis].append({
                     'parent': parent,
@@ -1481,21 +1421,20 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                     'generation': generation,
                     'timestamp': perf['creation_time']
                 })
-            
-            # Update analytics
+
+
             self.evolution_analytics['total_theses_created'] += 1
             self.evolution_analytics['generation_stats'][generation] += 1
-            
+
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "thesis_addition")
             self.logger.error(f"Thesis addition failed: {error_context}")
 
     def _find_oldest_thesis(self) -> Optional[str]:
-        """Find the oldest thesis for removal"""
         try:
             oldest_thesis = None
             oldest_time = None
-            
+
             for thesis in self.theses:
                 perf = self.thesis_performance.get(thesis, {})
                 creation_time = perf.get('creation_time')
@@ -1503,14 +1442,13 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                     if oldest_time is None or creation_time < oldest_time:
                         oldest_time = creation_time
                         oldest_thesis = thesis
-            
+
             return oldest_thesis
-            
+
         except Exception:
             return self.theses[0] if self.theses else None
 
     def get_state(self) -> Dict[str, Any]:
-        """Get complete state for hot-reload and persistence"""
         return {
             'module_info': {
                 'name': 'ThesisEvolutionEngine',
@@ -1548,9 +1486,8 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         }
 
     def set_state(self, state: Dict[str, Any]) -> None:
-        """Set state for hot-reload and persistence"""
         try:
-            # Load configuration
+
             config = state.get("configuration", {})
             self.capacity = int(config.get("capacity", self.capacity))
             self.thesis_lifespan = int(config.get("thesis_lifespan", self.thesis_lifespan))
@@ -1558,12 +1495,12 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             self.evolution_rate = float(config.get("evolution_rate", self.evolution_rate))
             self.diversity_target = float(config.get("diversity_target", self.diversity_target))
             self.debug = bool(config.get("debug", self.debug))
-            
-            # Load thesis state
+
+
             thesis_state = state.get("thesis_state", {})
             self.theses = list(thesis_state.get("theses", []))
-            
-            # Restore thesis performance
+
+
             performance_data = thesis_state.get("thesis_performance", {})
             self.thesis_performance = defaultdict(lambda: {
                 'pnls': [], 'trade_count': 0, 'win_count': 0, 'total_pnl': 0.0,
@@ -1576,33 +1513,33 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             })
             for k, v in performance_data.items():
                 self.thesis_performance[k] = v
-            
-            # Restore evolution history and genealogy
+
+
             self.evolution_history = deque(thesis_state.get("evolution_history", []), maxlen=100)
-            
+
             genealogy_data = thesis_state.get("thesis_genealogy", {})
             self.thesis_genealogy = defaultdict(list)
             for k, v in genealogy_data.items():
                 self.thesis_genealogy[k] = list(v)
-            
+
             self.successful_mutations = thesis_state.get("successful_mutations", [])
             self.failed_experiments = thesis_state.get("failed_experiments", [])
-            
-            # Load analytics state
+
+
             analytics_state = state.get("analytics_state", {})
             self.evolution_analytics = analytics_state.get("evolution_analytics", self.evolution_analytics)
             self.market_adaptation = analytics_state.get("market_adaptation", self.market_adaptation)
             self.evolution_intelligence = analytics_state.get("evolution_intelligence", self.evolution_intelligence)
-            
-            # Load error state
+
+
             error_state = state.get("error_state", {})
             self.error_count = error_state.get("error_count", 0)
             self.is_disabled = error_state.get("is_disabled", False)
-            
-            # Load templates and categories if provided
+
+
             self.thesis_categories.update(state.get("thesis_categories", {}))
             self.thesis_templates.update(state.get("thesis_templates", {}))
-            
+
             self.logger.info(format_operator_message(
                 icon="[RELOAD]",
                 message="Thesis Evolution Engine state restored",
@@ -1610,13 +1547,12 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 total_created=self.evolution_analytics.get('total_theses_created', 0),
                 evolutions=len(self.evolution_history)
             ))
-            
+
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "state_restoration")
             self.logger.error(f"State restoration failed: {error_context}")
 
     def _get_health_metrics(self) -> Dict[str, Any]:
-        """Get comprehensive health metrics for monitoring"""
         return {
             'module_name': 'ThesisEvolutionEngine',
             'status': 'disabled' if self.is_disabled else 'healthy',
@@ -1632,58 +1568,48 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             'session_duration': (datetime.datetime.now() - datetime.datetime.fromisoformat(self.evolution_analytics['session_start'])).total_seconds() / 3600
         }
 
-    # Additional placeholder methods that would be implemented following the same patterns
+
     async def _perform_intelligent_crossovers(self, evolution_context: Dict[str, Any]) -> int:
-        """Placeholder for intelligent crossover implementation"""
         return 0
 
     async def _perform_market_adaptations(self, evolution_context: Dict[str, Any], market_data: Dict[str, Any]) -> int:
-        """Placeholder for market adaptation implementation"""
         return 0
 
     async def _perform_thesis_refinements(self, evolution_context: Dict[str, Any]) -> int:
-        """Placeholder for thesis refinement implementation"""
         return 0
 
     async def _perform_diversity_enhancement(self, evolution_context: Dict[str, Any]) -> int:
-        """Placeholder for diversity enhancement implementation"""
         return 0
 
     async def _update_thesis_performance_comprehensive(self, market_data: Dict[str, Any], evolution_context: Dict[str, Any]):
-        """Placeholder for comprehensive performance update"""
+        pass
 
     async def _cleanup_underperforming_theses_comprehensive(self) -> Dict[str, Any]:
-        """Placeholder for comprehensive cleanup"""
         return {}
 
     async def _generate_new_theses_if_needed_comprehensive(self, evolution_context: Dict[str, Any], market_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Placeholder for comprehensive thesis generation"""
         return {}
 
     async def _calculate_comprehensive_analytics(self) -> Dict[str, Any]:
-        """Placeholder for comprehensive analytics calculation"""
         return self.evolution_analytics.copy()
 
     async def _generate_intelligent_thesis_recommendations(self, evolution_context: Dict[str, Any], analytics_results: Dict[str, Any]) -> List[str]:
-        """Placeholder for intelligent recommendations"""
         return ["Continue current thesis evolution approach"]
 
     async def _generate_comprehensive_evolution_thesis(self, evolution_results: Dict[str, Any], analytics_results: Dict[str, Any]) -> str:
-        """Placeholder for comprehensive thesis generation"""
         return "Thesis evolution proceeding optimally with intelligent adaptation"
 
     async def _update_smartinfobus_comprehensive(self, results: Dict[str, Any], thesis: str):
-        """Publish main results to SmartInfoBus (single-writer keys only)."""
         try:
             self.smart_bus.set('active_theses', results.get('active_theses', []), module='ThesisEvolutionEngine', thesis=thesis)
             self.smart_bus.set('thesis_performance', results.get('thesis_performance', {}), module='ThesisEvolutionEngine', thesis='Performance summary update')
             self.smart_bus.set('evolution_history', results.get('evolution_history', []), module='ThesisEvolutionEngine', thesis='Evolution history update')
             self.smart_bus.set('thesis_recommendations', results.get('thesis_recommendations', []), module='ThesisEvolutionEngine', thesis='Recommendations update')
             self.smart_bus.set('market_thesis', thesis, module='ThesisEvolutionEngine', thesis='Thesis evolution summary')
-            # Ensure best_thesis is published (TradingModeManager requires this input)
+
             best_thesis = results.get('best_thesis')
             if best_thesis is None:
-                # Provide a safe default to satisfy contract; downstream can ignore/override
+
                 best_thesis = 'neutral'
             self.smart_bus.set('best_thesis', best_thesis, module='ThesisEvolutionEngine', thesis='Best performing thesis')
         except Exception as e:
@@ -1691,11 +1617,10 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             self.logger.error(f"SmartInfoBus update failed: {error_context}")
 
     async def _handle_processing_error(self, error: Exception, start_time: float) -> Dict[str, Any]:
-        """Handle processing errors with intelligent recovery"""
         self.error_count += 1
         error_context = self.error_pinpointer.analyze_error(error, "ThesisEvolutionEngine")
-        
-        # Circuit breaker logic
+
+
         if self.error_count >= self.circuit_breaker_threshold:
             self.is_disabled = True
             self.logger.error(format_operator_message(
@@ -1704,7 +1629,7 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 error_count=self.error_count,
                 threshold=self.circuit_breaker_threshold
             ))
-        
+
         return {
             'active_theses': self.theses.copy(),
             'thesis_performance': {'error': str(error_context)},
@@ -1721,7 +1646,6 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         }
 
     def _get_safe_market_defaults(self) -> Dict[str, Any]:
-        """Get safe defaults when market data retrieval fails"""
         return {
             'market_data': {}, 'recent_trades': [], 'trading_performance': {},
             'market_regime': 'unknown', 'volatility_data': {}, 'session_metrics': {},
@@ -1730,7 +1654,6 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         }
 
     def _generate_disabled_response(self) -> Dict[str, Any]:
-        """Generate response when module is disabled"""
         return {
             'active_theses': self.theses.copy(),
             'thesis_performance': {'status': 'disabled'},
@@ -1747,7 +1670,6 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         }
 
     def _get_performance_summary_comprehensive(self) -> Dict[str, Any]:
-        """Get comprehensive performance summary"""
         return {
             'total_theses': len(self.theses),
             'active_categories': len(set(self.thesis_performance[t].get('category', 'general') for t in self.theses)),
@@ -1756,7 +1678,6 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
         }
 
     def _safe_int_conversion(self, value: Any) -> int:
-        """Safely convert value to int, handling various types"""
         try:
             if isinstance(value, (int, float)):
                 return int(value)
@@ -1768,7 +1689,6 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             return 0
 
     def _safe_float_conversion(self, value: Any) -> float:
-        """Safely convert value to float, handling various types"""
         try:
             if isinstance(value, (int, float)):
                 return float(value)
@@ -1780,11 +1700,10 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             return 0.0
 
     def _get_best_performing_thesis(self) -> Optional[str]:
-        """Get the best performing thesis"""
         try:
             best_thesis = None
             best_performance = float('-inf')
-            
+
             for thesis in self.theses:
                 perf = self.thesis_performance.get(thesis, {})
                 trade_count = self._safe_int_conversion(perf.get('trade_count', 0))
@@ -1794,23 +1713,22 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                     if avg_pnl > best_performance:
                         best_performance = avg_pnl
                         best_thesis = thesis
-            
+
             return best_thesis
-            
+
         except Exception:
             return None
 
     def _remove_thesis_comprehensive(self, thesis: str, reason: str = 'unknown') -> None:
-        """Remove thesis with comprehensive tracking"""
         try:
             if thesis in self.theses:
                 self.theses.remove(thesis)
-                
-                # Archive performance data
+
+
                 perf = self.thesis_performance.get(thesis, {})
                 perf['removal_time'] = datetime.datetime.now().isoformat()
                 perf['removal_reason'] = reason
-                
+
                 self.logger.info(format_operator_message(
                     icon="🗑️",
                     message="Thesis removed",
@@ -1819,13 +1737,12 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                     final_pnl=f"€{perf.get('total_pnl', 0):+.2f}",
                     trade_count=perf.get('trade_count', 0)
                 ))
-                
+
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "thesis_removal")
             self.logger.warning(f"Thesis removal failed: {error_context}")
 
     def _get_tee_init_view(self) -> Dict[str, Any]:
-        """Safely read or synthesize initialization view for contract compliance"""
         try:
             init_view = self.smart_bus.get('thesis_evolution_initialization', 'ThesisEvolutionEngine')
             if isinstance(init_view, dict) and init_view:
@@ -1841,29 +1758,16 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             }
         }
 
-    # ═══════════════════════════════════════════════════════════════════
-    # REQUIRED ABSTRACT METHOD IMPLEMENTATIONS
-    # ═══════════════════════════════════════════════════════════════════
 
     async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
-        """
-        Calculate confidence score for thesis evolution decisions
-        
-        Args:
-            action: The thesis evolution action/decision
-            **inputs: Additional context inputs
-            
-        Returns:
-            float: Confidence score between 0.0 and 1.0
-        """
         try:
-            base_confidence = 0.7  # Base confidence for thesis evolution
-            
-            # Adjust based on thesis portfolio quality
+            base_confidence = 0.7
+
+
             if self.theses:
                 diversity_score = self._calculate_thesis_diversity_comprehensive()
                 performance_scores = []
-                
+
                 for thesis in self.theses:
                     perf = self.thesis_performance.get(thesis, {})
                     trade_count = self._safe_int_conversion(perf.get('trade_count', 0))
@@ -1871,65 +1775,56 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                         total_pnl = self._safe_float_conversion(perf.get('total_pnl', 0))
                         avg_pnl = total_pnl / trade_count
                         performance_scores.append(avg_pnl)
-                
-                # Adjust confidence based on portfolio quality
+
+
                 if performance_scores:
                     avg_performance = np.mean(performance_scores)
                     if avg_performance > 10:
-                        base_confidence += 0.15  # Good performance increases confidence
+                        base_confidence += 0.15
                     elif avg_performance < -10:
-                        base_confidence -= 0.15  # Poor performance decreases confidence
-                
-                # Adjust confidence based on diversity
+                        base_confidence -= 0.15
+
+
                 base_confidence += diversity_score * 0.1
-                
-                # Adjust based on recent evolution success
-                recent_successes = len([e for e in self.evolution_history 
+
+
+                recent_successes = len([e for e in self.evolution_history
                                       if e.get('theses_evolved', 0) > 0])
                 if recent_successes > 5:
                     base_confidence += 0.1
-            
-            # Adjust based on market conditions
+
+
             market_data = inputs.get('market_data', {})
             if market_data:
                 market_regime = inputs.get('market_regime', 'unknown')
                 if market_regime != 'unknown':
-                    base_confidence += 0.05  # Known regime increases confidence
-                
+                    base_confidence += 0.05
+
                 volatility_level = market_data.get('volatility_level', 'medium')
                 if volatility_level in ['low', 'medium']:
-                    base_confidence += 0.05  # Stable conditions increase confidence
+                    base_confidence += 0.05
                 elif volatility_level in ['high', 'extreme']:
-                    base_confidence -= 0.05  # High volatility decreases confidence
-            
-            # Ensure confidence is within valid range
+                    base_confidence -= 0.05
+
+
             return max(0.0, min(1.0, base_confidence))
-            
+
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "confidence_calculation")
             self.logger.warning(f"Confidence calculation failed: {error_context}")
-            return 0.5  # Default moderate confidence
+            return 0.5
 
     async def propose_action(self, **inputs) -> Dict[str, Any]:
-        """
-        Propose thesis evolution actions based on current market conditions
-        
-        Args:
-            **inputs: Context inputs including market data, performance metrics
-            
-        Returns:
-            Dict containing proposed action with confidence and reasoning
-        """
         try:
-            # Extract context for action proposal
+
             market_data = inputs.get('market_data', {})
             recent_trades = inputs.get('recent_trades', [])
             market_regime = inputs.get('market_regime', 'unknown')
-            
-            # Calculate innovation pressure
+
+
             innovation_pressure = self._calculate_innovation_pressure_comprehensive()
-            
-            # Determine recommended action
+
+
             if innovation_pressure > 0.8:
                 action_type = 'high_innovation'
                 action_details = {
@@ -1940,7 +1835,7 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 }
                 confidence = 0.85
                 reasoning = f"High innovation pressure ({innovation_pressure:.2f}) indicates need for aggressive thesis evolution"
-                
+
             elif len(self.theses) < self.capacity * 0.7:
                 action_type = 'thesis_generation'
                 action_details = {
@@ -1951,7 +1846,7 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 }
                 confidence = 0.75
                 reasoning = f"Low thesis count ({len(self.theses)}) suggests need for new thesis generation"
-                
+
             elif self._calculate_diversity_gap_comprehensive() > 0.3:
                 action_type = 'diversification'
                 action_details = {
@@ -1962,7 +1857,7 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 }
                 confidence = 0.70
                 reasoning = "Diversity gap indicates need for portfolio diversification"
-                
+
             elif len(recent_trades) > 0 and self._calculate_recent_win_rate(recent_trades) < 0.4:
                 action_type = 'performance_improvement'
                 action_details = {
@@ -1973,7 +1868,7 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 }
                 confidence = 0.80
                 reasoning = "Poor recent performance indicates need for thesis refinement"
-                
+
             else:
                 action_type = 'maintenance'
                 action_details = {
@@ -1984,10 +1879,10 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 }
                 confidence = 0.60
                 reasoning = "Normal conditions suggest maintenance-level evolution"
-            
-            # Calculate final confidence using the confidence calculation method
+
+
             final_confidence = await self.calculate_confidence(action_details, **inputs)
-            
+
             proposal = {
                 'action_type': action_type,
                 'action_details': action_details,
@@ -2002,14 +1897,14 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
                 'timestamp': datetime.datetime.now().isoformat(),
                 'module': 'ThesisEvolutionEngine'
             }
-            
+
             return proposal
-            
+
         except Exception as e:
             error_context = self.error_pinpointer.analyze_error(e, "action_proposal")
             self.logger.warning(f"Action proposal failed: {error_context}")
-            
-            # Return safe fallback proposal
+
+
             return {
                 'action_type': 'maintenance',
                 'action_details': {'strategy': 'safe_monitoring', 'priority': 'low'},
@@ -2020,24 +1915,23 @@ class ThesisEvolutionEngine(BaseModule, SmartInfoBusTradingMixin, SmartInfoBusSt
             }
 
     def _identify_underrepresented_categories(self) -> List[str]:
-        """Identify thesis categories that are underrepresented"""
         try:
             category_counts = {}
-            
-            # Count current category representation
+
+
             for thesis in self.theses:
                 category = self._categorize_thesis_comprehensive(thesis)
                 category_counts[category] = category_counts.get(category, 0) + 1
-            
-            # Find underrepresented categories
+
+
             target_per_category = max(1, len(self.theses) // len(self.thesis_categories))
             underrepresented = []
-            
+
             for category in self.thesis_categories:
                 if category_counts.get(category, 0) < target_per_category:
                     underrepresented.append(category)
-            
+
             return underrepresented
-            
+
         except Exception:
-            return list(self.thesis_categories.keys())[:3]  # Return first 3 categories as fallback
+            return list(self.thesis_categories.keys())[:3]

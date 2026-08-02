@@ -1,14 +1,4 @@
-# modules/executor/debug/executor_debug_manager.py
-"""
-Executor Debug Manager (reward-level)
-- Clear English logging
-- SmartInfoBus inspection & validation
-- Performance + optional memory profiling
-- Detailed error tracking
-- Compact ring history + rolling metrics on bus
-- JSONL archival for post-mortem
-- Compatible with previous ExecutorDebugger.publish(...) signature
-"""
+
 
 from __future__ import annotations
 
@@ -17,7 +7,7 @@ import os
 import threading
 import time
 import traceback
-import tracemalloc  # optional; toggle in config
+import tracemalloc
 from collections import Counter, defaultdict, deque
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -28,123 +18,92 @@ import numpy as np
 from modules.utils.audit_utils import RotatingLogger
 
 
-# ─────────────────────────────────────────────────────────
-# Config
-# ─────────────────────────────────────────────────────────
 @dataclass
 class ExecutorDebugConfig:
     enabled: bool = True
-    level: str = "TRACE"     # OFF | LIGHT | FULL | DEBUG | TRACE
-    keep_history: int = 200  # ring buffer length
+    level: str = "TRACE"
+    keep_history: int = 200
     file_logging: bool = True
     jsonl_dir: str = "logs/executor/debug"
     redact_sizes: bool = False
-    mem_profile: bool = False         # enable tracemalloc section profiling
-    bus_module_name: str = "Executor" # for bus.get(key, module)
-    max_preview_items: int = 5        # how many accepted/rejected/fills to preview
-    report_key_text: str = "executor_debug_report"  # where to put human text report
-    # expected keys to probe on bus (name -> dict(meta))
+    mem_profile: bool = False
+    bus_module_name: str = "Executor"
+    max_preview_items: int = 5
+    report_key_text: str = "executor_debug_report"
+
     expected_bus_keys: Optional[Dict[str, Dict[str, Any]]] = None
 
 
-# sensible defaults for expected bus keys if not provided
 _DEFAULT_EXPECTED_BUS_KEYS: Dict[str, Dict[str, Any]] = {
-    # Inputs into executor
+
     "order_queue": {"source": "SignalRouter", "required": False},
     "position_decision_EURUSD": {"source": "DecisionEngine", "required": False},
     "position_decision_XAUUSD": {"source": "DecisionEngine", "required": False},
 
-    # State / positions / portfolio
+
     "current_positions": {"source": "PositionManager", "required": False},
     "portfolio_metrics": {"source": "Account/Env", "required": True},
     "trading_result": {"source": "Env", "required": False},
 
-    # Environment / mode
-    "environment_config": {"source": "Environment", "required": False},
-    "env_mode": {"source": "Environment", "required": False},              # "train" | "backtest" | "live"
-    "live_adapter_status": {"source": "Executor", "required": False},      # {'provider':'mt5', 'connected':bool, 'latency_ms':...}
 
-    # Performance bridge
+    "environment_config": {"source": "Environment", "required": False},
+    "env_mode": {"source": "Environment", "required": False},
+    "live_adapter_status": {"source": "Executor", "required": False},
+
+
     "performance_data": {"source": "PerformanceTracker", "required": False},
 }
 
 
-# ─────────────────────────────────────────────────────────
-# Manager
-# ─────────────────────────────────────────────────────────
 class ExecutorDebugManager:
-    """
-    Comprehensive debug manager for Executor (reward-level).
 
-    Public API (most commonly used):
-      - begin(stage), end(stage)                   : timing blocks (also aggregated)
-      - stage(stage)                               : context manager for timing
-      - memory_block(stage)                        : memory delta (if enabled)
-      - record_error(msg)                          : add error
-      - publish(...)                               : main per-step report (backward compatible)
-      - get_statistics()                           : dict of stats
-      - get_report()                               : human-readable multi-line string
-      - log_initialization_state()                 : probe bus at start and log availability
-      - log_shutdown()                             : final stats
 
-    Bus keys written:
-      - executor_debug                  : rich per-step snapshot
-      - executor_debug_history          : compact ring buffer of last N
-      - executor_debug_metrics          : rolling counters / rates
-      - executor_debug_report (text)    : (configurable key) latest human-readable report
-    """
-
-    # ----------------------------
-    # Construction
-    # ----------------------------
     def __init__(self, bus: Any, config: Optional[Dict[str, Any]] = None, logger: Optional[RotatingLogger] = None):
         cfg = ExecutorDebugConfig(**(config or {}))
         self.cfg: ExecutorDebugConfig = cfg
         self.bus = bus
         self.logger = logger or RotatingLogger("ExecutorDebugger", log_path="logs/executor/debugger.log")
 
-        # logging levels (lower = more verbose)
+
         self.levels: Dict[str, int] = {
             "TRACE": 0, "DEBUG": 1, "FULL": 1, "LIGHT": 2, "INFO": 2, "WARNING": 3, "ERROR": 4, "OFF": 99
         }
-        # normalize level
+
         self.current_level: int = self.levels.get(str(self.cfg.level).upper(), 1)
 
-        # storage
+
         self._history: deque = deque(maxlen=self.cfg.keep_history)
         self._metrics: Counter = Counter()
         self._last_errors: deque[str] = deque(maxlen=50)
         self._stage_t0: Dict[str, float] = {}
         self._stage_dt: Dict[str, float] = {}
-        self._op_timings: Dict[str, List[float]] = defaultdict(list)  # aggregated timings by stage
+        self._op_timings: Dict[str, List[float]] = defaultdict(list)
         self._lock = threading.RLock()
 
-        # bus tracking for expected keys
+
         self.expected_keys: Dict[str, Dict[str, Any]] = self.cfg.expected_bus_keys or dict(_DEFAULT_EXPECTED_BUS_KEYS)
         self.key_miss_counts: Dict[str, int] = defaultdict(int)
         self.key_error_counts: Dict[str, int] = defaultdict(int)
 
-        # memory profiling
+
         self._mem_enabled = bool(self.cfg.mem_profile)
         if self._mem_enabled and not tracemalloc.is_tracing():
             try:
                 tracemalloc.start()
             except Exception:
-                self._mem_enabled = False  # fail safe
+                self._mem_enabled = False
 
-        # files
+
         if self.cfg.file_logging:
             try:
                 os.makedirs(self.cfg.jsonl_dir, exist_ok=True)
             except Exception:
                 pass
 
-        # last log rate limiter
+
         self._last_log_time: Dict[Tuple[str, str], float] = {}
 
-    # ----------------------------
-    # Runtime toggles
-    # ----------------------------
+
     def enable(self) -> None:
         self.cfg.enabled = True
 
@@ -168,9 +127,7 @@ class ExecutorDebugManager:
         with self._lock:
             self._mem_enabled = False
 
-    # ----------------------------
-    # Timers
-    # ----------------------------
+
     def begin(self, name: str) -> None:
         if not self._should_log("DEBUG"):
             return
@@ -206,13 +163,11 @@ class ExecutorDebugManager:
             snap_after = tracemalloc.take_snapshot()
             stats = snap_after.compare_to(snap_before, "lineno")
             delta_bytes = float(sum(s.size_diff for s in stats))
-            # store as pseudo timing metric "name#mem_kb"
+
             key = f"{name}#mem_kb"
             self._op_timings[key].append(delta_bytes / 1024.0)
 
-    # ----------------------------
-    # Errors
-    # ----------------------------
+
     def record_error(self, msg: str) -> None:
         if not self.cfg.enabled:
             return
@@ -232,9 +187,7 @@ class ExecutorDebugManager:
                 j = str(inputs)[:2000]
             self._log("TRACE", f"Inputs at error: {j}", "ERROR_INPUTS")
 
-    # ----------------------------
-    # Bus inspection
-    # ----------------------------
+
     def log_initialization_state(self) -> None:
         if not self._should_log("INFO"):
             return
@@ -249,9 +202,7 @@ class ExecutorDebugManager:
             except Exception as e:
                 self._log("ERROR", f"  ✗ {key}: error reading ({e})", "BUS")
 
-    # ----------------------------
-    # Main per-step publish (compatible signature)
-    # ----------------------------
+
     def publish(
         self,
         *,
@@ -273,14 +224,10 @@ class ExecutorDebugManager:
         reason: str = "",
         extra: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """
-        Builds high-signal snapshot, pushes to bus, logs text, archives JSONL.
-        Backward compatible with your existing calls.
-        """
         if not self.cfg.enabled or not self.bus or self.current_level >= self.levels["OFF"]:
             return
 
-        # counters / histograms
+
         rej_hist = Counter([str(r.get("reason", "unknown")) for r in (rejected or [])])
         by_inst_notional: Dict[str, float] = defaultdict(float)
         for f in (fills or []):
@@ -291,7 +238,7 @@ class ExecutorDebugManager:
             except Exception:
                 pass
 
-        # anomalies / issues
+
         issues: List[str] = []
         if accepted and not fills:
             issues.append("accepted_but_no_fills")
@@ -299,19 +246,19 @@ class ExecutorDebugManager:
             issues.append("pnl_positive_but_equity_down")
         if float(step_pnl or 0.0) < 0 and float(equity_after or 0.0) > float(equity_before or 0.0):
             issues.append("pnl_negative_but_equity_up")
-        # non-positive lots detection
+
         if any(float(a.get("lots", a.get("units", 0.0)) or 0.0) <= 0.0 for a in (accepted or [])):
             issues.append("non_positive_size_in_accepted")
-        # duplicate intents per instrument in one step
+
         if self._has_duplicate_instruments(accepted):
             issues.append("duplicate_intents_same_instrument")
 
-        # timings snapshot and aggregate
+
         with self._lock:
             timings = dict(self._stage_dt)
             self._stage_dt.clear()
 
-        # redact previews if configured
+
         preview_n = int(self.cfg.max_preview_items)
         if self.cfg.redact_sizes:
             accepted_prev = [self._redact(a) for a in (accepted or [])][-preview_n:]
@@ -322,11 +269,11 @@ class ExecutorDebugManager:
             rejected_prev = (rejected or [])[-preview_n:]
             fills_prev = (fills or [])[-preview_n:]
 
-        # enrich with environment / adapter status if available
+
         env_mode = self._bus_get("env_mode") or self._infer_mode_from_config()
         live_status = self._bus_get("live_adapter_status")
 
-        # core node
+
         node = {
             "header": {
                 "ts": time.time(),
@@ -367,7 +314,7 @@ class ExecutorDebugManager:
         if extra:
             node["extra"] = extra
 
-        # rolling metrics & rates
+
         with self._lock:
             self._metrics.update({
                 "steps": 1,
@@ -383,10 +330,10 @@ class ExecutorDebugManager:
         accept_rate = self._safe_div(accepted_total, max(1, accepted_total + rejected_total))
         fill_rate = self._safe_div(fills_total, max(1, accepted_total))
 
-        # bus payloads
+
         self._bus_set("executor_debug", node, "Executor debug snapshot")
 
-        # compact history item
+
         hist_item = {
             "step": node["header"]["step"],
             "mode": node["header"]["mode"],
@@ -402,7 +349,7 @@ class ExecutorDebugManager:
             self._history.append(hist_item)
             self._bus_set("executor_debug_history", list(self._history), "Executor debug ring")
 
-        # cumulative metrics
+
         metrics_payload = {
             "steps": steps_total,
             "accepted": accepted_total,
@@ -414,31 +361,29 @@ class ExecutorDebugManager:
         }
         self._bus_set("executor_debug_metrics", metrics_payload, "Executor rolling metrics")
 
-        # optional human report
+
         if self._should_log("DEBUG"):
             self._bus_set(self.cfg.report_key_text, self._make_report_line(node, metrics_payload), "Executor text report")
 
-        # file logs - Only log to JSONL, not to main log (unified logger handles that)
+
         try:
-            # Compact debug line (only if level is TRACE or DEBUG)
+
             if self._should_log("DEBUG"):
                 self.logger.debug(
                     f"[EXECDBG] step={step} mode={mode}/{env_mode or 'n/a'} ok={len(accepted or [])} "
                     f"rej={len(rejected or [])} fills={len(fills or [])} dPnL={float(step_pnl or 0.0):.2f} "
                     f"issues={len(issues)}"
                 )
-            # Always write JSONL for forensics
+
             if self.cfg.file_logging:
                 path = os.path.join(self.cfg.jsonl_dir, "steps.jsonl")
                 with open(path, "a", encoding="utf-8") as fp:
                     fp.write(json.dumps(node, ensure_ascii=False) + "\n")
         except Exception:
-            # swallow all IO errors
+
             pass
 
-    # ----------------------------
-    # Reports & Stats
-    # ----------------------------
+
     def get_statistics(self) -> Dict[str, Any]:
         with self._lock:
             op_summaries = {
@@ -469,12 +414,12 @@ class ExecutorDebugManager:
         lines.append(f"Steps: {int(m.get('steps', 0))} | Accepted: {int(m.get('accepted', 0))} | "
                      f"Rejected: {int(m.get('rejected', 0))} | Fills: {int(m.get('fills', 0))}")
         lines.append(f"Accept Rate: {float(s.get('accept_rate', 0.0)):.2%} | Fill Rate: {float(s.get('fill_rate', 0.0)):.2%}")
-        # key misses
+
         km = s.get("key_miss_counts", {}) or {}
         if km:
             top_miss = sorted(km.items(), key=lambda kv: kv[1], reverse=True)[:5]
             lines.append("Most Missed Bus Keys: " + ", ".join(f"{k}({v})" for k, v in top_miss))
-        # timing summaries (top 6 by mean)
+
         ts = s.get("timing_summaries", {}) or {}
         if ts:
             lines.append("Timing Summaries (ms):")
@@ -492,9 +437,7 @@ class ExecutorDebugManager:
         for ln in report.splitlines():
             self._log("INFO", ln, "REPORT")
 
-    # ─────────────────────────────────────────────────────────
-    # Internals
-    # ─────────────────────────────────────────────────────────
+
     def _should_log(self, level: str) -> bool:
         if not self.cfg.enabled:
             return False
@@ -520,13 +463,13 @@ class ExecutorDebugManager:
             else:
                 self.logger.info(msg)
         except Exception:
-            # best effort fallback
+
             print(msg)
 
     def _bus_get(self, key: str) -> Any:
         if not self.bus:
             return None
-        # tolerate different signatures
+
         try:
             return self.bus.get(key, self.cfg.bus_module_name)
         except TypeError:
@@ -579,7 +522,7 @@ class ExecutorDebugManager:
         try:
             cfg = self._bus_get("environment_config")
             if isinstance(cfg, dict):
-                # common fields: {'mode': 'train'|'live'|'backtest', 'live_enabled': bool}
+
                 if "mode" in cfg:
                     return str(cfg["mode"])
                 if cfg.get("live_enabled"):

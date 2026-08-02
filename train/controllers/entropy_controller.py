@@ -1,10 +1,3 @@
-"""
-train/controllers/entropy_controller.py
-
-Smart Entropy Controller with PID-based adaptive control.
-Upgraded: consistent stage tolerances, mask-aware effective action count,
-output slew limiting, and better numeric guards.
-"""
 
 from __future__ import annotations
 
@@ -28,20 +21,8 @@ def _clamp(x: float, lo: float, hi: float) -> float:
 
 
 class SmartEntropyController:
-    """
-    High-level entropy management using PID control + stage awareness.
 
-    Controls ent_coef using normalized entropy:
-      H_norm = H_raw / log(K_eff)
-    where K_eff is an estimate of valid actions (mask-aware).
 
-    Goals:
-    - Early stages: allow exploration, only intervene on entropy collapse.
-    - Later stages: enforce predictable behavior with tight tolerances.
-    - Avoid oscillations: PID + cooldown + update interval + slew limiting.
-    """
-
-    # Normalized entropy targets (0=deterministic, 1=uniform random over valid actions)
     STAGE_TARGETS_NORMALIZED: Dict[int, float] = {
         0: 0.85,
         1: 0.75,
@@ -55,56 +36,49 @@ class SmartEntropyController:
         9: 0.06,
     }
 
-    # ent_coef output bounds by stage
-    # Lower ent_coef = less entropy bonus = more deterministic policy
-    # Higher stages need lower ent_coef to achieve lower entropy targets
-    # AUDIT FIX: Increased upper bounds for early stages - was hitting ceiling
+
     STAGE_ENT_COEF_BOUNDS: Dict[int, Tuple[float, float]] = {
-        0: (0.08, 0.25),    # Discovery: high exploration (was 0.05-0.15, too low)
-        1: (0.06, 0.20),    # Foundation: moderate exploration (was 0.04-0.12)
-        2: (0.04, 0.15),    # Trend Student: learning patterns (was 0.03-0.10)
-        3: (0.03, 0.12),    # Session Student: time awareness (was 0.025-0.08)
-        4: (0.025, 0.10),   # Timing Student: entry timing (was 0.02-0.06)
-        5: (0.02, 0.08),    # Integrator: combining skills (was 0.015-0.05)
-        6: (0.01, 0.04),    # Risk Manager: capital preservation
-        7: (0.008, 0.03),   # Optimizer: fine-tuning
-        8: (0.005, 0.02),   # Consistency: stable execution
-        9: (0.003, 0.015),  # Live Ready: minimal exploration
+        0: (0.08, 0.25),
+        1: (0.06, 0.20),
+        2: (0.04, 0.15),
+        3: (0.03, 0.12),
+        4: (0.025, 0.10),
+        5: (0.02, 0.08),
+        6: (0.01, 0.04),
+        7: (0.008, 0.03),
+        8: (0.005, 0.02),
+        9: (0.003, 0.015),
     }
 
-    # Learning rate multiplier bounds by stage (relative to base_lr)
-    # Later stages need LOWER LR for fine-tuning strategies, not wild exploration
-    # Format: (min_mult, max_mult) where actual_lr = base_lr * multiplier
+
     STAGE_LR_MULTIPLIERS: Dict[int, Tuple[float, float]] = {
-        0: (0.5, 2.0),      # Discovery: wide LR range for fast exploration
-        1: (0.5, 1.8),      # Foundation: still exploring
-        2: (0.4, 1.5),      # Trend Student: starting to learn patterns
-        3: (0.4, 1.3),      # Session Student: more stable
-        4: (0.35, 1.2),     # Timing Student: refining entries
-        5: (0.3, 1.0),      # Integrator: consolidating skills (no LR increase)
-        6: (0.25, 0.8),     # Risk Manager: LOWER LR - preserving learned behavior
-        7: (0.2, 0.6),      # Strategist: FINE-TUNING - strategies forming
-        8: (0.15, 0.5),     # Professional: very stable, small adjustments only
-        9: (0.1, 0.4),      # Live Ready: MINIMAL changes - strategy locked in
+        0: (0.5, 2.0),
+        1: (0.5, 1.8),
+        2: (0.4, 1.5),
+        3: (0.4, 1.3),
+        4: (0.35, 1.2),
+        5: (0.3, 1.0),
+        6: (0.25, 0.8),
+        7: (0.2, 0.6),
+        8: (0.15, 0.5),
+        9: (0.1, 0.4),
     }
 
-    # Clip range bounds by stage
-    # Later stages need TIGHTER clip to prevent policy from changing too much
-    # This protects learned strategies from being overwritten
+
     STAGE_CLIP_RANGE_BOUNDS: Dict[int, Tuple[float, float]] = {
-        0: (0.15, 0.40),    # Discovery: wide clip for fast learning
-        1: (0.15, 0.35),    # Foundation: still flexible
-        2: (0.12, 0.30),    # Trend Student: moderating changes
-        3: (0.12, 0.28),    # Session Student: more conservative
-        4: (0.10, 0.25),    # Timing Student: protecting timing skills
-        5: (0.10, 0.22),    # Integrator: preserving integrated skills
-        6: (0.08, 0.20),    # Risk Manager: TIGHT - risk behavior is critical
-        7: (0.06, 0.18),    # Strategist: STRATEGY PROTECTION - don't unlearn!
-        8: (0.05, 0.15),    # Professional: very tight - consistency matters
-        9: (0.04, 0.12),    # Live Ready: MINIMAL policy change - ready for live
+        0: (0.15, 0.40),
+        1: (0.15, 0.35),
+        2: (0.12, 0.30),
+        3: (0.12, 0.28),
+        4: (0.10, 0.25),
+        5: (0.10, 0.22),
+        6: (0.08, 0.20),
+        7: (0.06, 0.18),
+        8: (0.05, 0.15),
+        9: (0.04, 0.12),
     }
 
-    # Default action space size
+
     DEFAULT_N_ACTIONS = 10
 
     def __init__(
@@ -112,13 +86,13 @@ class SmartEntropyController:
         initial_ent_coef: float = 0.15,
         n_actions: int = DEFAULT_N_ACTIONS,
         min_valid_floor: int = 4,
-        # Scheduling / stability knobs
+
         min_steps_between_updates: int = 20_000,
         cooldown_after_stage_change: int = 40_000,
         cooldown_after_emergency: int = 15_000,
-        # Max ent_coef relative adjustment per apply (prevents huge jumps)
-        max_relative_step: float = 0.30,  # 30% max change per apply
-        # PID tuning (kept conservative)
+
+        max_relative_step: float = 0.30,
+
         kp: float = 0.10,
         ki: float = 0.01,
         kd: float = 0.05,
@@ -148,13 +122,12 @@ class SmartEntropyController:
             output_max=bounds[1],
             deadband=0.12,
             d_filter_alpha=0.2,
-            max_delta_per_update=None,  # we rate-limit at controller level instead
+            max_delta_per_update=None,
         )
 
         self._last_ent_coef = float(initial_ent_coef)
-        self._emergency_active = False  # Track emergency mode state
+        self._emergency_active = False
 
-    # ---------------------------- entropy normalization ----------------------------
 
     def _get_max_entropy(self, n_valid_actions: Optional[int] = None) -> float:
         k = self._effective_valid_actions(n_valid_actions)
@@ -182,18 +155,16 @@ class SmartEntropyController:
         return _clamp(float(raw_entropy) / max_h, 0.0, 1.0)
 
     def update_valid_actions_estimate(self, n_valid: int) -> None:
-        """EMA update of valid-action estimate; clamped to sane range."""
         try:
             n_valid = int(n_valid)
         except Exception:
             return
         n_valid = max(self.min_valid_floor, min(self.n_actions, n_valid))
 
-        # EMA on linear scale (stable enough); alpha can be stage-dependent if desired
+
         alpha = 0.10
         self._valid_actions_estimate = alpha * float(n_valid) + (1.0 - alpha) * float(self._valid_actions_estimate)
 
-    # ---------------------------- stage handling ----------------------------
 
     def on_stage_change(self, new_stage: int) -> None:
         if new_stage == self.current_stage:
@@ -215,30 +186,20 @@ class SmartEntropyController:
         self.cooldown_steps = self.cooldown_after_stage_change
         self.steps_since_update = 0
 
-    # ---------------------------- tolerances ----------------------------
 
     def _tolerance_band(self, stage: int) -> Tuple[float, float]:
-        """
-        Returns (low_tol, high_tol) where:
-        - emergency low triggers if norm_entropy < target - low_tol
-        - emergency high triggers if norm_entropy > target + high_tol
-
-        Early stages: tolerate high entropy; only protect against collapse.
-        Late stages: tight both sides.
-        """
         stage = int(max(0, min(stage, 9)))
 
         if stage <= 1:
-            # Discovery: only guard against collapse
-            return (0.35, 10.0)  # effectively disables high-side emergency
 
-        # Interpolate tolerances: stage 2..9 tighten progressively
-        t = (stage - 2) / 7.0  # 0..1
-        low_tol = (0.30 * (1.0 - t)) + (0.06 * t)   # 0.30 -> 0.06
-        high_tol = (0.35 * (1.0 - t)) + (0.08 * t)  # 0.35 -> 0.08
+            return (0.35, 10.0)
+
+
+        t = (stage - 2) / 7.0
+        low_tol = (0.30 * (1.0 - t)) + (0.06 * t)
+        high_tol = (0.35 * (1.0 - t)) + (0.08 * t)
         return (low_tol, high_tol)
 
-    # ---------------------------- main control ----------------------------
 
     def get_ent_coef(
         self,
@@ -247,19 +208,7 @@ class SmartEntropyController:
         timesteps_elapsed: int,
         n_valid_actions: Optional[int] = None,
     ) -> Tuple[float, str, bool]:
-        """
-        Compute recommended ent_coef.
 
-        Args:
-            current_entropy: raw entropy from policy (not normalized)
-            current_ent_coef: current ent_coef
-            timesteps_elapsed: delta-steps since last call (expected)
-            n_valid_actions: number of valid actions (mask-aware). Optional.
-
-        Returns:
-            (ent_coef, reason, should_apply)
-        """
-        # Defensive delta-steps
         try:
             delta_steps = int(timesteps_elapsed)
         except Exception:
@@ -275,7 +224,7 @@ class SmartEntropyController:
         k_eff = self._effective_valid_actions(n_valid_actions)
         max_h = self._get_max_entropy(n_valid_actions)
 
-        # Cooldown
+
         if self.cooldown_steps > 0:
             self.cooldown_steps = max(0, self.cooldown_steps - delta_steps)
             return (
@@ -284,7 +233,7 @@ class SmartEntropyController:
                 False,
             )
 
-        # Minimum interval
+
         if self.steps_since_update < self.min_steps_between_updates:
             return (
                 current_ent_coef,
@@ -299,15 +248,13 @@ class SmartEntropyController:
         low_threshold = _clamp(target - low_tol, 0.0, 1.0)
         high_threshold = _clamp(target + high_tol, 0.0, 1.0)
 
-        # ---------------- Emergency logic ----------------
 
-        # Discovery phases: intervene only on collapse
         if self.current_stage <= 1:
             if norm_entropy < low_threshold:
                 new_coef = min(bounds[1], float(current_ent_coef) * (1.0 + self.max_relative_step))
                 self.steps_since_update = 0
                 self.cooldown_steps = max(10_000, self.cooldown_after_emergency)
-                # keep PID output aligned to prevent a follow-up snap-back
+
                 self.pid._last_output = new_coef
                 return new_coef, f"DISCOVERY_BOOST: H_norm={norm_entropy:.3f} < {low_threshold:.3f}", True
 
@@ -317,7 +264,7 @@ class SmartEntropyController:
                 False,
             )
 
-        # Foundation+: emergency low/high
+
         if norm_entropy < low_threshold:
             new_coef = min(bounds[1], float(current_ent_coef) * (1.0 + self.max_relative_step))
             self.steps_since_update = 0
@@ -332,24 +279,21 @@ class SmartEntropyController:
             self.pid._last_output = new_coef
             return new_coef, f"EMERGENCY_HIGH: H_norm={norm_entropy:.3f} > {high_threshold:.3f}", True
 
-        # ---------------- PID control ----------------
 
-        # Let PID operate on normalized entropy; use dt proportional to elapsed steps bucket
-        # (keeps I/D scaling roughly consistent if caller varies frequency)
         dt = max(1.0, float(self.steps_since_update) / float(self.min_steps_between_updates))
 
         proposed, pid_reason = self.pid.update(norm_entropy, dt=dt)
 
-        # Rate limit relative step (hard safety clamp)
+
         if current_ent_coef > 0:
             upper = float(current_ent_coef) * (1.0 + self.max_relative_step)
             lower = float(current_ent_coef) * (1.0 - self.max_relative_step)
             proposed = _clamp(float(proposed), lower, upper)
 
-        # Clamp to stage bounds
+
         proposed = _clamp(float(proposed), bounds[0], bounds[1])
 
-        # Apply only if meaningful (>2%)
+
         if current_ent_coef > 0 and abs(proposed - current_ent_coef) / float(current_ent_coef) < 0.02:
             return current_ent_coef, f"PID_STABLE: H_norm={norm_entropy:.3f} | {pid_reason}", False
 
@@ -362,7 +306,6 @@ class SmartEntropyController:
         )
 
     def to_dict(self) -> dict:
-        """Serialize controller state for checkpointing."""
         return {
             "current_stage": self.current_stage,
             "cooldown_steps": self.cooldown_steps,
@@ -374,7 +317,6 @@ class SmartEntropyController:
         }
 
     def load_from_dict(self, state: dict) -> None:
-        """Restore controller state from checkpoint."""
         self.current_stage = int(state.get("current_stage", 0))
         self.cooldown_steps = int(state.get("cooldown_steps", 0))
         self.steps_since_update = int(state.get("steps_since_update", 0))

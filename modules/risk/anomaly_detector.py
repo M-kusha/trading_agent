@@ -1,7 +1,4 @@
-########################################################################################################################
-# File: modules/risk/anomaly_detector.py
-# PRODUCTION-READY Enhanced Anomaly Detector (contract-tight, hybrid global + per-instrument)
-########################################################################################################################
+
 
 from __future__ import annotations
 
@@ -43,16 +40,13 @@ class AnomalySeverity(Enum):
 
 
 class AnomalyVote(Enum):
-    """Standardized anomaly/risk vote for coordinators/routers."""
-    PROCEED = "proceed"    # normal - green light
-    CAUTION = "caution"    # elevated risk - reduce size / add safeguards
-    HALT    = "halt"       # high/critical risk - pause/halt new risk
-    ABSTAIN = "abstain"    # insufficient signal - do not influence
+    PROCEED = "proceed"
+    CAUTION = "caution"
+    HALT    = "halt"
+    ABSTAIN = "abstain"
 
 
-# Typed config (lint-safe) + namespaced health keys
 def _load_anomaly_detector_config_from_yaml() -> Dict[str, Any]:
-    """Load anomaly detector config values from risk_policy.yaml."""
     import os
 
     import yaml
@@ -72,15 +66,13 @@ def _load_anomaly_detector_config_from_yaml() -> Dict[str, Any]:
             escalation = policy.get("escalation", {})
             modules_cfg = policy.get("modules", {}).get("AnomalyDetector", {})
 
-            # NOTE: Do NOT use escalation thresholds here - those are drawdown %.
-            # Anomaly scores are 0-1 detection confidence, not loss percentages.
-            # Use module-specific anomaly thresholds from AnomalyDetector config:
-            anomaly_cfg = modules_cfg  # AnomalyDetector-specific settings
+
+            anomaly_cfg = modules_cfg
             defaults["emergency_threshold"] = float(anomaly_cfg.get("emergency_threshold", 0.7))
             defaults["critical_threshold"] = float(anomaly_cfg.get("critical_threshold", 0.5))
             defaults["warning_threshold"] = float(anomaly_cfg.get("warning_threshold", 0.3))
 
-            # Module-specific overrides
+
             for key in [
                 "pnl_limit",
                 "volume_zscore",
@@ -99,58 +91,55 @@ def _load_anomaly_detector_config_from_yaml() -> Dict[str, Any]:
 
 @dataclass
 class AnomalyDetectorConfig:
-    """Configuration loaded from risk_policy.yaml"""
-    # Core thresholds
+
     pnl_limit: float = 1000.0
-    # Ignore tiny absolute PnL moves (account currency)
+
     pnl_min_abs: float = 5.0
-    # Optional dynamic threshold: percentage of equity/balance
-    pnl_pct_limit: float = 0.01  # 1% of balance
+
+    pnl_pct_limit: float = 0.01
     volume_zscore: float = 3.0
     price_zscore: float = 3.0
     observation_zscore: float = 4.0
-    # History
+
     history_size: int = 100
     min_history_for_stats: int = 20
     correlation_window: int = 50
     volatility_window: int = 30
-    # Adaptation
+
     adaptive_thresholds: bool = True
     regime_awareness: bool = True
     learning_rate: float = 0.05
     threshold_smoothing: float = 0.8
-    # Training
+
     training_mode: bool = True
     training_duration_steps: int = 200
-    # Warmup steps before emitting PnL anomalies
+
     warmup_steps: int = 20
     synthetic_data_ratio: float = 0.3
-    # Performance / quality
+
     max_processing_time_ms: float = 50.0
     circuit_breaker_threshold: int = 5
     min_detection_quality: float = 0.7
-    # Anomaly score thresholds (0-1 scale, NOT drawdown percentages)
-    # These are detection confidence thresholds, not loss percentages!
-    warning_threshold: float = 0.3     # 30% anomaly score = warning
-    critical_threshold: float = 0.5    # 50% anomaly score = enhanced mode
-    emergency_threshold: float = 0.7   # 70% anomaly score = emergency mode
-    # Monitoring
+
+
+    warning_threshold: float = 0.3
+    critical_threshold: float = 0.5
+    emergency_threshold: float = 0.7
+
     health_check_interval: int = 30
     performance_window: int = 100
     false_positive_threshold: float = 0.3
-    # Status/health (namespaced)
+
     status_key: str = "anomaly_detector_status"
     health_key: str = "anomaly_detector_health"
 
     def __post_init__(self):
-        """Load values from risk_policy.yaml after init."""
         yaml_config = _load_anomaly_detector_config_from_yaml()
         for key, value in yaml_config.items():
             if hasattr(self, key):
                 setattr(self, key, value)
 
 
-# Module
 @module(**module_args(
     "EnhancedAnomalyDetector",
     description="Deterministic multi-window feature extraction with circuit breaker, monitoring, and explainability.",
@@ -164,17 +153,8 @@ class EnhancedAnomalyDetector(
     SmartInfoBusTradingMixin,
     SmartInfoBusStateMixin,
 ):
-    """
-    Contract guarantees:
-    - Returns ONLY provides keys + `_thesis` on success/fallback/error:
-      anomaly_detection, anomaly_score, anomaly_alerts, detection_analytics, _thesis
-    - Writes ONLY its provides keys to SmartInfoBus; health/status use namespaced keys.
-    - Numpy -> Python scalars/lists; timestamps are ISO-8601.
-    - Background monitor posts status & health; circuit breaker with safe fallback.
-    - Hybrid: global anomaly score + per-instrument scores (if per-instrument PnL is available).
-    """
 
-    # init & systems
+
     def __init__(
         self,
         config: Optional[Union[AnomalyDetectorConfig, Dict[str, Any]]] = None,
@@ -183,7 +163,7 @@ class EnhancedAnomalyDetector(
         **kwargs: Any,
     ) -> None:
 
-        # Keep BaseModule config as dict; use a typed copy for logic
+
         base_cfg = AnomalyDetectorConfig()
         cfg_dict: Dict[str, Any] = asdict(base_cfg)
 
@@ -192,7 +172,7 @@ class EnhancedAnomalyDetector(
         elif isinstance(config, AnomalyDetectorConfig):
             cfg_dict.update(asdict(config))
 
-        # Normalize key thresholds defensively (pnl_limit, *zscore)
+
         defaults = asdict(AnomalyDetectorConfig())
         for k in ['pnl_limit', 'volume_zscore', 'price_zscore', 'observation_zscore']:
             v = cfg_dict.get(k, defaults[k])
@@ -202,25 +182,25 @@ class EnhancedAnomalyDetector(
                 cfg_dict[k] = float(defaults[k])
 
         self._cfg = AnomalyDetectorConfig(**cfg_dict)
-        self.config: Dict[str, Any] = cfg_dict  # BaseModule expects dict-like
+        self.config: Dict[str, Any] = cfg_dict
 
         self.enabled = bool(enabled)
         self.action_dim = int(action_dim)
 
-        # Initialize low-level systems before BaseModule may call _initialize()
+
         self._initialize_advanced_systems()
 
-        # Define attributes consumed by _initialize before BaseModule runs it
+
         self.current_mode = AnomalyDetectionMode.INITIALIZATION
         self.mode_start_time = datetime.datetime.now()
         self.anomaly_score: float = 0.0
         self.detection_confidence: float = 0.5
         self.step_count: int = 0
-        self._last_vote: Optional[Dict[str, Any]] = None  # keep most recent vote for bus publishing
+        self._last_vote: Optional[Dict[str, Any]] = None
 
-        super().__init__()  # may call _initialize()
+        super().__init__()
 
-        # Detection state (guard against double-initialization from _initialize)
+
         if not getattr(self, "_det_state_initialized", False):
             self._initialize_detection_state()
 
@@ -237,16 +217,15 @@ class EnhancedAnomalyDetector(
         ))
 
     def _initialize(self) -> None:
-        """Lightweight async-style initialization hook required by BaseModule."""
         try:
             self.logger.info("[RELOAD] EnhancedAnomalyDetector async initialization")
-            # Ensure detection state and thresholds are present
+
             if not hasattr(self, 'current_thresholds') or not hasattr(self, 'base_thresholds'):
                 self._initialize_detection_state()
             else:
                 self._ensure_threshold_keys(initial=True)
 
-            # Post initial namespaced status (do not write provides here)
+
             status = {
                 "current_mode": self.current_mode.value,
                 "enabled": bool(self.enabled),
@@ -263,13 +242,13 @@ class EnhancedAnomalyDetector(
                 thesis="Anomaly detector initialization status",
             )
 
-            # Seed baseline voting keys to avoid early BUS MISS for coordinators
+
             try:
                 baseline_vote = {
                     "module": "EnhancedAnomalyDetector",
                     "topic": "anomaly_risk",
                     "vote": "abstain",
-                    "action": "abstain",  # Standard action field for committee compatibility
+                    "action": "abstain",
                     "confidence": 0.5,
                     "sizing_multiplier": 0.75,
                     "reasoning": "Baseline anomaly vote at initialization",
@@ -308,7 +287,7 @@ class EnhancedAnomalyDetector(
         self.system_utilities = SystemUtilities()
         self.performance_tracker = PerformanceTracker()
 
-        # Circuit breaker state
+
         self.circuit_breaker: Dict[str, Any] = {
             'failures': 0,
             'last_failure': 0.0,
@@ -317,45 +296,45 @@ class EnhancedAnomalyDetector(
             'cooldown_sec': 20.0,
         }
 
-        # Health
+
         self._health_status: str = 'healthy'
         self._last_health_check: float = time.time()
 
-        # Thread sync
+
         self._lock = threading.RLock()
 
     def _initialize_detection_state(self) -> None:
         try:
-            # Mixins
+
             self._initialize_risk_state()
             self._initialize_trading_state()
             self._initialize_state_management()
 
-            # Mode
+
             self.current_mode = AnomalyDetectionMode.INITIALIZATION
             self.mode_start_time = datetime.datetime.now()
 
-            # Thresholds
-            self.current_thresholds: Dict[str, Any] = dict(self.config)  # plain dict for bus
+
+            self.current_thresholds: Dict[str, Any] = dict(self.config)
             self.base_thresholds: Dict[str, Any] = dict(self.config)
             self.threshold_history: deque = deque(maxlen=100)
-            # Ensure required threshold keys are present (avoid KeyError: 'pnl_limit')
+
             self._ensure_threshold_keys(initial=True)
 
-            # Global data history
+
             self.pnl_history: deque = deque(maxlen=self._cfg.history_size)
             self.volume_history: deque = deque(maxlen=self._cfg.history_size)
             self.price_history: deque = deque(maxlen=self._cfg.history_size)
             self.observation_history: deque = deque(maxlen=min(self._cfg.history_size, 50))
             self.volatility_history: deque = deque(maxlen=self._cfg.volatility_window)
 
-            # Per-instrument histories & scores (hybrid design)
+
             self.instrument_pnl_history: Dict[str, deque] = defaultdict(
                 lambda: deque(maxlen=self._cfg.history_size)
             )
             self.instrument_scores: Dict[str, Dict[str, Any]] = {}
 
-            # Anomaly buckets (global)
+
             self.anomalies: Dict[str, List[Dict[str, Any]]] = {
                 "pnl": [],
                 "volume": [],
@@ -369,7 +348,7 @@ class EnhancedAnomalyDetector(
                 "market_structure": [],
             }
 
-            # Metrics
+
             self.anomaly_score = 0.0
             self.detection_confidence = 0.5
             self.step_count = 0
@@ -377,18 +356,18 @@ class EnhancedAnomalyDetector(
             self.false_positive_tracker: deque = deque(maxlen=self._cfg.performance_window)
             self.detection_effectiveness: deque = deque(maxlen=self._cfg.performance_window)
 
-            # Context baselines
+
             self.regime_baselines = defaultdict(lambda: defaultdict(lambda: deque(maxlen=100)))
             self.session_baselines = defaultdict(lambda: defaultdict(lambda: deque(maxlen=100)))
             self.volatility_baselines = defaultdict(lambda: deque(maxlen=50))
 
-            # Market context
+
             self.market_regime: str = "normal"
             self.market_session: str = "unknown"
             self.volatility_regime: str = "medium"
             self.market_stress_level: float = 0.0
 
-            # Training / adaptation
+
             self.training_progress: float = 0.0
             self.is_training_complete: bool = False
             our_params = {
@@ -400,16 +379,16 @@ class EnhancedAnomalyDetector(
             }
             self.adaptive_params: Dict[str, Any] = dict(our_params)
 
-            # Quality/perf
+
             self._detection_quality: float = 0.5
             self._processing_times: deque = deque(maxlen=100)
             self._last_significant_detection: Optional[str] = None
 
-            # Integrations
+
             self.external_anomaly_sources: Dict[str, Any] = {}
             self.compliance_alerts: List[Any] = []
 
-            # Publish initial status
+
             status = {
                 "current_mode": self.current_mode.value,
                 "enabled": self.enabled,
@@ -425,12 +404,12 @@ class EnhancedAnomalyDetector(
                 module='EnhancedAnomalyDetector',
                 thesis="Initial anomaly detector status",
             )
-            # Mark as initialized to avoid duplicate init from both __init__ and _initialize()
+
             self._det_state_initialized = True
         except Exception as e:
             self.logger.error(f"Anomaly detector initialization failed: {e}")
 
-    # background monitor
+
     def _start_monitoring(self) -> None:
         if self._monitoring_active:
             return
@@ -444,7 +423,7 @@ class EnhancedAnomalyDetector(
                     self._analyze_detection_effectiveness()
                     self._adapt_detection_parameters()
                     self._cleanup_old_data()
-                    # Publish health snapshot (namespaced)
+
                     health = self.get_health_status()
                     self.smart_bus.set(
                         self._cfg.health_key,
@@ -453,7 +432,7 @@ class EnhancedAnomalyDetector(
                         thesis="Anomaly detector health heartbeat",
                     )
 
-                    # Cooldown-based breaker reset
+
                     if self.circuit_breaker['state'] == 'OPEN':
                         if (time.time() - self.circuit_breaker['last_failure']) >= self.circuit_breaker['cooldown_sec']:
                             self.circuit_breaker['state'] = 'CLOSED'
@@ -470,12 +449,12 @@ class EnhancedAnomalyDetector(
     def stop_monitoring(self) -> None:
         self._monitoring_active = False
 
-    # contract-safe process
+
     async def process(self, **inputs: Any) -> Dict[str, Any]:
         start_time = time.time()
         try:
             if not self.enabled:
-                # Disabled fallback + vote
+
                 payload = await self._handle_disabled_fallback()
                 vote = await self.cast_vote(**inputs)
                 payload["anomaly_risk_vote"] = vote
@@ -484,7 +463,7 @@ class EnhancedAnomalyDetector(
                 self._write_bus_from_payload(payload, payload["_thesis"])
                 return payload
 
-            # Circuit breaker gating
+
             if self.circuit_breaker['state'] == 'OPEN':
                 thesis = "Circuit breaker OPEN; safe fallback payload emitted."
                 payload = self._fallback_payload(thesis=thesis)
@@ -497,7 +476,7 @@ class EnhancedAnomalyDetector(
 
             self.step_count += 1
 
-            # Extract detection data
+
             detection_data = await self._extract_detection_data(**inputs)
             if not detection_data:
                 payload = await self._handle_no_data_fallback()
@@ -508,10 +487,10 @@ class EnhancedAnomalyDetector(
                 self._write_bus_from_payload(payload, payload["_thesis"])
                 return payload
 
-            # Per-instrument metrics (hybrid global + per-instrument)
+
             await self._update_per_instrument_metrics_async(detection_data)
 
-            # Full pipeline
+
             context_result    = await self._update_market_context_async(detection_data)
             detection_result  = await self._detect_anomalies_comprehensive_async(detection_data)
             adaptation_result = await self._adapt_thresholds_async(detection_data) if self._cfg.adaptive_thresholds else {}
@@ -532,17 +511,17 @@ class EnhancedAnomalyDetector(
 
             thesis = await self._generate_detection_thesis(detection_data, _)
 
-            # Format payload (strict) + vote
+
             payload = self._format_provides_output(thesis=thesis)
             vote = await self.cast_vote(**inputs)
             payload["anomaly_risk_vote"] = vote
             payload['EnhancedAnomalyDetector_voting_proposal'] = vote
             payload['EnhancedAnomalyDetector_confidence'] = vote.get('confidence', 0.5)
 
-            # Publish to SmartInfoBus
+
             self._write_bus_from_payload(payload, thesis)
 
-            # Success metrics
+
             processing_time_ms = (time.time() - start_time) * 1000.0
             self._record_success(processing_time_ms)
 
@@ -557,12 +536,12 @@ class EnhancedAnomalyDetector(
                 payload['EnhancedAnomalyDetector_voting_proposal'] = vote
                 payload['EnhancedAnomalyDetector_confidence'] = vote.get('confidence', 0.5)
             except Exception:
-                # Attach a minimal abstain vote to satisfy provides
+
                 fallback_vote = {
                     "module": "EnhancedAnomalyDetector",
                     "topic": "anomaly_risk",
                     "vote": "abstain",
-                    "action": "abstain",  # Standard action field for committee compatibility
+                    "action": "abstain",
                     "confidence": 0.5,
                     "sizing_multiplier": 0.75,
                     "reasoning": "Vote generation failed in error path; abstaining.",
@@ -577,7 +556,7 @@ class EnhancedAnomalyDetector(
                 pass
             return payload
 
-    # SmartInfoBus I/O (single-writer)
+
     def _write_bus_from_payload(self, payload: Dict[str, Any], thesis: str) -> None:
         try:
             self.smart_bus.set(
@@ -604,7 +583,7 @@ class EnhancedAnomalyDetector(
                 module='EnhancedAnomalyDetector',
                 thesis="Detection analytics update",
             )
-            # Alias for consumers expecting 'anomaly_detector'
+
             try:
                 self.smart_bus.set(
                     'anomaly_detector',
@@ -615,15 +594,15 @@ class EnhancedAnomalyDetector(
             except Exception:
                 pass
 
-            # NEW: publish standardized vote - ALWAYS publish even if None/empty
+
             vote = payload.get('anomaly_risk_vote') or getattr(self, '_last_vote', None)
             if not vote:
-                # Fallback vote if none exists
+
                 vote = {
                     "module": "EnhancedAnomalyDetector",
                     "topic": "anomaly_risk",
                     "vote": "abstain",
-                    "action": "abstain",  # Standard action field for committee compatibility
+                    "action": "abstain",
                     "confidence": 0.5,
                     "sizing_multiplier": 0.75,
                     "reasoning": "No vote generated; abstaining.",
@@ -648,9 +627,9 @@ class EnhancedAnomalyDetector(
             err = self.error_pinpointer.analyze_error(e, "bus_write")
             self.logger.error(f"SmartInfoBus update failed: {err}")
 
-    # payload formatter (contract enforcer)
+
     def _format_provides_output(self, thesis: str) -> Dict[str, Any]:
-        # Build anomaly_detection snapshot
+
         detection_data_payload = {
             'current_mode': self.current_mode.value,
             'enabled': bool(self.enabled),
@@ -663,7 +642,7 @@ class EnhancedAnomalyDetector(
             'timestamp': datetime.datetime.now().isoformat(),
         }
 
-        # Score view
+
         score_data_payload = {
             'anomaly_score': float(self.anomaly_score),
             'detection_confidence': float(self.detection_confidence),
@@ -678,7 +657,7 @@ class EnhancedAnomalyDetector(
             ),
         }
 
-        # Alerts view
+
         alerts_data_payload = {
             'emergency_mode': bool(self.current_mode == AnomalyDetectionMode.EMERGENCY),
             'critical_anomalies_present': any(
@@ -704,7 +683,7 @@ class EnhancedAnomalyDetector(
             },
         }
 
-        # Analytics view (all python types)
+
         perf_avg_ms = (
             np.mean(list(self._processing_times)[-10:]) * 1000.0
             if self._processing_times
@@ -722,7 +701,7 @@ class EnhancedAnomalyDetector(
                     'timestamp': data.get('timestamp'),
                 }
         except Exception:
-            # Keep analytics robust even if instrument_scores got corrupted
+
             per_instrument_scores_payload = {}
 
         analytics_payload = {
@@ -753,7 +732,7 @@ class EnhancedAnomalyDetector(
             'per_instrument_scores': per_instrument_scores_payload,
         }
 
-        # Compact alias for DynamicRiskController compatibility
+
         worst_inst_score = 0.0
         try:
             if getattr(self, 'instrument_scores', None):
@@ -791,7 +770,7 @@ class EnhancedAnomalyDetector(
             '_thesis': thesis,
         }
 
-    # data extraction & context
+
     async def _extract_detection_data(self, **inputs: Any) -> Optional[Dict[str, Any]]:
         try:
             risk_data = self.smart_bus.get('risk_data', 'EnhancedAnomalyDetector') or {}
@@ -808,7 +787,7 @@ class EnhancedAnomalyDetector(
             risk_snapshot = risk_data.get('risk_snapshot', {})
             if not pnl and 'recent_pnl' in risk_snapshot:
                 pnl = risk_snapshot['recent_pnl']
-            # Fallback: some producers publish recent PnL under risk_data.metrics
+
             if not pnl:
                 try:
                     metrics = risk_data.get('metrics', {})
@@ -827,7 +806,7 @@ class EnhancedAnomalyDetector(
             if not trades and 'recent_trades' in trading_snapshot:
                 trades = trading_snapshot['recent_trades']
 
-            # Per-instrument positions / PnL aggregation (hybrid behaviour)
+
             positions = inputs.get('positions')
             if positions is None:
                 positions = (
@@ -939,16 +918,8 @@ class EnhancedAnomalyDetector(
         except Exception as e:
             self.logger.warning(f"Context baseline update failed: {e}")
 
-    # per-instrument metrics (hybrid layer)
-    async def _update_per_instrument_metrics_async(self, detection_data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Maintain per-instrument PnL histories and derive simple per-instrument
-        anomaly scores, while keeping the main anomaly engine global.
 
-        This allows downstream modules (DynamicRiskController, PPO, etc.) to
-        distinguish between XAUUSD vs EURUSD behaviour without changing the
-        global semantics.
-        """
+    async def _update_per_instrument_metrics_async(self, detection_data: Dict[str, Any]) -> Dict[str, Any]:
         try:
             if not hasattr(self, 'instrument_pnl_history'):
                 return {'per_instrument_metrics_updated': False, 'reason': 'no_instrument_state'}
@@ -973,12 +944,12 @@ class EnhancedAnomalyDetector(
                 score = 0.0
                 severity = AnomalySeverity.INFO.value
 
-                # Absolute-limit style anomaly component
+
                 if abs(pnl_val) > limit:
                     score = min(1.0, abs(pnl_val) / max(limit, 1e-6))
                     severity = AnomalySeverity.WARNING.value
 
-                # Statistical outlier vs instrument-specific PnL history
+
                 if len(hist) >= self._cfg.min_history_for_stats:
                     z = await self._calculate_robust_zscore_async(pnl_val, list(hist))
                     if z > 3.0:
@@ -1005,10 +976,10 @@ class EnhancedAnomalyDetector(
             self.logger.warning(f"Per-instrument metrics update failed: {e}")
             return {'per_instrument_metrics_updated': False, 'error': str(e)}
 
-    # comprehensive detection
+
     async def _detect_anomalies_comprehensive_async(self, detection_data: Dict[str, Any]) -> Dict[str, Any]:
         try:
-            # Clear/refresh buckets
+
             for k in self.anomalies:
                 self.anomalies[k].clear()
 
@@ -1032,7 +1003,7 @@ class EnhancedAnomalyDetector(
 
             structure_result = await self._detect_market_structure_anomalies_async(detection_data)
 
-            # Update simple stats counters
+
             self.detection_stats['total_anomalies'] = sum(len(v) for v in self.anomalies.values())
             self.detection_stats['pnl_count'] += len(self.anomalies['pnl'])
             self.detection_stats['volume_count'] += len(self.anomalies['volume'])
@@ -1049,10 +1020,10 @@ class EnhancedAnomalyDetector(
             self.logger.error(f"Comprehensive anomaly detection failed: {e}")
             return {'comprehensive_detection_completed': False, 'error': str(e)}
 
-    # individual detectors (safer)
+
     async def _detect_pnl_anomalies_async(self, detection_data: Dict[str, Any]) -> Dict[str, Any]:
         try:
-            # Ensure thresholds exist (pnl_limit in particular)
+
             self._ensure_threshold_keys()
             try:
                 if int(detection_data.get('step_count', 0)) < int(self._cfg.warmup_steps):
@@ -1072,7 +1043,7 @@ class EnhancedAnomalyDetector(
             anomalies_detected = 0
 
             adjusted_limit = await self._get_context_adjusted_threshold_async('pnl_limit', detection_data)
-            # Dynamic limit by equity (if available), and absolute floor
+
             dyn_limit = 0.0
             try:
                 pm = self.smart_bus.get('portfolio_metrics', 'EnhancedAnomalyDetector') or {}
@@ -1518,10 +1489,10 @@ class EnhancedAnomalyDetector(
             self.logger.warning(f"Market structure anomaly detection failed: {e}")
             return {'market_structure_detected': False, 'error': str(e)}
 
-    # adaptation, scoring, training, emergency, mode
+
     async def _adapt_thresholds_async(self, detection_data: Dict[str, Any]) -> Dict[str, Any]:
         try:
-            # Defensive: ensure thresholds exist before adapting
+
             self._ensure_threshold_keys()
             try:
                 if int(detection_data.get('step_count', 0)) < int(self._cfg.warmup_steps):
@@ -1602,7 +1573,6 @@ class EnhancedAnomalyDetector(
             return {'threshold_adaptation': False, 'error': str(e)}
 
     async def _calculate_comprehensive_score_async(self, detection_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Weighted, context-aware anomaly score + confidence."""
         try:
             severity_weights = {
                 AnomalySeverity.INFO.value: 0.1,
@@ -1647,7 +1617,7 @@ class EnhancedAnomalyDetector(
                 self.detection_confidence = float(np.clip(avg_conf, 0.0, 1.0))
             else:
                 self.anomaly_score = 0.0
-                self.detection_confidence = 1.0  # confident there's no anomaly
+                self.detection_confidence = 1.0
 
             eff = await self._calculate_detection_effectiveness_async()
             self.detection_effectiveness.append(eff)
@@ -1838,7 +1808,7 @@ class EnhancedAnomalyDetector(
             data_suff = min(len(self.pnl_history) / 50.0, 1.0)
             parts.append(f"Data quality: {data_suff:.0%} sufficiency")
 
-            # Optional: mention worst instrument if we have it
+
             if getattr(self, 'instrument_scores', None):
                 try:
                     worst_sym, worst_info = max(
@@ -1855,7 +1825,7 @@ class EnhancedAnomalyDetector(
         except Exception as e:
             return f"Detection thesis generation failed: {e!s} - Core anomaly detection functional"
 
-    # fallback & error payloads (contract-safe)
+
     def _fallback_payload(self, thesis: str) -> Dict[str, Any]:
         return self._format_provides_output(thesis=thesis)
 
@@ -1873,7 +1843,7 @@ class EnhancedAnomalyDetector(
 
     async def _handle_detection_error(self, error: Exception, start_time: float) -> Dict[str, Any]:
         processing_time = (time.time() - start_time) * 1000.0
-        # circuit breaker update
+
         self.circuit_breaker['failures'] += 1
         self.circuit_breaker['last_failure'] = time.time()
         if self.circuit_breaker['failures'] >= int(self.circuit_breaker['threshold']):
@@ -1895,12 +1865,12 @@ class EnhancedAnomalyDetector(
             circuit_breaker_state=self.circuit_breaker['state'],
         ))
         self._record_failure(error)
-        # Keep state minimally pessimistic
+
         self.anomaly_score = max(0.1, float(self.anomaly_score))
         self.detection_confidence = min(0.5, float(self.detection_confidence))
         return self._format_provides_output(thesis=f"Anomaly detector error fallback: {error!s}")
 
-    # calculations & utilities
+
     async def _generate_synthetic_pnl_async(self, detection_data: Dict[str, Any]) -> float:
         try:
             base = np.random.normal(0, 100)
@@ -2071,11 +2041,11 @@ class EnhancedAnomalyDetector(
 
     async def _finalize_training_thresholds_async(self) -> None:
         try:
-            # Defensive: ensure thresholds exist before finalization
+
             self._ensure_threshold_keys()
-            # Use internal step_count; respect warmup
+
             if int(getattr(self, 'step_count', 0)) < int(getattr(self._cfg, 'warmup_steps', 0)):
-                return  # still in warmup; do not finalize yet
+                return
             if len(self.pnl_history) >= 100:
                 arr = np.array(list(self.pnl_history), dtype=np.float64)
                 final_pnl = float(np.percentile(np.abs(arr), 98))
@@ -2092,7 +2062,7 @@ class EnhancedAnomalyDetector(
         except Exception as e:
             self.logger.warning(f"Threshold finalization failed: {e}")
 
-    # monitoring & health
+
     def _update_detection_health(self) -> None:
         try:
             if not hasattr(self, '_detection_quality') or not hasattr(self, '_processing_times'):
@@ -2151,7 +2121,7 @@ class EnhancedAnomalyDetector(
                         0.7,
                         float(self.adaptive_params['sensitivity_multiplier']) * 0.995,
                     )
-            # small random walk to simulate calibration dynamics
+
             self._detection_quality = float(
                 np.clip(
                     self._detection_quality + (np.random.normal(0, 0.02) if self.enabled else -0.1),
@@ -2169,7 +2139,7 @@ class EnhancedAnomalyDetector(
             for k in self.anomalies:
                 if len(self.anomalies[k]) > 100:
                     self.anomalies[k] = self.anomalies[k][-50:]
-            # prune empty baselines to avoid memory leaks
+
             for regime in list(self.regime_baselines.keys()):
                 for dtype in list(self.regime_baselines[regime].keys()):
                     if len(self.regime_baselines[regime][dtype]) == 0:
@@ -2199,9 +2169,8 @@ class EnhancedAnomalyDetector(
             False,
         )
 
-    # ¯\_(ツ)_/¯ public interface (kept stable) ¯\_(ツ)_/¯
+
     def get_voter_capabilities(self) -> Dict[str, Any]:
-        """Describe this voter's topic and schema to any aggregator/router."""
         return {
             "module": "EnhancedAnomalyDetector",
             "topic": "anomaly_risk",
@@ -2222,10 +2191,6 @@ class EnhancedAnomalyDetector(
         }
 
     async def cast_vote(self, **inputs: Any) -> Dict[str, Any]:
-        """
-        Convert current anomaly state into a standardized vote.
-        Uses only in-memory state; safe to call in fallbacks.
-        """
         mode = self.current_mode
         score = float(self.anomaly_score)
         crit_thresh = float(self._cfg.critical_threshold)
@@ -2240,7 +2205,7 @@ class EnhancedAnomalyDetector(
             )
         )
 
-        # Decide vote + suggested sizing
+
         if not self.enabled:
             vote = AnomalyVote.ABSTAIN
             sizing = 0.75
@@ -2272,7 +2237,7 @@ class EnhancedAnomalyDetector(
             halt_flag = False
             reduce_flag = False
 
-        # Reuse the module's confidence logic
+
         try:
             conf = await self.calculate_confidence(
                 {"halt_trading": halt_flag, "reduce_exposure": reduce_flag},
@@ -2285,7 +2250,7 @@ class EnhancedAnomalyDetector(
             "module": "EnhancedAnomalyDetector",
             "topic": "anomaly_risk",
             "vote": vote.value,
-            "action": vote.value,  # Standard action field for committee compatibility
+            "action": vote.value,
             "confidence": float(conf),
             "sizing_multiplier": float(sizing),
             "reasoning": reason,
@@ -2380,43 +2345,42 @@ class EnhancedAnomalyDetector(
         }
 
     def reset(self) -> None:
-        """Comprehensively reset detector state for a new session/run."""
         super().reset()
-        # Core anomaly collections
+
         for k in self.anomalies:
             self.anomalies[k].clear()
         self.anomaly_score = 0.0
         self.detection_confidence = 0.5
         self.step_count = 0
-        # Stats & trackers
+
         self.detection_stats.clear()
         self.false_positive_tracker.clear()
         self.detection_effectiveness.clear()
-        # Histories
+
         self.pnl_history.clear()
         self.volume_history.clear()
         self.price_history.clear()
         self.observation_history.clear()
         self.volatility_history.clear()
         self.threshold_history.clear()
-        # Per-instrument state
+
         if hasattr(self, 'instrument_pnl_history'):
             self.instrument_pnl_history.clear()
         if hasattr(self, 'instrument_scores'):
             self.instrument_scores.clear()
-        # Baselines
+
         self.regime_baselines.clear()
         self.session_baselines.clear()
         self.volatility_baselines.clear()
-        # Regime/session meta
+
         self.market_regime = "normal"
         self.market_session = "unknown"
         self.volatility_regime = "medium"
         self.market_stress_level = 0.0
-        # Training progress
+
         self.training_progress = 0.0
         self.is_training_complete = False
-        # Adaptive parameters
+
         self.adaptive_params.update({
             'sensitivity_multiplier': 1.0,
             'regime_adaptation_factor': 1.0,
@@ -2424,27 +2388,26 @@ class EnhancedAnomalyDetector(
             'learning_momentum': 0.0,
             'detection_confidence_boost': 1.0,
         })
-        # Thresholds
+
         self.current_thresholds = dict(self.base_thresholds)
         self._ensure_threshold_keys()
-        # Circuit breaker & health
+
         self.circuit_breaker['failures'] = 0
         self.circuit_breaker['state'] = 'CLOSED'
         self._health_status = 'healthy'
         self._detection_quality = 0.5
-        # External sources & compliance
+
         self.external_anomaly_sources.clear()
         self.compliance_alerts.clear()
-        # Operational mode
+
         self.current_mode = AnomalyDetectionMode.INITIALIZATION
         self.mode_start_time = datetime.datetime.now()
         self.logger.info("[RELOAD] Enhanced Anomaly Detector reset - all state cleared")
 
-    # ------------------------------ STATE PERSISTENCE -----------------
+
     def _get_custom_state(self) -> Dict[str, Any]:
-        """Return custom state for persistence."""
         return {
-            # Histories (truncated for storage)
+
             'pnl_history': list(self.pnl_history)[-50:],
             'volume_history': list(self.volume_history)[-50:],
             'price_history': list(self.price_history)[-50:],
@@ -2452,49 +2415,48 @@ class EnhancedAnomalyDetector(
             'volatility_history': list(self.volatility_history)[-30:],
             'threshold_history': list(self.threshold_history)[-50:],
 
-            # Per-instrument histories & scores
+
             'instrument_pnl_history': {
                 k: list(hist)[-50:]
                 for k, hist in getattr(self, 'instrument_pnl_history', {}).items()
             },
             'instrument_scores': dict(getattr(self, 'instrument_scores', {})),
 
-            # Anomaly counts and stats
+
             'detection_stats': dict(self.detection_stats),
             'anomaly_score': float(self.anomaly_score),
             'detection_confidence': float(self.detection_confidence),
             'step_count': self.step_count,
 
-            # Adaptive parameters (learned)
+
             'adaptive_params': dict(self.adaptive_params),
 
-            # Thresholds (may have been adapted)
+
             'current_thresholds': dict(self.current_thresholds),
 
-            # Market context
+
             'market_regime': self.market_regime,
             'market_session': self.market_session,
             'volatility_regime': self.volatility_regime,
             'market_stress_level': float(self.market_stress_level),
 
-            # Training progress
+
             'training_progress': float(self.training_progress),
             'is_training_complete': self.is_training_complete,
 
-            # Detection quality
+
             '_detection_quality': float(self._detection_quality),
 
-            # Mode
+
             'current_mode': self.current_mode.value,
         }
 
     def _set_custom_state(self, state: Dict[str, Any]) -> None:
-        """Restore custom state from persistence."""
         if not state:
             return
 
         try:
-            # Restore histories
+
             if 'pnl_history' in state:
                 self.pnl_history = deque(state['pnl_history'], maxlen=self._cfg.history_size)
             if 'volume_history' in state:
@@ -2514,7 +2476,7 @@ class EnhancedAnomalyDetector(
             if 'threshold_history' in state:
                 self.threshold_history = deque(state['threshold_history'], maxlen=100)
 
-            # Restore per-instrument state
+
             if 'instrument_pnl_history' in state:
                 self.instrument_pnl_history = defaultdict(
                     lambda: deque(maxlen=self._cfg.history_size)
@@ -2524,7 +2486,7 @@ class EnhancedAnomalyDetector(
             if 'instrument_scores' in state:
                 self.instrument_scores = dict(state['instrument_scores'])
 
-            # Restore stats
+
             if 'detection_stats' in state:
                 self.detection_stats = defaultdict(int, state['detection_stats'])
             if 'anomaly_score' in state:
@@ -2534,15 +2496,15 @@ class EnhancedAnomalyDetector(
             if 'step_count' in state:
                 self.step_count = int(state['step_count'])
 
-            # Restore adaptive params
+
             if 'adaptive_params' in state:
                 self.adaptive_params.update(state['adaptive_params'])
 
-            # Restore thresholds
+
             if 'current_thresholds' in state:
                 self.current_thresholds.update(state['current_thresholds'])
 
-            # Restore market context
+
             if 'market_regime' in state:
                 self.market_regime = state['market_regime']
             if 'market_session' in state:
@@ -2552,17 +2514,17 @@ class EnhancedAnomalyDetector(
             if 'market_stress_level' in state:
                 self.market_stress_level = float(state['market_stress_level'])
 
-            # Restore training progress
+
             if 'training_progress' in state:
                 self.training_progress = float(state['training_progress'])
             if 'is_training_complete' in state:
                 self.is_training_complete = bool(state['is_training_complete'])
 
-            # Restore quality
+
             if '_detection_quality' in state:
                 self._detection_quality = float(state['_detection_quality'])
 
-            # Restore mode
+
             if 'current_mode' in state:
                 mode_str = state['current_mode']
                 for mode in AnomalyDetectionMode:
@@ -2570,9 +2532,9 @@ class EnhancedAnomalyDetector(
                         self.current_mode = mode
                         break
 
-            # Make sure critical thresholds exist after restore
+
             self._ensure_threshold_keys()
-            # Reset mode start time for monitoring / health
+
             self.mode_start_time = datetime.datetime.now()
 
             self.logger.info(
@@ -2587,16 +2549,8 @@ class EnhancedAnomalyDetector(
         except Exception as e:
             self.logger.error(f"Failed to restore anomaly detector state: {e}")
 
-    # ------------------------------ INTERNAL HELPERS -----------------
 
     def _ensure_threshold_keys(self, initial: bool = False) -> None:
-        """
-        Ensure that all critical threshold keys exist in current/base thresholds.
-
-        This is defensive: it never raises; it only fills missing keys from the
-        typed config to avoid KeyError (e.g. 'pnl_limit') during hot reload or
-        after state restore.
-        """
         try:
             if not hasattr(self, "_cfg"):
                 return
@@ -2608,14 +2562,14 @@ class EnhancedAnomalyDetector(
                 "observation_zscore": float(self._cfg.observation_zscore),
             }
 
-            # Base thresholds
+
             if not hasattr(self, "base_thresholds") or not isinstance(self.base_thresholds, dict):
                 self.base_thresholds = dict(critical_defaults)
             else:
                 for k, v in critical_defaults.items():
                     self.base_thresholds.setdefault(k, v)
 
-            # Current thresholds
+
             if not hasattr(self, "current_thresholds") or not isinstance(self.current_thresholds, dict):
                 self.current_thresholds = dict(self.base_thresholds)
             else:
@@ -2634,7 +2588,7 @@ class EnhancedAnomalyDetector(
                     )
                 )
         except Exception as e:
-            # Last-resort fallback thresholds
+
             try:
                 self.current_thresholds = {
                     "pnl_limit": float(getattr(self._cfg, "pnl_limit", 1000.0)),

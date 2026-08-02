@@ -1,8 +1,4 @@
-# ─────────────────────────────────────────────────────────────
-# File: modules/risk/portfolio_risk_system.py
-# [ROCKET] PRODUCTION-READY Enhanced Portfolio Risk System
-# Advanced portfolio risk management with SmartInfoBus integration and intelligent automation
-# ─────────────────────────────────────────────────────────────
+
 
 import asyncio
 import datetime
@@ -25,7 +21,6 @@ from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 
 
 class RiskMode(Enum):
-    """Portfolio risk operational modes"""
     INITIALIZATION = "initialization"
     BOOTSTRAP = "bootstrap"
     NORMAL = "normal"
@@ -35,7 +30,6 @@ class RiskMode(Enum):
 
 
 def _load_portfolio_risk_config_from_yaml() -> Dict[str, Any]:
-    """Load portfolio risk config values from risk_policy.yaml."""
     import os
 
     import yaml
@@ -45,55 +39,53 @@ def _load_portfolio_risk_config_from_yaml() -> Dict[str, Any]:
         if os.path.exists(config_path):
             with open(config_path, "r", encoding="utf-8") as f:
                 policy = yaml.safe_load(f) or {}
-            
-            # Map risk_policy.yaml values to PortfolioRiskConfig fields
+
+
             limits = policy.get("limits", {})
             lot_sizing = policy.get("lot_sizing", {})
             escalation = policy.get("escalation", {})
             modules_cfg = policy.get("modules", {}).get("PortfolioRiskSystem", {})
-            
-            # Core limits from risk_policy.yaml
+
+
             defaults["dd_limit"] = float(limits.get("max_drawdown", 0.085))
             defaults["max_position_pct"] = float(limits.get("max_position_size", 0.05))
-            defaults["max_portfolio_exposure"] = float(limits.get("max_exposure_pct", 0.05) * 4)  # Portfolio can be 4x position
+            defaults["max_portfolio_exposure"] = float(limits.get("max_exposure_pct", 0.05) * 4)
             defaults["risk_budget_daily"] = float(limits.get("max_daily_loss", 0.042))
             defaults["correlation_threshold"] = float(limits.get("max_correlation", 0.70))
-            
-            # Module-specific overrides
+
+
             defaults["var_confidence"] = float(modules_cfg.get("var_confidence", 0.95))
             defaults["correlation_window"] = int(modules_cfg.get("correlation_window", 30))
     except Exception:
-        pass  # Fall back to dataclass defaults
+        pass
     return defaults
 
 
 @dataclass
 class PortfolioRiskConfig:
-    """Configuration for Portfolio Risk System - values loaded from risk_policy.yaml"""
     var_window: int = 20
-    dd_limit: float = 0.085           # From limits.max_drawdown
+    dd_limit: float = 0.085
     risk_mult: float = 2.0
     min_position_pct: float = 0.01
-    max_position_pct: float = 0.05    # From limits.max_position_size
-    correlation_window: int = 30       # From modules.PortfolioRiskSystem
+    max_position_pct: float = 0.05
+    correlation_window: int = 30
     bootstrap_trades: int = 10
-    var_confidence: float = 0.95       # From modules.PortfolioRiskSystem
-    max_portfolio_exposure: float = 0.20  # 4x position size
-    correlation_threshold: float = 0.70   # From limits.max_correlation
+    var_confidence: float = 0.95
+    max_portfolio_exposure: float = 0.20
+    correlation_threshold: float = 0.70
     volatility_lookback: int = 30
-    risk_budget_daily: float = 0.042   # From limits.max_daily_loss
+    risk_budget_daily: float = 0.042
 
-    # Performance thresholds
+
     max_processing_time_ms: float = 200
     circuit_breaker_threshold: int = 5
     min_risk_quality: float = 0.3
 
-    # Adaptation parameters
+
     adaptive_learning_rate: float = 0.01
     risk_sensitivity: float = 1.0
-    
+
     def __post_init__(self):
-        """Override defaults with values from risk_policy.yaml."""
         yaml_config = _load_portfolio_risk_config_from_yaml()
         for key, value in yaml_config.items():
             if hasattr(self, key):
@@ -106,21 +98,10 @@ class PortfolioRiskConfig:
     error_handling=True,
     hot_reload=True,
     timeout_ms=3000,
-    # --- Voting additions ---
+
     is_voting_member=True,
 ))
 class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTradingMixin, SmartInfoBusStateMixin):
-    """
-    [ROCKET] Advanced portfolio risk system with SmartInfoBus integration.
-    Contract guarantees:
-      • Reads required keys from SmartInfoBus: market_context, market_data, position_data
-      • Writes ONLY its provides: portfolio_risk, portfolio_risk_proposal, position_limits,
-        risk_data, risk_metrics, risk_score, risk_signals, trade_data, trading_data
-      • Returns ALL provides + '_thesis' + 'success' for success/fallback/error.
-
-    NOTE: This module must NOT read bus keys that it provides itself
-          (e.g., 'trade_data', 'risk_signals') to avoid first-run BUS MISS.
-    """
 
     def __init__(
         self,
@@ -128,7 +109,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
         instruments: Optional[List[str]] = None,
         **kwargs
     ):
-        # Keep a strongly-typed config separate from BaseModule.config (which is typically Dict[str, Any])
+
         if config is None:
             self._cfg = PortfolioRiskConfig()
         elif isinstance(config, dict):
@@ -138,15 +119,13 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
 
         self.instruments = instruments or ["XAUUSD"]
 
-        # Minimal pre-initialization so BaseModule.__init__ can safely call self._initialize()
-        # without attribute errors.
+
         self._preinitialize_minimum()
 
-        # Call Base init (may call self._initialize()). We do NOT overwrite BaseModule.config
-        # with our dataclass; BaseModule may set up its own config.
+
         super().__init__()
 
-        # Full initialization after base is ready
+
         self._initialize_advanced_systems()
         self._initialize_portfolio_state()
 
@@ -161,9 +140,8 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
         )
 
     def _preinitialize_minimum(self) -> None:
-        """Set minimal state so _initialize can run safely if invoked early by BaseModule."""
         try:
-            # Core services
+
             self.smart_bus = InfoBusManager.get_instance()
             self.logger = RotatingLogger(
                 name="PortfolioRiskSystem",
@@ -172,10 +150,10 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                 operator_mode=True,
                 plain_english=True,
             )
-            # Debug flag (set default to False for type safety)
+
             self.debug: bool = bool(getattr(self, "debug", False))
         except Exception:
-            # As a last resort, ensure attributes exist to avoid attribute errors
+
             if not hasattr(self, "smart_bus"):
                 self.smart_bus = InfoBusManager.get_instance()
             if not hasattr(self, "logger"):
@@ -192,7 +170,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             if not hasattr(self, "debug"):
                 self.debug = False
 
-        # Minimal risk state used by _initialize bus writes
+
         self.current_mode = getattr(self, "current_mode", RiskMode.INITIALIZATION)
         self.bootstrap_mode = getattr(self, "bootstrap_mode", True)
         self.current_var = getattr(self, "current_var", 0.0)
@@ -200,7 +178,6 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
         self.risk_adjustment = getattr(self, "risk_adjustment", 1.0)
 
     def _initialize_advanced_systems(self):
-        """Initialize advanced systems for portfolio risk"""
         self.smart_bus = InfoBusManager.get_instance()
         self.logger = RotatingLogger(
             name="PortfolioRiskSystem",
@@ -215,7 +192,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
         self.system_utilities = SystemUtilities()
         self.performance_tracker = PerformanceTracker()
 
-        # Circuit breaker for risk operations
+
         self.circuit_breaker = {
             "failures": 0,
             "last_failure": 0.0,
@@ -223,23 +200,22 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             "threshold": int(self._cfg.circuit_breaker_threshold),
         }
 
-        # Health monitoring
+
         self._health_status = "healthy"
         self._last_health_check = time.time()
-        # Note: Start monitoring after state init
+
 
     def _initialize_portfolio_state(self):
-        """Initialize portfolio risk state"""
-        # Initialize mixin states
+
         self._initialize_risk_state()
         self._initialize_trading_state()
         self._initialize_state_management()
 
-        # Current operational mode
+
         self.current_mode = RiskMode.INITIALIZATION
         self.mode_start_time = datetime.datetime.now()
 
-        # Enhanced state tracking
+
         self.returns_history: Dict[str, deque] = {
             inst: deque(maxlen=max(self._cfg.var_window, self._cfg.correlation_window))
             for inst in self.instruments
@@ -250,7 +226,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
         self.position_history = deque(maxlen=100)
         self.trade_count = 0
 
-        # Portfolio performance metrics
+
         self.performance_metrics = {
             "sharpe": 0.0,
             "max_dd": 0.0,
@@ -263,42 +239,42 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             "risk_quality": 0.5,
         }
 
-        # Risk factors
+
         self.risk_adjustment = 1.0
         self.min_risk_adjustment = 0.5
         self.max_risk_adjustment = 1.5
 
-        # Position limits tracking
+
         self.position_limits: Dict[str, float] = {inst: float(self._cfg.max_position_pct) for inst in self.instruments}
 
-        # VaR and correlation tracking
+
         self.current_var = 0.0
         self.correlation_matrix: Optional[np.ndarray] = None
-        the_max = 0.0  # to avoid potential uninitialized warnings in static analyzers
+        the_max = 0.0
         self.max_correlation = the_max
 
-        # Market context awareness
+
         self.market_regime = "normal"
         self.volatility_regime = "medium"
         self.market_session = "unknown"
 
-        # Bootstrap mode tracking
+
         self.bootstrap_mode = True
 
-        # Risk budget tracking
+
         self.daily_risk_used = 0.0
         self.risk_budget_violations = 0
 
-        # Performance analytics
+
         self.portfolio_analytics = defaultdict(list)
         self.regime_performance = defaultdict(lambda: defaultdict(list))
 
-        # Risk events tracking
+
         self.risk_events: List[Dict[str, Any]] = []
         self.limit_violations = 0
         self.correlation_alerts = 0
 
-        # Adaptive parameters
+
         self._adaptive_params = {
             "dynamic_limit_scaling": 1.0,
             "correlation_sensitivity": 1.0,
@@ -306,16 +282,15 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             "risk_adaptation_confidence": 0.5,
         }
 
-        # Position entry limit tracking (to avoid false violations from dynamic limit changes)
+
         self._position_entry_limits: Dict[str, float] = {}
 
-        # Start monitoring after all state is initialized
+
         self._start_monitoring()
 
     def _start_monitoring(self):
-        """Start background monitoring for portfolio risk (idempotent)."""
         if getattr(self, "_monitoring_active", False):
-            # already running
+
             return
 
         def monitoring_loop():
@@ -338,10 +313,9 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
 
 
     def _initialize(self) -> None:
-        """Initialize module with SmartInfoBus integration"""
         try:
-            # Defensive: ensure required components/attributes exist even if _initialize is called
-            # before our __init__ finished (ordering differences across bases/environments).
+
+
             if not hasattr(self, "smart_bus"):
                 self.smart_bus = InfoBusManager.get_instance()
             if not hasattr(self, "logger"):
@@ -359,7 +333,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             max_correlation = float(getattr(self, "max_correlation", 0.0))
             risk_adjustment = float(getattr(self, "risk_adjustment", 1.0))
 
-            # Initial portfolio risk status
+
             initial_status = {
                 "current_mode": mode.value if isinstance(mode, RiskMode) else str(mode),
                 "bootstrap_mode": bool(bootstrap_mode),
@@ -376,14 +350,14 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                 thesis="Initial portfolio risk system status",
             )
 
-            # PRE-PROVIDE EMPTY BASELINES to avoid early consumer bus misses
+
             self.smart_bus.set(
                 "risk_signals",
                 {"violations": [], "mode": mode.value if isinstance(mode, RiskMode) else str(mode), "budget_violation": False},
                 module="PortfolioRiskSystem",
                 thesis="Initial risk signals (baseline)",
             )
-            # Use namespaced key to avoid ownership conflict with Executor's 'trade_data'
+
             self.smart_bus.set(
                 "portfolio_trade_data",
                 {"recent_trades": [], "positions": []},
@@ -397,7 +371,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                 thesis="Initial trading data summary (baseline)",
             )
 
-            # Provide baseline risk_data early for consumers like TimeAwareRiskScaling
+
             self.smart_bus.set(
                 "risk_data",
                 {
@@ -427,44 +401,43 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             self.logger.error(f"Portfolio risk initialization failed: {e}")
 
     async def process(self, **inputs) -> Dict[str, Any]:
-        """Process portfolio risk assessment with enhanced analytics"""
         start_time = time.time()
 
         try:
-            # Extract portfolio data from SmartInfoBus (required keys only; NO self-provide reads)
+
             portfolio_data = await self._extract_portfolio_data(**inputs)
 
             if not portfolio_data:
                 payload = await self._handle_no_data_fallback()
-                # --- Voting additions (fallback voting) ---
+
                 vote_payload = await self.vote()
                 payload["PortfolioRiskSystem_voting_proposal"] = vote_payload
                 payload["PortfolioRiskSystem_confidence"] = float(vote_payload.get("confidence", 0.0))
-                # Ensure success flag even in fallback (no error)
+
                 payload["success"] = True
-                # Optional: write coordinator payload
+
                 await self._write_voting_to_bus(vote_payload)
                 return payload
 
-            # Update market context
+
             context_result = await self._update_market_context_async(portfolio_data)
 
-            # Update positions and returns
+
             position_result = await self._update_positions_and_returns(portfolio_data)
 
-            # Calculate comprehensive risk metrics
+
             risk_result = await self._calculate_comprehensive_risk_metrics(portfolio_data)
 
-            # Update position limits dynamically
+
             limits_result = await self._update_dynamic_position_limits(portfolio_data)
 
-            # Check risk violations
+
             violations_result = await self._check_portfolio_risk_violations(portfolio_data)
 
-            # Update mode based on risk level
+
             mode_result = await self._update_operational_mode(portfolio_data)
 
-            # Combine results
+
             result = {
                 **context_result,
                 **position_result,
@@ -474,10 +447,10 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                 **mode_result,
             }
 
-            # Generate thesis
+
             thesis = await self._generate_portfolio_thesis(portfolio_data, result)
 
-            # Build provides-compliant payload with thesis
+
             provides_payload = {
                 **result,
                 "portfolio_risk": {
@@ -489,7 +462,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                     "total_exposure": self.performance_metrics.get("total_exposure", 0.0),
                     "timestamp": datetime.datetime.now().isoformat(),
                 },
-                # Minimal risk_metrics bundle for contract compliance
+
                 "risk_metrics": {
                     "var_95": self.current_var,
                     "correlation_matrix": self.correlation_matrix.tolist() if self.correlation_matrix is not None else None,
@@ -498,14 +471,14 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                     "risk_quality": self.performance_metrics.get("risk_quality", 0.5),
                     "total_exposure": self.performance_metrics.get("total_exposure", 0.0),
                 },
-                # Position limits bundle for contract compliance
+
                 "position_limits": {
                     "position_limits": self.position_limits.copy(),
                     "risk_adjustment": self.risk_adjustment,
                     "base_limit": self._cfg.max_position_pct,
                     "bootstrap_mode": self.bootstrap_mode,
                 },
-                # Consolidated risk data bundle
+
                 "risk_data": {
                     "current_mode": self.current_mode.value,
                     "risk_budget_used": float(getattr(self, "daily_risk_used", 0.0)),
@@ -528,16 +501,16 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                     },
                     "alerts": {"limit_violations": self.limit_violations, "correlation_alerts": self.correlation_alerts},
                 },
-                # Derived risk signals (warnings/info)
+
                 "risk_signals": {
                     "violations": result.get("violations", []),
                     "mode": self.current_mode.value,
                     "budget_violation": result.get("budget_violation", False),
                 },
-                # Overall risk score (0-1)
+
                 "risk_score": float(self.performance_metrics.get("risk_quality", 0.5)),
-                # Trade and trading data passthrough (minimal, safe defaults)
-                # Publish under portfolio_trade_data (Executor owns canonical trade_data)
+
+
                 "portfolio_trade_data": {
                     "recent_trades": portfolio_data.get("trades", []),
                     "positions": portfolio_data.get("positions", []),
@@ -550,7 +523,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                 "_thesis": thesis,
             }
 
-            # Generate a proposal (required provides)
+
             try:
                 proposal = await self.propose_action()
             except Exception:
@@ -563,27 +536,27 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                 }
             provides_payload["portfolio_risk_proposal"] = proposal
 
-            # --- Voting additions: build + attach proposal & confidence ---
+
             vote_payload = await self.vote()
             provides_payload["PortfolioRiskSystem_voting_proposal"] = vote_payload
             provides_payload["PortfolioRiskSystem_confidence"] = float(vote_payload.get("confidence", 0.0))
-            # Optional: coordinator bus write (separate from our contract-provides keys)
+
             await self._write_voting_to_bus(vote_payload)
 
-            # Update SmartInfoBus (writes only provides)
+
             await self._update_portfolio_smart_bus(provides_payload, thesis)
 
-            # Record success
+
             processing_time = (time.time() - start_time) * 1000.0
             self._record_success(processing_time)
 
-            # Contract success flag
+
             provides_payload["success"] = True
             return provides_payload
 
         except Exception as e:
             error_payload = await self._handle_portfolio_error(e, start_time)
-            # --- Voting additions (error voting) ---
+
             try:
                 vote_payload = await self.vote()
                 error_payload["PortfolioRiskSystem_voting_proposal"] = vote_payload
@@ -595,26 +568,22 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             return error_payload
 
     async def _extract_portfolio_data(self, **inputs) -> Optional[Dict[str, Any]]:
-        """Extract comprehensive portfolio data from SmartInfoBus (requires-only).
-        IMPORTANT: Do NOT read self-provided keys here (e.g., 'trade_data', 'risk_signals').
-        """
         try:
-            # Required keys only (per contract)
+
             position_data = self.smart_bus.get("position_data", "PortfolioRiskSystem") or {}
             positions = position_data.get("positions", [])
-            # Accept both dict-of-dict and list-of-dict schemas
+
             if isinstance(positions, dict):
                 try:
                     positions = [{"instrument": inst, **(p or {})} for inst, p in positions.items()]
                 except Exception:
-                    # As a last resort, flatten to empty list to avoid type errors
+
                     positions = []
 
             market_data = self.smart_bus.get("market_data", "PortfolioRiskSystem") or {}
             prices = market_data.get("prices", {})
 
-            # Do NOT read trade_data/risk_signals from the bus (we provide them)
-            # Trades are optional inputs; fall back to empty list
+
             trades = inputs.get("trades", [])
             balance = inputs.get("balance", 0)
             portfolio_inputs = inputs.get("portfolio_data", {})
@@ -634,12 +603,11 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             return None
 
     async def _update_market_context_async(self, portfolio_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Update market context awareness asynchronously"""
         try:
-            # Required: market_context
+
             market_context = self.smart_bus.get("market_context", "PortfolioRiskSystem") or {}
 
-            # Update regime tracking (don't downgrade to 'unknown' if missing)
+
             old_regime = self.market_regime
             new_regime = market_context.get("regime")
             if new_regime and isinstance(new_regime, str):
@@ -677,17 +645,9 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
         except Exception as e:
             self.logger.error(f"Market context update failed: {e}")
             return {"market_context_updated": False, "error": str(e)}
-        
+
     def _infer_notional_eur(self, pos: dict, prices: dict, instrument: str) -> float:
-        """
-        Infer position notional in account currency (EUR).
-        Priority:
-        1) pos["notional_eur"]
-        2) Executor alias pos["size"] (which is already notional per Executor)
-        3) units * (entry_price or current_price)
-        4) 0.0
-        """
-        # 1) Explicit notional
+
         n = pos.get("notional_eur")
         if n is not None:
             try:
@@ -695,7 +655,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             except Exception:
                 pass
 
-        # 2) Executor alias: 'size' is already notional (per Executor._publish_all comment)
+
         size = pos.get("size")
         if size is not None:
             try:
@@ -703,10 +663,10 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             except Exception:
                 pass
 
-        # 3) Reconstruct from units × price
+
         try:
             units = float(pos.get("units", 0.0) or 0.0)
-            # prefer entry price; fallback to current price from pos or prices map
+
             entry_px = float(pos.get("entry_price", 0.0) or 0.0)
             px = entry_px
             if px <= 0.0:
@@ -722,29 +682,28 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
         except Exception:
             pass
 
-        # 4) Nothing usable
+
         return 0.0
 
 
     async def _update_positions_and_returns(self, portfolio_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Update position tracking and returns history (correct exposure from notional/balance)."""
         try:
             positions = portfolio_data.get("positions", []) or []
             self.current_positions.clear()
 
             prices = portfolio_data.get("prices", {}) or {}
 
-            # Resolve balance/equity to normalize exposures
+
             balance = float(portfolio_data.get("balance", 0.0) or 0.0)
             if balance <= 0.0:
                 try:
                     pm = self.smart_bus.get("portfolio_metrics", "PortfolioRiskSystem") or {}
-                    # prefer equity, fallback to balance
+
                     balance = float(pm.get("equity", pm.get("balance", 0.0)) or 0.0)
                 except Exception:
                     balance = 0.0
 
-            # Throttled warning if we still can't normalize exposures
+
             if balance <= 0.0:
                 import time as _time
                 now = _time.time()
@@ -758,18 +717,18 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             for pos in positions:
                 instrument = pos.get("symbol", pos.get("instrument", "UNKNOWN"))
 
-                # Compute notional safely (EUR)
+
                 notional = self._infer_notional_eur(pos, prices, instrument)
 
-                # Normalize to exposure (% of equity)
+
                 if balance > 0.0:
                     exposure = notional / balance
                 else:
-                    exposure = 0.0  # avoid divide-by-zero blowups
+                    exposure = 0.0
 
                 self.current_positions[instrument] = float(exposure)
 
-            # Track trades and bootstrap transition
+
             trades = portfolio_data.get("trades", []) or []
             if trades:
                 self.trade_count += len(trades)
@@ -785,10 +744,10 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                         )
                     )
 
-            # Update returns history (uses prices + last_prices)
+
             await self._update_returns_history_async(portfolio_data)
 
-            # Keep a short history of exposure snapshots
+
             if positions:
                 import datetime as _dt
                 self.position_history.append(
@@ -812,7 +771,6 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
 
 
     async def _update_returns_history_async(self, portfolio_data: Dict[str, Any]):
-        """Update returns history from market data"""
         try:
             prices = portfolio_data.get("prices", {})
 
@@ -831,7 +789,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                 for instrument, position in self.current_positions.items():
                     if instrument in self.returns_history and len(self.returns_history[instrument]) > 0:
                         inst_return = float(self.returns_history[instrument][-1])
-                        # Weight by normalized exposure magnitude
+
                         weight = abs(position)
                         portfolio_return += inst_return * weight
                         total_weight += weight
@@ -844,7 +802,6 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             self.logger.error(f"Returns history update failed: {e}")
 
     async def _calculate_comprehensive_risk_metrics(self, portfolio_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Calculate comprehensive portfolio risk metrics"""
         try:
             var_result = await self._calculate_portfolio_var_async()
             correlation_result = await self._calculate_correlation_matrix_async()
@@ -873,7 +830,6 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             return {"risk_metrics_calculated": False, "error": str(e)}
 
     async def _calculate_portfolio_var_async(self) -> Dict[str, Any]:
-        """Calculate portfolio Value at Risk asynchronously"""
         try:
             if len(self.portfolio_returns) < 10:
                 self.current_var = 0.0
@@ -896,30 +852,21 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             return {"var_calculated": False, "error": str(e)}
 
     async def _calculate_correlation_matrix_async(self) -> Dict[str, Any]:
-        """
-        Get correlation matrix from CorrelatedRiskController (single source of truth).
-        
-        v4.1.0: Changed from self-calculating to consuming from CorrelatedRiskController
-        to eliminate duplication and ensure consistency across the system.
-        
-        Fallback: If CorrelatedRiskController data is unavailable, calculate locally.
-        """
         try:
-            # ═══════════════════════════════════════════════════════════════════
-            # CORRELATED RISK CONTROLLER INTEGRATION (v4.1.0 - PRIMARY SOURCE)
-            # ═══════════════════════════════════════════════════════════════════
+
+
             correlation_matrix_data = self.smart_bus.get("correlation_matrix", "PortfolioRiskSystem")
             correlation_risk_data = self.smart_bus.get("correlation_risk", "PortfolioRiskSystem") or {}
             diversification_score = self.smart_bus.get("diversification_score", "PortfolioRiskSystem")
-            
-            # Try to use CorrelatedRiskController's data first
+
+
             if correlation_matrix_data and isinstance(correlation_matrix_data, dict):
                 matrix = correlation_matrix_data.get("matrix")
                 if matrix is not None:
                     try:
                         self.correlation_matrix = np.array(matrix)
                         self.max_correlation = float(correlation_matrix_data.get("max_correlation", 0.0))
-                        
+
                         if self.debug:
                             self.logger.info(format_operator_message(
                                 icon="🔗",
@@ -927,7 +874,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                                 max_correlation=f"{self.max_correlation:.2f}",
                                 source="CorrelatedRiskController"
                             ))
-                        
+
                         return {
                             "correlation_source": "CorrelatedRiskController",
                             "correlation_calculated": True,
@@ -936,20 +883,20 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                         }
                     except (ValueError, TypeError) as e:
                         self.logger.warning(f"Failed to parse CorrelatedRiskController matrix: {e}")
-            
-            # If we have correlation_risk data but no matrix, use max_correlation
+
+
             if correlation_risk_data:
                 corr_risk_score = float(correlation_risk_data.get("correlation_risk_score", 0.0))
-                max_corr_from_risk = float(correlation_risk_data.get("max_correlation", 
+                max_corr_from_risk = float(correlation_risk_data.get("max_correlation",
                                            correlation_risk_data.get("risk_metrics", {}).get("max_correlation", 0.0)))
-                
+
                 if max_corr_from_risk > 0:
                     self.max_correlation = max_corr_from_risk
-                    # Estimate matrix from max_correlation if needed
+
                     n_inst = len(self.instruments)
                     if self.correlation_matrix is None or self.correlation_matrix.shape[0] != n_inst:
                         self.correlation_matrix = np.eye(n_inst)
-                    
+
                     return {
                         "correlation_source": "CorrelatedRiskController_risk",
                         "correlation_calculated": True,
@@ -957,9 +904,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                         "correlation_risk_score": corr_risk_score,
                     }
 
-            # ═══════════════════════════════════════════════════════════════════
-            # FALLBACK: Calculate locally if CorrelatedRiskController unavailable
-            # ═══════════════════════════════════════════════════════════════════
+
             n_inst = len(self.instruments)
             self.correlation_matrix = np.eye(n_inst)
 
@@ -1020,7 +965,6 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             return {"correlation_source": "error", "correlation_calculated": False, "error": str(e)}
 
     async def _calculate_portfolio_volatility_async(self) -> Dict[str, Any]:
-        """Calculate portfolio volatility asynchronously"""
         try:
             if len(self.portfolio_returns) < 5:
                 self.performance_metrics["volatility"] = 0.0
@@ -1042,7 +986,6 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             return {"volatility_calculated": False, "error": str(e)}
 
     async def _update_portfolio_performance_async(self, portfolio_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Update portfolio performance metrics asynchronously"""
         try:
             recent_pnl = float(sum(float(trade.get("pnl", 0)) for trade in portfolio_data.get("trades", [])))
             balance = float(portfolio_data.get("balance", 0))
@@ -1086,7 +1029,6 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             return {"performance_updated": False, "error": str(e)}
 
     def _calculate_risk_quality(self) -> float:
-        """Calculate comprehensive risk quality score"""
         try:
             quality_factors: List[float] = []
 
@@ -1111,7 +1053,6 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             return 0.5
 
     async def _update_risk_adjustment_factor_async(self, portfolio_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Update dynamic risk adjustment factor asynchronously"""
         try:
             balance = float(portfolio_data.get("balance", 0.0))
             drawdown = 0.0
@@ -1166,11 +1107,10 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
 
         except Exception as e:
             self.logger.warning(f"Risk adjustment calculation failed: {e}")
-            self.risk_adjustment = 0.8  # Conservative fallback
+            self.risk_adjustment = 0.8
             return {"risk_adjustment_updated": False, "error": str(e)}
 
     async def _update_risk_budget_usage_async(self, portfolio_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Update daily risk budget usage asynchronously"""
         try:
             current_exposure = float(self.performance_metrics.get("total_exposure", 0.0))
             var_usage = float(self.current_var)
@@ -1195,7 +1135,6 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             return {"risk_budget_updated": False, "error": str(e)}
 
     async def _update_dynamic_position_limits(self, portfolio_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Update dynamic position limits based on risk conditions"""
         try:
             base_limit = float(self._cfg.max_position_pct)
 
@@ -1218,21 +1157,17 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             if self.bootstrap_mode:
                 adjusted_limit *= 1.3
 
-            # ═══════════════════════════════════════════════════════════════════
-            # TRADING MODE MANAGER INTEGRATION
-            # Apply max_exposure from trading mode to position limits
-            # ═══════════════════════════════════════════════════════════════════
+
             try:
                 mode_config = self.smart_bus.get('mode_config', 'PortfolioRiskSystem') or {}
                 trading_mode = self.smart_bus.get('trading_mode', 'PortfolioRiskSystem') or 'normal'
                 max_exposure_from_mode = float(mode_config.get('max_exposure', 0.6))
 
-                # Mode's max_exposure applies to total portfolio, translate to per-position limit
-                # Assuming max 3-5 concurrent positions, divide exposure across them
+
                 estimated_concurrent_positions = 3.0
                 mode_position_limit = max_exposure_from_mode / estimated_concurrent_positions
 
-                # Use the more conservative limit between our calculation and mode's limit
+
                 if mode_position_limit < adjusted_limit:
                     old_adjusted = adjusted_limit
                     adjusted_limit = mode_position_limit
@@ -1250,7 +1185,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             except Exception as e:
                 if self.debug:
                     self.logger.warning(f"Trading mode integration failed in position limits: {e}")
-            # ═══════════════════════════════════════════════════════════════════
+
 
             final_limit = float(np.clip(adjusted_limit, self._cfg.min_position_pct, self._cfg.max_position_pct))
             old_limits = self.position_limits.copy()
@@ -1271,67 +1206,56 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             return {"position_limits_updated": False, "error": str(e)}
 
     async def _check_portfolio_risk_violations(self, portfolio_data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Check for portfolio risk violations.
-        
-        NOTE: For prop firms, NOTIONAL EXPOSURE is NOT the same as RISK.
-        A 0.01 lot XAUUSD has ~$2700 notional value but only ~$10-30 risk with proper SL.
-        Prop firms care about P&L drawdown, not notional exposure.
-        
-        We log exposure as INFO, not WARNING, since it's informational only.
-        """
         try:
             violations: List[str] = []
-            info_alerts: List[str] = []  # Informational, not violations
+            info_alerts: List[str] = []
 
             exposure = float(self.performance_metrics.get("total_exposure", 0.0))
-            
-            # NOTE: For prop firms, notional exposure > limit is INFORMATIONAL only
-            # Prop firms don't care about notional exposure - they care about P&L drawdown
+
+
             if exposure > self._cfg.max_portfolio_exposure:
-                # Log as INFO, not violation - this is expected for leveraged products like XAUUSD
+
                 info_alerts.append(
                     f"Portfolio notional exposure {exposure:.1%} (informational - prop firms use P&L limits)"
                 )
 
-            # Track position limits at entry time to avoid false violations from dynamic limit changes
+
             if not hasattr(self, '_position_entry_limits'):
                 self._position_entry_limits: Dict[str, float] = {}
 
             for instrument, position in self.current_positions.items():
                 current_limit = float(self.position_limits.get(instrument, self._cfg.max_position_pct))
 
-                # Check if this is a new position or existing position
-                if abs(position) > 0.001:  # Position exists
-                    # Use the higher of: entry limit (if known) or current limit
-                    # This prevents false violations when limits decrease after position entry
+
+                if abs(position) > 0.001:
+
+
                     if instrument in self._position_entry_limits:
                         effective_limit = max(self._position_entry_limits[instrument], current_limit)
                     else:
-                        # First time seeing this position - record current limit as entry limit
+
                         self._position_entry_limits[instrument] = current_limit
                         effective_limit = current_limit
 
-                    # For prop firms: notional exposure exceeding limit is INFORMATIONAL
-                    # This is NOT a risk violation - it's just how leveraged products work
+
                     if abs(position) > effective_limit:
                         info_alerts.append(
                             f"{instrument} notional {abs(position):.1%} of equity (normal for leveraged instruments)"
                         )
                 else:
-                    # Position closed - remove entry limit tracking
+
                     self._position_entry_limits.pop(instrument, None)
 
-            # VaR violations are real risk concerns
+
             if self.current_var > 0.05:
                 violations.append(f"Portfolio VaR {self.current_var:.1%} > 5% limit")
 
-            # High correlation with multiple positions is a real concern
+
             if self.max_correlation > 0.9 and len(self.current_positions) > 1:
                 violations.append(f"High correlation {self.max_correlation:.2f} with multiple positions")
                 self.correlation_alerts += 1
 
-            # Log real violations as warnings
+
             if violations:
                 self.logger.warning(
                     format_operator_message(
@@ -1353,7 +1277,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                         }
                     )
 
-            # Log informational alerts at debug level (not warnings)
+
             if info_alerts and self.debug:
                 self.logger.debug(
                     f"[INFO] Exposure info (not violations): {'; '.join(info_alerts[:2])}"
@@ -1376,7 +1300,6 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             return {"violations_checked": False, "error": str(e)}
 
     async def _update_operational_mode(self, portfolio_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Update operational mode based on risk level"""
         try:
             old_mode = self.current_mode
 
@@ -1421,7 +1344,6 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             return {"mode_updated": False, "error": str(e)}
 
     async def _generate_portfolio_thesis(self, portfolio_data: Dict[str, Any], result: Dict[str, Any]) -> str:
-        """Generate comprehensive portfolio thesis"""
         try:
             var = float(self.current_var)
             correlation = float(self.max_correlation)
@@ -1461,12 +1383,11 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             return f"Portfolio thesis generation failed: {e!s} - Core risk monitoring functional"
 
     async def _update_portfolio_smart_bus(self, result: Dict[str, Any], thesis: str):
-        """Update SmartInfoBus with portfolio results (ONLY provides)"""
         try:
-            # Portfolio risk
+
             self.smart_bus.set("portfolio_risk", result.get("portfolio_risk", {}), module="PortfolioRiskSystem", thesis=thesis)
 
-            # Risk metrics
+
             self.smart_bus.set(
                 "risk_metrics",
                 result.get("risk_metrics", {}),
@@ -1474,7 +1395,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                 thesis="Comprehensive portfolio risk metrics and analysis",
             )
 
-            # Position limits
+
             self.smart_bus.set(
                 "position_limits",
                 result.get("position_limits", {}),
@@ -1482,7 +1403,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                 thesis="Dynamic position limits based on current risk conditions",
             )
 
-            # Risk data (consolidated)
+
             self.smart_bus.set(
                 "risk_data",
                 result.get("risk_data", {}),
@@ -1490,7 +1411,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                 thesis="Consolidated portfolio risk data",
             )
 
-            # Risk signals
+
             self.smart_bus.set(
                 "risk_signals",
                 result.get("risk_signals", {}),
@@ -1498,7 +1419,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                 thesis="Risk signals and alerts",
             )
 
-            # Risk score
+
             self.smart_bus.set(
                 "risk_score",
                 result.get("risk_score", 0.0),
@@ -1506,8 +1427,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                 thesis="Overall portfolio risk score",
             )
 
-            # Trade data (passthrough) → use namespaced key to avoid owner conflict with Executor
-            # Prefer an explicitly provided portfolio_trade_data payload; fall back to trade_data if present
+
             self.smart_bus.set(
                 "portfolio_trade_data",
                 result.get("portfolio_trade_data", result.get("trade_data", {})),
@@ -1515,7 +1435,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                 thesis="Recent trades and positions (risk view)",
             )
 
-            # Trading data summary (passthrough)
+
             self.smart_bus.set(
                 "trading_data",
                 result.get("trading_data", {}),
@@ -1523,7 +1443,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                 thesis="Trading data summary (risk view)",
             )
 
-            # Portfolio risk proposal (provides)
+
             if "portfolio_risk_proposal" in result:
                 self.smart_bus.set(
                     "portfolio_risk_proposal",
@@ -1532,18 +1452,12 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                     thesis="Portfolio risk proposal and recommendations",
                 )
 
-            # NOTE: We intentionally do NOT write non-provides (e.g., internal analytics) to the bus.
 
         except Exception as e:
             self.logger.error(f"Failed to update SmartInfoBus: {e}")
 
-    # --- Voting helper: optional coordinator bus write (kept separate from provides) ---
-    async def _write_voting_to_bus(self, vote_payload: Dict[str, Any]) -> None:
-        """Publish module-scoped voting outputs to avoid canonical-key thrash.
 
-        Coordinator (EnhancedVotingCommitteeCoordinator) owns the canonical
-        committee decision. We publish namespaced keys here.
-        """
+    async def _write_voting_to_bus(self, vote_payload: Dict[str, Any]) -> None:
         try:
             self.smart_bus.set(
                 "PortfolioRiskSystem_voting_proposal",
@@ -1561,7 +1475,6 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             self.logger.warning(f"Voting bus write failed: {e}")
 
     async def _handle_no_data_fallback(self) -> Dict[str, Any]:
-        """Handle case when no portfolio data is available (contract-safe)"""
         self.logger.warning("No portfolio data available - using fallback mode")
         thesis = "Portfolio risk operating with cached state due to missing inputs"
         return {
@@ -1633,7 +1546,6 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
         }
 
     async def _handle_portfolio_error(self, error: Exception, start_time: float) -> Dict[str, Any]:
-        """Handle portfolio risk errors (contract-safe)"""
         processing_time = (time.time() - start_time) * 1000.0
 
         self.circuit_breaker["failures"] += 1
@@ -1661,11 +1573,10 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
         self._record_failure(error)
 
         payload = self._create_error_fallback_response(f"error: {error!s}")
-        # Ensure all provides + thesis + success flag present; success added by caller
+
         return payload
 
     def _create_error_fallback_response(self, reason: str) -> Dict[str, Any]:
-        """Create fallback response for error cases"""
         thesis = f"Portfolio risk fallback: {reason}"
         return {
             "portfolio_risk": {
@@ -1736,7 +1647,6 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
         }
 
     def _update_portfolio_health(self):
-        """Update portfolio health metrics"""
         try:
             if not hasattr(self, "performance_metrics"):
                 return
@@ -1759,7 +1669,6 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             self._health_status = "warning"
 
     def _analyze_risk_effectiveness(self):
-        """Analyze risk management effectiveness"""
         try:
             if not hasattr(self, "position_history") or not hasattr(self, "performance_metrics"):
                 return
@@ -1792,7 +1701,6 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             self.logger.error(f"Risk effectiveness analysis failed: {e}")
 
     def _adapt_risk_parameters(self):
-        """Continuous risk parameter adaptation"""
         try:
             if not hasattr(self, "market_regime") or not hasattr(self, "_adaptive_params") or not hasattr(self, "performance_metrics"):
                 return
@@ -1819,7 +1727,6 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             self.logger.warning(f"Risk parameter adaptation failed: {e}")
 
     def _record_success(self, processing_time: float):
-        """Record successful processing"""
         self.performance_tracker.record_metric(
             "PortfolioRiskSystem", "portfolio_risk_calculation", processing_time, True
         )
@@ -1828,17 +1735,13 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             self.circuit_breaker["state"] = "CLOSED"
 
     def _record_failure(self, error: Exception):
-        """Record processing failure"""
         self.performance_tracker.record_metric("PortfolioRiskSystem", "portfolio_risk_calculation", 0.0, False)
 
-    # ================== PUBLIC INTERFACE METHODS ==================
 
     def get_position_limits(self) -> Dict[str, float]:
-        """Get current position limits for each instrument"""
         return self.position_limits.copy()
 
     def check_risk_limits(self, proposed_positions: Dict[str, float]) -> Tuple[bool, str]:
-        """Check if proposed positions violate risk limits"""
         try:
             total_exposure = sum(abs(pos) for pos in proposed_positions.values())
 
@@ -1866,7 +1769,6 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             return False, "Risk limit check failed"
 
     def get_risk_metrics(self) -> Dict[str, float]:
-        """Get current risk metrics"""
         return {
             "var": float(self.current_var),
             "max_correlation": float(self.max_correlation),
@@ -1883,7 +1785,6 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
         }
 
     def get_observation_components(self) -> np.ndarray:
-        """Get portfolio risk features for observation"""
         try:
             features = [
                 float(self.current_var),
@@ -1905,7 +1806,6 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             return np.array([0.0] * 12, dtype=np.float32)
 
     def get_health_status(self) -> Dict[str, Any]:
-        """Get comprehensive health status"""
         return {
             "status": self._health_status,
             "last_check": self._last_health_check,
@@ -1918,11 +1818,9 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
         }
 
     def stop_monitoring(self):
-        """Stop background monitoring"""
         self._monitoring_active = False
 
     def get_portfolio_risk_report(self) -> str:
-        """Generate operator-friendly portfolio risk report"""
 
         if self.current_var > 0.05:
             var_status = "[ALERT] High Risk"
@@ -2002,10 +1900,8 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
 • DD Limit: {self._cfg.dd_limit:.1%}
         """
 
-    # ================== LEGACY COMPATIBILITY ==================
 
     def step(self, **kwargs) -> Dict[str, Any]:
-        """Legacy step interface for backward compatibility"""
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
@@ -2015,7 +1911,6 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             loop.close()
 
     def reset(self) -> None:
-        """Enhanced reset with comprehensive state cleanup"""
         for inst in self.instruments:
             self.returns_history[inst].clear()
         self.portfolio_returns.clear()
@@ -2073,13 +1968,12 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             "risk_adaptation_confidence": 0.5,
         }
 
-        # Clear position entry limit tracking
+
         self._position_entry_limits = {}
 
         self.logger.info("[RELOAD] Enhanced Portfolio Risk System reset - all state cleared")
 
     async def calculate_confidence(self, action: Dict[str, Any], **kwargs) -> float:
-        """Calculate confidence level based on portfolio risk metrics"""
         try:
             confidence_factors: List[float] = []
 
@@ -2105,11 +1999,11 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             if self.risk_adjustment < 1.0:
                 total_confidence *= self.risk_adjustment
 
-            # Down-weight if bootstrap (less information)
+
             if self.bootstrap_mode:
                 total_confidence *= 0.9
 
-            # Down-weight if proposed jump is large
+
             try:
                 target_adj = float(action.get("target_risk_adjustment", self.risk_adjustment))
                 jump = abs(target_adj - self.risk_adjustment)
@@ -2125,7 +2019,6 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             return 0.5
 
     async def propose_action(self, **kwargs) -> Dict[str, Any]:
-        """Propose portfolio risk management actions based on current state (also written to bus by process)"""
         try:
             status = self.get_current_risk_status()
             actions: List[Dict[str, Any]] = []
@@ -2194,7 +2087,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                 },
             }
 
-            # Keep this write for callers that invoke propose_action() directly
+
             self.smart_bus.set(
                 "portfolio_risk_proposal",
                 proposal,
@@ -2209,7 +2102,6 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             return {"timestamp": time.time(), "confidence": 0.0, "actions": [], "error": str(e)}
 
     def get_current_risk_status(self) -> Dict[str, Any]:
-        """Get comprehensive portfolio risk status"""
         try:
             return {
                 "mode": self.current_mode.value,
@@ -2223,36 +2115,14 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             self.logger.error(f"Risk status retrieval failed: {e}")
             return {}
 
-    # ================== VOTING INTERFACE ==================
 
     async def vote(self) -> Dict[str, Any]:
-        """
-        Build a voting proposal for the committee.
-        Outputs a compact payload with desired portfolio risk posture and confidence.
-
-        Schema:
-        {
-            "member": "PortfolioRiskSystem",
-            "type": "risk_posture",
-            "posture": "reduce" | "increase" | "maintain" | "halt",
-            "target_risk_adjustment": 0.92,
-            "target_position_limit": 0.18,
-            "bounds": {
-                "risk_adjustment": [min_adj, max_adj],
-                "position_limit": [min_limit, max_limit]
-            },
-            "rationale": "...",
-            "confidence": 0.78,
-            "context": {...},
-            "timestamp": 1700000000.0
-        }
-        """
         try:
             now = time.time()
             cur_adj = float(self.risk_adjustment)
             base_limit = float(self._cfg.max_position_pct)
 
-            # Decide posture
+
             if self.circuit_breaker["state"] == "OPEN" or self.current_mode == RiskMode.EMERGENCY:
                 posture = "halt"
                 target_adj = max(self.min_risk_adjustment, min(cur_adj, 0.6))
@@ -2271,7 +2141,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                     target_adj = cur_adj
                     rationale = "Bootstrap phase — maintain until more data."
                 else:
-                    # NORMAL
+
                     if self.current_var < 0.02 and self.max_correlation < 0.6 and self.daily_risk_used < self._cfg.risk_budget_daily * 0.6:
                         posture = "increase"
                         target_adj = min(self.max_risk_adjustment, max(cur_adj, 1.1))
@@ -2281,10 +2151,10 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                         target_adj = cur_adj
                         rationale = "Risk acceptable — maintain posture."
 
-            # Map target adjustment to a suggested position limit
+
             suggested_limit = float(np.clip(base_limit * target_adj, self._cfg.min_position_pct, self._cfg.max_position_pct))
 
-            # Confidence
+
             conf_input = {
                 "action_type": "risk_posture",
                 "posture": posture,
@@ -2293,7 +2163,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             }
             confidence = await self.calculate_confidence(conf_input)
 
-            # Map posture to standard action field for committee compatibility
+
             action_map = {
                 "halt": "reduce_risk",
                 "reduce": "reduce_risk",
@@ -2303,7 +2173,7 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
 
             payload = {
                 "member": "PortfolioRiskSystem",
-                "action": action_map.get(posture, "hold"),  # Standard action field for committee
+                "action": action_map.get(posture, "hold"),
                 "type": "risk_posture",
                 "posture": posture,
                 "target_risk_adjustment": float(target_adj),
@@ -2344,63 +2214,55 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                 "timestamp": time.time(),
             }
 
-    # ================== STATE PERSISTENCE ==================
 
     def _get_custom_state(self) -> Dict[str, Any]:
-        """
-        Get custom state for persistence.
-        Saves portfolio risk history and metrics.
-        """
         return {
-            # Core risk state
+
             "current_var": float(self.current_var),
             "max_correlation": float(self.max_correlation),
             "risk_adjustment": float(self.risk_adjustment),
-            
-            # Returns history (per-instrument)
+
+
             "returns_history": {k: list(v) for k, v in self.returns_history.items()},
             "portfolio_returns": list(self.portfolio_returns),
             "position_history": list(self.position_history),
-            
-            # Tracking state
+
+
             "limit_violations": int(self.limit_violations),
             "daily_risk_used": float(self.daily_risk_used),
             "total_exposure": float(self.total_exposure),
-            
-            # Market context
+
+
             "market_regime": str(self.market_regime),
             "volatility_regime": str(self.volatility_regime),
-            
-            # Performance metrics
+
+
             "performance_metrics": dict(self.performance_metrics),
-            
-            # Correlation and position data
+
+
             "correlation_matrix": (
                 self.correlation_matrix.tolist() if self.correlation_matrix is not None else None
             ),
             "current_positions": dict(self.current_positions),
-            
-            # Adaptive parameters
+
+
             "_adaptive_params": dict(self._adaptive_params),
-            
-            # Mode and circuit breaker
+
+
             "current_mode": self.current_mode.value if hasattr(self.current_mode, 'value') else str(self.current_mode),
             "circuit_breaker": dict(self.circuit_breaker),
         }
 
     def _set_custom_state(self, state: Dict[str, Any]) -> None:
-        """
-        Restore custom state from persistence.
-        """
         if not state:
             return
-        
-        # Core risk state
+
+
         self.current_var = float(state.get("current_var", self.current_var))
         self.max_correlation = float(state.get("max_correlation", self.max_correlation))
         self.risk_adjustment = float(state.get("risk_adjustment", self.risk_adjustment))
-        
-        # Returns history
+
+
         if "returns_history" in state:
             for k, v in state["returns_history"].items():
                 maxlen = max(self._cfg.var_window, self._cfg.correlation_window)
@@ -2409,21 +2271,21 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
             self.portfolio_returns = deque(state["portfolio_returns"], maxlen=self._cfg.var_window)
         if "position_history" in state:
             self.position_history = deque(state["position_history"], maxlen=100)
-        
-        # Tracking state
+
+
         self.limit_violations = int(state.get("limit_violations", self.limit_violations))
         self.daily_risk_used = float(state.get("daily_risk_used", self.daily_risk_used))
         self.total_exposure = float(state.get("total_exposure", self.total_exposure))
-        
-        # Market context
+
+
         self.market_regime = str(state.get("market_regime", self.market_regime))
         self.volatility_regime = str(state.get("volatility_regime", self.volatility_regime))
-        
-        # Performance metrics
+
+
         if "performance_metrics" in state:
             self.performance_metrics.update(state["performance_metrics"])
-        
-        # Correlation and position data
+
+
         if "correlation_matrix" in state:
             cm = state["correlation_matrix"]
             if cm is None:
@@ -2435,14 +2297,14 @@ class PortfolioRiskSystem(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusTrading
                     self.correlation_matrix = None
         if "current_positions" in state:
             self.current_positions.update(state["current_positions"])
-        
-        # Adaptive parameters
+
+
         if "_adaptive_params" in state:
             self._adaptive_params.update(state["_adaptive_params"])
-        
-        # Circuit breaker
+
+
         if "circuit_breaker" in state:
             self.circuit_breaker.update(state["circuit_breaker"])
-        
+
         self.logger.info(f"📂 Restored PortfolioRiskSystem state: VaR={self.current_var:.2%}, "
                         f"positions={len(self.current_positions)}, violations={self.limit_violations}")

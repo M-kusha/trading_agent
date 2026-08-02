@@ -1,11 +1,3 @@
-"""
-train/controllers/__init__.py
-
-Re-exports for backward compatibility.
-Import controllers from this package:
-    from train.controllers import PIDController, SmartEntropyController, TrainingHealthWatchdog
-    from train.controllers import SmartLRController, SmartClipController
-"""
 
 from .clip_controller import SmartClipController
 from .entropy_controller import SmartEntropyController

@@ -1,25 +1,4 @@
 #!/usr/bin/env python3
-"""
-EntryTimingController - SmartInfoBus Integration for Timing Features
-====================================================================
-
-This module wraps the pure timing_features library for live trading.
-It reads inputs from SmartInfoBus and publishes timing features back.
-
-Architecture:
-- Reads: market_data_latest, atr_values, session_info
-- Reads (preferred for OHLC windows): multi_timeframe_data
-- Optional: position_state_summary (gracefully handled if missing)
-- Computes: timing features via timing_features.compute_timing_features()
-- Publishes:
-    - entry_timing: per-instrument TimingFeatures as dicts
-    - entry_timing_array: per-instrument fixed-size float arrays
-    - entry_timing_allowed: global "any instrument allowed" bool
-
-This is a thin adapter layer - all core logic lives in timing_features.py.
-
-Version: 1.2.0 (v5.2: position_state_summary now optional)
-"""
 
 from __future__ import annotations
 
@@ -56,44 +35,29 @@ logger = logging.getLogger(__name__)
         "multi_timeframe_data",
         "atr_values",
         "session_info",
-        # v5.2: position_state_summary is optional - code handles missing gracefully
+
     ],
     dependencies=[],
     thesis_required=False,
 )
 class EntryTimingController(BaseModule):
-    """
-    Computes entry timing features and publishes to SmartInfoBus.
-
-    This module runs on each orchestration cycle to provide PPO
-    with rich timing features for better entry/exit decisions.
-
-    Notes:
-    - It is deliberately "fail-closed" per instrument: if data is missing
-      or invalid for an instrument, that instrument gets entry_allowed=False
-      with block_reasons explaining why.
-    - Global entry_timing_allowed is "any instrument allowed", mainly for
-      high-level monitors; PPO should look at per-instrument features.
-    """
 
     def _initialize(self) -> None:
-        """Initialize the controller and load configuration."""
         self.smart_bus = InfoBusManager.get_instance()
 
-        # Load timing configuration for all instruments
-        # You can override path via module config in module_registry.yaml
+
         config_path = self.config.get("timing_config_path", "config/timing_policy.yaml")
         self.timing_config: TimingConfig = load_timing_config(config_path)
 
-        # Instruments to track (default to XAUUSD-only; strict pipelines are single-instrument)
+
         instruments_cfg = self.config.get("instruments", ["XAUUSD"])
-        # Ensure this is a list of strings
+
         self.instruments: List[str] = [
             str(sym) for sym in instruments_cfg
             if isinstance(sym, (str, bytes))
         ]
 
-        # OHLC window size (minimum 2 bars to be meaningful)
+
         ohlc_window_size_cfg = int(self.config.get("ohlc_window_size", 50))
         self.ohlc_window_size: int = max(2, ohlc_window_size_cfg)
 
@@ -105,30 +69,6 @@ class EntryTimingController(BaseModule):
         )
 
     async def process(self, **inputs: Any) -> Dict[str, Any]:
-        """
-        Compute timing features for all tracked instruments.
-
-        Args:
-            **inputs: Data from orchestrator, usually mirrored from SmartInfoBus:
-                - market_data_latest: dict[instrument -> OHLC/price structure]
-                - multi_timeframe_data: dict[instrument -> timeframe -> OHLC arrays + current_bar] (preferred for OHLC windows)
-                - atr_values: dict[instrument -> float]
-                - session_info: dict with time info (hour, minute, weekday)
-                - position_state_summary: dict[instrument -> state summary]
-
-        Returns:
-            {
-                "entry_timing": {
-                    "EURUSD": TimingFeatures.to_dict(),
-                    "XAUUSD": ...
-                },
-                "entry_timing_array": {
-                    "EURUSD": [float; TIMING_FEATURE_DIM],
-                    "XAUUSD": ...
-                },
-                "entry_timing_allowed": bool (any instrument entry_allowed=True)
-            }
-        """
         results: Dict[str, Dict[str, Any]] = {}
         timing_arrays: Dict[str, List[float]] = {}
         any_allowed = False
@@ -153,7 +93,7 @@ class EntryTimingController(BaseModule):
         if not isinstance(position_summary, dict):
             position_summary = {}
 
-        # Prefer a full OHLC window from multi_timeframe_data; fall back to bus read if orchestrator didn't pass it.
+
         if not isinstance(multi_timeframe_data, dict):
             try:
                 multi_timeframe_data = self.smart_bus.get(
@@ -186,13 +126,13 @@ class EntryTimingController(BaseModule):
                     instrument,
                     e,
                 )
-                # Return default "blocked" features on error
+
                 features = TimingFeatures(entry_allowed=False)
                 features.block_reasons.append(f"COMPUTE_ERROR:{type(e).__name__}")
                 results[instrument] = features.to_dict()
                 timing_arrays[instrument] = timing_features_to_array(features).tolist()
 
-        # Optional: small debug summary
+
         allowed_count = 0
         try:
             allowed_count = sum(
@@ -205,7 +145,7 @@ class EntryTimingController(BaseModule):
                 len(self.instruments),
             )
         except Exception:
-            # Logging errors should never break the module
+
             pass
 
         out = {
@@ -214,8 +154,7 @@ class EntryTimingController(BaseModule):
             "entry_timing_allowed": any_allowed,
         }
 
-        # Defensive publish: orchestrator should publish module outputs, but if that path
-        # is misconfigured, publish directly to keep downstream consumers alive.
+
         try:
             thesis = f"Entry timing features computed (allowed={allowed_count}/{len(self.instruments)})"
             self.smart_bus.set(
@@ -253,23 +192,8 @@ class EntryTimingController(BaseModule):
         session_info: Dict[str, Any],
         position_summary: Dict[str, Any],
     ) -> TimingFeatures:
-        """
-        Compute timing features for a single instrument.
 
-        Args:
-            instrument: Instrument symbol (e.g., "XAUUSD").
-            market_data: Full market_data_latest dict from inputs (often single-bar snapshot).
-            multi_timeframe_data: Full multi_timeframe_data dict (preferred for OHLC windows).
-            atr_values: Full atr_values dict from inputs.
-            session_info: Session info dict.
-            position_summary: Per-instrument position state summary.
 
-        Returns:
-            TimingFeatures for the instrument.
-        """
-        # ─────────────────────────────────────────────────────────────
-        # 1. Get OHLC data
-        # ─────────────────────────────────────────────────────────────
         instrument_data = market_data.get(instrument, {})
 
         if not isinstance(instrument_data, dict):
@@ -282,10 +206,10 @@ class EntryTimingController(BaseModule):
             features.block_reasons.append("NO_INSTRUMENT_DATA")
             return features
 
-        # First attempt: market_data_latest per-instrument block (may be arrays in some modes)
+
         ohlc_window = self._extract_ohlc_window(instrument, instrument_data)
 
-        # Preferred: multi_timeframe_data[instrument]["M15"] provides a true OHLC window
+
         if ohlc_window is None or len(ohlc_window) < 2:
             try:
                 mtf_inst = multi_timeframe_data.get(instrument, {})
@@ -306,27 +230,22 @@ class EntryTimingController(BaseModule):
             features.block_reasons.append("NO_OHLC_DATA")
             return features
 
-        # ─────────────────────────────────────────────────────────────
-        # 2. Get ATR value (compute_timing_features will still sanitize)
-        # ─────────────────────────────────────────────────────────────
+
         raw_atr = atr_values.get(instrument, 1.0)
         try:
             atr_value = float(raw_atr)
         except (TypeError, ValueError):
             atr_value = 1.0
 
-        # Optional local fallback if ATR missing/zero (compute_timing_features
-        # also has its own safety logic; this just makes the input less insane).
+
         if atr_value <= 0.0:
             if len(ohlc_window) >= 14:
-                ranges = ohlc_window[-14:, 1] - ohlc_window[-14:, 2]  # High - Low
+                ranges = ohlc_window[-14:, 1] - ohlc_window[-14:, 2]
                 atr_value = float(np.mean(ranges))
             else:
                 atr_value = float(np.mean(ohlc_window[:, 1] - ohlc_window[:, 2]))
 
-        # ─────────────────────────────────────────────────────────────
-        # 3. Get/normalize session info
-        # ─────────────────────────────────────────────────────────────
+
         if not session_info:
             now = datetime.utcnow()
             session_info = {
@@ -335,16 +254,14 @@ class EntryTimingController(BaseModule):
                 "weekday": now.weekday(),
             }
         else:
-            # Ensure required keys exist, with sane defaults
+
             session_info = {
                 "hour": int(session_info.get("hour", 12)),
                 "minute": int(session_info.get("minute", 0)),
                 "weekday": int(session_info.get("weekday", 0)),
             }
 
-        # ─────────────────────────────────────────────────────────────
-        # 4. Get position state for this instrument
-        # ─────────────────────────────────────────────────────────────
+
         instrument_position = position_summary.get(instrument, {})
         if not isinstance(instrument_position, dict):
             instrument_position = {}
@@ -357,9 +274,7 @@ class EntryTimingController(BaseModule):
             "had_recent_loss": instrument_position.get("had_recent_loss", False),
         }
 
-        # ─────────────────────────────────────────────────────────────
-        # 5. Compute features (delegated to pure timing engine)
-        # ─────────────────────────────────────────────────────────────
+
         features = compute_timing_features(
             instrument=instrument,
             ohlc_window=ohlc_window,
@@ -376,20 +291,9 @@ class EntryTimingController(BaseModule):
         instrument: str,
         instrument_data: Dict[str, Any],
     ) -> Optional[np.ndarray]:
-        """
-        Extract an OHLC window for a given instrument from market_data.
-
-        Tries several common formats:
-        - instrument_data["ohlc"] -> direct array-like
-        - instrument_data["candles"] -> list[dict] with open/high/low/close
-        - instrument_data["open"/"high"/"low"/"close"] -> parallel arrays
-
-        Returns:
-            np.ndarray of shape (N, 4) or None if extraction fails.
-        """
         ohlc_window: Optional[np.ndarray] = None
 
-        # 1) Direct "ohlc" key
+
         raw_ohlc = instrument_data.get("ohlc")
         if raw_ohlc is not None:
             try:
@@ -401,7 +305,7 @@ class EntryTimingController(BaseModule):
                     e,
                 )
 
-        # 2) Candles list of dicts
+
         if ohlc_window is None:
             candles = instrument_data.get("candles")
             if isinstance(candles, list) and candles:
@@ -426,7 +330,7 @@ class EntryTimingController(BaseModule):
                         e,
                     )
 
-        # 3) Parallel arrays format
+
         if ohlc_window is None:
             close = instrument_data.get("close")
             high = instrument_data.get("high")
@@ -444,7 +348,7 @@ class EntryTimingController(BaseModule):
                         open_arr = np.asarray(open_, dtype=float)
                         n = min(n, len(open_arr))
                     else:
-                        # If open is missing, approximate with previous close
+
                         open_arr = np.roll(close_arr, 1)
                         open_arr[0] = close_arr[0]
 
@@ -465,7 +369,7 @@ class EntryTimingController(BaseModule):
                     )
 
         if ohlc_window is not None and len(ohlc_window) > 0:
-            # Ensure we always use the last N rows and correct shape
+
             ohlc_window = ohlc_window[-self.ohlc_window_size :]
             if ohlc_window.shape[1] != 4:
                 logger.debug(
@@ -478,11 +382,6 @@ class EntryTimingController(BaseModule):
         return ohlc_window
 
     def get_timing_for_instrument(self, instrument: str) -> Optional[Dict[str, Any]]:
-        """
-        Get cached timing features for an instrument from the bus.
-
-        This is a convenience helper for other modules to query timing.
-        """
         entry_timing = self.smart_bus.get(
             "entry_timing",
             self.__class__.__name__,
@@ -493,14 +392,7 @@ class EntryTimingController(BaseModule):
         return entry_timing.get(instrument)
 
     def is_entry_allowed(self, instrument: str) -> bool:
-        """
-        Quick check if entry is allowed for an instrument.
-
-        Returns True if no timing data is available (fail-open),
-        to avoid hard-wiring this module as a single point of failure
-        for the entire trading stack.
-        """
         timing = self.get_timing_for_instrument(instrument)
         if timing is None or not isinstance(timing, dict):
-            return True  # Fail-open by design
+            return True
         return bool(timing.get("entry_allowed", True))

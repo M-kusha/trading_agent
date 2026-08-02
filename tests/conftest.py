@@ -1,9 +1,3 @@
-"""Shared fixtures for the trading-system test suite.
-
-These tests exist because the repository previously shipped none, and the
-failure that resulted (an agent training on a constant zero vector for weeks)
-was invisible to every dashboard and every metric.
-"""
 from __future__ import annotations
 
 import sys
@@ -22,7 +16,6 @@ TIMEFRAMES = ("M15", "H1", "H4", "D1")
 
 
 def _load_instrument(instrument: str) -> dict:
-    """Load the tracked feature CSVs the same way training does."""
     out: dict = {}
     if not DATA_DIR.is_dir():
         return out
@@ -69,7 +62,6 @@ def env(market_data):
 
 @pytest.fixture(scope="session")
 def rollout(env) -> np.ndarray:
-    """A deterministic random-action rollout, returned as an (N, obs_dim) array."""
     rng = np.random.default_rng(0)
     obs, _ = env.reset(seed=0)
     collected = [obs.copy()]

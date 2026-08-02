@@ -6,7 +6,6 @@ from typing import Any, Dict, List, Optional
 
 @dataclass
 class ModeConfig:
-    """Mode toggles shared by training and live pipelines."""
 
     name: str = "training"
     live: bool = False
@@ -17,13 +16,12 @@ class ModeConfig:
 
 @dataclass
 class LoggingConfig:
-    """Central logging configuration with a global debug switch."""
 
     debug: bool = False
     level: str = "INFO"
     log_dir: str = "logs"
     filename: str = "trading_agent.log"
-    max_bytes: int = 10_485_760  # 10 MB
+    max_bytes: int = 10_485_760
     backup_count: int = 5
 
     @property
@@ -33,7 +31,6 @@ class LoggingConfig:
 
 @dataclass
 class PathsConfig:
-    """Filesystem layout."""
 
     logs: str = "logs"
     checkpoints: str = "checkpoints"
@@ -44,7 +41,6 @@ class PathsConfig:
 
 @dataclass
 class EnvironmentConfig:
-    """Environment defaults shared between training and live runs."""
 
     instruments: List[str] = field(default_factory=lambda: ["XAUUSD"])
     timeframes: List[str] = field(default_factory=lambda: ["M15", "H1", "H4", "D1"])
@@ -62,7 +58,6 @@ class EnvironmentConfig:
 
 @dataclass
 class RLConfig:
-    """RL hyperparameters and training loop controls."""
 
     learning_rate: float = 1e-4
     n_steps: int = 2048
@@ -85,7 +80,6 @@ class RLConfig:
 
 @dataclass
 class MT5Config:
-    """MT5 connection parameters."""
 
     account: Optional[int] = None
     password: Optional[str] = None
@@ -95,13 +89,11 @@ class MT5Config:
 
 @dataclass
 class RiskConfig:
-    """Risk policy wrapper to keep YAML typed while allowing passthrough."""
 
     policy: Dict[str, Any] = field(default_factory=dict)
     overrides: Dict[str, Any] = field(default_factory=dict)
 
     def to_trading_overrides(self) -> Dict[str, Any]:
-        """Map known risk overrides into TradingConfig fields."""
         out: Dict[str, Any] = {}
         for key in ["max_total_exposure", "max_position_pct", "max_drawdown", "emergency_drawdown_trigger"]:
             if key in self.overrides and self.overrides[key] is not None:
@@ -111,7 +103,6 @@ class RiskConfig:
 
 @dataclass
 class TradingAgentConfig:
-    """Complete config object consumed by both training and live flows."""
 
     mode: ModeConfig = field(default_factory=ModeConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
@@ -122,24 +113,23 @@ class TradingAgentConfig:
     risk: RiskConfig = field(default_factory=RiskConfig)
 
     def to_trading_config(self):
-        """Convert to the existing TradingConfig used by envs.*."""
-        from envs.config import TradingConfig  # Lazy import to avoid cycles
+        from envs.config import TradingConfig
 
         overrides = {
-            # Modes and flags
+
             "debug": self.logging.debug,
             "log_level": self.logging.effective_level,
             "live_mode": self.mode.live,
             "training_mode": self.mode.training,
             "test_mode": self.mode.test_mode,
             "enable_shadow_sim": self.mode.enable_shadow_sim,
-            # Paths
+
             "log_dir": self.paths.logs,
             "checkpoint_dir": self.paths.checkpoints,
             "model_dir": self.paths.models,
             "tensorboard_dir": self.paths.tensorboard,
             "data_dir": self.paths.data,
-            # Env
+
             "initial_balance": self.environment.initial_balance,
             "max_steps": self.environment.max_steps,
             "num_envs": self.environment.num_envs,
@@ -147,7 +137,7 @@ class TradingAgentConfig:
             "timeframes": self.environment.timeframes,
             "bus_first": self.environment.bus_first,
             "primary_timeframe": self.environment.primary_timeframe,
-            # RL hyperparameters
+
             "learning_rate": self.rl.learning_rate,
             "n_steps": self.rl.n_steps,
             "batch_size": self.rl.batch_size,
@@ -159,7 +149,7 @@ class TradingAgentConfig:
             "vf_coef": self.rl.vf_coef,
             "max_grad_norm": self.rl.max_grad_norm,
             "target_kl": self.rl.target_kl,
-            # Training loop
+
             "final_training_steps": self.rl.final_training_steps,
             "checkpoint_freq": self.rl.checkpoint_freq,
             "eval_freq": self.rl.eval_freq,

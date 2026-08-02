@@ -1,17 +1,4 @@
-# -------------------------------------------------------------
-# File: modules/position/exit_engine.py
-# ExitStrategyEngine — Unified exit logic for BOTH systems
-#
-# SINGLE SOURCE OF TRUTH for exit decisions.
-#
-# Enhancements (v2.2):
-#   - Per-instrument overrides: risk_policy.yaml -> exit_strategies.per_instrument
-#   - Hot-reload on YAML mtime (safe, throttled)
-#   - Stronger config validation/clamping (prevents “too-loose” drift)
-#   - Lifecycle-aware regime mapping (probe/build/ride/defend supported)
-#   - Optional ctx.atr_eur support (preferred over heuristics)
-#   - More robust peak tracking and stale-peak reset
-# -------------------------------------------------------------
+
 
 from __future__ import annotations
 
@@ -22,23 +9,18 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-# yaml is optional (fallback to defaults if missing)
 try:
     import yaml  # type: ignore
 except Exception:  # pragma: no cover
     yaml = None  # type: ignore
 
-# Training mode check - signal exits bypassed during training
+
 try:
     from modules.voting.core.constants import is_training_mode
 except ImportError:  # pragma: no cover
     def is_training_mode() -> bool:
         return False
 
-
-# -----------------------------
-# Small safety utilities
-# -----------------------------
 
 def _clamp(x: float, lo: float, hi: float) -> float:
     try:
@@ -63,10 +45,6 @@ def _norm_symbol(sym: str) -> str:
     return (sym or "").replace("_", "").replace(".", "").upper()
 
 
-# -----------------------------
-# Public types
-# -----------------------------
-
 class ExitReason(Enum):
     HOLD = auto()
     HARD_STOP = auto()
@@ -83,8 +61,8 @@ class ExitReason(Enum):
 class ExitDecision:
     should_exit: bool
     reason: ExitReason
-    confidence: float  # 0..1
-    urgency: float     # 0..1
+    confidence: float
+    urgency: float
     details: Dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -104,18 +82,18 @@ class ExitDecision:
 
 @dataclass
 class ExitConfig:
-    # Hard stop (ALWAYS EXIT)
+
     hard_stop_loss_eur: float = 150.0
 
-    # Soft stop (loss + opposing signal)
+
     soft_stop_loss_eur: float = 80.0
     soft_stop_min_signal: float = 0.3
 
-    # Time decay
+
     time_decay_hours: float = 4.0
     time_decay_stop_eur: float = 60.0
 
-    # Trailing profit
+
     trailing_activation_eur: float = 100.0
     trailing_activation_atr: float = 2.0
     trailing_retrace_pct: float = 0.30
@@ -123,34 +101,31 @@ class ExitConfig:
     trailing_use_atr: bool = True
     trailing_min_peak_eur: float = 50.0
 
-    # Momentum exit
+
     momentum_exit_profit_eur: float = 60.0
     momentum_reversal_signal: float = 0.65
 
-    # Signal exit
+
     signal_exit_threshold: float = 0.10
     signal_direction_weight: float = 0.8
 
-    # Regime scaling
+
     volatile_regime_tighten: float = 0.7
     ranging_regime_loosen: float = 1.2
     trending_regime_neutral: float = 1.0
 
-    # Emergency / account protection
+
     emergency_drawdown_pct: float = 0.08
     emergency_daily_loss_buffer_pct: float = 0.9
     emergency_max_open_risk_eur: float = 2000.0
 
-    # Internal safety clamps (not in YAML typically, but safe defaults)
+
     _min_hard_stop: float = 30.0
     _max_hard_stop: float = 300.0
     _min_trailing_activation: float = 20.0
     _max_trailing_activation: float = 250.0
 
     def validated(self) -> "ExitConfig":
-        """
-        Clamp and normalize config so it cannot become dangerously permissive.
-        """
         cfg = self
 
         hard = _clamp(_safe_float(cfg.hard_stop_loss_eur, 150.0), cfg._min_hard_stop, cfg._max_hard_stop)
@@ -208,7 +183,7 @@ class ExitConfig:
 
 @dataclass
 class PositionContext:
-    # Position-level
+
     symbol: str
     side: int
     unrealized_pnl: float
@@ -219,19 +194,19 @@ class PositionContext:
     lots: float = 0.0
     position_id: str = ""
 
-    # Market context
-    atr: Optional[float] = None        # ATR in price units
-    atr_eur: Optional[float] = None    # Preferred: ATR already converted to EUR
-    volatility: float = 0.02
-    regime: str = "normal"             # "volatile/ranging/trending/normal/auto" or lifecycle: "probe/build/ride/defend"
 
-    # Signal / committee
+    atr: Optional[float] = None
+    atr_eur: Optional[float] = None
+    volatility: float = 0.02
+    regime: str = "normal"
+
+
     signal_direction: int = 0
     signal_strength: float = 0.0
     signal_valid: bool = False
     consensus_confidence: float = 0.5
 
-    # Account/portfolio context (optional)
+
     account_drawdown_pct: Optional[float] = None
     daily_loss_eur: Optional[float] = None
     daily_loss_limit_eur: Optional[float] = None
@@ -275,22 +250,11 @@ class PositionContext:
         return (self.current_price - self.entry_price) * self.side / pip_size
 
 
-# -----------------------------
-# YAML loading (base + per-instrument overrides)
-# -----------------------------
-
 def _risk_policy_path() -> Path:
     return Path(__file__).parent.parent.parent / "config" / "risk_policy.yaml"
 
 
 def load_exit_config() -> ExitConfig:
-    """
-    Load base exit configuration from risk_policy.yaml.
-
-    Reads:
-      - exit_strategies (preferred)
-      - smart_position (fallback mapping)
-    """
     if yaml is None:
         return ExitConfig().validated()
 
@@ -323,19 +287,6 @@ def load_exit_config() -> ExitConfig:
 
 
 def load_exit_per_instrument_overrides() -> Dict[str, Dict[str, Any]]:
-    """
-    Load per-instrument overrides from risk_policy.yaml.
-
-    Supported location:
-      risk_policy.yaml -> exit_strategies:
-        per_instrument:
-          XAUUSD:
-            hard_stop_loss_eur: 200
-            trailing_activation_eur: 120
-            trailing_retrace_pct: 0.22
-          EURUSD:
-            trailing_use_atr: true
-    """
     if yaml is None:
         return {}
 
@@ -357,49 +308,33 @@ def load_exit_per_instrument_overrides() -> Dict[str, Dict[str, Any]]:
         return {}
 
 
-# -----------------------------
-# Engine
-# -----------------------------
-
 class ExitStrategyEngine:
-    """
-    Unified exit strategy engine.
-
-    Evaluates exit strategies in priority order and returns the first triggered exit.
-    """
 
     def __init__(self, config: Optional[ExitConfig] = None):
         self.config: ExitConfig = (config or load_exit_config()).validated()
 
-        # Per-instrument overrides (symbol-normalized keys)
+
         self._per_instrument: Dict[str, Dict[str, Any]] = load_exit_per_instrument_overrides()
         self._merged_cfg_cache: Dict[str, ExitConfig] = {}
 
-        # Track profit peaks per position or symbol
+
         self._profit_peaks: Dict[str, float] = {}
 
-        # Hot reload control
+
         self._cfg_path: Path = _risk_policy_path()
         self._last_mtime: float = 0.0
         self._last_reload_check_ts: float = 0.0
-        self._reload_check_interval_sec: float = 3.0  # throttled
+        self._reload_check_interval_sec: float = 3.0
 
-        # Initialize mtime baseline
+
         try:
             if self._cfg_path.exists():
                 self._last_mtime = float(self._cfg_path.stat().st_mtime)
         except Exception:
             self._last_mtime = 0.0
 
-    # -------------------------
-    # Reload
-    # -------------------------
 
     def _maybe_reload(self) -> None:
-        """
-        Hot-reload config and per-instrument overrides if YAML changed.
-        Safe and throttled; never raises.
-        """
         now = time.time()
         if (now - self._last_reload_check_ts) < self._reload_check_interval_sec:
             return
@@ -411,18 +346,15 @@ class ExitStrategyEngine:
             mtime = float(self._cfg_path.stat().st_mtime)
             if mtime <= self._last_mtime:
                 return
-            # Reload
+
             self.config = load_exit_config().validated()
             self._per_instrument = load_exit_per_instrument_overrides()
             self._merged_cfg_cache.clear()
             self._last_mtime = mtime
         except Exception:
-            # Never let reload break trading
+
             return
 
-    # -------------------------
-    # Internal helpers
-    # -------------------------
 
     def _peak_key(self, ctx: PositionContext) -> str:
         return f"{ctx.position_id}|{ctx.symbol}" if ctx.position_id else ctx.symbol
@@ -437,8 +369,7 @@ class ExitStrategyEngine:
         peak_key = self._peak_key(ctx)
         tracked_peak = self._profit_peaks.get(peak_key, ctx.unrealized_pnl)
 
-        # Stale peak reset protection:
-        # if position is very new + near flat, but tracked_peak is huge -> reset.
+
         if ctx.age_seconds < 300 and abs(ctx.unrealized_pnl) < 50.0 and tracked_peak > 100.0:
             self._profit_peaks[peak_key] = ctx.unrealized_pnl
             tracked_peak = ctx.unrealized_pnl
@@ -460,9 +391,6 @@ class ExitStrategyEngine:
         return _clamp(base_urg * factor, 0.0, 1.0)
 
     def _cfg_for_symbol(self, symbol: str) -> ExitConfig:
-        """
-        Merge base config + per-instrument overrides (cached).
-        """
         sym = _norm_symbol(symbol)
         cached = self._merged_cfg_cache.get(sym)
         if cached is not None:
@@ -482,27 +410,15 @@ class ExitStrategyEngine:
         return merged
 
     def _map_lifecycle_regime(self, regime: str) -> str:
-        """
-        Accept lifecycle regimes coming from SmartPositionManager:
-          probe/build/ride/defend/exit
-
-        Map them into behavior buckets:
-          - defend is special (tighten trailing + earlier activation)
-          - probe tightens soft/time-decay slightly (early cut)
-          - ride slightly loosens soft/time-decay (let winners breathe)
-        """
         r = (regime or "").lower().strip()
         if r in ("probe", "build", "ride", "defend", "exit"):
             return r
         return r or "normal"
 
     def _regime_adjusted_config(self, ctx: PositionContext, base_cfg: ExitConfig) -> ExitConfig:
-        """
-        Adjust thresholds based on regime and lifecycle.
-        """
         regime = self._map_lifecycle_regime(ctx.regime)
 
-        # Lifecycle: DEFEND = tighten trailing + activate earlier
+
         if regime == "defend":
             scale = 0.75
             return replace(
@@ -516,7 +432,7 @@ class ExitStrategyEngine:
                 momentum_reversal_signal=_clamp(base_cfg.momentum_reversal_signal * 0.9, 0.2, 0.99),
             ).validated()
 
-        # Lifecycle: PROBE = cut losers a bit sooner (but do not touch HARD_STOP)
+
         if regime == "probe":
             return replace(
                 base_cfg,
@@ -525,7 +441,7 @@ class ExitStrategyEngine:
                 time_decay_stop_eur=base_cfg.time_decay_stop_eur * 0.85,
             ).validated()
 
-        # Lifecycle: RIDE = allow more breathing room
+
         if regime == "ride":
             return replace(
                 base_cfg,
@@ -533,7 +449,7 @@ class ExitStrategyEngine:
                 time_decay_hours=min(72.0, base_cfg.time_decay_hours * 1.25),
             ).validated()
 
-        # Classic regimes: auto/normal => infer by volatility
+
         r = (ctx.regime or "normal").lower()
         if r in ("auto", "normal", ""):
             vol = _clamp(_safe_float(ctx.volatility, 0.02), 0.0, 1.0)
@@ -554,7 +470,7 @@ class ExitStrategyEngine:
         if abs(scale - 1.0) < 1e-9:
             return base_cfg
 
-        # Scale numeric thresholds where appropriate (do not scale time)
+
         return replace(
             base_cfg,
             hard_stop_loss_eur=base_cfg.hard_stop_loss_eur * scale,
@@ -567,10 +483,6 @@ class ExitStrategyEngine:
         ).validated()
 
     def _atr_eur(self, ctx: PositionContext, cfg: ExitConfig) -> Optional[float]:
-        """
-        Prefer ctx.atr_eur if provided.
-        Otherwise fall back to heuristics based on symbol & lot size.
-        """
         if not cfg.trailing_use_atr:
             return None
 
@@ -583,35 +495,29 @@ class ExitStrategyEngine:
         symbol = (ctx.symbol or "").upper()
         atr = float(ctx.atr)
 
-        # Heuristic contract conversions (approximate; best is ctx.atr_eur)
+
         if "XAU" in symbol:
-            return atr * 100.0 * ctx.lots  # 100 oz per lot-ish
+            return atr * 100.0 * ctx.lots
         else:
             return atr * 100_000.0 * ctx.lots
 
-    # -------------------------
-    # Public API
-    # -------------------------
 
     def evaluate(self, ctx: PositionContext) -> ExitDecision:
-        """
-        Evaluate all exit strategies for a position.
-        """
         self._maybe_reload()
 
-        # Effective peak P&L (internal + external)
+
         ctx_peak = self._effective_peak_pnl(ctx)
 
-        # Base cfg + per-instrument + regime adjustments
+
         base_cfg = self._cfg_for_symbol(ctx.symbol)
         cfg = self._regime_adjusted_config(ctx, base_cfg)
 
-        # 0) EMERGENCY
+
         emergency = self._check_emergency(ctx, cfg)
         if emergency.should_exit:
             return emergency
 
-        # 1) HARD STOP
+
         if _safe_float(ctx.unrealized_pnl) <= -cfg.hard_stop_loss_eur:
             return ExitDecision(
                 should_exit=True,
@@ -625,27 +531,27 @@ class ExitStrategyEngine:
                 },
             )
 
-        # 2) SOFT STOP
+
         soft = self._check_soft_stop(ctx, cfg)
         if soft.should_exit:
             return soft
 
-        # 3) TIME DECAY
+
         td = self._check_time_decay(ctx, ctx_peak, cfg)
         if td.should_exit:
             return td
 
-        # 4) TRAILING PROFIT
+
         tr = self._check_trailing_profit(ctx, ctx_peak, cfg)
         if tr.should_exit:
             return tr
 
-        # 5) MOMENTUM EXIT
+
         mo = self._check_momentum_exit(ctx, cfg)
         if mo.should_exit:
             return mo
 
-        # 6) SIGNAL EXIT
+
         se = self._check_signal_exit(ctx, cfg)
         if se.should_exit:
             return se
@@ -664,9 +570,6 @@ class ExitStrategyEngine:
         )
 
     def evaluate_all(self, ctx: PositionContext) -> Dict[str, ExitDecision]:
-        """
-        Diagnostics helper: evaluate all strategies and return their decisions.
-        """
         self._maybe_reload()
 
         ctx_peak = self._effective_peak_pnl(ctx)
@@ -676,7 +579,7 @@ class ExitStrategyEngine:
         results: Dict[str, ExitDecision] = {}
         results["emergency"] = self._check_emergency(ctx, cfg)
 
-        # hard stop (synthetic decision)
+
         if _safe_float(ctx.unrealized_pnl) <= -cfg.hard_stop_loss_eur:
             results["hard_stop"] = ExitDecision(True, ExitReason.HARD_STOP, 0.99, 1.0, {"loss": float(ctx.unrealized_pnl)})
         else:
@@ -690,9 +593,6 @@ class ExitStrategyEngine:
         results["final"] = self.evaluate(ctx)
         return results
 
-    # -------------------------
-    # Strategy implementations
-    # -------------------------
 
     def _check_emergency(self, ctx: PositionContext, cfg: ExitConfig) -> ExitDecision:
         triggers = []
@@ -749,7 +649,7 @@ class ExitStrategyEngine:
         if age_h < cfg.time_decay_hours:
             return ExitDecision(False, ExitReason.HOLD, 0.0, 0.0, {})
 
-        # old + losing (critical)
+
         if _safe_float(ctx.unrealized_pnl) <= -cfg.time_decay_stop_eur:
             conf = self._adjust_confidence(0.85, ctx)
             urg = self._adjust_urgency(0.80, ctx)
@@ -767,7 +667,7 @@ class ExitStrategyEngine:
                 },
             )
 
-        # stale profit: very old and gave back most of peak
+
         if ctx.is_profitable and peak_pnl > 0:
             retrace_eur = peak_pnl - _safe_float(ctx.unrealized_pnl)
             retrace_pct = retrace_eur / peak_pnl if peak_pnl > 0 else 0.0
@@ -797,7 +697,7 @@ class ExitStrategyEngine:
 
         atr_eur = self._atr_eur(ctx, cfg)
 
-        # Activation
+
         activated = False
         activation_method = ""
         if atr_eur is not None:
@@ -818,7 +718,7 @@ class ExitStrategyEngine:
         retrace_eur = peak_pnl - _safe_float(ctx.unrealized_pnl)
         retrace_pct = retrace_eur / peak_pnl if peak_pnl > 0 else 0.0
 
-        # Profit-tier adaptive trailing
+
         hard_stop = max(cfg.hard_stop_loss_eur, 1e-6)
         R = peak_pnl / hard_stop
 
@@ -842,11 +742,11 @@ class ExitStrategyEngine:
         else:
             r_factor = 0.90
 
-        # Day-aware tightening: strong day => protect more
+
         daily_factor = 1.0
         if ctx.daily_loss_eur is not None and ctx.daily_loss_limit_eur is not None:
             limit = _safe_float(ctx.daily_loss_limit_eur, 0.0)
-            pnl = _safe_float(ctx.daily_loss_eur, 0.0)  # signed
+            pnl = _safe_float(ctx.daily_loss_eur, 0.0)
             if limit > 0 and pnl > 0:
                 ratio = _clamp(pnl / limit, 0.0, 1.0)
                 daily_factor = 1.0 - 0.3 * ratio
@@ -921,15 +821,15 @@ class ExitStrategyEngine:
         return ExitDecision(False, ExitReason.HOLD, 0.0, 0.0, {})
 
     def _check_signal_exit(self, ctx: PositionContext, cfg: ExitConfig) -> ExitDecision:
-        # Startup grace
+
         if not bool(ctx.signal_valid):
             return ExitDecision(False, ExitReason.HOLD, 0.0, 0.0, {"message": "Signal not yet valid (startup grace period)"})
 
-        # Training bypass
+
         if is_training_mode():
             return ExitDecision(False, ExitReason.HOLD, 0.0, 0.0, {"message": "Signal exit bypassed (training mode)"})
 
-        # Direction flip
+
         if ctx.signal_against and _safe_float(ctx.signal_strength) >= cfg.signal_direction_weight:
             conf = self._adjust_confidence(0.75, ctx)
             urg = self._adjust_urgency(0.60, ctx)
@@ -950,7 +850,7 @@ class ExitStrategyEngine:
                 },
             )
 
-        # Very weak conviction
+
         if _safe_float(ctx.signal_strength) < cfg.signal_exit_threshold:
             conf = self._adjust_confidence(0.70, ctx)
             urg = self._adjust_urgency(0.50, ctx)
@@ -968,9 +868,6 @@ class ExitStrategyEngine:
 
         return ExitDecision(False, ExitReason.HOLD, 0.0, 0.0, {})
 
-    # -------------------------
-    # Peak management
-    # -------------------------
 
     def reset_peak(self, symbol: str) -> None:
         sym = symbol or ""
@@ -987,7 +884,6 @@ class ExitStrategyEngine:
         return self._profit_peaks.copy()
 
 
-# Singleton
 _exit_engine_instance: Optional[ExitStrategyEngine] = None
 
 

@@ -1,22 +1,9 @@
-# envs/curriculum/config/registry.py
-"""
-Canonical metric registry with split namespaces.
 
-Separates OBSERVED METRICS (what evaluators produce) from THRESHOLD FIELDS
-(what CompetenceThresholds contains). This prevents silent failures from
-metric name mismatches.
-
-Upgrades (Jan 2026):
-- Fixed composite component key mismatch: composite scoring uses "drawdown"
-  (component), not "max_drawdown" (observed metric). Added canonicalization
-  for composite component keys to preserve backward compatibility.
-"""
 
 from __future__ import annotations
 
 from typing import Dict, Optional, Set
 
-# ---- Namespace 1: Observed Metrics ----
 OBSERVED_METRICS: Set[str] = {
     "win_rate",
     "profit_factor",
@@ -31,7 +18,7 @@ OBSERVED_METRICS: Set[str] = {
     "entropy",
     "consistency",
     "trade_activity",
-    # Patience / discipline
+
     "avg_bars_between_trades",
     "setup_skipped_per_episode",
     "entry_certainty_avg",
@@ -51,7 +38,7 @@ OBSERVED_ALIASES: Dict[str, str] = {
     "setup_skipped": "setup_skipped_per_episode",
 }
 
-# ---- Namespace 2: Threshold Fields ----
+
 THRESHOLD_FIELDS: Set[str] = {
     "min_win_rate",
     "min_profit_factor",
@@ -68,7 +55,7 @@ THRESHOLD_FIELDS: Set[str] = {
     "min_entropy",
     "max_mask_collapse_rate",
     "max_stop_mode_rate",
-    # Patience / discipline
+
     "min_avg_bars_between_trades",
     "min_setup_skipped_per_episode",
     "min_entry_certainty_avg",
@@ -83,7 +70,7 @@ THRESHOLD_ALIASES: Dict[str, str] = {
     "min_r_multiple": "min_avg_r_multiple",
 }
 
-# ---- Bridge: Observed Metric -> Threshold Field ----
+
 METRIC_TO_THRESHOLD: Dict[str, str] = {
     "win_rate": "min_win_rate",
     "profit_factor": "min_profit_factor",
@@ -104,9 +91,7 @@ METRIC_TO_THRESHOLD: Dict[str, str] = {
     "revenge_trade_rate": "max_revenge_trade_rate",
 }
 
-# ---- Composite Scoring Component Keys ----
-# These must match compute_composite_score() component names.
-# NOTE: Composite uses "drawdown" (a normalized component), while observed metric is "max_drawdown".
+
 COMPOSITE_KEY_ALIASES: Dict[str, str] = {
     "max_drawdown": "drawdown",
 }
@@ -130,7 +115,7 @@ COMPOSITE_HARD_FLOOR_KEYS: Set[str] = {
     "r_multiple",
 }
 
-# Legacy: Combined set for backward compatibility
+
 METRIC_CANONICAL_NAMES: Set[str] = OBSERVED_METRICS | THRESHOLD_FIELDS
 
 
@@ -145,9 +130,6 @@ def canonicalize_threshold_field(name: str) -> str:
 
 
 def canonicalize_metric(name: str) -> str:
-    """
-    DEPRECATED: Use canonicalize_observed_metric or canonicalize_threshold_field.
-    """
     lower = name.lower()
     if lower in OBSERVED_METRICS or lower in OBSERVED_ALIASES:
         return canonicalize_observed_metric(lower)
@@ -157,7 +139,6 @@ def canonicalize_metric(name: str) -> str:
 
 
 def canonicalize_composite_key(name: str) -> str:
-    """Canonicalize composite component key (e.g., max_drawdown -> drawdown)."""
     lower = name.lower()
     return COMPOSITE_KEY_ALIASES.get(lower, lower)
 

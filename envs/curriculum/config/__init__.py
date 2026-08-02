@@ -1,9 +1,4 @@
-# envs/curriculum/config/__init__.py
-"""
-Curriculum configuration classes.
 
-Re-exports all configuration classes for backward compatibility.
-"""
 
 from envs.curriculum.config.constraints import (
     RewardShaping,
@@ -26,12 +21,10 @@ from envs.curriculum.config.registry import (
     METRIC_CANONICAL_NAMES,
     METRIC_TO_THRESHOLD,
     OBSERVED_ALIASES,
-    # Metric registries
     OBSERVED_METRICS,
     THRESHOLD_ALIASES,
     THRESHOLD_FIELDS,
     canonicalize_metric,
-    # Helper functions
     canonicalize_observed_metric,
     canonicalize_threshold_field,
     get_threshold_for_metric,
@@ -54,43 +47,38 @@ from envs.curriculum.config.thresholds import (
 )
 
 __all__ = [
-    # Stages
-    "CurriculumStage",
-    "TradingSkill",
-    "MarketRegime",
-    "CurriculumStageConfig",
-    # Execution
-    "ExecutionDifficulty",
-    "DataDifficulty",
-    "TransitionSettings",
-    # Thresholds
-    "CompetenceThresholds",
-    "SkillRequirements",
-    "EntropyTargets",
-    "CompositeScoringConfig",
-    "AdaptiveThresholdConfig",
-    "MIN_EVALUATION_EPISODES",
-    # Constraints
-    "TradingConstraints",
-    "RewardShaping",
-    # Protocols
-    "RecoveryProtocolConfig",
-    "MixedStageSamplingConfig",
-    "ReviewSessionConfig",
-    "ValidationConfig",
-    # Registry
-    "OBSERVED_METRICS",
-    "OBSERVED_ALIASES",
-    "THRESHOLD_FIELDS",
-    "THRESHOLD_ALIASES",
-    "METRIC_TO_THRESHOLD",
-    "COMPOSITE_WEIGHT_KEYS",
+
     "COMPOSITE_HARD_FLOOR_KEYS",
+    "COMPOSITE_WEIGHT_KEYS",
     "METRIC_CANONICAL_NAMES",
+    "METRIC_TO_THRESHOLD",
+    "MIN_EVALUATION_EPISODES",
+    "OBSERVED_ALIASES",
+    "OBSERVED_METRICS",
+    "THRESHOLD_ALIASES",
+    "THRESHOLD_FIELDS",
+    "AdaptiveThresholdConfig",
+    "CompetenceThresholds",
+    "CompositeScoringConfig",
+    "CurriculumStage",
+    "CurriculumStageConfig",
+    "DataDifficulty",
+    "EntropyTargets",
+    "ExecutionDifficulty",
+    "MarketRegime",
+    "MixedStageSamplingConfig",
+    "RecoveryProtocolConfig",
+    "ReviewSessionConfig",
+    "RewardShaping",
+    "SkillRequirements",
+    "TradingConstraints",
+    "TradingSkill",
+    "TransitionSettings",
+    "ValidationConfig",
+    "canonicalize_metric",
     "canonicalize_observed_metric",
     "canonicalize_threshold_field",
-    "canonicalize_metric",
+    "get_threshold_for_metric",
     "is_valid_observed_metric",
     "is_valid_threshold_field",
-    "get_threshold_for_metric",
 ]

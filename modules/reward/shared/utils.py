@@ -1,8 +1,4 @@
-# modules/reward/shared/utils.py
-"""
-Shared Utilities for Reward System
-Common helper functions and utilities
-"""
+
 
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List
@@ -11,11 +7,9 @@ import numpy as np
 
 
 class RewardUtils:
-    """Utility functions for reward system"""
 
     @staticmethod
     def utcnow() -> str:
-        """Get current UTC timestamp as ISO string (timezone-aware)."""
         return datetime.now(timezone.utc).isoformat()
 
     @staticmethod
@@ -24,11 +18,10 @@ class RewardUtils:
         result: Dict[str, Any],
         state: Any
     ) -> str:
-        """Generate comprehensive thesis for reward calculation."""
         try:
             parts: List[str] = []
 
-            # Core metrics
+
             reward = float(result.get('shaped_reward', 0.0))
             components = result.get('reward_components', {}) or {}
             pnl = float(components.get('pnl', 0.0) or 0.0)
@@ -36,12 +29,12 @@ class RewardUtils:
 
             parts.append(f"Reward: {reward:.4f} from {pnl:.2f} PnL over {trades_count} trades")
 
-            # Context
+
             regime = str(reward_data.get('regime', 'unknown'))
             volatility = str(reward_data.get('volatility_level', 'medium'))
             parts.append(f"Context: {regime.upper()} regime, {volatility.upper()} vol")
 
-            # Quality assessment
+
             rq = float(getattr(state, 'reward_quality', 0.5))
             win_rate = float(getattr(state, 'win_rate', 0.0))
             if rq > 0.7:
@@ -51,7 +44,7 @@ class RewardUtils:
             else:
                 parts.append(f"Quality: MODERATE ({rq:.2f})")
 
-            # Major components (penalties, bonuses, and adjustments), sorted by |impact|
+
             majors: List[tuple[str, float]] = []
             for k, v in components.items():
                 if not isinstance(v, (int, float)):
@@ -64,14 +57,14 @@ class RewardUtils:
                 majors.sort(key=lambda kv: abs(kv[1]), reverse=True)
                 parts.append("Major: " + ", ".join(f"{k}={v:.3f}" for k, v in majors[:3]))
 
-            # Adaptation confidence
+
             adapt_conf = float(getattr(state, 'adaptive_params', {}).get('adaptation_confidence', 0.5))
             if adapt_conf > 0.8:
                 parts.append("Adaptation: HIGH confidence")
             elif adapt_conf < 0.3:
                 parts.append("Adaptation: LOW confidence")
 
-            # Warnings
+
             cb_state = getattr(state, 'circuit_breaker', {}).get('state', 'CLOSED')
             if cb_state == 'OPEN':
                 parts.append("ALERT: Circuit breaker OPEN")
@@ -86,13 +79,12 @@ class RewardUtils:
     @staticmethod
     def generate_system_report(
         state: Any,
-        analytics_engine: Any,   # kept for API parity/future use
-        adaptation_manager: Any,  # kept for API parity/future use
+        analytics_engine: Any,
+        adaptation_manager: Any,
         config: Any
     ) -> str:
-        """Generate comprehensive system report."""
 
-        # Performance status
+
         avg_reward = float(getattr(state, 'avg_reward', 0.0))
         if avg_reward > 0.5:
             performance_status = "🚀 Excellent"
@@ -103,7 +95,7 @@ class RewardUtils:
         else:
             performance_status = "⚠️ Poor"
 
-        # Quality status
+
         reward_quality = float(getattr(state, 'reward_quality', 0.5))
         if reward_quality > 0.8:
             quality_status = "🎯 High"
@@ -114,13 +106,13 @@ class RewardUtils:
         else:
             quality_status = "❌ Low"
 
-        # Circuit breaker & health
+
         cb_state = getattr(state, 'circuit_breaker', {}).get('state', 'CLOSED')
         cb_status = "🔴 OPEN" if cb_state == 'OPEN' else "🟢 CLOSED"
         health = getattr(state, 'health_status', 'healthy')
         health_emoji = "✅" if health == 'healthy' else "⚠️"
 
-        # Regime weights formatting (defensive)
+
         weights_raw = getattr(config, 'regime_weights', []) or []
         try:
             regime_weights_str = ', '.join(f"{float(w):.2f}" for w in list(weights_raw))
@@ -176,7 +168,6 @@ class RewardUtils:
 
     @staticmethod
     def safe_float(value: Any, default: float = 0.0) -> float:
-        """Safely convert value to float."""
         try:
             return float(value)
         except (TypeError, ValueError):
@@ -184,7 +175,6 @@ class RewardUtils:
 
     @staticmethod
     def safe_mean(values: Iterable[float]) -> float:
-        """Calculate mean with safety checks (handles empty iterables)."""
         try:
             values_list = list(values)
             if not values_list:

@@ -1,4 +1,4 @@
-# modules/executor/adapters/base_adapter.py
+
 from __future__ import annotations
 
 import math
@@ -7,42 +7,36 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 
-# ─────────────────────────────────────────────────────────
-# Configuration
-# ─────────────────────────────────────────────────────────
 @dataclass
 class LiveAdapterConfig:
     broker: str = "mt5"
     account_currency: str = "EUR"
     symbol_overrides: Optional[Dict[str, str]] = None
 
-    # contract sizing
+
     lot_step: float = 0.01
     min_lot: float = 0.01
-    contract_size: float = 100_000.0  # default units per 1.0 lot (FX)
+    contract_size: float = 100_000.0
     price_decimals: int = 5
 
-    # execution policy
-    price_slippage: float = 0.0       # fallback slippage in price units if broker returns no price
-    require_positive_lots: bool = True
-    fallback_to_mid: bool = True      # if bid/ask missing, derive mid
 
-    # reliability
+    price_slippage: float = 0.0
+    require_positive_lots: bool = True
+    fallback_to_mid: bool = True
+
+
     max_retries: int = 2
     initial_backoff_ms: int = 150
     backoff_multiplier: float = 2.0
-    rate_limit_per_sec: int = 15      # coarse token bucket
+    rate_limit_per_sec: int = 15
     circuit_breaker_threshold: int = 6
     circuit_reset_sec: int = 30
-    price_staleness_sec: int = 5      # reject stale quotes if older than this
+    price_staleness_sec: int = 5
 
-    # telemetry (best-effort, adapter-agnostic)
+
     telemetry_enabled: bool = True
 
 
-# ─────────────────────────────────────────────────────────
-# Helpers
-# ─────────────────────────────────────────────────────────
 def _now() -> float:
     return time.time()
 
@@ -68,27 +62,21 @@ def _safe_float(v: Any, default: float = 0.0) -> float:
 
 
 def _open_time_to_ts(v: Any) -> float:
-    """
-    Best-effort parse of a position `open_time` field into a Unix timestamp (seconds).
-
-    Supports numeric seconds, numeric milliseconds, ISO8601 strings, and numeric strings.
-    Returns 0.0 when parsing fails.
-    """
     if v is None:
         return 0.0
 
-    # Already numeric
+
     if isinstance(v, (int, float)):
         ts = float(v)
     elif isinstance(v, str):
         s = v.strip()
         if not s:
             return 0.0
-        # Numeric string?
+
         try:
             ts = float(s)
         except Exception:
-            # ISO8601 (e.g. 2025-12-09T20:10:59Z)
+
             try:
                 from datetime import datetime
 
@@ -105,83 +93,50 @@ def _open_time_to_ts(v: Any) -> float:
     if not math.isfinite(ts):
         return 0.0
 
-    # Milliseconds -> seconds
+
     if ts > 1e12:
         ts /= 1000.0
     return ts
 
 
-# ─────────────────────────────────────────────────────────
-# Base Interface + Robust Wrappers
-# ─────────────────────────────────────────────────────────
 class BaseLiveAdapter:
-    """
-    Adapter contract for live execution providers (e.g., MT5).
-
-    Implement the *_impl methods in concrete adapters:
-      - _connect_impl() -> bool
-      - _disconnect_impl() -> None
-      - _get_account_info_impl() -> Dict[str, float | str]
-      - _get_prices_impl(instrument) -> Dict[str, float]  # {'bid','ask','mid','ts'}
-      - _market_order_impl(instrument, side, lots) -> Dict[str, Any]
-      - _reduce_position_impl(instrument, lots, side) -> Dict[str, Any]
-      - _close_position_impl(instrument) -> Dict[str, Any]
-      - _sync_positions_impl() -> Dict[str, Dict[str, Any]]
-      - _modify_position_impl(ticket, sl, tp) -> Dict[str, Any]
-
-    Public methods (used by Executor) run through robust wrappers providing:
-      - rate limiting, retries + backoff, circuit breaking
-      - lot rounding/clamping
-      - quote freshness checks & price normalization
-      - fallback slippage if broker omits execution price
-      - standardized return shapes
-    """
 
     def __init__(self, cfg: LiveAdapterConfig):
         self.cfg = cfg
         self.connected: bool = False
 
-        # rate limiter state
+
         self._rl_last_sec: int = int(_now())
         self._rl_used: int = 0
 
-        # circuit breaker state
-        self._cb_failures: int = 0
-        self._cb_opened_at: float = 0.0  # 0 => closed
 
-        # last quotes timestamps by symbol for freshness checks
+        self._cb_failures: int = 0
+        self._cb_opened_at: float = 0.0
+
+
         self._quote_ts: Dict[str, float] = {}
 
-    # ─────────────────────────────────────────────────────
-    # Symbol / sizing utilities
-    # ─────────────────────────────────────────────────────
+
     def resolve_symbol(self, instrument: str) -> str:
-        """Apply overrides like {'XAU_USD': 'XAUUSD'} before hitting the broker."""
         ov = self.cfg.symbol_overrides or {}
         return ov.get(instrument, instrument).replace("/", "").replace("_", "")
 
     def contract_size_for(self, instrument: str) -> float:
-        """
-        Symbol-specific contract size.
-
-        This logic is aligned with Executor._get_contract_size so that
-        units/lot calculations are consistent across the system.
-        """
         sym = (instrument or "").upper().replace("_", "").replace("/", "")
 
-        # Metals
-        if "XAU" in sym or "GOLD" in sym:
-            return 100.0          # 100 oz per lot
-        if "XAG" in sym or "SILVER" in sym:
-            return 5000.0         # 5000 oz per lot
 
-        # Crypto
+        if "XAU" in sym or "GOLD" in sym:
+            return 100.0
+        if "XAG" in sym or "SILVER" in sym:
+            return 5000.0
+
+
         if "BTC" in sym:
             return 1.0
         if "ETH" in sym:
             return 1.0
 
-        # Default FX
+
         cs = _safe_float(self.cfg.contract_size, 100_000.0)
         return cs if cs > 0 else 100_000.0
 
@@ -203,18 +158,14 @@ class BaseLiveAdapter:
         return lots
 
     def apply_fallback_slippage(self, side: int, price: float) -> float:
-        """If broker did not return an execution price, bias by configured slippage."""
         slip = _safe_float(self.cfg.price_slippage, 0.0)
         if slip == 0.0:
             return price
-        # buy => pay slightly more; sell => receive slightly less
+
         return price + (slip if side > 0 else -slip)
 
-    # ─────────────────────────────────────────────────────
-    # Connection lifecycle
-    # ─────────────────────────────────────────────────────
+
     def connect(self) -> bool:
-        """Robust connect with retries + circuit breaker semantics."""
         if self.connected:
             return True
         if self._circuit_open():
@@ -244,23 +195,8 @@ class BaseLiveAdapter:
     def is_connected(self) -> bool:
         return bool(self.connected)
 
-    # ─────────────────────────────────────────────────────
-    # Account & market data
-    # ─────────────────────────────────────────────────────
+
     def get_account_info(self) -> Dict[str, Any]:
-        """
-        Return account info with at least:
-        {
-            'balance': float,
-            'equity': float,
-            'margin': float,
-            'free_margin': float,
-            'margin_level': float,
-            'leverage': float,
-            'currency': str,
-        }
-        Missing numeric keys default to 0.0, currency falls back to config/account default.
-        """
         out: Dict[str, Any] = {
             "balance": 0.0,
             "equity": 0.0,
@@ -274,10 +210,10 @@ class BaseLiveAdapter:
             return out
         try:
             raw = self._get_account_info_impl() or {}
-            # numeric fields
+
             for k in ("balance", "equity", "margin", "free_margin", "margin_level", "leverage"):
                 out[k] = _safe_float(raw.get(k, out[k]), out[k])
-            # currency (string)
+
             cur = raw.get("currency")
             if isinstance(cur, str) and cur:
                 out["currency"] = cur
@@ -287,11 +223,6 @@ class BaseLiveAdapter:
             return out
 
     def get_prices(self, instrument: str) -> Dict[str, float]:
-        """
-        Return {'bid','ask','mid','ts'}.
-        - Fills missing bid/ask from mid when allowed (fallback_to_mid).
-        - Enforces staleness: if ts older than price_staleness_sec, returns {}.
-        """
         if not self._ensure_ready():
             return {}
         sym = self.resolve_symbol(instrument)
@@ -301,7 +232,7 @@ class BaseLiveAdapter:
             ask = raw.get("ask")
             mid = raw.get("mid")
 
-            # derive mid/bid/ask if needed
+
             if mid is None and bid is not None and ask is not None:
                 mid = 0.5 * (_safe_float(bid) + _safe_float(ask))
             if self.cfg.fallback_to_mid:
@@ -312,12 +243,12 @@ class BaseLiveAdapter:
             if mid is None and bid is not None and ask is not None:
                 mid = 0.5 * (float(bid) + float(ask))
 
-            # timestamp
+
             ts = raw.get("ts", _now())
             ts = _safe_float(ts, _now())
             self._quote_ts[sym] = ts
 
-            # staleness
+
             if self.cfg.price_staleness_sec > 0 and (_now() - ts) > self.cfg.price_staleness_sec:
                 return {}
 
@@ -334,14 +265,8 @@ class BaseLiveAdapter:
             self._cb_note_failure()
             return {}
 
-    # ─────────────────────────────────────────────────────
-    # Execution (robust wrappers)
-    # ─────────────────────────────────────────────────────
+
     def market_order(self, instrument: str, side: int, lots: float) -> Dict[str, Any]:
-        """
-        Place a market order. Return:
-          {'ok': bool, 'instrument': str, 'side': int, 'lots': float, 'price': float, 'ticket': Any? , 'error': str?}
-        """
         result: Dict[str, Any] = {
             "ok": False,
             "instrument": instrument,
@@ -353,19 +278,19 @@ class BaseLiveAdapter:
             result["error"] = "not_connected_or_circuit_open"
             return result
 
-        # lot policy
+
         lots = self.round_lots(_safe_float(lots))
         if self.cfg.require_positive_lots and lots <= 0:
             result.update({"error": "non_positive_lots"})
             return result
 
-        # rate limit
+
         if not self._rate_ok():
             result.update({"error": "rate_limited"})
             return result
 
         sym = self.resolve_symbol(instrument)
-        # try to fetch a price for fallback slippage if broker omits executed price
+
         q = self.get_prices(instrument) or {}
         price_hint = q.get("mid") or q.get("bid") or q.get("ask") or 0.0
 
@@ -410,10 +335,6 @@ class BaseLiveAdapter:
         return result
 
     def reduce_position(self, instrument: str, lots: float, side: int) -> Dict[str, Any]:
-        """
-        Reduce an existing position (close part of it).
-        Return shape mirrors market_order().
-        """
         result: Dict[str, Any] = {
             "ok": False,
             "instrument": instrument,
@@ -477,10 +398,6 @@ class BaseLiveAdapter:
         return result
 
     def close_position(self, instrument: str) -> Dict[str, Any]:
-        """
-        Close an entire position in 'instrument'.
-        Return {'ok', 'instrument', 'price', 'ticket'?, 'error'?}
-        """
         result: Dict[str, Any] = {"ok": False, "instrument": instrument, "price": 0.0}
         if not self._ensure_ready():
             result["error"] = "not_connected_or_circuit_open"
@@ -501,7 +418,7 @@ class BaseLiveAdapter:
                 ok = bool(raw.get("ok", False))
                 px = _safe_float(raw.get("price", 0.0))
                 if px <= 0.0 and price_hint > 0.0:
-                    # side is irrelevant for full close here
+
                     px = self.apply_fallback_slippage(+1, price_hint)
                 result.update({"ok": ok, "instrument": sym, "price": px})
                 if ok:
@@ -521,19 +438,13 @@ class BaseLiveAdapter:
         result["error"] = last_err or "execution_failed"
         return result
 
-    # ─────────────────────────────────────────────────────
-    # Position modification (SL/TP)
-    # ─────────────────────────────────────────────────────
+
     def modify_position(
         self,
         ticket: int,
         sl: Optional[float] = None,
         tp: Optional[float] = None,
     ) -> Dict[str, Any]:
-        """
-        Modify SL/TP of an existing position by ticket.
-        Return {'ok': bool, 'sl': float, 'tp': float, 'error'?: str}
-        """
         result: Dict[str, Any] = {"ok": False, "sl": 0.0, "tp": 0.0}
         if not self._ensure_ready():
             result["error"] = "not_connected_or_circuit_open"
@@ -568,28 +479,8 @@ class BaseLiveAdapter:
         result["error"] = last_err or "modify_failed"
         return result
 
-    # ─────────────────────────────────────────────────────
-    # Positions snapshot
-    # ─────────────────────────────────────────────────────
+
     def sync_positions(self) -> Dict[str, Dict[str, Any]]:
-        """
-        Map: {
-          'EURUSD': {
-             'instrument': 'EURUSD',
-             'side': +1|-1,
-             'units': float,
-             'entry_price': float,
-             'notional_eur': float,
-              'open_time': iso|unix (optional),
-              'age_hours': float,        # Best-effort derived from open_time
-              'unrealized_pnl': float,  # Current P&L
-              'current_price': float,   # Current market price
-              'ticket': int,            # MT5 ticket for modifications     
-              'sl': float,              # Stop loss price
-              'tp': float,              # Take profit price
-          }, ...
-        }
-        """
         if not self._ensure_ready():
             return {}
         try:
@@ -620,7 +511,7 @@ class BaseLiveAdapter:
                             "notional_eur": notional,
                             "open_time": open_time_raw,
                             "age_hours": float(age_hours),
-                            # Pass through P&L and price data
+
                             "unrealized_pnl": _safe_float(node.get("unrealized_pnl", node.get("profit", 0.0))),
                             "profit": _safe_float(node.get("profit", node.get("unrealized_pnl", 0.0))),
                             "current_price": _safe_float(node.get("current_price", node.get("price_current", 0.0))),
@@ -638,9 +529,7 @@ class BaseLiveAdapter:
             self._cb_note_failure()
             return {}
 
-    # ─────────────────────────────────────────────────────
-    # Abstract impls (to be provided by concrete adapter)
-    # ─────────────────────────────────────────────────────
+
     def _connect_impl(self) -> bool:
         raise NotImplementedError
 
@@ -671,12 +560,9 @@ class BaseLiveAdapter:
         sl: Optional[float] = None,
         tp: Optional[float] = None,
     ) -> Dict[str, Any]:
-        """Override in concrete adapter to modify SL/TP by ticket."""
         raise NotImplementedError
 
-    # ─────────────────────────────────────────────────────
-    # Internals: rate limit & circuit breaker
-    # ─────────────────────────────────────────────────────
+
     def _rate_ok(self) -> bool:
         sec = int(_now())
         if sec != self._rl_last_sec:
@@ -690,9 +576,9 @@ class BaseLiveAdapter:
     def _circuit_open(self) -> bool:
         if self._cb_opened_at <= 0.0:
             return False
-        # half-open after reset window
+
         if (_now() - self._cb_opened_at) >= max(1, int(self.cfg.circuit_reset_sec)):
-            # half-open: allow a try, but keep state until success
+
             return False
         return True
 
@@ -706,10 +592,6 @@ class BaseLiveAdapter:
         self._cb_opened_at = 0.0
 
     def _ensure_ready(self) -> bool:
-        """
-        Ensure adapter is connected and circuit is not open.
-        Will attempt to (re)connect if needed.
-        """
         if self.connected and not self._circuit_open():
             return True
         return self.connect()

@@ -1,7 +1,4 @@
-# ─────────────────────────────────────────────────────────────
-# File: modules/market/shared/__init__.py
-# Shared utilities initialization
-# ─────────────────────────────────────────────────────────────
+
 
 from .base_component import BaseMarketComponent, ComponentResult, ComponentStatus
 from .circuit_breaker import CircuitBreaker, CircuitState

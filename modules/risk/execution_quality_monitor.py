@@ -1,8 +1,4 @@
-# ─────────────────────────────────────────────────────────────
-# File: modules/risk/execution_quality_monitor.py
-# [ROCKET] PRODUCTION-READY Enhanced Execution Quality Monitor
-# Advanced execution monitoring with SmartInfoBus integration and intelligent training mode
-# ─────────────────────────────────────────────────────────────
+
 
 import asyncio
 import datetime
@@ -26,7 +22,6 @@ from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 
 
 class ExecutionMode(Enum):
-    """Execution quality monitoring modes"""
     TRAINING = "training"
     CALIBRATION = "calibration"
     NORMAL = "normal"
@@ -35,17 +30,14 @@ class ExecutionMode(Enum):
     EMERGENCY = "emergency"
 
 class ExecutionVote(Enum):
-    """Standardized vote for routing / risk governor"""
-    PROCEED = "proceed"    # healthy, green light
-    CAUTION = "caution"    # proceed with reduced size / safeguards
-    HALT    = "halt"       # pause / block new risk
-    ABSTAIN = "abstain"    # not enough data / don't influence
-
+    PROCEED = "proceed"
+    CAUTION = "caution"
+    HALT    = "halt"
+    ABSTAIN = "abstain"
 
 
 @dataclass
 class ExecutionQualityConfig:
-    """Configuration for Execution Quality Monitor"""
     slip_limit: float = 0.002
     latency_limit: int = 1000
     min_fill_rate: float = 0.95
@@ -57,15 +49,15 @@ class ExecutionQualityConfig:
     quality_threshold: float = 0.7
     degradation_threshold: float = 0.5
 
-    # Performance thresholds
+
     max_processing_time_ms: float = 150
     circuit_breaker_threshold: int = 5
     min_execution_quality: float = 0.3
 
-    # Adaptation parameters
+
     adaptive_learning_rate: float = 0.02
     quality_sensitivity: float = 1.0
-    
+
 @module(**module_args(
     "ExecutionQualityMonitor",
     description="Advanced execution quality monitoring with intelligent context-aware analysis and training mode",
@@ -76,15 +68,7 @@ class ExecutionQualityConfig:
 
 
 class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, SmartInfoBusTradingMixin):
-    """
-    [ROCKET] Advanced execution quality monitor with SmartInfoBus integration.
-    Monitors execution metrics including slippage, latency, fill rates, and spreads
-    with intelligent context-aware analysis.
-    """
 
-    # NOTE ABOUT CONFIG:
-    # - self._cfg is the typed ExecutionQualityConfig used throughout this class.
-    # - self.config is kept as a dict for BaseModule/infra compatibility.
 
     def __init__(
         self,
@@ -92,7 +76,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
         training_mode: bool = True,
         **kwargs: Any
     ):
-        # Build the typed config (_cfg)
+
         if isinstance(config, ExecutionQualityConfig):
             self._cfg = config
         elif isinstance(config, dict):
@@ -102,9 +86,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
 
         self.training_mode = training_mode
 
-        # EARLY INITIALIZATION: Define attributes used by BaseModule._initialize
-        # so that early _initialize() calls won't crash with AttributeError
-        # - Smart bus & logger (used inside _initialize)
+
         self.smart_bus = InfoBusManager.get_instance()
         self.logger = RotatingLogger(
             name="ExecutionQualityMonitor",
@@ -113,22 +95,22 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             operator_mode=True,
             plain_english=True
         )
-        # Debug flag for conditional logging (type-safe for linters)
+
         self.debug: bool = bool(getattr(self, "debug", False))
-        # - Minimal state referenced by _initialize
+
         self.current_mode = ExecutionMode.TRAINING if self.training_mode else ExecutionMode.NORMAL
         self.mode_start_time = datetime.datetime.now()
         self.quality_score = 1.0
         self.execution_count = 0
         self.degraded_executions = 0
-        self._last_vote = None  # Keep track of last vote for bus publishing
-        # - Config dict for BaseModule compatibility
+        self._last_vote = None
+
         self.config = dict(self._cfg.__dict__)  # type: ignore[assignment]
 
-        # Initialize BaseModule (this may invoke self._initialize early)
+
         super().__init__()
 
-        # Initialize advanced systems & state
+
         self._initialize_advanced_systems()
         self._initialize_execution_state()
 
@@ -141,12 +123,8 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             )
         )
 
-    # ─────────────────────────────────────────────────────────────
-    # INIT HELPERS
-    # ─────────────────────────────────────────────────────────────
 
     def _initialize_advanced_systems(self):
-        """Initialize advanced systems for execution monitoring"""
         self.smart_bus = InfoBusManager.get_instance()
         self.logger = RotatingLogger(
             name="ExecutionQualityMonitor",
@@ -161,7 +139,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
         self.system_utilities = SystemUtilities()
         self.performance_tracker = PerformanceTracker()
 
-        # Circuit breaker for execution operations
+
         self.circuit_breaker = {
             'failures': 0,
             'last_failure': 0,
@@ -169,30 +147,29 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             'threshold': self._cfg.circuit_breaker_threshold
         }
 
-        # Health monitoring
+
         self._health_status = 'healthy'
         self._last_health_check = time.time()
-        # Do not start monitoring yet; wait until execution state is initialized to avoid races
+
 
     def _initialize_execution_state(self):
-        """Initialize execution quality state"""
-        # Initialize mixin states
+
         self._initialize_risk_state()
         self._initialize_trading_state()
         self._initialize_state_management()
 
-        # Current operational mode
+
         self.current_mode = ExecutionMode.TRAINING if self.training_mode else ExecutionMode.NORMAL
         self.mode_start_time = datetime.datetime.now()
 
-        # Enhanced histories
+
         self.slippage_history = deque(maxlen=self._cfg.stats_window)
         self.latency_history = deque(maxlen=self._cfg.stats_window)
         self.fill_history = deque(maxlen=self._cfg.stats_window)
         self.spread_history = deque(maxlen=self._cfg.stats_window)
         self.quality_history = deque(maxlen=self._cfg.stats_window)
 
-        # Instrument-specific tracking
+
         self.instrument_metrics: Dict[str, Dict[str, deque]] = defaultdict(
             lambda: {
                 'slippage': deque(maxlen=20),
@@ -202,17 +179,17 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             }
         )
 
-        # Current quality metrics
+
         self.quality_score = 1.0
         self.execution_count = 0
         self.degraded_executions = 0
 
-        # Market context awareness
+
         self.market_regime = "normal"
         self.volatility_regime = "medium"
         self.market_session = "unknown"
 
-        # Issue tracking with enhanced categorization
+
         self.issues: Dict[str, List[Dict[str, Any]]] = {
             "slippage": [],
             "latency": [],
@@ -222,12 +199,12 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             "partial_fill": []
         }
 
-        # Performance analytics
+
         self.execution_analytics = defaultdict(list)
         self.regime_performance = defaultdict(lambda: defaultdict(list))
         self.session_performance = defaultdict(lambda: defaultdict(list))
 
-        # Comprehensive metrics
+
         self.comprehensive_metrics = {
             "avg_slippage": 0.0,
             "avg_latency": 0.0,
@@ -239,25 +216,24 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             "quality_trend": 0.0
         }
 
-        # Broker/venue performance tracking
+
         self.venue_performance: Dict[str, Dict[str, Any]] = {}
 
-        # Alert thresholds and escalation
+
         self.quality_alerts = deque(maxlen=10)
         self.escalation_count = 0
         self.last_escalation: Optional[datetime.datetime] = None
 
-        # Adaptive parameters
+
         self._adaptive_params = {
             'dynamic_threshold_scaling': 1.0,
             'context_sensitivity': 1.0,
             'quality_adaptation_confidence': 0.5
         }
-        # Now that all attributes exist, start monitoring loop safely
+
         self._start_monitoring()
 
     def _start_monitoring(self):
-        """Start background monitoring for execution quality"""
 
         def monitoring_loop():
             while getattr(self, '_monitoring_active', True):
@@ -274,9 +250,8 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
         monitor_thread.start()
 
     def _initialize(self) -> None:
-        """Initialize module with SmartInfoBus integration"""
         try:
-            # Set initial execution quality status
+
             initial_status = {
                 "current_mode": self.current_mode.value,
                 "quality_score": self.quality_score,
@@ -294,44 +269,37 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
         except Exception as e:
             self.logger.error(f"Execution monitor initialization failed: {e}")
 
-    # ─────────────────────────────────────────────────────────────
-    # MAIN PROCESS
-    # ─────────────────────────────────────────────────────────────
 
     async def process(self, **inputs) -> Dict[str, Any]:
-        """Process execution quality assessment with enhanced analytics + voter output."""
         start_time = time.time()
 
         try:
-            # Extract execution data from SmartInfoBus
+
             execution_data = await self._extract_execution_data(**inputs)
             if not execution_data:
-                # Even if we fallback, provide a vote (likely ABSTAIN) from current state
+
                 vote_payload = await self.cast_vote(**inputs)
                 fallback = await self._handle_no_data_fallback()
                 fallback["execution_quality_vote"] = vote_payload
-                # ADD REQUIRED KEYS TO RETURN PAYLOAD
+
                 fallback["ExecutionQualityMonitor_voting_proposal"] = vote_payload
                 fallback["ExecutionQualityMonitor_confidence"] = vote_payload.get('confidence', 0.5)
-                # Publish to bus
+
                 self._write_bus_from_payload(fallback, fallback["_thesis"])
                 return fallback
 
-            # Update market context
+
             context_result = await self._update_market_context_async(execution_data)
 
-            # ═══════════════════════════════════════════════════════════════════
-            # TRADING MODE MANAGER INTEGRATION
-            # Adjust quality thresholds based on trading mode
-            # ═══════════════════════════════════════════════════════════════════
+
             try:
                 mode_config = self.smart_bus.get('mode_config', 'ExecutionQualityMonitor') or {}
                 trading_mode = self.smart_bus.get('trading_mode', 'ExecutionQualityMonitor') or 'normal'
                 mode_effectiveness = self.smart_bus.get('mode_effectiveness', 'ExecutionQualityMonitor') or 0.5
 
-                # In safe mode or low effectiveness, tighten quality requirements
+
                 if trading_mode == 'safe' or mode_effectiveness < 0.4:
-                    tightening_factor = 0.8  # Stricter thresholds
+                    tightening_factor = 0.8
                     self._adaptive_params['dynamic_threshold_scaling'] = tightening_factor
 
                     if self.debug:
@@ -343,9 +311,9 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
                             threshold_scaling=f"{tightening_factor:.2f}x"
                         ))
 
-                # In aggressive/extreme mode with good effectiveness, relax slightly
+
                 elif trading_mode in ['aggressive', 'extreme'] and mode_effectiveness > 0.7:
-                    relaxing_factor = 1.15  # Slightly looser thresholds
+                    relaxing_factor = 1.15
                     self._adaptive_params['dynamic_threshold_scaling'] = relaxing_factor
 
                     if self.debug:
@@ -362,33 +330,31 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             except Exception as e:
                 if self.debug:
                     self.logger.warning(f"Trading mode integration failed in execution quality: {e}")
-            # ═══════════════════════════════════════════════════════════════════
 
-            # Process executions comprehensively
+
             processing_result = await self._process_executions_comprehensive(execution_data)
 
-            # Generate training data if needed
+
             training_result = {}
             if self.training_mode and self._should_generate_training_data():
                 training_result = await self._generate_realistic_training_data(execution_data)
 
-            # Analyze quality trends
+
             trends_result = await self._analyze_execution_quality_trends()
 
-            # Check for degradation and alerts
+
             alerts_result = await self._check_quality_degradation_and_alerts()
 
-            # Update comprehensive metrics
+
             metrics_result = await self._update_comprehensive_metrics()
 
-            # Update operational mode
+
             mode_result = await self._update_operational_mode()
 
-            # --- NEW: cast a vote based on current quality state
-            vote_payload = await self.cast_vote(**inputs)
-            # ---
 
-            # Combine results
+            vote_payload = await self.cast_vote(**inputs)
+
+
             result = {
                 **context_result,
                 **processing_result,
@@ -399,10 +365,10 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
                 **mode_result
             }
 
-            # Generate thesis
+
             thesis = await self._generate_execution_thesis(execution_data, result)
 
-            # Build provided outputs for return payload
+
             execution_quality_data = {
                 'current_mode': self.current_mode.value,
                 'quality_score': self.quality_score,
@@ -444,42 +410,42 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
                 'current_issues': {k: len(v) for k, v in self.issues.items() if v}
             }
 
-            # Record success
+
             processing_time = (time.time() - start_time) * 1000
             self._record_success(processing_time)
 
-            # Ensure returned payload complies with provides contract
+
             result.update({
                 'execution_quality': execution_quality_data,
                 'execution_analytics': analytics_data,
                 'quality_metrics': metrics_data,
                 'execution_alerts': alerts_data,
-                'execution_quality_vote': vote_payload,   # <-- NEW: return the vote
-                # ADD REQUIRED KEYS TO RETURN PAYLOAD
+                'execution_quality_vote': vote_payload,
+
                 'ExecutionQualityMonitor_voting_proposal': vote_payload,
                 'ExecutionQualityMonitor_confidence': vote_payload.get('confidence', 0.5),
                 '_thesis': thesis,
                 'success': True
             })
 
-            # Update SmartInfoBus (includes vote)
+
             self._write_bus_from_payload(result, thesis)
 
             return result
 
         except Exception as e:
-            # On error, still try to provide a vote from current state (likely caution/halt)
+
             try:
                 vote_payload = await self.cast_vote(**inputs)
                 error_payload = await self._handle_execution_error(e, start_time)
                 error_payload["execution_quality_vote"] = vote_payload
-                # ADD REQUIRED KEYS TO RETURN PAYLOAD
+
                 error_payload["ExecutionQualityMonitor_voting_proposal"] = vote_payload
                 error_payload["ExecutionQualityMonitor_confidence"] = vote_payload.get('confidence', 0.5)
                 self._write_bus_from_payload(error_payload, error_payload.get("_thesis", "Execution monitor error"))
                 return error_payload
             except Exception:
-                # If vote casting itself fails, fall back to original error handling with fallback keys
+
                 error_payload = await self._handle_execution_error(e, start_time)
                 fallback_vote = {
                     "module": "ExecutionQualityMonitor",
@@ -496,10 +462,10 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
                 error_payload["ExecutionQualityMonitor_confidence"] = 0.1
                 return error_payload
 
-    # ── SmartInfoBus I/O (single-writer) ─────────────────────
+
     def _write_bus_from_payload(self, payload: Dict[str, Any], thesis: str) -> None:
         try:
-            # Write standard provides keys
+
             self.smart_bus.set('execution_quality', payload['execution_quality'],
                             module='ExecutionQualityMonitor', thesis=thesis)
             self.smart_bus.set('execution_analytics', payload['execution_analytics'],
@@ -509,10 +475,10 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             self.smart_bus.set('execution_alerts', payload['execution_alerts'],
                             module='ExecutionQualityMonitor', thesis="Execution alerts update")
 
-            # NEW: publish standardized vote - ALWAYS publish even if None/empty
+
             vote = payload.get('execution_quality_vote') or getattr(self, '_last_vote', None)
             if not vote:
-                # Fallback vote if none exists
+
                 vote = {
                     "module": "ExecutionQualityMonitor",
                     "topic": "execution_quality",
@@ -523,7 +489,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
                     "metrics": {},
                     "timestamp": datetime.datetime.now().isoformat()
                 }
-            
+
             self.smart_bus.set('ExecutionQualityMonitor_voting_proposal', vote,
                             module='ExecutionQualityMonitor', thesis="Execution quality voting proposal")
             self.smart_bus.set('ExecutionQualityMonitor_confidence', vote.get('confidence', 0.5),
@@ -533,24 +499,20 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             err = self.error_pinpointer.analyze_error(e, "bus_write")
             self.logger.error(f"SmartInfoBus update failed: {err}")
 
-    # ─────────────────────────────────────────────────────────────
-    # DATA EXTRACTION & CONVERSION
-    # ─────────────────────────────────────────────────────────────
 
     async def _extract_execution_data(self, **inputs) -> Optional[Dict[str, Any]]:
-        """Extract comprehensive execution data from SmartInfoBus"""
         try:
-            # Get execution data from SmartInfoBus (robust to dict/list variants)
+
             execution_data_raw = self.smart_bus.get('execution_data', 'ExecutionQualityMonitor') or {}
             if isinstance(execution_data_raw, dict):
                 executions = execution_data_raw.get('executions', []) or []
             elif isinstance(execution_data_raw, list):
-                # Sometimes a plain list of executions is published
+
                 executions = execution_data_raw
             else:
                 executions = []
 
-            # Get trade data
+
             trade_data_raw = self.smart_bus.get('trade_data', 'ExecutionQualityMonitor') or {}
             if isinstance(trade_data_raw, dict):
                 recent_trades = trade_data_raw.get('recent_trades', []) or []
@@ -559,7 +521,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             else:
                 recent_trades = []
 
-            # Get order data
+
             order_data_raw = self.smart_bus.get('order_data', 'ExecutionQualityMonitor') or {}
             if isinstance(order_data_raw, dict):
                 orders = order_data_raw.get('orders', []) or []
@@ -568,7 +530,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             else:
                 orders = []
 
-            # Get market data (spreads may be dict or list of pairs)
+
             market_data = self.smart_bus.get('market_data', 'ExecutionQualityMonitor') or {}
             spreads: Dict[str, float] = {}
             if isinstance(market_data, dict):
@@ -576,7 +538,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
                 if isinstance(md_spreads, dict):
                     spreads = md_spreads
                 elif isinstance(md_spreads, list):
-                    # Accept list of {'instrument': x, 'spread': y}
+
                     for item in md_spreads:
                         if isinstance(item, dict):
                             inst = item.get('instrument') or item.get('symbol')
@@ -584,7 +546,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
                             if inst is not None and isinstance(val, (int, float, np.generic)):
                                 spreads[str(inst)] = float(val)
             elif isinstance(market_data, list):
-                # Sometimes a list of spreads entries
+
                 for item in market_data:
                     if isinstance(item, dict):
                         inst = item.get('instrument') or item.get('symbol')
@@ -592,7 +554,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
                         if inst is not None and isinstance(val, (int, float, np.generic)):
                             spreads[str(inst)] = float(val)
 
-            # Get direct inputs and normalize
+
             trade_executions_raw = inputs.get('trade_executions', inputs.get('trades', recent_trades))
             if isinstance(trade_executions_raw, dict):
                 trade_executions = list(trade_executions_raw.values())
@@ -624,7 +586,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             else:
                 spread_data = {}
 
-            # Convert trades to executions if needed
+
             converted_executions: List[Dict[str, Any]] = []
             for trade in trade_executions:
                 if isinstance(trade, dict):
@@ -632,7 +594,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
                     if execution:
                         converted_executions.append(execution)
 
-            # Filter non-dict executions if any
+
             normalized_executions: List[Dict[str, Any]] = [e for e in executions if isinstance(e, dict)]
 
             return {
@@ -648,7 +610,6 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             return None
 
     def _convert_trade_to_execution(self, trade: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Convert trade data to execution format"""
         try:
             execution = {
                 'instrument': trade.get('symbol', trade.get('instrument', 'UNKNOWN')),
@@ -658,7 +619,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
                 'execution_price': float(trade.get('price', trade.get('fill_price', 0)) or 0.0),
             }
 
-            # Extract execution quality metrics
+
             sl = self._extract_slippage(trade)
             if sl is not None:
                 execution['slippage'] = float(sl)
@@ -673,7 +634,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
 
             execution['fill_status'] = self._extract_fill_status(trade)
 
-            # Add venue information if available
+
             execution['venue'] = trade.get('broker', trade.get('venue', 'unknown'))
 
             return execution
@@ -683,8 +644,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             return None
 
     def _extract_slippage(self, trade: Dict[str, Any]) -> Optional[float]:
-        """Extract slippage from trade data with multiple fallback methods"""
-        # Method 1: Direct slippage field
+
         for field in ["slippage", "slip", "price_diff", "execution_slippage"]:
             if field in trade and trade[field] is not None:
                 try:
@@ -692,7 +652,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
                 except Exception:
                     pass
 
-        # Method 2: Calculate from expected vs actual price
+
         expected_price = trade.get("expected_price", trade.get("order_price"))
         actual_price = trade.get("actual_price", trade.get("fill_price", trade.get("price")))
         try:
@@ -704,19 +664,18 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
         except Exception:
             pass
 
-        # Method 3: Estimate from market impact
+
         size = trade.get('size', trade.get('volume', 0))
         try:
-            if size and abs(float(size)) > 0.1:  # Significant size
-                return abs(float(size)) * 0.0001  # 1 pip per lot estimation
+            if size and abs(float(size)) > 0.1:
+                return abs(float(size)) * 0.0001
         except Exception:
             pass
 
         return None
 
     def _extract_latency(self, trade: Dict[str, Any]) -> Optional[float]:
-        """Extract latency from trade data with multiple methods"""
-        # Method 1: Direct latency fields
+
         for field in ["latency_ms", "latency", "execution_time_ms", "fill_time_ms"]:
             if field in trade and trade[field] is not None:
                 try:
@@ -724,7 +683,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
                 except Exception:
                     pass
 
-        # Method 2: Calculate from timestamps
+
         order_time = trade.get("order_time", trade.get("submit_time"))
         fill_time = trade.get("fill_time", trade.get("execution_time"))
 
@@ -737,15 +696,14 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
 
                 if isinstance(order_time, datetime.datetime) and isinstance(fill_time, datetime.datetime):
                     latency_seconds = (fill_time - order_time).total_seconds()
-                    return max(0.0, latency_seconds * 1000.0)  # Convert to milliseconds
+                    return max(0.0, latency_seconds * 1000.0)
             except Exception:
                 pass
 
         return None
 
     def _extract_spread(self, trade: Dict[str, Any]) -> Optional[float]:
-        """Extract spread from trade data"""
-        # Method 1: Direct spread fields
+
         for field in ["spread", "bid_ask_spread", "market_spread"]:
             if field in trade and trade[field] is not None:
                 try:
@@ -753,7 +711,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
                 except Exception:
                     pass
 
-        # Method 2: Calculate from bid/ask
+
         bid = trade.get("bid_price", trade.get("bid"))
         ask = trade.get("ask_price", trade.get("ask"))
 
@@ -768,8 +726,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
         return None
 
     def _extract_fill_status(self, trade: Dict[str, Any]) -> str:
-        """Extract fill status from trade data"""
-        # Check various status indicators
+
         status_fields = ["status", "state", "fill_status", "order_status"]
         for field in status_fields:
             status = str(trade.get(field, "")).lower()
@@ -780,7 +737,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             elif status in ["rejected", "cancelled", "failed"]:
                 return "failed"
 
-        # Check fill quantities
+
         try:
             order_qty = float(trade.get("quantity", trade.get("size", trade.get("volume", 0))) or 0.0)
             filled_qty = float(trade.get("filled_quantity", trade.get("filled_size", trade.get("executed_quantity", order_qty))) or 0.0)
@@ -795,23 +752,19 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
 
         return "unknown"
 
-    # ─────────────────────────────────────────────────────────────
-    # ANALYSIS
-    # ─────────────────────────────────────────────────────────────
 
     async def _update_market_context_async(self, execution_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Update market context awareness asynchronously"""
         try:
-            # Extract market context from SmartInfoBus
+
             market_context = self.smart_bus.get('market_context', 'ExecutionQualityMonitor') or {}
 
-            # Update regime tracking
+
             old_regime = self.market_regime
             self.market_regime = market_context.get('regime', self.market_regime)
             self.volatility_regime = market_context.get('volatility_level', self.volatility_regime)
             self.market_session = market_context.get('session', self.market_session)
 
-            # Log regime changes
+
             if self.market_regime != old_regime:
                 self.logger.info(
                     format_operator_message(
@@ -836,20 +789,19 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             return {'market_context_updated': False, 'error': str(e)}
 
     async def _process_executions_comprehensive(self, execution_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Process executions with comprehensive analysis"""
         try:
             executions = execution_data.get('executions', [])
             orders = execution_data.get('orders', [])
             spreads = execution_data.get('spreads', {})
 
-            # Clear previous issues
+
             for issue_type in self.issues:
                 self.issues[issue_type].clear()
 
             execution_count = 0
             processing_results = []
 
-            # Process individual executions
+
             for execution in executions:
                 try:
                     result = await self._analyze_single_execution_async(execution)
@@ -858,17 +810,17 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
                 except Exception as e:
                     self.logger.warning(f"Execution analysis failed: {e}")
 
-            # Process fill rates from orders
+
             fill_rate_result = {}
             if orders:
                 fill_rate_result = await self._analyze_fill_rates_async(orders)
 
-            # Process spread data
+
             spread_result = {}
             if spreads:
                 spread_result = await self._analyze_spread_data_async(spreads)
 
-            # Update execution count
+
             self.execution_count += execution_count
             self.comprehensive_metrics["total_executions"] = self.execution_count
 
@@ -886,19 +838,18 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             return {'executions_processed': False, 'error': str(e)}
 
     async def _analyze_single_execution_async(self, execution: Dict[str, Any]) -> Dict[str, Any]:
-        """Analyze individual execution with context awareness"""
         try:
             instrument = execution.get('instrument', 'UNKNOWN')
             analysis_result: Dict[str, Any] = {}
 
-            # Analyze slippage
+
             slippage = execution.get('slippage')
             if slippage is not None:
                 slippage = abs(float(slippage))
                 self.slippage_history.append(slippage)
                 self.instrument_metrics[instrument]['slippage'].append(slippage)
 
-                # Context-aware slippage limits
+
                 adjusted_limit = self._get_context_adjusted_slip_limit()
 
                 if slippage > adjusted_limit:
@@ -926,14 +877,14 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
                         )
                     )
 
-            # Analyze latency
+
             latency = execution.get('latency_ms')
             if latency is not None:
                 latency = float(latency)
                 self.latency_history.append(latency)
                 self.instrument_metrics[instrument]['latency'].append(latency)
 
-                # Context-aware latency limits
+
                 adjusted_limit = self._get_context_adjusted_latency_limit()
 
                 if latency > adjusted_limit:
@@ -961,7 +912,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
                         )
                     )
 
-            # Analyze spread
+
             spread = execution.get('spread')
             if spread is not None:
                 spread = float(spread)
@@ -985,7 +936,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
                     self.issues["spread"].append(issue)
                     analysis_result['spread_violation'] = True
 
-            # Analyze fill status
+
             fill_status = execution.get('fill_status', 'unknown')
             if fill_status == 'partial':
                 issue = {
@@ -1020,15 +971,11 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             self.logger.warning(f"Single execution analysis failed: {e}")
             return {}
 
-    # ─────────────────────────────────────────────────────────────
-    # CONTEXT-AWARE LIMITS
-    # ─────────────────────────────────────────────────────────────
 
     def _get_context_adjusted_slip_limit(self) -> float:
-        """Get context-adjusted slippage limit"""
         base_limit = self._cfg.slip_limit
 
-        # Adjust for volatility
+
         if self.volatility_regime == 'high':
             base_limit *= 2.0
         elif self.volatility_regime == 'extreme':
@@ -1036,63 +983,57 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
         elif self.volatility_regime == 'low':
             base_limit *= 0.7
 
-        # Adjust for market regime
+
         if self.market_regime == 'volatile':
             base_limit *= 1.5
         elif self.market_regime == 'trending':
             base_limit *= 0.8
 
-        # Adjust for session
+
         if self.market_session in ['asian', 'rollover', 'closed']:
-            base_limit *= 1.3  # Less liquidity
+            base_limit *= 1.3
 
         return float(base_limit * self._adaptive_params['dynamic_threshold_scaling'])
 
     def _get_context_adjusted_latency_limit(self) -> float:
-        """Get context-adjusted latency limit"""
         base_limit = float(self._cfg.latency_limit)
 
-        # Adjust for session
+
         if self.market_session == 'asian':
-            base_limit *= 1.5  # Higher latency expected
+            base_limit *= 1.5
         elif self.market_session in ('rollover', 'closed'):
             base_limit *= 1.3
 
-        # Adjust for volatility
+
         if self.volatility_regime in ['high', 'extreme']:
-            base_limit *= 1.4  # Higher latency during volatility
+            base_limit *= 1.4
 
         return float(base_limit * self._adaptive_params['dynamic_threshold_scaling'])
 
     def _get_context_adjusted_spread_threshold(self, instrument: str) -> float:
-        """Get context-adjusted spread threshold"""
-        # Base thresholds by instrument type
+
         inst_upper = instrument.upper()
         if 'XAU' in inst_upper or 'GOLD' in inst_upper:
-            base_threshold = 1.0  # $1 for gold
+            base_threshold = 1.0
         elif any(curr in inst_upper for curr in ['EUR', 'USD', 'GBP', 'JPY']):
-            base_threshold = 0.0003  # 3 pips for major pairs
+            base_threshold = 0.0003
         else:
             base_threshold = self._cfg.spread_threshold
 
-        # Adjust for volatility
+
         if self.volatility_regime == 'high':
             base_threshold *= 2.0
         elif self.volatility_regime == 'extreme':
             base_threshold *= 3.0
 
-        # Adjust for session
+
         if self.market_session in ['asian', 'rollover', 'closed']:
             base_threshold *= 1.5
 
         return float(base_threshold)
 
-    # ─────────────────────────────────────────────────────────────
-    # AGGREGATIONS
-    # ─────────────────────────────────────────────────────────────
 
     async def _analyze_fill_rates_async(self, orders: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Analyze fill rates from order data asynchronously"""
         try:
             if not orders:
                 return {'fill_rates_analyzed': False}
@@ -1105,12 +1046,12 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
                 if fill_status == 'filled':
                     filled_equiv += 1.0
                 elif fill_status == 'partial':
-                    filled_equiv += 0.5  # Count partial fills as half
+                    filled_equiv += 0.5
 
             fill_rate = filled_equiv / total_orders if total_orders > 0 else 1.0
             self.fill_history.append(fill_rate)
 
-            # Context-aware fill rate expectations
+
             expected_fill_rate = self._get_context_adjusted_fill_rate()
 
             if fill_rate < expected_fill_rate:
@@ -1151,23 +1092,21 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             return {'fill_rates_analyzed': False, 'error': str(e)}
 
     def _get_context_adjusted_fill_rate(self) -> float:
-        """Get context-adjusted expected fill rate"""
         base_rate = self._cfg.min_fill_rate
 
-        # Adjust for volatility
+
         if self.volatility_regime == 'extreme':
-            base_rate -= 0.05  # Lower expectations during extreme volatility
+            base_rate -= 0.05
         elif self.volatility_regime == 'high':
             base_rate -= 0.02
 
-        # Adjust for session
-        if self.market_session in ['asian', 'rollover', 'closed']:
-            base_rate -= 0.03  # Lower liquidity sessions
 
-        return float(max(0.8, base_rate))  # Never go below 80%
+        if self.market_session in ['asian', 'rollover', 'closed']:
+            base_rate -= 0.03
+
+        return float(max(0.8, base_rate))
 
     async def _analyze_spread_data_async(self, spreads: Dict[str, float]) -> Dict[str, Any]:
-        """Analyze spread data with context awareness asynchronously"""
         try:
             spreads_analyzed = 0
             violations = []
@@ -1187,7 +1126,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
                 self.instrument_metrics[instrument]['spread'].append(spread_val)
                 spreads_analyzed += 1
 
-                # Context-aware spread thresholds
+
                 threshold = self._get_context_adjusted_spread_threshold(instrument)
 
                 if spread_val > threshold:
@@ -1216,12 +1155,8 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             self.logger.warning(f"Spread analysis failed: {e}")
             return {'spreads_analyzed': False, 'error': str(e)}
 
-    # ─────────────────────────────────────────────────────────────
-    # TRAINING DATA (OPTIONAL)
-    # ─────────────────────────────────────────────────────────────
 
     def _should_generate_training_data(self) -> bool:
-        """Determine if we should generate training data"""
         return (
             self.training_mode and
             len(self.slippage_history) < 10 and
@@ -1229,12 +1164,11 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
         )
 
     async def _generate_realistic_training_data(self, execution_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Generate realistic execution data for training"""
         try:
-            # Generate realistic slippage
+
             base_slippage = 0.0002
 
-            # Adjust for context
+
             if self.volatility_regime == 'high':
                 base_slippage *= 2.0
             elif self.volatility_regime == 'extreme':
@@ -1243,12 +1177,12 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             if self.market_session in ['asian', 'rollover', 'closed']:
                 base_slippage *= 1.3
 
-            # Generate with realistic distribution
+
             realistic_slippage = abs(float(np.random.gamma(2, base_slippage)))
             self.slippage_history.append(realistic_slippage)
 
-            # Generate realistic latency
-            base_latency = 250.0  # 250ms base
+
+            base_latency = 250.0
 
             if self.market_session == 'asian':
                 base_latency += 100
@@ -1258,7 +1192,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             realistic_latency = max(50.0, float(np.random.gamma(3, base_latency / 3)))
             self.latency_history.append(realistic_latency)
 
-            # Generate realistic fill rate
+
             base_fill_rate = 0.96
 
             if self.volatility_regime == 'extreme':
@@ -1269,8 +1203,8 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             realistic_fill_rate = float(np.random.beta(20 * base_fill_rate, 20 * (1 - base_fill_rate)))
             self.fill_history.append(realistic_fill_rate)
 
-            # Generate realistic spread
-            base_spread = 0.00015  # 1.5 pips
+
+            base_spread = 0.00015
 
             if self.volatility_regime == 'high':
                 base_spread *= 2.0
@@ -1292,20 +1226,16 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             self.logger.warning(f"Training data generation failed: {e}")
             return {'training_data_generated': False, 'error': str(e)}
 
-    # ─────────────────────────────────────────────────────────────
-    # TRENDS & METRICS
-    # ─────────────────────────────────────────────────────────────
 
     async def _analyze_execution_quality_trends(self) -> Dict[str, Any]:
-        """Analyze execution quality trends"""
         try:
-            # Calculate current quality score
+
             await self._calculate_comprehensive_quality_score_async()
 
-            # Add to history
+
             self.quality_history.append(self.quality_score)
 
-            # Analyze trends
+
             quality_trend = 0.0
             if len(self.quality_history) >= 10:
                 recent_scores = list(self.quality_history)[-10:]
@@ -1317,7 +1247,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
                 quality_trend = current_avg - previous_avg
                 self.comprehensive_metrics["quality_trend"] = quality_trend
 
-            # Update regime and session performance
+
             await self._update_regime_session_performance_async()
 
             return {
@@ -1332,63 +1262,61 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             return {'quality_trends_analyzed': False, 'error': str(e)}
 
     async def _calculate_comprehensive_quality_score_async(self) -> None:
-        """Calculate comprehensive execution quality score asynchronously"""
         try:
             scores: List[float] = []
             weights: List[float] = []
 
-            # Slippage score
+
             if self.slippage_history:
                 percentile_slippage = float(np.percentile(list(self.slippage_history), self._cfg.slippage_percentile))
                 slippage_score = max(0.0, 1.0 - (percentile_slippage / (self._cfg.slip_limit * 2)))
                 scores.append(slippage_score)
                 weights.append(0.3)
 
-            # Latency score
+
             if self.latency_history:
                 percentile_latency = float(np.percentile(list(self.latency_history), self._cfg.latency_percentile))
                 latency_score = max(0.0, 1.0 - (percentile_latency / (self._cfg.latency_limit * 2)))
                 scores.append(latency_score)
                 weights.append(0.3)
 
-            # Fill rate score
+
             if self.fill_history:
                 avg_fill_rate = float(np.mean(list(self.fill_history)[-20:]))
                 fill_score = max(0.0, min(1.0, avg_fill_rate))
                 scores.append(fill_score)
                 weights.append(0.25)
 
-            # Spread score
+
             if self.spread_history:
                 avg_spread = float(np.mean(list(self.spread_history)[-20:]))
                 spread_score = max(0.0, 1.0 - (avg_spread / (self._cfg.spread_threshold * 2 if self._cfg.spread_threshold > 0 else 1e-6)))
                 scores.append(spread_score)
                 weights.append(0.15)
 
-            # Calculate weighted average
+
             if scores and weights:
                 self.quality_score = float(np.average(scores, weights=weights))
             else:
                 self.quality_score = 1.0
 
-            # Apply issue penalties
+
             total_issues = sum(len(issues) for issues in self.issues.values())
             if total_issues > 0:
                 issue_penalty = min(0.3, total_issues * 0.05)
                 self.quality_score = max(0.1, self.quality_score - issue_penalty)
 
-            # Check for degraded executions
+
             if self.quality_score < self._cfg.degradation_threshold:
                 self.degraded_executions += 1
 
         except Exception as e:
             self.logger.error(f"Quality score calculation failed: {e}")
-            self.quality_score = 0.5  # Conservative fallback
+            self.quality_score = 0.5
 
     async def _update_regime_session_performance_async(self) -> None:
-        """Update regime and session performance tracking asynchronously"""
         try:
-            # Update regime performance
+
             if self.market_regime and self.market_regime != 'unknown':
                 regime_data = self.regime_performance[self.market_regime]
                 regime_data['quality_scores'].append(self.quality_score)
@@ -1397,7 +1325,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
                 if self.latency_history:
                     regime_data.setdefault('avg_latency', []).append(float(np.mean(list(self.latency_history)[-5:])))
 
-            # Update session performance
+
             if self.market_session and self.market_session != 'unknown':
                 session_data = self.session_performance[self.market_session]
                 session_data['quality_scores'].append(self.quality_score)
@@ -1407,16 +1335,12 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
         except Exception as e:
             self.logger.warning(f"Regime/session performance update failed: {e}")
 
-    # ─────────────────────────────────────────────────────────────
-    # ALERTS & MODES
-    # ─────────────────────────────────────────────────────────────
 
     async def _check_quality_degradation_and_alerts(self) -> Dict[str, Any]:
-        """Check for quality degradation and generate alerts"""
         try:
             alerts_generated = []
 
-            # Check for significant quality degradation
+
             if self.quality_score < self._cfg.degradation_threshold:
                 alert = {
                     'timestamp': datetime.datetime.now().isoformat(),
@@ -1444,11 +1368,11 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
                     )
                 )
 
-                # Check for escalation
+
                 if (
                     self.quality_score < 0.3 and
                     (self.last_escalation is None or
-                     (datetime.datetime.now() - self.last_escalation).total_seconds() > 300)  # 5 min cooldown
+                     (datetime.datetime.now() - self.last_escalation).total_seconds() > 300)
                 ):
                     self.escalation_count += 1
                     self.last_escalation = datetime.datetime.now()
@@ -1476,9 +1400,8 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             return {'quality_degradation_checked': False, 'error': str(e)}
 
     async def _update_comprehensive_metrics(self) -> Dict[str, Any]:
-        """Update comprehensive execution metrics"""
         try:
-            # Update averages
+
             if self.slippage_history:
                 self.comprehensive_metrics["avg_slippage"] = float(np.mean(self.slippage_history))
             if self.latency_history:
@@ -1488,7 +1411,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             if self.spread_history:
                 self.comprehensive_metrics["avg_spread"] = float(np.mean(self.spread_history))
 
-            # Update rates
+
             self.comprehensive_metrics["success_rate"] = (
                 (self.execution_count - self.degraded_executions) / max(self.execution_count, 1)
             )
@@ -1510,11 +1433,10 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             return {'comprehensive_metrics_updated': False, 'error': str(e)}
 
     async def _update_operational_mode(self) -> Dict[str, Any]:
-        """Update operational mode based on execution quality"""
         try:
             old_mode = self.current_mode
 
-            # Determine new mode based on quality conditions
+
             if self.quality_score < 0.3 or self.escalation_count > 3:
                 new_mode = ExecutionMode.EMERGENCY
             elif self.quality_score < 0.5 or len(self.quality_alerts) > 5:
@@ -1528,7 +1450,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             else:
                 new_mode = ExecutionMode.NORMAL
 
-            # Update mode if changed
+
             mode_changed = False
             if new_mode != old_mode:
                 self.current_mode = new_mode
@@ -1557,10 +1479,9 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
         except Exception as e:
             self.logger.warning(f"Mode update failed: {e}")
             return {'mode_updated': False, 'error': str(e)}
-        
+
 
     def get_voter_capabilities(self) -> Dict[str, Any]:
-        """Describe this voter's topic and schema (for coordinators/aggregators)."""
         return {
             "module": "ExecutionQualityMonitor",
             "topic": "execution_quality",
@@ -1582,11 +1503,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
         }
 
     async def cast_vote(self, **inputs) -> Dict[str, Any]:
-        """
-        Turn current execution-quality state into a standardized vote.
-        Uses in-memory state only (does not read self-provided bus keys).
-        """
-        # Not enough data yet -> abstain
+
         if self.execution_count == 0 and not (self.slippage_history or self.latency_history or self.fill_history):
             vote_payload = {
                 "module": "ExecutionQualityMonitor",
@@ -1611,7 +1528,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
         qs = float(self.quality_score)
         mode = self.current_mode
 
-        # Map quality/mode -> vote & suggested sizing
+
         if mode in (ExecutionMode.EMERGENCY, ExecutionMode.CRITICAL) or qs < 0.30:
             vote = ExecutionVote.HALT
             sizing = 0.0
@@ -1635,7 +1552,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             "module": "ExecutionQualityMonitor",
             "topic": "execution_quality",
             "vote": vote.value,
-            "action": vote.value,  # Standard action field for committee compatibility
+            "action": vote.value,
             "confidence": float(confidence),
             "sizing_multiplier": float(sizing),
             "reasoning": reasoning,
@@ -1655,9 +1572,8 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
 
     async def _generate_execution_thesis(self, execution_data: Dict[str, Any],
                                          result: Dict[str, Any]) -> str:
-        """Generate comprehensive execution thesis"""
         try:
-            # Core metrics
+
             quality_score = self.quality_score
             mode = self.current_mode.value
             execution_count = result.get('execution_count', 0)
@@ -1667,29 +1583,29 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
                 f"Processing: {execution_count} executions analyzed"
             ]
 
-            # Quality assessment
+
             if quality_score < 0.5:
                 thesis_parts.append("DEGRADED: Quality below acceptable threshold")
             elif quality_score > 0.8:
                 thesis_parts.append("EXCELLENT: High execution quality maintained")
 
-            # Issue analysis
+
             total_issues = sum(len(v) for v in self.issues.values())
             if total_issues > 0:
                 issue_types = [k for k, v in self.issues.items() if v]
                 thesis_parts.append(f"ISSUES: {total_issues} problems in {', '.join(issue_types[:2])}")
 
-            # Performance metrics
+
             if self.comprehensive_metrics["avg_slippage"] > 0:
                 thesis_parts.append(f"Slippage: {self.comprehensive_metrics['avg_slippage']:.4f} avg")
 
             if self.comprehensive_metrics["avg_latency"] > 0:
                 thesis_parts.append(f"Latency: {self.comprehensive_metrics['avg_latency']:.0f}ms avg")
 
-            # Market context
+
             thesis_parts.append(f"Context: {self.market_regime.upper()} regime, {self.volatility_regime.upper()} volatility")
 
-            # Training status
+
             if self.training_mode:
                 thesis_parts.append(f"TRAINING: {self.execution_count} total executions processed")
 
@@ -1698,12 +1614,8 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
         except Exception as e:
             return f"Execution thesis generation failed: {e!s} - Core execution monitoring functional"
 
-    # ─────────────────────────────────────────────────────────────
-    # FALLBACKS & ERRORS
-    # ─────────────────────────────────────────────────────────────
 
     async def _handle_no_data_fallback(self) -> Dict[str, Any]:
-        """Handle case when no execution data is available"""
         self.logger.warning("No execution data available - maintaining current state")
 
         thesis = "No execution data available - maintaining current state"
@@ -1749,10 +1661,9 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
         }
 
     async def _handle_execution_error(self, error: Exception, start_time: float) -> Dict[str, Any]:
-        """Handle execution monitoring errors"""
         processing_time = (time.time() - start_time) * 1000
 
-        # Update circuit breaker
+
         self.circuit_breaker['failures'] += 1
         self.circuit_breaker['last_failure'] = time.time()
 
@@ -1760,7 +1671,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             self.circuit_breaker['state'] = 'OPEN'
             self._health_status = 'warning'
 
-        # Log error with context
+
         _ = self.error_pinpointer.analyze_error(error, "ExecutionQualityMonitor")
         explanation = self.english_explainer.explain_error(
             "ExecutionQualityMonitor", str(error), "execution quality monitoring"
@@ -1777,13 +1688,12 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             )
         )
 
-        # Record failure
+
         self._record_failure(error)
 
         return self._create_error_fallback_response(f"error: {error!s}")
 
     def _create_error_fallback_response(self, reason: str) -> Dict[str, Any]:
-        """Create fallback response for error cases"""
         thesis = f"Execution monitor error fallback: {reason}"
         execution_quality_data = {
             'current_mode': ExecutionMode.EMERGENCY.value,
@@ -1827,24 +1737,20 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             'fallback_reason': reason
         }
 
-    # ─────────────────────────────────────────────────────────────
-    # HEALTH, EFFECTIVENESS & ADAPTATION
-    # ─────────────────────────────────────────────────────────────
 
     def _update_execution_health(self):
-        """Update execution health metrics"""
         try:
-            # Check execution quality
+
             if self.quality_score < self._cfg.min_execution_quality:
                 self._health_status = 'warning'
             else:
                 self._health_status = 'healthy'
 
-            # Check circuit breaker
+
             if self.circuit_breaker['state'] == 'OPEN':
                 self._health_status = 'warning'
 
-            # Check for excessive degradation
+
             if self.degraded_executions > self.execution_count * 0.5:
                 self._health_status = 'warning'
 
@@ -1855,7 +1761,6 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             self._health_status = 'warning'
 
     def _analyze_execution_effectiveness(self):
-        """Analyze execution monitoring effectiveness"""
         try:
             if self.execution_count >= 20:
                 effectiveness = self.quality_score
@@ -1883,22 +1788,21 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             self.logger.error(f"Execution effectiveness analysis failed: {e}")
 
     def _adapt_quality_parameters(self):
-        """Continuous quality parameter adaptation"""
         try:
-            # Adapt threshold scaling based on recent performance
+
             if len(self.quality_history) >= 10:
                 recent_quality = float(np.mean(list(self.quality_history)[-10:]))
 
-                if recent_quality < 0.5:  # Poor quality
+                if recent_quality < 0.5:
                     self._adaptive_params['dynamic_threshold_scaling'] = min(
                         1.5, self._adaptive_params['dynamic_threshold_scaling'] * 1.02
                     )
-                elif recent_quality > 0.8:  # Good quality
+                elif recent_quality > 0.8:
                     self._adaptive_params['dynamic_threshold_scaling'] = max(
                         0.7, self._adaptive_params['dynamic_threshold_scaling'] * 0.995
                     )
 
-            # Adapt context sensitivity
+
             total_issues = sum(len(v) for v in self.issues.values())
             if total_issues > 10:
                 self._adaptive_params['context_sensitivity'] = min(
@@ -1913,32 +1817,26 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             self.logger.warning(f"Quality parameter adaptation failed: {e}")
 
     def _record_success(self, processing_time: float):
-        """Record successful processing"""
         self.performance_tracker.record_metric(
             'ExecutionQualityMonitor', 'execution_monitoring', processing_time, True
         )
 
-        # Reset circuit breaker on success
+
         if self.circuit_breaker['state'] == 'OPEN':
             self.circuit_breaker['failures'] = 0
             self.circuit_breaker['state'] = 'CLOSED'
 
     def _record_failure(self, error: Exception):
-        """Record processing failure"""
         self.performance_tracker.record_metric(
             'ExecutionQualityMonitor', 'execution_monitoring', 0, False
         )
 
-    # ─────────────────────────────────────────────────────────────
-    # PUBLIC INTERFACE
-    # ─────────────────────────────────────────────────────────────
 
     def get_execution_stats(self) -> Dict[str, Any]:
-        """Get detailed execution statistics"""
         stats: Dict[str, Any] = {}
 
         try:
-            # Slippage statistics
+
             if self.slippage_history:
                 slips = list(self.slippage_history)
                 stats["slippage"] = {
@@ -1952,7 +1850,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
                     "violations": len([s for s in slips if s > self._cfg.slip_limit])
                 }
 
-            # Latency statistics
+
             if self.latency_history:
                 latencies = list(self.latency_history)
                 stats["latency"] = {
@@ -1966,7 +1864,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
                     "violations": len([l for l in latencies if l > self._cfg.latency_limit])
                 }
 
-            # Fill rate statistics
+
             if self.fill_history:
                 fills = list(self.fill_history)
                 stats["fill_rate"] = {
@@ -1979,7 +1877,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
                     "count": len(fills)
                 }
 
-            # Quality statistics
+
             if self.quality_history:
                 qualities = list(self.quality_history)
                 stats["quality"] = {
@@ -1996,7 +1894,6 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
         return stats
 
     def get_observation_components(self) -> np.ndarray:
-        """Return execution quality metrics as observation"""
         try:
             has_issues = float(any(len(issues) > 0 for issues in self.issues.values()))
 
@@ -2022,7 +1919,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
                 float(np.clip(recent_fill_rate, 0.0, 1.0)),
                 float(np.clip(recent_spread / max(self._cfg.spread_threshold, 1e-8), 0.0, 10.0)),
                 float(self.degraded_executions / max(self.execution_count, 1)),
-                float(self.escalation_count / 10.0),  # Normalize escalations
+                float(self.escalation_count / 10.0),
                 float(1.0 if self.current_mode in [ExecutionMode.CRITICAL, ExecutionMode.EMERGENCY] else 0.0),
                 float(self.training_mode)
             ], dtype=np.float32)
@@ -2032,7 +1929,6 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             return np.array([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
 
     def get_health_status(self) -> Dict[str, Any]:
-        """Get comprehensive health status"""
         return {
             'status': self._health_status,
             'last_check': self._last_health_check,
@@ -2044,13 +1940,11 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
         }
 
     def stop_monitoring(self):
-        """Stop background monitoring"""
         self._monitoring_active = False
 
     def get_execution_quality_report(self) -> str:
-        """Generate operator-friendly execution quality report"""
 
-        # Quality status indicators
+
         if self.quality_score < 0.5:
             quality_status = "[ALERT] Critical"
         elif self.quality_score < 0.7:
@@ -2060,7 +1954,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
         else:
             quality_status = "[OK] Excellent"
 
-        # Mode status
+
         mode_emoji = {
             ExecutionMode.TRAINING: "🎓",
             ExecutionMode.CALIBRATION: "[TOOL]",
@@ -2072,11 +1966,11 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
 
         mode_status = f"{mode_emoji.get(self.current_mode, '❓')} {self.current_mode.value.upper()}"
 
-        # Health status
+
         health_emoji = "[OK]" if self._health_status == 'healthy' else "[WARN]"
         cb_status = "[RED] OPEN" if self.circuit_breaker['state'] == 'OPEN' else "[GREEN] CLOSED"
 
-        # Issue summary
+
         issue_lines = []
         for issue_type, issues in self.issues.items():
             if issues:
@@ -2133,12 +2027,8 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
 • History Sizes: S:{len(self.slippage_history)} L:{len(self.latency_history)} F:{len(self.fill_history)} Q:{len(self.quality_history)}
         """
 
-    # ─────────────────────────────────────────────────────────────
-    # LEGACY COMPATIBILITY
-    # ─────────────────────────────────────────────────────────────
 
     def step(self, **kwargs) -> Dict[str, Any]:
-        """Legacy step interface for backward compatibility"""
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
@@ -2149,37 +2039,36 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             loop.close()
 
     def reset(self) -> None:
-        """Enhanced reset with comprehensive state cleanup"""
-        # Reset history
+
         self.slippage_history.clear()
         self.latency_history.clear()
         self.fill_history.clear()
         self.spread_history.clear()
         self.quality_history.clear()
 
-        # Reset instrument-specific metrics
+
         self.instrument_metrics.clear()
 
-        # Reset quality metrics
+
         self.quality_score = 1.0
         self.execution_count = 0
         self.degraded_executions = 0
 
-        # Reset market context
+
         self.market_regime = "normal"
         self.volatility_regime = "medium"
         self.market_session = "unknown"
 
-        # Reset issues
+
         for issue_type in self.issues:
             self.issues[issue_type].clear()
 
-        # Reset analytics
+
         self.execution_analytics.clear()
         self.regime_performance.clear()
         self.session_performance.clear()
 
-        # Reset comprehensive metrics
+
         self.comprehensive_metrics = {
             "avg_slippage": 0.0,
             "avg_latency": 0.0,
@@ -2191,24 +2080,24 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             "quality_trend": 0.0
         }
 
-        # Reset venue performance
+
         self.venue_performance.clear()
 
-        # Reset alerts
+
         self.quality_alerts.clear()
         self.escalation_count = 0
         self.last_escalation = None
 
-        # Reset mode
+
         self.current_mode = ExecutionMode.TRAINING if self.training_mode else ExecutionMode.NORMAL
         self.mode_start_time = datetime.datetime.now()
 
-        # Reset circuit breaker
+
         self.circuit_breaker['failures'] = 0
         self.circuit_breaker['state'] = 'CLOSED'
         self._health_status = 'healthy'
 
-        # Reset adaptive parameters
+
         self._adaptive_params = {
             'dynamic_threshold_scaling': 1.0,
             'context_sensitivity': 1.0,
@@ -2217,42 +2106,38 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
 
         self.logger.info("[RELOAD] Enhanced Execution Quality Monitor reset - all state cleared")
 
-    # ─────────────────────────────────────────────────────────────
-    # STATE PERSISTENCE
-    # ─────────────────────────────────────────────────────────────
 
     def _get_custom_state(self) -> Dict[str, Any]:
-        """Return custom state for persistence."""
         return {
-            # Execution histories
+
             'slippage_history': list(self.slippage_history)[-50:],
             'latency_history': list(self.latency_history)[-50:],
             'fill_history': list(self.fill_history)[-50:],
             'spread_history': list(self.spread_history)[-50:],
             'quality_history': list(self.quality_history)[-50:],
-            
-            # Quality metrics
+
+
             'quality_score': float(self.quality_score),
             'execution_count': self.execution_count,
             'degraded_executions': self.degraded_executions,
-            
-            # Comprehensive metrics
+
+
             'comprehensive_metrics': dict(self.comprehensive_metrics),
-            
-            # Adaptive parameters
+
+
             'adaptive_params': dict(self._adaptive_params),
-            
-            # Performance tracking per regime/session
-            'regime_performance': {k: {sk: list(sv)[-20:] for sk, sv in v.items()} 
+
+
+            'regime_performance': {k: {sk: list(sv)[-20:] for sk, sv in v.items()}
                                    for k, v in self.regime_performance.items()},
-            'session_performance': {k: {sk: list(sv)[-20:] for sk, sv in v.items()} 
+            'session_performance': {k: {sk: list(sv)[-20:] for sk, sv in v.items()}
                                     for k, v in self.session_performance.items()},
-            
-            # Alert tracking
+
+
             'quality_alerts': list(self.quality_alerts)[-10:],
             'escalation_count': self.escalation_count,
-            
-            # Mode info
+
+
             'current_mode': self.current_mode.value,
             'market_regime': self.market_regime,
             'volatility_regime': self.volatility_regime,
@@ -2260,12 +2145,11 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
         }
 
     def _set_custom_state(self, state: Dict[str, Any]) -> None:
-        """Restore custom state from persistence."""
         if not state:
             return
-        
+
         try:
-            # Restore histories
+
             if 'slippage_history' in state:
                 self.slippage_history = deque(state['slippage_history'], maxlen=self._cfg.stats_window)
             if 'latency_history' in state:
@@ -2276,24 +2160,24 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
                 self.spread_history = deque(state['spread_history'], maxlen=self._cfg.stats_window)
             if 'quality_history' in state:
                 self.quality_history = deque(state['quality_history'], maxlen=self._cfg.stats_window)
-            
-            # Restore quality metrics
+
+
             if 'quality_score' in state:
                 self.quality_score = float(state['quality_score'])
             if 'execution_count' in state:
                 self.execution_count = int(state['execution_count'])
             if 'degraded_executions' in state:
                 self.degraded_executions = int(state['degraded_executions'])
-            
-            # Restore comprehensive metrics
+
+
             if 'comprehensive_metrics' in state:
                 self.comprehensive_metrics.update(state['comprehensive_metrics'])
-            
-            # Restore adaptive parameters
+
+
             if 'adaptive_params' in state:
                 self._adaptive_params.update(state['adaptive_params'])
-            
-            # Restore regime/session performance
+
+
             if 'regime_performance' in state:
                 for regime, data in state['regime_performance'].items():
                     for key, values in data.items():
@@ -2302,14 +2186,14 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
                 for session, data in state['session_performance'].items():
                     for key, values in data.items():
                         self.session_performance[session][key] = list(values)
-            
-            # Restore alerts
+
+
             if 'quality_alerts' in state:
                 self.quality_alerts = deque(state['quality_alerts'], maxlen=10)
             if 'escalation_count' in state:
                 self.escalation_count = int(state['escalation_count'])
-            
-            # Restore mode info
+
+
             if 'current_mode' in state:
                 mode_str = state['current_mode']
                 for mode in ExecutionMode:
@@ -2322,7 +2206,7 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
                 self.volatility_regime = state['volatility_regime']
             if 'market_session' in state:
                 self.market_session = state['market_session']
-            
+
             self.logger.info(
                 format_operator_message(
                     "[STATE]", "ExecutionQualityMonitor state restored",
@@ -2334,17 +2218,13 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
         except Exception as e:
             self.logger.warning(f"Failed to restore ExecutionQualityMonitor state: {e}")
 
-    # ─────────────────────────────────────────────────────────────
-    # BASEMODULE ABSTRACT METHOD IMPLEMENTATIONS
-    # ─────────────────────────────────────────────────────────────
 
     async def calculate_confidence(self, action: Dict[str, Any], **inputs) -> float:
-        """Calculate confidence in execution quality assessment"""
         try:
-            # Base confidence from execution quality score
+
             execution_quality = float(self.quality_score)
 
-            # Mode adjustment factor
+
             mode_confidence = {
                 ExecutionMode.TRAINING: 0.6,
                 ExecutionMode.CALIBRATION: 0.7,
@@ -2354,11 +2234,11 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
                 ExecutionMode.EMERGENCY: 0.1
             }.get(self.current_mode, 0.5)
 
-            # Data quality factor
+
             latency_count = len(self.latency_history) if hasattr(self, 'latency_history') else 0
             data_quality = min(latency_count / max(self._cfg.stats_window, 1), 1.0)
 
-            # Recent performance consistency
+
             if hasattr(self, 'quality_history') and len(self.quality_history) > 2:
                 recent_qualities = list(self.quality_history)[-5:]
                 denom = max(float(np.mean(recent_qualities)), 0.1)
@@ -2366,10 +2246,10 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
             else:
                 consistency = 0.5
 
-            # Health status factor
+
             health_factor = 1.0 if self._health_status == 'healthy' else 0.3
 
-            # Combine factors
+
             confidence = (
                 execution_quality * 0.4 +
                 mode_confidence * 0.25 +
@@ -2378,10 +2258,10 @@ class ExecutionQualityMonitor(BaseModule, SmartInfoBusRiskMixin, SmartInfoBusSta
                 health_factor * 0.05
             )
 
-            # Ensure valid range
+
             return float(max(0.1, min(0.95, float(confidence))))
 
         except Exception as e:
             if hasattr(self, 'logger'):
                 self.logger.warning(f"Confidence calculation failed: {e}")
-            return 0.4  # Conservative default
+            return 0.4

@@ -1,14 +1,4 @@
-# -------------------------------------------------------------
-# File: modules/position/position_debug.py
-# Position Manager Debug System (Hardened & Mirrored)
-#
-# Responsibilities:
-#   - Track every decision with full context (per instrument)
-#   - Emit human-readable, plain-English explanations
-#   - Persist CSV / TXT / JSON artifacts for forensics
-#   - Mirror messages into a shared RotatingLogger (if attached)
-#   - Stay thread-safe and cheap in the hot path
-# -------------------------------------------------------------
+
 
 from __future__ import annotations
 
@@ -24,21 +14,16 @@ from typing import Any, Deque, Dict, List, Optional, Tuple
 
 import numpy as np
 
-# =============================================================================
-# ENUMERATIONS & DATA MODELS
-# =============================================================================
-
 
 class DebugLevel(Enum):
-    """Debug verbosity levels with priorities (lower = more verbose)."""
 
-    TRACE = ("TRACE", "🔍", 0)        # Ultra-detailed internal state
-    DEBUG = ("DEBUG", "🐛", 10)       # Detailed debugging info
-    INFO = ("INFO", "ℹ️", 20)        # General informational messages
-    SUCCESS = ("SUCCESS", "✅", 25)   # Successful operations
-    WARNING = ("WARNING", "⚠️", 30)   # Warning conditions
-    ERROR = ("ERROR", "❌", 40)       # Error conditions
-    CRITICAL = ("CRITICAL", "🚨", 50) # Critical failures
+    TRACE = ("TRACE", "🔍", 0)
+    DEBUG = ("DEBUG", "🐛", 10)
+    INFO = ("INFO", "ℹ️", 20)
+    SUCCESS = ("SUCCESS", "✅", 25)
+    WARNING = ("WARNING", "⚠️", 30)
+    ERROR = ("ERROR", "❌", 40)
+    CRITICAL = ("CRITICAL", "🚨", 50)
 
     def __init__(self, label: str, icon: str, priority: int):
         self.label = label
@@ -48,54 +33,47 @@ class DebugLevel(Enum):
 
 @dataclass
 class DecisionSnapshot:
-    """
-    Complete snapshot of a position decision with full context.
 
-    This is the “atomic record” of what the PositionManager decided
-    for a single instrument at a single time step.
-    """
 
-    # Identification
     timestamp: str
     instrument: str
 
-    # Action details
-    action: str                       # e.g. BUY / SELL / HOLD / CLOSE_POSITION
-    is_buying: bool                  # True if action is in BUY direction
-    direction: str                   # LONG / SHORT / NEUTRAL / EXIT / CLOSING
 
-    # Sizing & confidence
+    action: str
+    is_buying: bool
+    direction: str
+
+
     size_eur: float
     confidence: float
     market_intensity: float
     current_price: float
 
-    # Technical metrics
+
     signal_strength: float
-    trend_direction: str             # BULLISH / BEARISH / NEUTRAL
+    trend_direction: str
     volatility: float
 
-    # Portfolio state
-    portfolio_health: float          # 0–1
-    risk_score: float                # 0–1
 
-    # Explanations
+    portfolio_health: float
+    risk_score: float
+
+
     plain_english_reason: str
     technical_factors: List[str]
     risk_factors: List[str]
 
-    # Execution
+
     will_execute: bool
     execution_blocked_reason: Optional[str] = None
 
-    # Optional extended context (only at low verbosity)
+
     raw_context: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
     def _format_action(self) -> str:
-        """Human-friendly short description of the action."""
         a = self.action
         if a == "BUY":
             return "🟢 OPEN LONG"
@@ -114,7 +92,6 @@ class DecisionSnapshot:
         return f"⏸ {a}"
 
     def to_plain_english(self) -> str:
-        """Compact human-readable explanation block."""
         action_line = self._format_action()
         status = (
             "✅ WILL EXECUTE"
@@ -156,7 +133,6 @@ class DecisionSnapshot:
 
 @dataclass
 class ErrorSnapshot:
-    """Detailed error information with full context."""
 
     timestamp: str
     error_type: str
@@ -197,11 +173,10 @@ class ErrorSnapshot:
 
 @dataclass
 class TradeSignal:
-    """Simple record of a trade signal that could be executed."""
 
     timestamp: datetime.datetime
     instrument: str
-    action: str          # BUY / SELL / SCALE_UP
+    action: str
     size_eur: float
     confidence: float
     executed: bool
@@ -211,7 +186,6 @@ class TradeSignal:
 
 @dataclass
 class PerformanceMetric:
-    """One metric sample for monitoring (drawdown, exposure, etc.)."""
 
     timestamp: str
     metric_name: str
@@ -220,27 +194,9 @@ class PerformanceMetric:
     context: Dict[str, Any]
 
 
-# =============================================================================
-# MAIN DEBUG SYSTEM
-# =============================================================================
-
-
 class PositionDebugSystem:
-    """
-    Unified debug system for PositionManager.
 
-    Design goals:
-      - Very easy to reason about decisions when reading logs.
-      - Safe in hot paths (thread-safe, cheap when disabled).
-      - Minimal API surface from the outside:
-          * log_decision(...)
-          * log_error(...)
-          * log_metric(...)
-          * get_statistics()
-          * cleanup()
-    """
 
-    # CSV header constants – kept here for easy grepping
     _DECISION_CSV_HEADER = (
         "timestamp,instrument,action,is_buying,direction,size_eur,confidence,"
         "signal_strength,volatility,portfolio_health,risk_score,will_execute,"
@@ -259,26 +215,26 @@ class PositionDebugSystem:
         file_output: bool = True,
         max_memory_items: int = 10000,
     ):
-        # Configuration
+
         self.enabled = enable
         self.verbosity = verbosity
         self.console_output = console_output
         self.file_output = file_output
         self.max_memory_items = max_memory_items
 
-        # Thread safety
+
         self._lock = threading.RLock()
 
-        # Optional external sink (e.g. RotatingLogger), wired via attach_shared_logger()
+
         self._shared_logger = None
 
-        # In-memory storage (bounded)
+
         self.decision_history: Deque[DecisionSnapshot] = deque(maxlen=max_memory_items)
         self.error_history: Deque[ErrorSnapshot] = deque(maxlen=1000)
         self.performance_metrics: Deque[PerformanceMetric] = deque(maxlen=5000)
         self.trade_signals: Deque[TradeSignal] = deque(maxlen=1000)
 
-        # Stats
+
         self.stats = {
             "total_decisions": 0,
             "buy_decisions": 0,
@@ -290,7 +246,7 @@ class PositionDebugSystem:
             "start_time": datetime.datetime.utcnow(),
         }
 
-        # Per-instrument signal stats
+
         self.active_signals: Dict[str, TradeSignal] = {}
         self.signal_stats = defaultdict(
             lambda: {
@@ -305,7 +261,7 @@ class PositionDebugSystem:
             }
         )
 
-        # File paths (initialised lazily)
+
         self.log_dir: Optional[Path] = None
         self.decision_csv: Optional[Path] = None
         self.decision_summary: Optional[Path] = None
@@ -319,25 +275,17 @@ class PositionDebugSystem:
         if self.enabled and self.file_output:
             self._init_log_files(log_dir)
 
-    # -------------------------------------------------------------------------
-    # Shared RotatingLogger wiring
-    # -------------------------------------------------------------------------
 
     def attach_shared_logger(self, logger: Any) -> None:
-        """Attach shared RotatingLogger to mirror lines and blocks."""
         with self._lock:
             self._shared_logger = logger
 
-    # -------------------------------------------------------------------------
-    # File initialization
-    # -------------------------------------------------------------------------
 
     def _init_log_files(self, log_dir: str) -> None:
-        """Create directories and base files for this debug session."""
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(parents=True, exist_ok=True)
 
-        # Subdirectories
+
         (self.log_dir / "decisions").mkdir(exist_ok=True)
         (self.log_dir / "errors").mkdir(exist_ok=True)
         (self.log_dir / "signals").mkdir(exist_ok=True)
@@ -345,25 +293,25 @@ class PositionDebugSystem:
 
         timestamp = datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
 
-        # Main files
+
         self.decision_csv = self.log_dir / "decisions" / f"decisions_{timestamp}.csv"
         self.decision_summary = self.log_dir / "decisions" / f"summary_{timestamp}.txt"
         self.error_log = self.log_dir / "errors" / f"errors_{timestamp}.log"
         self.debug_log = self.log_dir / f"debug_{timestamp}.log"
 
-        # Signal files
+
         self.buy_signals_json = self.log_dir / "signals" / f"buy_signals_{timestamp}.json"
         self.sell_signals_json = self.log_dir / "signals" / f"sell_signals_{timestamp}.json"
         self.signals_csv = self.log_dir / "signals" / f"signals_{timestamp}.csv"
 
-        # Metrics file
+
         self.metrics_json = self.log_dir / "metrics" / f"metrics_{timestamp}.json"
 
-        # CSV headers
+
         self._write_csv_header(self.decision_csv, self._DECISION_CSV_HEADER)
         self._write_csv_header(self.signals_csv, self._SIGNAL_CSV_HEADER)
 
-        # Session header
+
         header = f"""
 {'=' * 80}
 🎯 POSITION MANAGER DEBUG SESSION
@@ -378,9 +326,6 @@ Log Directory: {self.log_dir}
 """
         self._log_to_file(self.debug_log, header)
 
-    # -------------------------------------------------------------------------
-    # Core logging API
-    # -------------------------------------------------------------------------
 
     def log_decision(
         self,
@@ -393,20 +338,14 @@ Log Directory: {self.log_dir}
         rationale: Dict[str, Any],
         portfolio_health: float,
     ) -> Optional[DecisionSnapshot]:
-        """
-        Log a decision taken by the PositionManager.
-
-        Parameters are intentionally minimal: instrument, decision enum value,
-        a scalar intensity, size in EUR, confidence, and a small context dict.
-        """
         if not self.enabled:
             return None
 
         try:
-            # 1) Parse high-level action semantics
+
             action, is_buying, direction_label = self._parse_decision(decision, intensity)
 
-            # 2) Extract metrics from context
+
             signal_strength = abs(float(intensity))
             trend_direction = (
                 "BULLISH" if intensity > 0 else "BEARISH" if intensity < 0 else "NEUTRAL"
@@ -416,7 +355,7 @@ Log Directory: {self.log_dir}
 
             risk_score = self._calculate_risk_score(context)
 
-            # 3) Generate explanations
+
             plain_english = self._generate_plain_english_reason(
                 action=action,
                 is_buying=is_buying,
@@ -431,12 +370,12 @@ Log Directory: {self.log_dir}
                 context, rationale.get("risk_factors", {})
             )
 
-            # 4) Check if this decision should be executed at all (log-level check)
+
             will_execute, blocked_reason = self._check_execution_viability(
                 size, confidence, context, risk_score=risk_score
             )
 
-            # 5) Build snapshot
+
             snapshot = DecisionSnapshot(
                 timestamp=datetime.datetime.utcnow().isoformat() + "Z",
                 instrument=instrument,
@@ -462,7 +401,7 @@ Log Directory: {self.log_dir}
                 ),
             )
 
-            # 6) Persist & mirror
+
             with self._lock:
                 self.decision_history.append(snapshot)
                 self._update_stats(snapshot)
@@ -477,7 +416,7 @@ Log Directory: {self.log_dir}
 
                 self._track_trade_signal(snapshot)
 
-            # TRACE-only compact mirror
+
             if self.verbosity.priority <= DebugLevel.TRACE.priority:
                 self._log_debug(
                     DebugLevel.TRACE,
@@ -497,7 +436,6 @@ Log Directory: {self.log_dir}
         context: Dict[str, Any],
         recovery_action: Optional[str] = None,
     ) -> Optional[ErrorSnapshot]:
-        """Log an error with a full snapshot (stack trace + context)."""
         if not self.enabled:
             return None
 
@@ -530,7 +468,7 @@ Log Directory: {self.log_dir}
             return snapshot
 
         except Exception as e:
-            # Final fallback – do not swallow meta-errors
+
             print(f"Critical: Error while logging error: {e}")
             return None
 
@@ -541,7 +479,6 @@ Log Directory: {self.log_dir}
         unit: str = "",
         context: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Log a performance / health metric (lightweight)."""
         if not self.enabled:
             return
         try:
@@ -563,7 +500,7 @@ Log Directory: {self.log_dir}
         except Exception as e:
             self._log_debug(DebugLevel.ERROR, f"Error logging metric: {e}")
 
-    # Convenience wrappers
+
     def log_trace(self, message: str, **kwargs) -> None:
         self._log_debug(DebugLevel.TRACE, message, **kwargs)
 
@@ -579,19 +516,8 @@ Log Directory: {self.log_dir}
     def log_success(self, message: str, **kwargs) -> None:
         self._log_debug(DebugLevel.SUCCESS, message, **kwargs)
 
-    # -------------------------------------------------------------------------
-    # INTERNAL HELPERS – logging + formatting
-    # -------------------------------------------------------------------------
 
     def _log_debug(self, level: DebugLevel, message: str, **kwargs) -> None:
-        """
-        Internal debug logger.
-
-        - Applies verbosity filter.
-        - Writes to console (if enabled).
-        - Writes to debug log file (if enabled).
-        - Mirrors into shared RotatingLogger (if attached).
-        """
         if not self.enabled or level.priority < self.verbosity.priority:
             return
 
@@ -600,15 +526,15 @@ Log Directory: {self.log_dir}
         if kwargs:
             formatted += f" | {kwargs}"
 
-        # Console
+
         if self.console_output:
             print(formatted)
 
-        # File
+
         if self.file_output and self.debug_log:
             self._log_to_file(self.debug_log, formatted + "\n")
 
-        # Mirror into shared logger
+
         sl = getattr(self, "_shared_logger", None)
         if not sl:
             return
@@ -624,16 +550,11 @@ Log Directory: {self.log_dir}
             if hasattr(sl, "flush"):
                 sl.flush()
         except Exception:
-            # Never allow debug propagation to break hot path
+
             pass
 
     @staticmethod
     def _parse_decision(decision: str, intensity: float) -> Tuple[str, bool, str]:
-        """
-        Map PositionDecision enum value to a normalized action string.
-
-        Returns: (action, is_buying, direction_label)
-        """
         d = (decision or "").lower()
         if "open_long" in d:
             return "BUY", True, "LONG"
@@ -652,19 +573,13 @@ Log Directory: {self.log_dir}
 
     @staticmethod
     def _calculate_risk_score(context: Dict[str, Any]) -> float:
-        """
-        Aggregate a simple 0–1 risk score from drawdown, exposure, volatility.
-
-        This is intentionally simple and monotonic:
-          - high drawdown, exposure, or volatility pushes risk towards 1.
-        """
         drawdown = float(context.get("drawdown", 0.0) or 0.0)
         exposure = float(context.get("current_exposure", 0.0) or 0.0)
         volatility = float(context.get("volatility", 0.02) or 0.02)
 
-        drawdown_risk = min(drawdown * 5.0, 1.0)         # 20% dd -> 1.0
-        exposure_risk = min(exposure * 2.0, 1.0)         # 50% exposure -> 1.0
-        vol_risk = min(volatility / 0.05, 1.0)           # 5% vol -> 1.0
+        drawdown_risk = min(drawdown * 5.0, 1.0)
+        exposure_risk = min(exposure * 2.0, 1.0)
+        vol_risk = min(volatility / 0.05, 1.0)
 
         score = drawdown_risk * 0.4 + exposure_risk * 0.3 + vol_risk * 0.3
         return float(min(score, 1.0))
@@ -679,7 +594,6 @@ Log Directory: {self.log_dir}
         confidence: float,
         rationale: Dict[str, Any],
     ) -> str:
-        """Generate a short plain-English summary sentence for the decision."""
         stage = rationale.get("stage", "unknown")
         factors = rationale.get("factors", [])
 
@@ -724,7 +638,6 @@ Log Directory: {self.log_dir}
 
     @staticmethod
     def _extract_technical_factors(context: Dict[str, Any]) -> List[str]:
-        """Translate raw context values into compact, human-readable tags."""
         factors: List[str] = []
 
         trend_strength = float(context.get("trend_strength", 0.0) or 0.0)
@@ -762,7 +675,6 @@ Log Directory: {self.log_dir}
         context: Dict[str, Any],
         risk_factors: Dict[str, float],
     ) -> List[str]:
-        """Translate risk context into human-readable risk notes."""
         factors: List[str] = []
 
         drawdown = float(context.get("drawdown", 0.0) or 0.0)
@@ -796,15 +708,6 @@ Log Directory: {self.log_dir}
         context: Dict[str, Any],
         risk_score: Optional[float] = None,
     ) -> Tuple[bool, Optional[str]]:
-        """
-        Decide whether this decision should realistically be executed.
-
-        This is an additional safety layer used only for logging:
-          - zero / tiny size → block,
-          - too large relative to balance → block,
-          - low confidence → block,
-          - very high risk score or drawdown → block.
-        """
         if size <= 0:
             return False, "Position size is zero or negative"
 
@@ -825,12 +728,8 @@ Log Directory: {self.log_dir}
 
         return True, None
 
-    # -------------------------------------------------------------------------
-    # INTERNAL HELPERS – signal tracking / stats
-    # -------------------------------------------------------------------------
 
     def _track_trade_signal(self, snapshot: DecisionSnapshot) -> None:
-        """Track BUY / SELL / SCALE_UP decisions for later signal stats."""
         if snapshot.action not in ("BUY", "SELL", "SCALE_UP"):
             return
 
@@ -855,7 +754,7 @@ Log Directory: {self.log_dir}
             stats["total_sells"] += 1
             stats["sell_volume"] += snapshot.size_eur
 
-        # Persist to signals CSV for fast forensic analysis
+
         if self.file_output and self.signals_csv is not None:
             try:
                 ts = signal.timestamp.isoformat() + "Z"
@@ -867,11 +766,10 @@ Log Directory: {self.log_dir}
                 )
                 self._log_to_file(self.signals_csv, line)
             except Exception:
-                # Never let debug I/O break trading
+
                 pass
 
     def _update_stats(self, snapshot: DecisionSnapshot) -> None:
-        """Update global statistics from a new decision snapshot."""
         self.stats["total_decisions"] += 1
 
         if snapshot.action == "BUY":
@@ -886,9 +784,6 @@ Log Directory: {self.log_dir}
         else:
             self.stats["blocked_executions"] += 1
 
-    # -------------------------------------------------------------------------
-    # FILE I/O (hardened + atomic)
-    # -------------------------------------------------------------------------
 
     def _write_csv_header(self, filepath: Optional[Path], header: str) -> None:
         if not self.file_output or filepath is None:
@@ -944,12 +839,6 @@ Log Directory: {self.log_dir}
             pass
 
     def _write_decision_to_debug_log(self, snapshot: DecisionSnapshot) -> None:
-        """
-        Write the pretty-block decision only when verbosity is high enough.
-
-        The unified logger already produces high-level, human-readable summaries;
-        this block is for deeper inspection sessions.
-        """
         if self.verbosity.priority > DebugLevel.DEBUG.priority:
             return
         if not self.file_output or self.debug_log is None:
@@ -986,7 +875,7 @@ Log Directory: {self.log_dir}
         if not self.file_output:
             return
         try:
-            # Human-readable line into debug log
+
             line = (
                 f"[METRIC] {metric.timestamp} | {metric.metric_name}: "
                 f"{metric.value:.6f} {metric.unit}"
@@ -1000,7 +889,7 @@ Log Directory: {self.log_dir}
             if self.debug_log is not None:
                 self._log_to_file(self.debug_log, line)
 
-            # Structured JSON into metrics file
+
             if self.metrics_json is not None:
                 payload = {
                     "timestamp": metric.timestamp,
@@ -1014,7 +903,7 @@ Log Directory: {self.log_dir}
                     json.dumps(payload, default=str) + "\n",
                 )
 
-            # Mirror compact line to shared logger
+
             sl = getattr(self, "_shared_logger", None)
             if sl:
                 try:
@@ -1027,9 +916,6 @@ Log Directory: {self.log_dir}
         except Exception:
             pass
 
-    # -------------------------------------------------------------------------
-    # CONSOLE OUTPUT
-    # -------------------------------------------------------------------------
 
     @staticmethod
     def _print_decision(snapshot: DecisionSnapshot) -> None:
@@ -1039,12 +925,8 @@ Log Directory: {self.log_dir}
     def _print_error(snapshot: ErrorSnapshot) -> None:
         print(snapshot.to_plain_english())
 
-    # -------------------------------------------------------------------------
-    # PUBLIC API – stats / lifecycle
-    # -------------------------------------------------------------------------
 
     def get_statistics(self) -> Dict[str, Any]:
-        """Return a snapshot of high-level debug statistics."""
         with self._lock:
             runtime = (datetime.datetime.utcnow() - self.stats["start_time"]).total_seconds()
             total_decisions = max(self.stats["total_decisions"], 1)
@@ -1072,7 +954,6 @@ Log Directory: {self.log_dir}
             }
 
     def print_summary(self) -> None:
-        """Pretty-print a short stats summary to stdout."""
         stats = self.get_statistics()
         print("\n" + "=" * 80)
         print("📊 POSITION DEBUG SYSTEM SUMMARY")
@@ -1089,7 +970,6 @@ Log Directory: {self.log_dir}
         print("=" * 80 + "\n")
 
     def flush(self) -> None:
-        """Flush shared logger (file writes are already flushed per write)."""
         sl = getattr(self, "_shared_logger", None)
         try:
             if sl and hasattr(sl, "flush"):
@@ -1098,7 +978,6 @@ Log Directory: {self.log_dir}
             pass
 
     def flush_signals_to_json(self) -> None:
-        """Persist trade signal history into JSON artifacts (BUY / SELL)."""
         if not self.enabled or not self.file_output:
             return
         try:
@@ -1113,7 +992,7 @@ Log Directory: {self.log_dir}
                 if s.action == "SELL" and s.timestamp
             ]
 
-            # Normalise timestamps
+
             for sig in buy_signals + sell_signals:
                 ts = sig.get("timestamp")
                 if isinstance(ts, datetime.datetime):
@@ -1130,12 +1009,6 @@ Log Directory: {self.log_dir}
             self._log_debug(DebugLevel.ERROR, f"Error flushing signals: {e}")
 
     def cleanup(self) -> None:
-        """
-        Finalise the debug session:
-          - flush signals into JSON,
-          - write a final summary footer to logs,
-          - dump a JSON summary file.
-        """
         if not self.enabled:
             return
 
@@ -1143,7 +1016,7 @@ Log Directory: {self.log_dir}
         self.flush_signals_to_json()
         stats = self.get_statistics()
 
-        # Session footer
+
         if self.file_output and self.log_dir and self.debug_log:
             footer = f"""
 
@@ -1166,7 +1039,7 @@ Decision Rate:     {stats['decisions_per_hour']:.1f} / hour
 """
             self._log_to_file(self.debug_log, footer)
 
-            # JSON summary
+
             summary_path = self.log_dir / "final_summary.json"
             try:
                 with open(summary_path, "w", encoding="utf-8", newline="") as f:

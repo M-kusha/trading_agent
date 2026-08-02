@@ -1,15 +1,4 @@
-# train/controllers/lr_controller.py
-"""
-Smart Learning Rate Controller with PID-based adaptive control.
-Stage-aware bounds protect learned strategies in late stages.
 
-Robustness upgrades:
-- Learning-health is scale-aware (relative trends, CV-style stability metrics)
-- Separate instability detector gates emergency LR reductions
-- Slew limiting clamps around the *current* multiplier (safe under external overrides)
-- Stage-aware “stuck” handling: early can increase LR; later prioritizes stability
-- Strong numeric guards + partial-telemetry behavior
-"""
 
 from __future__ import annotations
 
@@ -45,10 +34,6 @@ def _safe_std(xs: list[float]) -> float:
 
 
 def _lin_slope(xs: list[float]) -> float:
-    """
-    Least-squares slope over equally spaced points.
-    Returns slope per step index.
-    """
     n = len(xs)
     if n < 3:
         return 0.0
@@ -62,23 +47,10 @@ def _lin_slope(xs: list[float]) -> float:
 
 
 class SmartLRController:
-    """
-    PID-based learning rate controller with stage awareness.
-
-    Control objective:
-      Maintain stage-specific "learning health" near target.
-      - 0.0 => learning unhealthy / not improving
-      - 1.0 => learning healthy / improving
-      Targets decrease by stage to prefer stability/fine-tuning later.
-
-    Additionally:
-      Instability detector (loss volatility / divergence) can force emergency LR reduction,
-      independent of health target.
-    """
 
     MAX_STAGE = 9
 
-    # Learning rate multiplier bounds by stage (relative to base_lr)
+
     STAGE_LR_MULTIPLIERS: Dict[int, Tuple[float, float]] = {
         0: (0.5, 2.0),
         1: (0.5, 1.8),
@@ -92,7 +64,7 @@ class SmartLRController:
         9: (0.1, 0.4),
     }
 
-    # Target "learning health" by stage (lower later)
+
     STAGE_HEALTH_TARGETS: Dict[int, float] = {
         0: 0.70,
         1: 0.65,
@@ -109,17 +81,17 @@ class SmartLRController:
     def __init__(
         self,
         base_lr: float = 1e-4,
-        # Scheduling / stability knobs
+
         min_steps_between_updates: int = 40_000,
         cooldown_after_stage_change: int = 60_000,
         cooldown_after_emergency: int = 30_000,
-        # Slew limiting per apply (relative to current multiplier)
+
         max_relative_step: float = 0.15,
-        # PID tuning (conservative for LR)
+
         kp: float = 0.08,
         ki: float = 0.005,
         kd: float = 0.03,
-        # History windows
+
         history_len_loss: int = 30,
         history_len_reward: int = 50,
         smooth_window: int = 12,
@@ -145,21 +117,20 @@ class SmartLRController:
             ki=ki,
             kd=kd,
             setpoint=self.STAGE_HEALTH_TARGETS[0],
-            output_min=bounds[0],  # multiplier
+            output_min=bounds[0],
             output_max=bounds[1],
             deadband=0.08,
             d_filter_alpha=0.15,
-            max_delta_per_update=0.05,  # absolute multiplier step per PID update
+            max_delta_per_update=0.05,
         )
 
         self._last_lr_mult = 1.0
 
-        # History for computing health/instability
+
         self._p_loss_history: list[float] = []
         self._v_loss_history: list[float] = []
         self._reward_history: list[float] = []
 
-    # ---------------------------- telemetry ----------------------------
 
     def update_history(
         self,
@@ -167,7 +138,6 @@ class SmartLRController:
         value_loss: Optional[float] = None,
         reward: Optional[float] = None,
     ) -> None:
-        """Update internal history buffers."""
         if policy_loss is not None and _is_finite(policy_loss):
             self._p_loss_history.append(float(policy_loss))
             self._p_loss_history = self._p_loss_history[-self.history_len_loss :]
@@ -183,56 +153,39 @@ class SmartLRController:
             return []
         return xs[-n:] if len(xs) >= 1 else []
 
-    # ---------------------------- health + instability ----------------------------
 
     def _policy_trend_score(self) -> float:
-        """
-        Policy loss trend score:
-          decreasing loss => higher score
-        Uses relative slope to reduce dependence on absolute scale.
-        """
         xs = self._recent(self._p_loss_history, self.smooth_window)
         if len(xs) < 6:
             return 0.5
-        slope = _lin_slope(xs)  # per index
+        slope = _lin_slope(xs)
         denom = abs(_mean(xs)) + 1e-8
         rel = float(slope) / float(denom)
 
-        # rel < 0 (decreasing) is good; map to [0..1]
-        # scale chosen so rel=-0.05 => high, rel=+0.05 => low
+
         scale = 0.06
         z = -rel / scale
         return _clamp(0.5 * (1.0 + math.tanh(z)), 0.0, 1.0)
 
     def _value_stability_score(self) -> float:
-        """
-        Value loss stability score:
-          lower coefficient-of-variation => higher score
-        """
         xs = self._recent(self._v_loss_history, self.smooth_window)
         if len(xs) < 6:
             return 0.5
         mu = abs(_mean(xs)) + 1e-8
         sd = _safe_std(xs)
-        cv = float(sd) / float(mu)  # scale-free
+        cv = float(sd) / float(mu)
 
-        # CV <= 0.15 => very stable (near 1)
-        # CV >= 1.00 => unstable (near 0)
+
         good = 0.15
         bad = 1.00
         if cv <= good:
             return 0.98
         if cv >= bad:
             return 0.05
-        # linear interpolation
+
         return _clamp(1.0 - (cv - good) / (bad - good), 0.0, 1.0)
 
     def _reward_improvement_score(self) -> float:
-        """
-        Reward improvement score:
-          increasing reward => higher score
-        Uses relative change to reduce dependence on absolute scale.
-        """
         rs = self._recent(self._reward_history, max(self.smooth_window, 20))
         if len(rs) < 20:
             return 0.5
@@ -244,16 +197,12 @@ class SmartLRController:
         denom = abs(early) + 1e-6
         rel_improve = float(late - early) / float(denom)
 
-        # rel_improve ~ +0.25 => strong improvement; -0.25 => bad
+
         scale = 0.30
         z = rel_improve / scale
         return _clamp(0.5 * (1.0 + math.tanh(z)), 0.0, 1.0)
 
     def _compute_learning_health(self) -> Tuple[float, Dict[str, float]]:
-        """
-        Compute learning health in [0..1] + debug signals.
-        Returns neutral if insufficient telemetry.
-        """
         have_p = len(self._p_loss_history) >= 8
         have_v = len(self._v_loss_history) >= 8
         have_r = len(self._reward_history) >= 20
@@ -265,7 +214,7 @@ class SmartLRController:
         v_score = self._value_stability_score() if have_v else 0.5
         r_score = self._reward_improvement_score() if have_r else 0.5
 
-        # Reward + policy trend dominate; value stability is a stabilizer term
+
         health = 0.40 * p_score + 0.25 * v_score + 0.35 * r_score
         health = _clamp(float(health), 0.0, 1.0)
 
@@ -277,13 +226,6 @@ class SmartLRController:
         }
 
     def _compute_instability(self) -> Tuple[float, Dict[str, float]]:
-        """
-        Instability index in [0..1]:
-          0 => stable
-          1 => divergent/volatile
-
-        Uses scale-free volatility + adverse trends.
-        """
         xs_v = self._recent(self._v_loss_history, self.smooth_window)
         xs_p = self._recent(self._p_loss_history, self.smooth_window)
 
@@ -294,28 +236,25 @@ class SmartLRController:
         p_slope = _lin_slope(xs_p) if len(xs_p) >= 6 else 0.0
         p_rel = float(p_slope) / float(p_mu)
 
-        # Convert signals to [0..1] “badness”
-        # v_cv: 0.2 good, 1.2 bad
+
         v_bad = _clamp((v_cv - 0.20) / (1.20 - 0.20), 0.0, 1.0)
 
-        # p_rel: positive slope is bad (loss increasing over time)
-        # Threshold 0.06: In PPO, relative slope >3% is suspicious, >6% is alarming.
-        # This scales linearly: 0% -> 0.0 badness, 6%+ -> 1.0 badness.
+
         p_bad = _clamp((p_rel - 0.00) / 0.06, 0.0, 1.0)
 
-        # reward collapse indicator
+
         rs = self._recent(self._reward_history, max(self.smooth_window, 20))
         if len(rs) >= 20:
             half = len(rs) // 2
             early = _mean(rs[:half])
             late = _mean(rs[half:])
             denom = abs(early) + 1e-6
-            rel_drop = float(early - late) / float(denom)  # positive => dropping
+            rel_drop = float(early - late) / float(denom)
             r_bad = _clamp(rel_drop / 0.40, 0.0, 1.0)
         else:
             r_bad = 0.0
 
-        # Weighted instability
+
         instability = 0.45 * v_bad + 0.35 * p_bad + 0.20 * r_bad
         instability = _clamp(float(instability), 0.0, 1.0)
 
@@ -327,17 +266,12 @@ class SmartLRController:
         }
 
     def _instability_threshold(self, stage: int) -> float:
-        """
-        Later stages tolerate less instability.
-        """
         stage = int(max(0, min(stage, self.MAX_STAGE)))
-        t = stage / float(self.MAX_STAGE)  # 0..1
-        return float((0.75 * (1.0 - t)) + (0.45 * t))  # 0.75 -> 0.45
+        t = stage / float(self.MAX_STAGE)
+        return float((0.75 * (1.0 - t)) + (0.45 * t))
 
-    # ---------------------------- stage handling ----------------------------
 
     def on_stage_change(self, new_stage: int) -> None:
-        """Handle curriculum stage transition."""
         try:
             ns = int(new_stage)
         except Exception:
@@ -360,24 +294,13 @@ class SmartLRController:
 
         self._last_lr_mult = _clamp(self._last_lr_mult, bounds[0], bounds[1])
 
-    # ---------------------------- main control ----------------------------
 
     def get_lr(
         self,
         current_lr: float,
         timesteps_elapsed: int,
     ) -> Tuple[float, str, bool]:
-        """
-        Compute recommended learning rate.
 
-        Args:
-            current_lr: current learning rate
-            timesteps_elapsed: delta-steps since last call
-
-        Returns:
-            (lr, reason, should_apply)
-        """
-        # Defensive delta-steps
         try:
             delta_steps = int(timesteps_elapsed)
         except Exception:
@@ -397,11 +320,11 @@ class SmartLRController:
 
         self.steps_since_update += delta_steps
 
-        # If external systems changed LR abruptly (checkpoint load), resync last mult
+
         if self._last_lr_mult > 0 and abs(current_mult - self._last_lr_mult) / self._last_lr_mult > 0.35:
             self._last_lr_mult = current_mult
 
-        # Cooldown
+
         if self.cooldown_steps > 0:
             self.cooldown_steps = max(0, self.cooldown_steps - delta_steps)
             return (
@@ -410,7 +333,7 @@ class SmartLRController:
                 False,
             )
 
-        # Minimum interval
+
         if self.steps_since_update < self.min_steps_between_updates:
             return (
                 current_lr,
@@ -418,12 +341,12 @@ class SmartLRController:
                 False,
             )
 
-        # Compute health and instability
+
         health, hs = self._compute_learning_health()
         instability, ins = self._compute_instability()
         inst_th = self._instability_threshold(self.current_stage)
 
-        # Emergency: instability too high -> reduce LR
+
         if instability > inst_th:
             new_mult = max(bounds[0], current_mult * (1.0 - max(self.max_relative_step, 0.20)))
             new_lr = self.base_lr * new_mult
@@ -450,9 +373,7 @@ class SmartLRController:
 
         target = float(self.STAGE_HEALTH_TARGETS[self.current_stage])
 
-        # Extremely low health handling (stage-aware):
-        # - Early stages (0..2): increase LR to escape plateaus if stable
-        # - Later stages (3..9): reduce LR slightly to regain stability
+
         if health < 0.12:
             if self.current_stage <= 2:
                 new_mult = min(bounds[1], current_mult * (1.0 + max(0.10, self.max_relative_step)))
@@ -479,20 +400,20 @@ class SmartLRController:
                 True,
             )
 
-        # PID control on health
+
         dt = max(1.0, float(self.steps_since_update) / float(self.min_steps_between_updates))
         proposed_mult, pid_reason = self.pid.update(float(health), dt=dt)
 
-        # Slew limit around *current* multiplier
+
         upper = current_mult * (1.0 + self.max_relative_step)
         lower = current_mult * (1.0 - self.max_relative_step)
         proposed_mult = _clamp(float(proposed_mult), lower, upper)
 
-        # Clamp to stage bounds
+
         proposed_mult = _clamp(float(proposed_mult), bounds[0], bounds[1])
         proposed_lr = self.base_lr * proposed_mult
 
-        # Apply only if meaningful (>3%)
+
         if abs(proposed_mult - current_mult) / max(current_mult, 1e-6) < 0.03:
             self.steps_since_update = 0
             self._last_lr_mult = current_mult
@@ -511,7 +432,6 @@ class SmartLRController:
         )
 
     def to_dict(self) -> dict:
-        """Serialize controller state for checkpointing."""
         return {
             "current_stage": self.current_stage,
             "cooldown_steps": self.cooldown_steps,
@@ -524,7 +444,6 @@ class SmartLRController:
         }
 
     def load_from_dict(self, state: dict) -> None:
-        """Restore controller state from checkpoint."""
         self.current_stage = int(state.get("current_stage", 0))
         self.cooldown_steps = int(state.get("cooldown_steps", 0))
         self.steps_since_update = int(state.get("steps_since_update", 0))

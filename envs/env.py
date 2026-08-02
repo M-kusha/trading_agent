@@ -1,10 +1,3 @@
-"""
-Compatibility shim for legacy imports.
-
-Exports:
-- EnhancedTradingEnv: alias of PropFirmTradingEnv
-- TradingConfig: re-export from envs.core.config
-"""
 
 from envs.core.config import TradingConfig
 from envs.prop_firm_env import PropFirmTradingEnv as EnhancedTradingEnv

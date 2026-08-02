@@ -1,8 +1,4 @@
 #!/usr/bin/env python3
-"""
-AI Trading System Backend - Live Trading Only
-FastAPI server for live MT5 trading with comprehensive monitoring and control.
-"""
 
 import asyncio
 import json
@@ -79,13 +75,7 @@ def _live_logging_debug(default: bool = False) -> bool:
     return default
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Utilities
-# ══════════════════════════════════════════════════════════════════════════════
-
-
 def sanitize_for_json(obj: Any) -> Any:
-    """Recursively sanitize an object for JSON serialization."""
     import math
 
     if obj is None:
@@ -115,7 +105,6 @@ _CACHE_TTL_SECONDS: float = 0.5
 
 
 def _refresh_persisted_cache() -> Dict[str, Any]:
-    """Refresh the persisted bus cache if stale."""
     global _persisted_cache, _persisted_cache_time
 
     now = time.time()
@@ -143,7 +132,6 @@ def _refresh_persisted_cache() -> Dict[str, Any]:
 
 
 def get_persisted_bus_value(key: str, default: Any = None) -> Any:
-    """Read a value from cached persisted InfoBus data."""
     try:
         cache = _refresh_persisted_cache()
         return cache.get(key, default)
@@ -152,7 +140,6 @@ def get_persisted_bus_value(key: str, default: Any = None) -> Any:
 
 
 def get_bus_value_with_fallback(key: str, module: str, default: Any = None) -> Any:
-    """Try InfoBus first, then fall back to persisted file."""
     try:
         from modules.utils.info_bus import InfoBusManager
 
@@ -164,10 +151,6 @@ def get_bus_value_with_fallback(key: str, module: str, default: Any = None) -> A
         pass
     return get_persisted_bus_value(key, default)
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# FastAPI App
-# ══════════════════════════════════════════════════════════════════════════════
 
 app = FastAPI(
     title="AI Trading Dashboard API",
@@ -184,11 +167,6 @@ app.add_middleware(
 )
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Data Models
-# ══════════════════════════════════════════════════════════════════════════════
-
-
 class LoginRequest(BaseModel):
     login: int
     password: str
@@ -196,15 +174,6 @@ class LoginRequest(BaseModel):
 
 
 class LiveTradingConfig(BaseModel):
-    """Live trading configuration.
-    
-    NOTE: These defaults are conservative fallbacks. The actual values should
-    come from risk_policy.yaml via start_live_trading.py which reads:
-    - prop_firm.daily_drawdown_limit (5%)
-    - prop_firm.max_drawdown_limit (10%)
-    - limits.max_position_size
-    - limits.max_exposure_pct
-    """
 
     instruments: List[str] = Field(default_factory=lambda: list(_live_env_attr("instruments", ["EURUSD", "XAUUSD"])))
     timeframes: List[str] = Field(default_factory=lambda: list(_live_env_attr("timeframes", ["M15", "H1", "H4", "D1"])))
@@ -213,7 +182,7 @@ class LiveTradingConfig(BaseModel):
     max_total_exposure: float = Field(default_factory=lambda: float(_live_risk_override("max_total_exposure", 0.15)), gt=0, le=1)
     min_trade_interval: int = Field(default_factory=lambda: int(_live_env_attr("min_trade_interval", 60)), ge=10, le=3600)
     use_trailing_stop: bool = Field(default_factory=lambda: bool(_live_env_attr("use_trailing_stop", True)))
-    # CRITICAL: Default to conservative 4.2% (below 5% daily limit)
+
     emergency_drawdown_limit: float = Field(
         default_factory=lambda: float(_live_risk_override("emergency_drawdown_trigger", 0.042)),
         gt=0,
@@ -222,13 +191,7 @@ class LiveTradingConfig(BaseModel):
     debug: bool = Field(default_factory=lambda: _live_logging_debug(False))
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Global State Management
-# ══════════════════════════════════════════════════════════════════════════════
-
-
 class TradingSystemState:
-    """State management for live trading system."""
 
     trading_task: Optional[asyncio.Task[Any]]
     monitoring_tasks: List[asyncio.Task[Any]]
@@ -296,7 +259,6 @@ class TradingSystemState:
         self._load_modules_from_registry()
 
     def _load_modules_from_registry(self) -> None:
-        """Load module names from YAML registry."""
         try:
             registry_path = "config/module_registry.yaml"
             if not os.path.exists(registry_path):
@@ -318,7 +280,6 @@ class TradingSystemState:
             logger.warning(f"Failed to load module registry: {e}")
 
     def _sync_modules_from_orchestrator(self) -> bool:
-        """Sync module_states from the live ModuleOrchestrator."""
         try:
             from modules.core.module_system import ModuleOrchestrator
         except Exception:
@@ -376,7 +337,6 @@ class TradingSystemState:
             return False
 
     def get_uptime(self) -> str:
-        """Get system uptime."""
         uptime = datetime.now() - self.startup_time
         days = uptime.days
         hours, remainder = divmod(uptime.seconds, 3600)
@@ -389,7 +349,6 @@ class TradingSystemState:
         return f"{minutes}m {seconds}s"
 
     def add_error(self, error: str, module: str = "system") -> None:
-        """Add error with tracking."""
         entry = {
             "timestamp": datetime.now().isoformat(),
             "module": module,
@@ -409,7 +368,6 @@ class TradingSystemState:
             ][-10:]
 
     def add_warning(self, warning: str, module: str = "system") -> None:
-        """Add warning with tracking."""
         entry = {
             "timestamp": datetime.now().isoformat(),
             "module": module,
@@ -423,7 +381,6 @@ class TradingSystemState:
     def add_alert(
         self, alert: str, severity: str = "info", module: str = "system"
     ) -> None:
-        """Add system alert."""
         entry = {
             "timestamp": datetime.now().isoformat(),
             "module": module,
@@ -438,13 +395,7 @@ class TradingSystemState:
 state = TradingSystemState()
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# MT5 Integration
-# ══════════════════════════════════════════════════════════════════════════════
-
-
 def connect_mt5(login: int, password: str, server: str) -> Dict[str, Any]:
-    """Connect to MT5 broker."""
     try:
         logger.info(f"Attempting MT5 connection - Login: {login}, Server: {server}")
 
@@ -501,7 +452,6 @@ def connect_mt5(login: int, password: str, server: str) -> Dict[str, Any]:
 
 
 def disconnect_mt5() -> None:
-    """Disconnect from MT5."""
     try:
         if state.mt5_connected:
             mt5.shutdown()
@@ -513,13 +463,7 @@ def disconnect_mt5() -> None:
         logger.error(error_msg)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Live Trading System
-# ══════════════════════════════════════════════════════════════════════════════
-
-
 async def start_live_trading(config: LiveTradingConfig) -> Dict[str, Any]:
-    """Start live trading with the PPO model."""
     try:
         if not state.mt5_connected:
             raise HTTPException(status_code=400, detail="MT5 not connected")
@@ -527,7 +471,7 @@ async def start_live_trading(config: LiveTradingConfig) -> Dict[str, Any]:
         if state.trading_task and not state.trading_task.done():
             raise HTTPException(status_code=400, detail="Trading already active")
 
-        # Set trading mode to LIVE
+
         try:
             from modules.core.trading_mode import TradingModeManager
 
@@ -536,7 +480,7 @@ async def start_live_trading(config: LiveTradingConfig) -> Dict[str, Any]:
         except Exception as e:
             logger.warning(f"Failed to set TradingModeManager to LIVE: {e}")
 
-        # Set environment config on InfoBus
+
         try:
             from modules.utils.info_bus import InfoBusManager
 
@@ -584,7 +528,7 @@ async def start_live_trading(config: LiveTradingConfig) -> Dict[str, Any]:
                 status_code=500, detail=f"Failed to configure live mode: {e}"
             )
 
-        # Load PPO model - prioritize PropFirm MaskablePPO model
+
         model_path = "models/propfirm/best/best_model.zip"
         if not os.path.exists(model_path):
             alt_paths = [
@@ -603,7 +547,7 @@ async def start_live_trading(config: LiveTradingConfig) -> Dict[str, Any]:
 
         logger.info(f"Starting live trading system with model: {model_path}")
 
-        # Try MaskablePPO first (for PropFirm discrete models), fall back to PPO
+
         try:
             from sb3_contrib import MaskablePPO
             MASKABLE_AVAILABLE = True
@@ -648,22 +592,22 @@ async def start_live_trading(config: LiveTradingConfig) -> Dict[str, Any]:
         )
 
         state.live_env = EnhancedTradingEnv(hist_data, env_config)
-        
-        # Load model - try MaskablePPO first for PropFirm models
+
+
         model_loaded = False
         if MASKABLE_AVAILABLE and MaskablePPO is not None and "propfirm" in model_path.lower():
             try:
-                # Load without env to avoid action space mismatch
+
                 state.model = MaskablePPO.load(model_path, device="cpu")
                 logger.info(f"[PPO] Loaded as MaskablePPO (discrete actions): {state.model.action_space}")
                 model_loaded = True
             except Exception as e:
                 logger.warning(f"MaskablePPO.load failed: {e}, trying PPO.load")
-        
+
         if not model_loaded:
             state.model = PPO.load(model_path, device="cpu")
             logger.info("[PPO] Loaded as standard PPO (continuous actions)")
-        
+
         state.model_loaded = True
         state.trading_config = config
 
@@ -690,7 +634,6 @@ async def start_live_trading(config: LiveTradingConfig) -> Dict[str, Any]:
 
 
 async def live_trading_loop(config: LiveTradingConfig, connector: Any) -> None:
-    """Main live trading loop."""
     try:
         assert state.live_env is not None
         assert state.model is not None
@@ -731,8 +674,8 @@ async def live_trading_loop(config: LiveTradingConfig, connector: Any) -> None:
                         logger.warning(f"Module execution error: {e}")
 
                 action, _ = state.model.predict(obs, deterministic=True)
-                # SB3 model may output more actions than env expects (e.g., 4 for 2 instruments)
-                # Slice to match env's action_dim
+
+
                 if hasattr(state.live_env, 'action_dim') and state.live_env.action_dim > 0:
                     action = action[:state.live_env.action_dim]
                 obs, reward, terminated, truncated, info = state.live_env.step(action)
@@ -740,7 +683,7 @@ async def live_trading_loop(config: LiveTradingConfig, connector: Any) -> None:
 
                 if time.time() - last_balance_update > 30:
                     _update_balance_from_broker()
-                    _sync_trade_performance_from_bus()  # CRITICAL: Sync accurate trade metrics
+                    _sync_trade_performance_from_bus()
                     last_balance_update = time.time()
 
                 if time.time() - last_health_check > 60:
@@ -788,7 +731,6 @@ async def live_trading_loop(config: LiveTradingConfig, connector: Any) -> None:
 
 
 def _update_environment_data(new_data: Dict[str, Any], config: LiveTradingConfig) -> None:
-    """Update environment with new market data."""
     try:
         for inst in config.instruments:
             inst_key = inst[:3] + "/" + inst[3:] if len(inst) == 6 else inst
@@ -810,7 +752,6 @@ def _update_environment_data(new_data: Dict[str, Any], config: LiveTradingConfig
 
 
 def _update_module_states(info: Dict[str, Any]) -> None:
-    """Update module states from environment info."""
     try:
         current_time = datetime.now().isoformat()
 
@@ -854,7 +795,6 @@ def _update_module_states(info: Dict[str, Any]) -> None:
 
 
 def _update_balance_from_broker() -> None:
-    """Update balance from MT5 broker."""
     try:
         if state.mt5_connected:
             account_info = mt5.account_info()
@@ -883,50 +823,42 @@ def _update_balance_from_broker() -> None:
 
 
 def _sync_trade_performance_from_bus() -> None:
-    """
-    Sync trade performance metrics from InfoBus closed_positions.
-    
-    CRITICAL FIX: Use closed_positions for accurate win rate calculation.
-    The recent_trades/trades keys contain ALL fills (opens + closes) which double-counts.
-    closed_positions contains only completed round-trip trades.
-    """
     try:
         closed_positions = get_bus_value_with_fallback("closed_positions", "BackendAPI", default=[]) or []
-        
+
         if not closed_positions:
-            # No closed positions yet - don't overwrite metrics
+
             return
-        
+
         total_trades = len(closed_positions)
         winning_trades = sum(1 for t in closed_positions if (t.get("pnl", 0) or t.get("profit", 0) or 0) > 0)
         losing_trades = sum(1 for t in closed_positions if (t.get("pnl", 0) or t.get("profit", 0) or 0) < 0)
-        
-        # Calculate win rate from actual closed trades
+
+
         win_rate = winning_trades / max(1, total_trades)
-        
-        # Update state metrics
+
+
         state.performance_metrics["total_trades"] = total_trades
         state.performance_metrics["winning_trades"] = winning_trades
         state.performance_metrics["losing_trades"] = losing_trades
         state.performance_metrics["win_rate"] = win_rate
-        
-        # Calculate profit factor from closed positions
+
+
         total_wins = sum(float(t.get("pnl", 0) or t.get("profit", 0) or 0) for t in closed_positions if (t.get("pnl", 0) or t.get("profit", 0) or 0) > 0)
         total_losses = abs(sum(float(t.get("pnl", 0) or t.get("profit", 0) or 0) for t in closed_positions if (t.get("pnl", 0) or t.get("profit", 0) or 0) < 0))
-        
+
         if total_losses > 0:
             state.performance_metrics["profit_factor"] = total_wins / total_losses
         elif total_wins > 0:
-            state.performance_metrics["profit_factor"] = 999.0  # All wins, no losses
+            state.performance_metrics["profit_factor"] = 999.0
         else:
-            state.performance_metrics["profit_factor"] = 1.0  # No trades with P&L
-            
+            state.performance_metrics["profit_factor"] = 1.0
+
     except Exception as e:
         logger.debug(f"Trade performance sync from bus failed (may be normal during startup): {e}")
 
 
 def _perform_health_checks() -> None:
-    """Perform comprehensive system health checks."""
     try:
         if state.mt5_connected:
             terminal_info = mt5.terminal_info()
@@ -972,7 +904,6 @@ def _perform_health_checks() -> None:
 
 
 async def _auto_fix_sl_tp() -> None:
-    """Auto-fix positions missing SL/TP."""
     try:
         try:
             if _LIVE_APP_CONFIG:
@@ -1057,7 +988,6 @@ async def _auto_fix_sl_tp() -> None:
 
 
 def _check_emergency_conditions() -> bool:
-    """Check for emergency conditions."""
     try:
         current_dd = state.performance_metrics.get("current_drawdown", 0.0)
         max_dd_limit = (
@@ -1091,7 +1021,6 @@ def _check_emergency_conditions() -> bool:
 
 
 async def emergency_stop() -> Dict[str, Any]:
-    """Emergency stop with comprehensive cleanup."""
     try:
         logger.warning("[ALERT] EMERGENCY STOP INITIATED")
         state.add_alert("Emergency stop initiated", "critical", "emergency")
@@ -1166,13 +1095,7 @@ async def emergency_stop() -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=error_msg)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# WebSocket Management
-# ══════════════════════════════════════════════════════════════════════════════
-
-
 async def broadcast_system_state() -> None:
-    """Broadcast system state to all WebSocket connections."""
     if not state.websocket_connections:
         return
 
@@ -1227,7 +1150,6 @@ async def broadcast_system_state() -> None:
 
 
 async def broadcast_mt5_data_update() -> None:
-    """Broadcast MT5 data updates."""
     if not state.websocket_connections:
         return
 
@@ -1304,7 +1226,6 @@ async def broadcast_mt5_data_update() -> None:
 
 
 async def start_real_time_updates() -> None:
-    """Start periodic real-time updates."""
     logger.info("[WS] Starting real-time update loop")
     while True:
         try:
@@ -1318,7 +1239,6 @@ async def start_real_time_updates() -> None:
 
 
 async def _send_to_all_websockets(message: Dict[str, Any]) -> None:
-    """Send message to all connected websockets."""
     lock = getattr(state, "broadcast_lock", None)
 
     async def _do_send() -> None:
@@ -1352,14 +1272,8 @@ async def _send_to_all_websockets(message: Dict[str, Any]) -> None:
         await _do_send()
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Application Events
-# ══════════════════════════════════════════════════════════════════════════════
-
-
 @app.on_event("startup")
 async def startup_event() -> None:
-    """System startup."""
     directories = [
         "logs",
         "logs/risk",
@@ -1417,7 +1331,6 @@ async def startup_event() -> None:
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    """System shutdown."""
     logger.info("[STOP] Shutting down trading dashboard...")
 
     for task in state.monitoring_tasks:
@@ -1437,7 +1350,6 @@ async def shutdown_event() -> None:
 
 
 async def _periodic_metrics_collector() -> None:
-    """Collect system metrics periodically."""
     while True:
         try:
             await broadcast_system_state()
@@ -1448,7 +1360,6 @@ async def _periodic_metrics_collector() -> None:
 
 
 async def _system_health_monitor() -> None:
-    """Monitor system health periodically."""
     while True:
         try:
             _perform_health_checks()
@@ -1459,7 +1370,6 @@ async def _system_health_monitor() -> None:
 
 
 async def _performance_tracker() -> None:
-    """Track and update performance metrics."""
     while True:
         try:
             try:
@@ -1468,7 +1378,7 @@ async def _performance_tracker() -> None:
                 pass
             if state.mt5_connected and state.system_status == "TRADING":
                 _update_balance_from_broker()
-            # Always sync trade performance from bus (works for both sim and live)
+
             _sync_trade_performance_from_bus()
             await asyncio.sleep(30)
         except Exception as e:
@@ -1476,14 +1386,8 @@ async def _performance_tracker() -> None:
             await asyncio.sleep(30)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# API Endpoints - Authentication
-# ══════════════════════════════════════════════════════════════════════════════
-
-
 @app.post("/api/login")
 async def login(request: LoginRequest) -> Dict[str, Any]:
-    """MT5 login."""
     result = connect_mt5(request.login, request.password, request.server)
     if result["success"]:
         await broadcast_system_state()
@@ -1493,7 +1397,6 @@ async def login(request: LoginRequest) -> Dict[str, Any]:
 
 @app.post("/api/logout")
 async def logout() -> Dict[str, Any]:
-    """Logout with cleanup."""
     if state.trading_task and not state.trading_task.done():
         state.system_status = "STOPPING"
         state.trading_task.cancel()
@@ -1509,14 +1412,8 @@ async def logout() -> Dict[str, Any]:
     return {"success": True}
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# API Endpoints - Trading
-# ══════════════════════════════════════════════════════════════════════════════
-
-
 @app.post("/api/trading/start")
 async def trading_start(config: LiveTradingConfig) -> Dict[str, Any]:
-    """Start live trading."""
     result = await start_live_trading(config)
     await broadcast_system_state()
     return result
@@ -1524,7 +1421,6 @@ async def trading_start(config: LiveTradingConfig) -> Dict[str, Any]:
 
 @app.post("/api/trading/stop")
 async def trading_stop() -> Dict[str, Any]:
-    """Stop live trading."""
     if state.trading_task and not state.trading_task.done():
         state.system_status = "STOPPING"
         state.trading_task.cancel()
@@ -1542,20 +1438,13 @@ async def trading_stop() -> Dict[str, Any]:
 
 @app.post("/api/trading/emergency-stop")
 async def emergency_stop_endpoint() -> Dict[str, Any]:
-    """Emergency stop endpoint."""
     result = await emergency_stop()
     await broadcast_system_state()
     return result
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# API Endpoints - Status & Monitoring
-# ══════════════════════════════════════════════════════════════════════════════
-
-
 @app.get("/api/status")
 async def get_comprehensive_status() -> Dict[str, Any]:
-    """Get comprehensive system status."""
     return {
         "system": {
             "status": state.system_status,
@@ -1589,7 +1478,6 @@ async def get_comprehensive_status() -> Dict[str, Any]:
 
 @app.get("/api/performance")
 async def get_performance_metrics() -> Dict[str, Any]:
-    """Get detailed performance metrics."""
     return {
         "performance": state.performance_metrics,
         "risk_metrics": {
@@ -1611,7 +1499,6 @@ async def get_performance_metrics() -> Dict[str, Any]:
 
 @app.get("/api/alerts")
 async def get_alerts(limit: int = Query(default=50, le=1000)) -> Dict[str, Any]:
-    """Get system alerts."""
     return {
         "alerts": state.alerts[-limit:],
         "total_alerts": len(state.alerts),
@@ -1619,14 +1506,8 @@ async def get_alerts(limit: int = Query(default=50, le=1000)) -> Dict[str, Any]:
     }
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# API Endpoints - Modules
-# ══════════════════════════════════════════════════════════════════════════════
-
-
 @app.get("/api/modules")
 async def list_modules() -> Dict[str, Any]:
-    """Get module states."""
     try:
         modules_data = []
 
@@ -1710,7 +1591,6 @@ async def list_modules() -> Dict[str, Any]:
 
 @app.get("/api/modules/{module_name}")
 async def get_module_state(module_name: str) -> Dict[str, Any]:
-    """Get detailed state for specific module."""
     if module_name not in state.module_states:
         raise HTTPException(status_code=404, detail=f"Module {module_name} not found")
 
@@ -1723,7 +1603,6 @@ async def get_module_state(module_name: str) -> Dict[str, Any]:
 
 @app.post("/api/modules/{module_name}/toggle")
 async def toggle_module(module_name: str) -> Dict[str, Any]:
-    """Toggle module enabled/disabled state."""
     try:
         from modules.core.module_system import ModuleOrchestrator
 
@@ -1757,14 +1636,8 @@ async def toggle_module(module_name: str) -> Dict[str, Any]:
     }
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# API Endpoints - MT5
-# ══════════════════════════════════════════════════════════════════════════════
-
-
 @app.get("/api/mt5/status")
 async def mt5_status() -> Dict[str, Any]:
-    """Get MT5 connection status."""
     info: Dict[str, Any] = {"connected": bool(state.mt5_connected)}
     if state.mt5_connected:
         try:
@@ -1784,7 +1657,6 @@ async def mt5_status() -> Dict[str, Any]:
 
 @app.get("/api/mt5/account")
 async def mt5_account() -> Dict[str, Any]:
-    """Get MT5 account info."""
     if not state.mt5_connected:
         raise HTTPException(status_code=400, detail="MT5 not connected")
     ai = mt5.account_info()
@@ -1809,7 +1681,6 @@ async def mt5_account() -> Dict[str, Any]:
 
 @app.get("/api/mt5/positions")
 async def get_mt5_positions() -> Dict[str, Any]:
-    """Get current MT5 positions."""
     if not state.mt5_connected:
         return {"success": False, "error": "MT5 not connected"}
 
@@ -1851,7 +1722,6 @@ async def get_mt5_positions() -> Dict[str, Any]:
 
 @app.post("/api/mt5/positions/fix-sl-tp")
 async def fix_positions_sl_tp() -> Dict[str, Any]:
-    """Fix positions that are missing SL/TP."""
     if not state.mt5_connected:
         return {"success": False, "error": "MT5 not connected"}
 
@@ -1868,7 +1738,6 @@ async def fix_positions_sl_tp() -> Dict[str, Any]:
 async def get_mt5_chart_data(
     symbol: str, timeframe: str = "M5", count: int = 50
 ) -> Dict[str, Any]:
-    """Get MT5 chart data."""
     if not state.mt5_connected:
         return {"success": False, "error": "MT5 not connected"}
 
@@ -1915,7 +1784,6 @@ async def get_mt5_chart_data(
 
 @app.get("/api/mt5/deals/recent")
 async def get_recent_mt5_deals(limit: int = 10) -> Dict[str, Any]:
-    """Get recent MT5 deals."""
     if not state.mt5_connected:
         return {"success": False, "error": "MT5 not connected"}
 
@@ -1949,14 +1817,8 @@ async def get_recent_mt5_deals(limit: int = 10) -> Dict[str, Any]:
     }
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# API Endpoints - Risk
-# ══════════════════════════════════════════════════════════════════════════════
-
-
 @app.get("/api/risk/overview")
 async def risk_overview() -> Dict[str, Any]:
-    """Get risk overview."""
     perf = state.performance_metrics
     base_metrics = {
         "current_drawdown": perf.get("current_drawdown", 0.0),
@@ -1986,7 +1848,6 @@ async def risk_overview() -> Dict[str, Any]:
 
 @app.get("/api/risk/alerts")
 async def risk_alerts() -> Dict[str, Any]:
-    """Get risk-related alerts."""
     alerts = {
         "anomaly_alerts": get_bus_value_with_fallback("anomaly_alerts", "BackendAPI", default=[]) or [],
         "compliance_alerts": get_bus_value_with_fallback("compliance_violations", "BackendAPI", default=[]) or [],
@@ -2013,14 +1874,8 @@ async def risk_alerts() -> Dict[str, Any]:
     }
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# API Endpoints - Memory
-# ══════════════════════════════════════════════════════════════════════════════
-
-
 @app.get("/api/memory/overview")
 async def memory_overview() -> Dict[str, Any]:
-    """Get memory system overview."""
     unified_metrics = get_bus_value_with_fallback("unified_metrics", "BackendAPI", default={}) or {}
     memory_status = get_bus_value_with_fallback("unified_memory_status", "BackendAPI", default={}) or {}
 
@@ -2037,14 +1892,8 @@ async def memory_overview() -> Dict[str, Any]:
     return sanitize_for_json({"success": True, **overview, "timestamp": datetime.now().isoformat()})
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# API Endpoints - Voting
-# ══════════════════════════════════════════════════════════════════════════════
-
-
 @app.get("/api/voting/overview")
 async def voting_overview() -> Dict[str, Any]:
-    """Get voting system overview."""
     voting_metrics = get_bus_value_with_fallback("voting_metrics", "BackendAPI", default={}) or {}
     consensus_score = get_bus_value_with_fallback("consensus_score", "BackendAPI", default=0.0) or 0.0
     voting_result = get_bus_value_with_fallback("voting_result", "BackendAPI", default={}) or {}
@@ -2073,14 +1922,8 @@ async def voting_overview() -> Dict[str, Any]:
     return {"success": True, **overview, "timestamp": datetime.now().isoformat()}
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# WebSocket Endpoint
-# ══════════════════════════════════════════════════════════════════════════════
-
-
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
-    """WebSocket endpoint for real-time updates."""
     await websocket.accept()
     state.websocket_connections.append(websocket)
     logger.info(f"[WS] New connection, total: {len(state.websocket_connections)}")
@@ -2118,14 +1961,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             logger.info(f"[WS] Connection removed, total: {len(state.websocket_connections)}")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Health & Info Endpoints
-# ══════════════════════════════════════════════════════════════════════════════
-
-
 @app.get("/health")
 async def health_check() -> Dict[str, Any]:
-    """Health check endpoint."""
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
@@ -2142,7 +1979,6 @@ async def health_check() -> Dict[str, Any]:
 
 @app.get("/api")
 async def api_documentation() -> Dict[str, Any]:
-    """API documentation."""
     return {
         "name": "AI Trading Dashboard API",
         "version": "4.0.0",
@@ -2188,10 +2024,6 @@ async def api_documentation() -> Dict[str, Any]:
         "timestamp": datetime.now().isoformat(),
     }
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# Static Frontend
-# ══════════════════════════════════════════════════════════════════════════════
 
 frontend_dist = Path(__file__).parent.parent / "frontend" / "dist"
 

@@ -1,14 +1,4 @@
-# ─────────────────────────────────────────────────────────────
-# File: modules/utils/audit_utils.py
-# PRODUCTION-READY Audit & Logging System (v2.5)
-# - Zero-recursion SmartInfoBus wiring
-# - Rotation by lines/size/time
-# - Secret redaction, env interpolation
-# - Operator-friendly output
-# - Contract-first infra compatibility
-# - NEW: SmartInfoBus mirroring for ALL log lines
-# - NEW: Banner/header de-duping across rapid re-inits
-# ─────────────────────────────────────────────────────────────
+
 
 from __future__ import annotations
 
@@ -28,13 +18,13 @@ from typing import TYPE_CHECKING, Any, Dict, Iterable, Optional, Protocol, Tuple
 
 try:
     import numpy as np
-except Exception:  # numpy is optional; degrade gracefully
+except Exception:
     np = None  # type: ignore
 
 if TYPE_CHECKING:
-    pass  # for type hints only
+    pass
 
-# Narrow interface for SmartInfoBus used here to avoid circular typing issues
+
 class InfoBusLike(Protocol):
     def set(
         self,
@@ -51,9 +41,6 @@ class InfoBusLike(Protocol):
 
     def register_provider(self, module: str, provides: list[str]) -> None: ...
 
-# ═══════════════════════════════════════════════════════════════════
-# Helpers
-# ═══════════════════════════════════════════════════════════════════
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -72,10 +59,6 @@ def _coerce_bool(v: Any, default: bool = False) -> bool:
     return default
 
 def _redact(obj: Any, secret_keys: Iterable[str]) -> Any:
-    """
-    Redact obvious secrets in dicts recursively. Keeps shape, masks values.
-    Secret keys matched case-insensitively if key contains any token.
-    """
     tokens = tuple(k.lower() for k in secret_keys)
 
     def _r(x: Any) -> Any:
@@ -94,15 +77,9 @@ def _redact(obj: Any, secret_keys: Iterable[str]) -> Any:
 
     return _r(obj)
 
-# ═══════════════════════════════════════════════════════════════════
-# PRODUCTION-GRADE AUDIT STRUCTURES
-# ═══════════════════════════════════════════════════════════════════
 
 @dataclass
 class AuditEvent:
-    """
-    Audit event with integrity protection.
-    """
     event_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     timestamp: float = field(default_factory=lambda: time.time())
     event_type: str = ""
@@ -110,24 +87,24 @@ class AuditEvent:
     function_name: str = ""
     operator_message: str = ""
 
-    # Context
+
     user_id: Optional[str] = None
     session_id: Optional[str] = None
     correlation_id: Optional[str] = None
 
-    # Details
-    severity: str = "DEBUG"       # TRACE, DEBUG, INFO, WARNING, ERROR, CRITICAL
-    category: str = "general"    # general, security, performance, business
 
-    # Payload
+    severity: str = "DEBUG"
+    category: str = "general"
+
+
     data: Dict[str, Any] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
-    # Integrity
+
     checksum: str = field(default="")
     signature: str = field(default="")
 
-    # SmartInfoBus
+
     smart_bus_key: Optional[str] = None
     thesis: Optional[str] = None
     confidence: float = 1.0
@@ -168,53 +145,40 @@ class AuditEvent:
 
 @dataclass
 class AuditConfiguration:
-    """Audit logger configuration."""
     enabled: bool = True
     log_level: str = "TRACE"
     max_file_size_mb: int = 100
     max_files: int = 10
     rotation_interval_hours: int = 24
 
-    # Security
+
     encryption_enabled: bool = False
     signature_required: bool = False
     tamper_detection: bool = True
 
-    # Performance
+
     async_logging: bool = True
     buffer_size: int = 1000
     flush_interval_seconds: int = 30
 
-    # Compliance
+
     retention_days: int = 2555
     immutable_logs: bool = True
     audit_trail_required: bool = True
 
-    # SmartInfoBus
+
     info_bus_integration: bool = True
     publish_to_bus: bool = True
     bus_retention_seconds: int = 3600
 
-    # Redaction
+
     secret_keys: Tuple[str, ...] = ("password", "passwd", "token", "api_key", "secret", "bearer", "client_secret")
 
-# ═══════════════════════════════════════════════════════════════════
-# ENHANCED ROTATING LOGGER
-# ═══════════════════════════════════════════════════════════════════
 
 class RotatingLogger:
-    """
-    Rotating JSON/Operator/Plain-English logger with:
-      • line/size/time rotation
-      • async buffering with backpressure
-      • SmartInfoBus publishing (safe)
-      • secret redaction for watcher callbacks
-      • NEW: global & per-module SmartInfoBus mirroring for every log line
-      • NEW: banner/header deduplication across rapid re-inits
-    """
 
     _LEVELS = {"TRACE": -1, "DEBUG": 0, "INFO": 1, "WARNING": 2, "ERROR": 3, "CRITICAL": 4}
-    # Track last banner time to suppress spammy re-inits per logger name
+
     _last_banner_at: Dict[str, float] = {}
 
     def __init__(
@@ -229,7 +193,7 @@ class RotatingLogger:
         operator_mode: bool = False,
         info_bus_aware: bool = False,
     ):
-        # 1) Bootstrap guard to avoid InfoBus recursion during its own init
+
         if name.startswith("SmartInfoBus"):
             info_bus_aware = False
 
@@ -241,7 +205,7 @@ class RotatingLogger:
         self.operator_mode = operator_mode
         self.info_bus_aware = info_bus_aware
 
-        # 2) File layout
+
         if log_path:
             self.log_path = Path(log_path)
             self.log_dir = self.log_path.parent
@@ -255,7 +219,7 @@ class RotatingLogger:
             self.log_path = None
             self.use_direct_path = False
 
-        # 3) Internal state
+
         self._lock = threading.RLock()
         self._buffer_lock = threading.Lock()
         self.current_file: Optional[Path] = None
@@ -267,7 +231,7 @@ class RotatingLogger:
         self._last_flush = time.time()
         self._shutdown = False
 
-        # Session/meta
+
         self.session_id = str(uuid.uuid4())[:8]
         self.start_time = time.time()
         self.correlation_id = str(uuid.uuid4())[:8]
@@ -282,15 +246,15 @@ class RotatingLogger:
             "rotations": 0,
         }
 
-        # NEW: local rolling streams we’ll publish to the bus
+
         self._mirrored_stream: deque = deque(maxlen=800)
         self._module_stream: deque = deque(maxlen=800)
 
-        # 4) Safe SmartInfoBus attachment (if singleton already alive)
+
         self.smart_bus: Optional[InfoBusLike] = None
         if self.info_bus_aware and self.config.info_bus_integration:
             try:
-                from modules.utils.info_bus import InfoBusManager  # lazy import
+                from modules.utils.info_bus import InfoBusManager
                 if getattr(InfoBusManager, "_instance", None) is not None:
                     self.smart_bus = InfoBusManager.get_instance()
             except Exception:
@@ -298,7 +262,7 @@ class RotatingLogger:
 
         self.english_formatter = PlainEnglishFormatter() if self.plain_english else None
 
-        # 5) Init file + worker threads
+
         self._initialize_logging()
 
         if self.config.async_logging:
@@ -306,54 +270,37 @@ class RotatingLogger:
         if self.smart_bus and self.config.publish_to_bus:
             self._start_bus_publisher()
 
-        # Announce
+
         self.info(f"RotatingLogger initialized: {self.name} (session {self.session_id})")
 
-    # ─────────────────────────────────────────
-    # Public controls
-    # ─────────────────────────────────────────
+
     def set_level(self, level: str):
-        """Dynamically change log level (DEBUG/INFO/WARNING/ERROR/CRITICAL)."""
         self.config.log_level = level.upper().strip()
 
     def bind_correlation(self, correlation_id: str):
-        """Attach a correlation id to future entries."""
         self.correlation_id = str(correlation_id)
 
-    # ─────────────────────────────────────────
-    # Setup
-    # ─────────────────────────────────────────
+
     def _get_log_category(self, module_name: str) -> str:
-        """Derive dynamic log subdirectory based on module contracts.
-
-        Priority:
-          1. Exact CONTRACTS name match → use its file path prefix (folder before filename)
-          2. Startswith match against known contract names (to catch suffixed variants)
-          3. Heuristic fallback by common substrings (risk, voting, strategy, etc.)
-          4. Default: other
-
-        Returned value always prefixed with 'rotate_logger/'.
-        Safe against import issues (will fallback silently).
-        """
         try:
-            from modules.contracts import CONTRACTS  # local import to avoid circulars at module import time
+            from modules.contracts import CONTRACTS
         except Exception:
             CONTRACTS = {}
 
-        # 1. Exact match
+
         if module_name in CONTRACTS:
             rel_path = CONTRACTS[module_name].file or ""
             category_folder = rel_path.split("/")[0] if rel_path else "other"
             return f"rotate_logger/{category_folder}"
 
-        # 2. Startswith fuzzy match (handles subclasses / decorated variants)
+
         for cname, mc in CONTRACTS.items():
             if module_name.startswith(cname):
                 rel_path = mc.file or ""
                 category_folder = rel_path.split("/")[0] if rel_path else "other"
                 return f"rotate_logger/{category_folder}"
 
-        # 3. Heuristic fallback by keyword in name
+
         lowered = module_name.lower()
         keyword_map = {
             "agent": "meta",
@@ -375,7 +322,7 @@ class RotatingLogger:
             if k in lowered:
                 return f"rotate_logger/{v}"
 
-        # 4. Default fallback
+
         return "rotate_logger/other"
 
     def _register_with_smart_bus(self):
@@ -386,10 +333,6 @@ class RotatingLogger:
             )
 
     def _header_allowed(self) -> bool:
-        """
-        Prevent header/banner spam when multiple RotatingLogger instances for the same
-        name are created within a short time window.
-        """
         now = time.time()
         last = RotatingLogger._last_banner_at.get(self.name, 0.0)
         if (now - last) < 3.0:
@@ -413,11 +356,11 @@ class RotatingLogger:
                 self.current_lines = self._count_existing_lines() if self.use_direct_path else 0
                 self.current_bytes = self.current_file.stat().st_size if self.current_file.exists() else 0
                 self.created_at = time.time()
-                # header (suppress duplicates if re-initialized within 3s)
+
                 if self._header_allowed():
                     header = self._create_log_header()
                     self._write_line(header, already_formatted=True)
-                # SmartBus registry (late)
+
                 self._register_with_smart_bus()
             except Exception as e:
                 print(f"CRITICAL: Failed to initialize log file: {e}", file=sys.stderr)
@@ -487,9 +430,7 @@ class RotatingLogger:
             pass
         return 0
 
-    # ─────────────────────────────────────────
-    # Workers
-    # ─────────────────────────────────────────
+
     def _start_flush_timer(self):
         def flush_timer():
             while not self._shutdown:
@@ -500,7 +441,7 @@ class RotatingLogger:
 
     def _start_bus_publisher(self):
         def bus_publisher():
-            # decoupled; we only push metrics periodically
+
             while not self._shutdown:
                 try:
                     if self.smart_bus:
@@ -521,13 +462,10 @@ class RotatingLogger:
                 time.sleep(10)
         threading.Thread(target=bus_publisher, daemon=True, name=f"Logger-Publisher-{self.name}").start()
 
-    # ─────────────────────────────────────────
-    # Core write/rotation
-    # ─────────────────────────────────────────
+
     def _should_rotate(self) -> bool:
-        """Check rotation by lines, size, or time interval."""
         if self.use_direct_path:
-            return False  # don't rotate direct-path logs automatically
+            return False
         by_lines = self.current_lines >= self.max_lines
         by_size = self.config.max_file_size_mb > 0 and (self.current_bytes / (1024 * 1024)) >= self.config.max_file_size_mb
         by_time = self.config.rotation_interval_hours > 0 and (time.time() - self.created_at) >= (self.config.rotation_interval_hours * 3600)
@@ -541,49 +479,40 @@ class RotatingLogger:
                 start = time.perf_counter()
                 payload = line if already_formatted else (line + ("\n" if not line.endswith("\n") else ""))
                 if not already_formatted and not (self.plain_english or self.operator_mode):
-                    # ensure JSON line ends with newline
+
                     pass
                 self.current_handle.write(payload + ("\n" if not payload.endswith("\n") else ""))
                 self.current_lines += 1
                 self.current_bytes += len(payload.encode("utf-8"))
-                # perf
+
                 dt = (time.perf_counter() - start) * 1000.0
                 self.performance_metrics["total_writes"] += 1
                 tw = self.performance_metrics["total_writes"]
                 self.performance_metrics["avg_write_time_ms"] = (
                     (self.performance_metrics["avg_write_time_ms"] * (tw - 1) + dt) / max(1, tw)
                 )
-                # rotation
+
                 if self._should_rotate():
                     self._rotate_log()
             except Exception as e:
                 print(f"ERROR: Failed to write log: {e}", file=sys.stderr)
 
     def _rotate_log(self):
-        """Rotate the underlying log file safely.
-
-        NOTE: This method must never attempt to join the current thread.
-        Rotation is triggered from within the logger's own write path and
-        potentially from background threads; any internal threading mistakes
-        can surface as "cannot join current thread" warnings. We keep the
-        rotation logic single-threaded and side-effect free beyond closing
-        and reopening files.
-        """
         try:
             if self.current_handle and self.current_handle not in (sys.stderr, sys.stdout):
-                # footer
+
                 try:
                     self.current_handle.write(self._create_log_footer() + "\n")
                     self.current_handle.flush()
                 except Exception:
-                    # footer failures should never break rotation
+
                     pass
                 try:
                     self.current_handle.close()
                 except Exception:
                     pass
 
-            # SmartBus notify (best-effort; ignore failures)
+
             try:
                 if self.smart_bus:
                     self.smart_bus.set(
@@ -595,12 +524,12 @@ class RotatingLogger:
             except Exception:
                 pass
 
-            # Cleanup and reopen
+
             self._cleanup_old_files()
             self.performance_metrics["rotations"] += 1
             self._initialize_logging()
         except Exception as e:
-            # Hardening: never allow rotation failures to crash callers
+
             print(f"ERROR: Failed to rotate log: {e}", file=sys.stderr)
 
     def _cleanup_old_files(self):
@@ -617,9 +546,7 @@ class RotatingLogger:
         except Exception as e:
             print(f"ERROR: Cleanup failed: {e}", file=sys.stderr)
 
-    # ─────────────────────────────────────────
-    # Formatting / entries
-    # ─────────────────────────────────────────
+
     def _format_log_entry(self, level: str, message: str, **kwargs) -> str:
         frame_info = self._get_caller_info()
         entry = {
@@ -636,12 +563,12 @@ class RotatingLogger:
         if kwargs:
             entry["data"] = kwargs
 
-        # Mode-specific formatting
+
         if self.plain_english and self.english_formatter:
             return self.english_formatter.format(level, message, entry)
         if self.operator_mode:
             return self._format_operator_entry(level, message, entry)
-        # JSON
+
         return json.dumps(entry, separators=(",", ":"), default=str)
 
     def _format_operator_entry(self, level: str, message: str, entry: Dict[str, Any]) -> str:
@@ -657,7 +584,7 @@ class RotatingLogger:
         ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
         formatted = f"[{ts}] {emoji} {message}"
         data = entry.get("data") or {}
-        # pull common fields up-front
+
         highlights = []
         for k in ("instrument", "module", "error", "duration"):
             if k in data:
@@ -693,16 +620,8 @@ class RotatingLogger:
             del frame
         return info
 
-    # ─────────────────────────────────────────
-    # SmartInfoBus mirroring
-    # ─────────────────────────────────────────
+
     def _mirror_to_bus(self, level: str, formatted_text: str, raw_message: str, data: Dict[str, Any]):
-        """
-        Mirrors log lines to SmartInfoBus for UI/console visibility.
-        Publishes to:
-          - 'thesis_stream'           (global rolling feed)
-          - 'module_events/<logger>'  (per-module feed)
-        """
         if not (self.smart_bus and self.config.publish_to_bus):
             return
         try:
@@ -715,11 +634,11 @@ class RotatingLogger:
                 "data": _redact(data or {}, self.config.secret_keys),
                 "session_id": self.session_id,
             }
-            # keep local rolling buffers so we don't need bus.get()
+
             self._mirrored_stream.append(item)
             self._module_stream.append(item)
 
-            # publish rolling lists (bounded by deque maxlen)
+
             self.smart_bus.set(
                 "thesis_stream",
                 list(self._mirrored_stream),
@@ -735,12 +654,10 @@ class RotatingLogger:
                 confidence=1.0,
             )
         except Exception:
-            # never raise from logging
+
             pass
 
-    # ─────────────────────────────────────────
-    # Logging core
-    # ─────────────────────────────────────────
+
     def _should_log(self, level: str) -> bool:
         configured = self._LEVELS.get(self.config.log_level.upper(), 1)
         msg_level = self._LEVELS.get(level, 1)
@@ -768,7 +685,7 @@ class RotatingLogger:
             pass
 
     def _log(self, level: str, message: str, **kwargs):
-        # stats
+
         self.total_events += 1
         self.events_by_level[level] += 1
         self.last_event_time = time.time()
@@ -777,30 +694,30 @@ class RotatingLogger:
             self.performance_metrics["cache_hits"] += 1
             return
 
-        # Build a formatted line for file/console
+
         formatted_line = self._format_log_entry(level, message, **kwargs)
 
-        # Mirror to SmartInfoBus for UI feeds (INFO/WARN/ERROR/CRITICAL/DEBUG)
+
         try:
             self._mirror_to_bus(level, formatted_line, message, kwargs)
         except Exception:
             pass
 
-        # Retain original high-severity structured event on the bus
+
         if self.config.publish_to_bus and level in ("ERROR", "CRITICAL"):
             try:
                 self._publish_to_smart_bus(level, message, kwargs)
             except Exception:
                 pass
 
-        # Async buffer or immediate write as before
+
         if self.config.async_logging:
             with self._buffer_lock:
                 if len(self._buffer) == self._buffer.maxlen:
-                    # backpressure: drop oldest to avoid unbounded growth
+
                     self._buffer.popleft()
                 self._buffer.append(formatted_line)
-            # opportunistic flush
+
             maxlen_val = self._buffer.maxlen or 0
             half_capacity = max(1, (maxlen_val // 2) if maxlen_val > 0 else 1)
             if (len(self._buffer) >= half_capacity) or (time.time() - self._last_flush > self.config.flush_interval_seconds):
@@ -808,7 +725,7 @@ class RotatingLogger:
         else:
             self._write_line(formatted_line)
 
-    # Public API
+
     def trace(self, message: str, **kwargs): self._log("TRACE", message, **kwargs)
     def debug(self, message: str, **kwargs): self._log("DEBUG", message, **kwargs)
     def info(self, message: str, **kwargs): self._log("INFO", message, **kwargs)
@@ -827,7 +744,7 @@ class RotatingLogger:
     def critical(self, message: str, **kwargs):
         self._log("CRITICAL", message, **kwargs)
 
-    # Audit-friendly helper to accept AuditEvent or dict payloads
+
     def audit(self, event: Union["AuditEvent", Dict[str, Any], str], level: str = "INFO") -> None:
         try:
             payload: Dict[str, Any]
@@ -839,11 +756,11 @@ class RotatingLogger:
                 payload = dict(event)
 
             message = payload.get("operator_message") or payload.get("message") or payload.get("event_type") or "audit_event"
-            # Ensure redaction of sensitive data in payload
+
             redacted = _redact(payload, self.config.secret_keys)
             self._log(level, f"AUDIT: {message}", audit=redacted)
 
-            # Optionally publish to bus regardless of severity for audit events
+
             if self.config.publish_to_bus and self.smart_bus:
                 try:
                     self.smart_bus.set(
@@ -856,7 +773,7 @@ class RotatingLogger:
                 except Exception:
                     pass
         except Exception:
-            # Never raise from logging
+
             pass
 
     def log_with_thesis(self, level: str, message: str, thesis: str, confidence: float = 1.0, **kwargs):
@@ -925,7 +842,7 @@ class RotatingLogger:
         }
         if self.smart_bus:
             try:
-                # Optional: if InfoBus supports health query
+
                 stats["smart_bus_integration"] = {"provider": f"Logger_{self.name}"}
             except Exception:
                 pass
@@ -944,7 +861,6 @@ class RotatingLogger:
         }
 
     def shutdown(self):
-        """Graceful shutdown with final flush + footer."""
         if self._shutdown:
             return
         self._shutdown = True
@@ -968,12 +884,8 @@ class RotatingLogger:
         except Exception:
             pass
 
-# ═══════════════════════════════════════════════════════════════════
-# PLAIN ENGLISH FORMATTER
-# ═══════════════════════════════════════════════════════════════════
 
 class PlainEnglishFormatter:
-    """Formats log entries in plain English for non-technical users."""
 
     def __init__(self):
         self.templates = {
@@ -1013,18 +925,11 @@ class PlainEnglishFormatter:
 
         return formatted
 
-# ═══════════════════════════════════════════════════════════════════
-# ENHANCED AUDIT SYSTEM WITH SMARTINFOBUS INTEGRATION
-# ═══════════════════════════════════════════════════════════════════
 
 class AuditSystem:
-    """
-    High-level audit orchestrator (bus-safe).
-    Provides convenience APIs for decision logging and performance tracking.
-    """
 
     def __init__(self, system_name: str = "TradingSystem") -> None:
-        # Defer SmartInfoBus wiring if we are booting the bus itself
+
         is_bus_bootstrap = (system_name == "SmartInfoBus")
 
         self.system_name = system_name
@@ -1055,13 +960,13 @@ class AuditSystem:
             except Exception:
                 pass
 
-        # Stats
+
         self.module_call_times = defaultdict(lambda: deque(maxlen=1_000))
         self.module_error_counts = defaultdict(int)
         self.module_thesis_counts = defaultdict(int)
         self.module_confidence_scores = defaultdict(lambda: deque(maxlen=100))
 
-        # thresholds (can be tuned from ConfigurationManager if desired)
+
         self.alert_thresholds = {
             "error_rate": 0.10,
             "avg_latency_ms": 500.0,
@@ -1139,7 +1044,7 @@ class AuditSystem:
             confidence=1.0,
         )
 
-    # Convenience APIs
+
     def record_module_decision(
         self,
         module: str,
@@ -1366,9 +1271,6 @@ class AuditSystem:
             lines.append(f"- Review low confidence modules: {', '.join(low_conf)}")
         return "\n".join(lines)
 
-# ═══════════════════════════════════════════════════════════════════
-# UTILITY FUNCTIONS
-# ═══════════════════════════════════════════════════════════════════
 
 def format_operator_message(icon: str, message: str, **context) -> str:
     parts = [f"{icon} {message}"]
@@ -1457,7 +1359,7 @@ def setup_production_logging(system_name: str, enable_smart_bus: bool = True, en
 
     return main_logger, audit_logger, audit_system
 
-# Global audit system instance (lazy)
+
 _global_audit_system: Optional[AuditSystem] = None
 
 def get_audit_system() -> AuditSystem:
@@ -1472,12 +1374,8 @@ def log_module_decision(module: str, decision: str, thesis: str, confidence: flo
 def log_performance_metric(module: str, duration_ms: float, success: bool = True, error: Optional[str] = None):
     get_audit_system().record_module_performance(module, duration_ms, success, error)
 
-# ═══════════════════════════════════════════════════════════════════
-# SPECIALIZED LOGGERS
-# ═══════════════════════════════════════════════════════════════════
 
 class TradingLogger(RotatingLogger):
-    """Specialized logger for trading operations."""
 
     def __init__(self, name: str = "Trading"):
         super().__init__(name=f"{name}Trading", log_dir="logs/trading", max_lines=100_000, operator_mode=True, info_bus_aware=True)
@@ -1499,7 +1397,6 @@ class TradingLogger(RotatingLogger):
             )
 
 class RiskLogger(RotatingLogger):
-    """Specialized logger for risk management."""
 
     def __init__(self, name: str = "Risk"):
         super().__init__(name=f"{name}Risk", log_dir="logs/risk", max_lines=50_000, plain_english=True, info_bus_aware=True)
@@ -1509,12 +1406,8 @@ class RiskLogger(RotatingLogger):
         emoji = emoji_map.get(severity, "[WARN]")
         self._log(severity, f"{emoji} RISK ALERT - {alert_type}: {message}", alert_type=alert_type, metrics=metrics or {})
 
-# ═══════════════════════════════════════════════════════════════════
-# AUDIT REPORT GENERATOR
-# ═══════════════════════════════════════════════════════════════════
 
 class AuditReportGenerator:
-    """Generates comprehensive audit reports."""
 
     def __init__(self, audit_system: AuditSystem):
         self.audit_system = audit_system
@@ -1552,23 +1445,13 @@ Average Confidence: {m['avg_confidence']:.1%}
 Minimum Confidence: {m['min_confidence']:.1%}
 """.strip()
 
-# ---------------------------------------------------------------------------
-# Backward-compatibility shims
-# ---------------------------------------------------------------------------
 
 class AuditTracker:
-    """
-    Backward-compatible wrapper around AuditSystem.
-
-    Older modules may import `AuditTracker` from this module and expect to
-    construct it with a `system_name`. We map that to a dedicated AuditSystem
-    instance and expose a few convenience methods.
-    """
 
     def __init__(self, system_name: str = "TradingSystem") -> None:
         self._audit = AuditSystem(system_name)
 
-    # Common legacy-style helpers
+
     def record_decision(
         self,
         module: str,
@@ -1598,7 +1481,7 @@ class AuditTracker:
     ) -> None:
         self._audit.record_module_performance(module, duration_ms, success, error)
 
-    # Friendly aliases
+
     def decision(self, *args, **kwargs) -> None:
         self.record_decision(*args, **kwargs)
 
@@ -1613,10 +1496,6 @@ class AuditTracker:
         severity: str = "debug",
         message: Optional[str] = None,
     ) -> None:
-        """Generic event recorder to match legacy usage.
-
-        Maps to AuditSystem by emitting an AuditEvent through the audit logger.
-        """
         try:
             sev = str(severity or "DEBUG").upper()
             evt = AuditEvent(
@@ -1629,7 +1508,7 @@ class AuditTracker:
             )
             self._audit.audit_logger.audit(evt, level=sev)
         except Exception:
-            # Never throw from audit path
+
             try:
                 self._audit.operator_logger.warning(
                     f"AuditTracker.record_event failed for {module}:{event_type}"
@@ -1637,10 +1516,9 @@ class AuditTracker:
             except Exception:
                 pass
 
-    # Access to the underlying system
+
     def system(self) -> AuditSystem:
         return self._audit
 
 
-# Legacy global accessor name expected by some modules
 system_audit: AuditSystem = get_audit_system()

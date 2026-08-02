@@ -1,14 +1,3 @@
-"""
-Per-instrument voting utilities.
-
-Scope:
-- Per-instrument proposal containers (InstrumentProposal, PerInstrumentVote)
-- Per-instrument aggregation (aggregate_all_instruments)
-- Robust extraction helper (extract_instrument_data)
-
-Canonical vote/pipeline types live in `modules/voting/core/types.py`.
-Canonical instrument normalization lives in `modules/voting/core/constants.py`.
-"""
 
 from __future__ import annotations
 
@@ -29,7 +18,7 @@ def _clamp_01(value: Any, default: float = 0.0) -> float:
     except (TypeError, ValueError):
         return float(default)
 
-    if v != v:  # NaN
+    if v != v:
         return float(default)
 
     if v < 0.0:
@@ -44,10 +33,6 @@ DEFAULT_INSTRUMENTS: List[str] = ["XAUUSD"]
 
 @dataclass
 class AggregatedInstrumentDecision:
-    """
-    Result of aggregating votes for a single instrument.
-    Used as return type of aggregate_all_instruments().
-    """
 
     action: str = "flat"
     confidence: float = 0.5
@@ -110,9 +95,6 @@ class InstrumentProposal:
 
 @dataclass
 class PerInstrumentVote:
-    """
-    Per-instrument voting proposals from a single voting member.
-    """
 
     member: str
     proposals: Dict[str, InstrumentProposal] = field(default_factory=dict)
@@ -164,11 +146,6 @@ def aggregate_all_instruments(
     instruments: Optional[List[str]] = None,
     weights: Optional[Dict[str, float]] = None,
 ) -> Dict[str, AggregatedInstrumentDecision]:
-    """
-    Aggregate per-instrument votes across all voting members.
-
-    Returns a dict keyed by canonical instrument symbol with AggregatedInstrumentDecision objects.
-    """
     instruments = instruments or DEFAULT_INSTRUMENTS
     weights = weights or {}
 
@@ -240,16 +217,10 @@ def aggregate_all_instruments(
 
 
 def extract_instrument_data(data: Dict[str, Any], instrument: str) -> Dict[str, Any]:
-    """
-    Extract data for a specific instrument from nested market/feature data.
-
-    Also supports SmartInfoBus wrapper format: {'value': {...}, 'timestamp': ..., 'version': ...}.
-    If the instrument key cannot be found, returns the original `data` dict for backward compatibility.
-    """
     if not isinstance(data, dict):
         return {}
 
-    # SmartInfoBus wrapper format
+
     if "value" in data and isinstance(data.get("value"), dict) and "timestamp" in data:
         data = data["value"]
 
@@ -257,12 +228,12 @@ def extract_instrument_data(data: Dict[str, Any], instrument: str) -> Dict[str, 
     if not inst_norm:
         return data
 
-    # Direct keys first
+
     for key in (instrument, inst_norm, str(instrument).upper(), str(instrument).lower()):
         if key in data:
             return data[key] if isinstance(data[key], dict) else data
 
-    # Normalized key match
+
     for k, v in data.items():
         if isinstance(k, str) and normalize_instrument(k) == inst_norm:
             return v if isinstance(v, dict) else data

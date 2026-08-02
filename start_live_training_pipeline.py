@@ -1,25 +1,4 @@
 #!/usr/bin/env python3
-"""
-Live Trading Runner (Training-Pipeline vs Orchestrator)
-======================================================
-
-This script lets you A/B test live behavior:
-
-- engine=training: build observation using the same TRAINING pipeline
-  (PropFirmTradingEnv mixins + PPOObservationBuilder), then run PPOCore
-  inference and optionally execute via Executor (order_queue).
-
-- engine=orchestrator: delegate to the existing `start_live_trading.py`
-  (full module stack: voting/committee/risk modules, PPOAgentShell, etc).
-
-Default is SAFE: dry-run (no orders are sent).
-
-Diagnostics added (2026-01-19):
-- Per-bar signatures (timestamps + closes) for each timeframe, so you can prove the feed is changing.
-- Stable hashes of expert_signals / committee_state / etc, so you can detect “stuck outputs” even when data moves.
-- Warnings when decision_idx stays constant (expected with fixed window) so you don’t use it as a cache key.
-- Optional “pending order” flags wired into the mask call (still basic, but prevents obvious spam).
-"""
 
 from __future__ import annotations
 
@@ -98,7 +77,6 @@ def _parse_csv_list(raw: str) -> List[str]:
 
 
 def _to_internal_symbol(symbol: str) -> str:
-    """Convert MT5 symbol (EURUSD) into internal symbol (EUR/USD) when applicable."""
     s = str(symbol or "").strip()
     if len(s) == 6 and "/" not in s:
         return f"{s[:3]}/{s[3:]}"
@@ -106,7 +84,6 @@ def _to_internal_symbol(symbol: str) -> str:
 
 
 def _safe_symbol_slug(symbol: str) -> str:
-    """Create a filename-safe symbol tag (avoids '/' on Windows)."""
     return str(symbol or "").replace("/", "").replace("\\", "").replace(" ", "_")
 
 
@@ -126,7 +103,7 @@ def _to_jsonable(obj: Any) -> Any:
         return [_to_jsonable(v) for v in obj]
     if isinstance(obj, datetime):
         return obj.isoformat()
-    # pandas Timestamp compatibility (without importing pandas)
+
     try:
         to_py = getattr(obj, "to_pydatetime", None)
         if callable(to_py):
@@ -139,7 +116,6 @@ def _to_jsonable(obj: Any) -> Any:
 
 
 def _hash_obj(obj: Any) -> str:
-    """Stable-ish hash of a nested structure (after making it JSONable)."""
     try:
         payload = json.dumps(_to_jsonable(obj), sort_keys=True, separators=(",", ":")).encode("utf-8")
     except Exception:
@@ -147,10 +123,7 @@ def _hash_obj(obj: Any) -> str:
     return hashlib.sha1(payload).hexdigest()
 
 
-
-
 def _safe_close(df: Any, i: int) -> Optional[float]:
-    """Best-effort access to a candle close value (handles different column naming)."""
     try:
         cols = getattr(df, "columns", None)
         if cols is not None:
@@ -163,7 +136,7 @@ def _safe_close(df: Any, i: int) -> Optional[float]:
 
         row = df.iloc[i]
 
-        # If it's dict-like (including pandas Series-as-Mapping in some stubs), check keys directly
+
         if isinstance(row, Mapping):
             for c in ("close", "Close", "CLOSE", "c"):
                 if c in row:
@@ -172,7 +145,7 @@ def _safe_close(df: Any, i: int) -> Optional[float]:
                     except Exception:
                         pass
 
-        # pandas Series-like: use getattr + callable to satisfy type checker
+
         to_dict_fn = getattr(row, "to_dict", None)
         if callable(to_dict_fn):
             try:
@@ -184,7 +157,7 @@ def _safe_close(df: Any, i: int) -> Optional[float]:
             except Exception:
                 pass
 
-        # brute fallback (last numeric in row)
+
         try:
             return float(cast(Any, row)[-1])
         except Exception:
@@ -204,7 +177,6 @@ class BarSignature:
 
 
 def _make_bar_signature(tf: str, df: Any) -> Optional[BarSignature]:
-    """Requires >=2 bars. Uses index[-2] as closed, index[-1] as forming."""
     try:
         if df is None or getattr(df, "empty", True):
             return None
@@ -261,7 +233,7 @@ def _format_primary_experts(expert_signals: Dict[str, Any]) -> str:
     ordered = ["trend", "momentum", "theme", "seasonality"]
     items = [_fmt_one(k) for k in ordered if k in experts]
     if not items:
-        # Fallback: include whatever is present
+
         items = [_fmt_one(k) for k in list(experts.keys())[:4]]
     return "Experts(M15): " + " | ".join(items)
 
@@ -384,7 +356,7 @@ def _format_mask_line(
 @dataclass
 class _LivePosition:
     symbol: str
-    side: int  # +1 long, -1 short
+    side: int
     lots: float
     profit: float
     open_time: Optional[datetime]
@@ -459,13 +431,6 @@ def _translate_decision_to_intent(
     size_mult: float,
     position: Optional[_LivePosition],
 ) -> Optional[Dict[str, Any]]:
-    """
-    Convert PPO intent into an Executor order_queue item.
-
-    Notes:
-    - We avoid spamming "open_long/open_short" while already in the same-side position.
-    - Executor's SmartPositionManager will decide lots; we pass strength via intensity.
-    """
     intent = (intent or "").lower().strip()
     strength = float(np.clip(size_mult, 0.0, 1.0))
 
@@ -513,10 +478,10 @@ async def _run_orchestrator_mode() -> int:
 
 
 async def _run_training_mode(args: argparse.Namespace) -> int:
-    # Imports kept inside so engine=orchestrator doesn't require these deps.
+
     try:
         import MetaTrader5 as _MT5  # type: ignore
-        mt5: Any = cast(Any, _MT5)  # MT5 exposes dynamic attrs; treat as Any for type checkers.
+        mt5: Any = cast(Any, _MT5)
     except Exception as e:
         logger.error("MetaTrader5 import failed: %s", e)
         return 1
@@ -536,7 +501,7 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
     os.environ["EXECUTION_MODE"] = "live"
     os.environ["TRADING_MODE"] = "live"
 
-    # Trading mode manager (best-effort)
+
     try:
         from modules.core.trading_mode import TradingModeManager
 
@@ -551,7 +516,7 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
     mt5_instruments = list(instruments)
     primary_mt5_symbol = mt5_instruments[0]
 
-    # LiveDataConnector returns data keyed in internal format for 6-letter symbols (EURUSD -> EUR/USD).
+
     instruments = [_to_internal_symbol(s) for s in mt5_instruments]
     primary_instrument = instruments[0]
 
@@ -559,7 +524,7 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
     if not timeframes:
         timeframes = ["M15", "H1", "H4", "D1"]
 
-    # InfoBus
+
     bus = InfoBusManager.get_instance()
     bus.set(
         "environment_config",
@@ -576,7 +541,7 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
     )
     bus.set("execution_mode", "live", module="LiveTrainingPipeline", thesis="live mode active")
 
-    # MT5
+
     try:
         from live.mt5_credentials import MT5Credentials
 
@@ -604,14 +569,14 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
     bus.set("account_balance", float(getattr(account, "balance", initial_balance)), module="LiveTrainingPipeline", thesis="MT5 balance")
     bus.set("account_equity", float(getattr(account, "equity", initial_balance)), module="LiveTrainingPipeline", thesis="MT5 equity")
 
-    # Risk policy -> PropFirmConfig (training parity knobs)
+
     env_cfg = PropFirmConfig()
     env_cfg.instruments = instruments
     env_cfg.primary_timeframe = str(args.primary_timeframe).upper().strip()
     env_cfg.initial_balance = float(initial_balance)
     env_cfg.live_mode = True
 
-    # Live data connector
+
     connector = LiveDataConnector(instruments=mt5_instruments, timeframes=timeframes)
     try:
         connector.connect()
@@ -624,12 +589,12 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
         logger.error("No historical data returned from LiveDataConnector")
         return 1
 
-    # Training env (used ONLY for state building parity, not stepping)
+
     env = PropFirmTradingEnv(hist, config=env_cfg, apply_curriculum_overrides=False)
 
     obs_builder = PPOObservationBuilder()
 
-    # PPOCore
+
     ppo_core = PPOCore(config=PPOCoreConfig())
     try:
         ppo_core.set_instruments(instruments)
@@ -646,7 +611,7 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
     else:
         logger.warning("No model found; PPOCore will use untrained weights")
 
-    # Live action masking (MaskablePPO parity)
+
     mask_cfg = LiveMaskConfig(
         daily_drawdown_limit=float(env_cfg.daily_drawdown_limit),
         max_drawdown_limit=float(env_cfg.max_drawdown_limit),
@@ -665,7 +630,7 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
     )
     mask_builder = LiveActionMaskBuilder(mask_cfg)
 
-    # Executor (optional live execution)
+
     executor: Optional[Executor] = None
     if bool(args.execute):
         try:
@@ -696,18 +661,18 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
     winning_trades = 0
     total_trades = 0
 
-    # ---- Diagnostics state: detect “stuck” outputs even when candles change ----
+
     last_tf_sigs: Dict[str, Optional[BarSignature]] = {}
     last_state_hashes: Dict[str, str] = {}
     same_hash_streak: Dict[str, int] = {}
     last_closed_ts_str: Optional[str] = None
     last_decision_idx: Optional[int] = None
 
-    # ---- Basic pending-order gating (prevents obvious spam while fill status lags) ----
+
     has_pending_entry = False
     has_pending_exit = False
     pending_since: Optional[float] = None
-    pending_timeout_s = 20.0  # conservative, enough for demo server lag
+    pending_timeout_s = 20.0
 
     try:
         logger.info(
@@ -778,10 +743,10 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
 
                 closed_bar_ts = primary_block.index[-2]
 
-                # Training parity default: make ONE decision per CLOSED bar.
+
                 if bool(args.only_on_new_bar):
                     if last_decision_bar_ts is not None and closed_bar_ts == last_decision_bar_ts:
-                        # Reduce log noise: this can otherwise print every poll.
+
                         now = time.time()
                         if now - last_wait_log > 15 * 60.0:
                             logger.info(
@@ -791,8 +756,8 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
                                 str(latest_bar_ts),
                             )
                             last_wait_log = now
-                        # Between-bar position management (optional): lets trailing/ExitEngine manage open positions
-                        # even though PPO decisions are bar-close only.
+
+
                         if executor is not None and bool(args.manage_between_bars):
                             now_ts = time.time()
                             if now_ts - last_manage_ts >= max(0.25, float(args.manage_interval_s)):
@@ -805,15 +770,15 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
                     decision_bar_ts = closed_bar_ts
                     forming_bar_ts = latest_bar_ts
                 else:
-                    # Intrabar mode: use latest bar (may be forming / tick-updated).
+
                     decision_idx = int(len(primary_block) - 1)
                     decision_bar_ts = latest_bar_ts
                     forming_bar_ts = latest_bar_ts
 
-                # ---- Diagnostics: decision_idx warning (expected constant when n_bars fixed) ----
+
                 if last_decision_idx is not None and decision_idx == last_decision_idx and bool(args.only_on_new_bar):
-                    # This is not an error; it just means your window is fixed-length.
-                    # The important part: NEVER use decision_idx as cache key in live.
+
+
                     pass
                 last_decision_idx = decision_idx
 
@@ -825,7 +790,7 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
                     balance = float(initial_balance)
                     equity = float(initial_balance)
 
-                # Update env snapshot
+
                 env.data = market_data
                 env._episode_instrument = primary_instrument
                 env.current_step = max(0, int(decision_idx))
@@ -835,7 +800,7 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
                 env.config.initial_balance = float(initial_balance)
                 env.day_start_balance = float(day_start_balance)
 
-                # Track peak + day start (best effort; day boundary by env tz)
+
                 try:
                     env._update_peak_balance()
                 except Exception:
@@ -850,7 +815,7 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
                 if getattr(now_dt, "tzinfo", None) is not None:
                     now_dt = now_dt.replace(tzinfo=None)
 
-                # Day rollover (best-effort, based on env timezone conversion)
+
                 try:
                     day = now_dt.date()
                 except Exception:
@@ -861,7 +826,7 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
                     daily_trades = 0
                 env.day_start_balance = float(day_start_balance)
 
-                # Live position snapshot
+
                 live_pos = _get_live_position(
                     mt5,
                     primary_mt5_symbol,
@@ -870,7 +835,7 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
                 if live_pos and live_pos.open_time and (last_entry_time is None):
                     last_entry_time = live_pos.open_time
 
-                # ---- Pending-order resolution (best-effort) ----
+
                 if has_pending_entry and live_pos is not None:
                     has_pending_entry = False
                     pending_since = None
@@ -878,31 +843,31 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
                     has_pending_exit = False
                     pending_since = None
                 if pending_since is not None and (time.time() - pending_since) > pending_timeout_s:
-                    # fail open (do not block forever)
+
                     has_pending_entry = False
                     has_pending_exit = False
                     pending_since = None
 
-                # Drawdowns
+
                 try:
                     current_dd, daily_dd = env._calc_dds()
                 except Exception:
                     current_dd, daily_dd = 0.0, 0.0
 
-                # Time-in-position in bars (approx, based on open_time)
+
                 time_in_pos_bars = 0.0
                 if live_pos and live_pos.open_time:
                     mins = max(1, int(env._tf_minutes()) if hasattr(env, "_tf_minutes") else 15)
                     age_min = (now_dt - live_pos.open_time).total_seconds() / 60.0
                     time_in_pos_bars = float(max(0.0, age_min / float(mins)))
 
-                # Cooldown (best-effort using last_loss_time)
+
                 on_cooldown = False
                 if last_loss_time is not None:
                     mins_since_loss = (now_dt - last_loss_time).total_seconds() / 60.0
                     on_cooldown = mins_since_loss < float(env_cfg.min_minutes_after_loss)
 
-                # Account state (live-based)
+
                 win_rate = float(winning_trades / max(total_trades, 1))
                 account_state = _build_account_state(
                     balance=balance,
@@ -916,7 +881,7 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
                     on_cooldown=on_cooldown,
                 )
 
-                # Keep env stats in sync for memory/risk/governor blocks
+
                 env.total_trades = int(total_trades)
                 env.winning_trades = int(winning_trades)
                 env.total_pnl = float(equity - initial_balance)
@@ -927,7 +892,7 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
                 env.session_start_balance = float(day_start_balance)
                 env.session_pnl = float(equity - day_start_balance)
 
-                # ---- Per-TF bar signatures (PROVES candles are changing) ----
+
                 sig_lines: List[str] = []
                 try:
                     blocks = market_data.get(primary_instrument, {})
@@ -940,7 +905,7 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
                             if sig is None:
                                 sig_lines.append(f"{tf}:sig=NA")
                             else:
-                                # show 4 decimals on close (more than your normal logs)
+
                                 cc = "NA" if sig.closed_close is None else f"{sig.closed_close:.4f}"
                                 fc = "NA" if sig.forming_close is None else f"{sig.forming_close:.4f}"
                                 changed = ""
@@ -950,12 +915,12 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
                 except Exception:
                     sig_lines = []
 
-                # ---- Detect “stuck outputs” by hashing states per closed bar ----
+
                 closed_ts_str = str(closed_bar_ts)
                 new_closed = (last_closed_ts_str is None) or (closed_ts_str != last_closed_ts_str)
                 last_closed_ts_str = closed_ts_str
 
-                # Training pipeline states
+
                 market_state = env._prepare_market_data(primary_instrument)
                 expert_signals = env._prepare_expert_signals(primary_instrument)
                 committee_state = env._prepare_committee_state(expert_signals)
@@ -1053,10 +1018,10 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
                 if bool(args.explain):
                     bar_label = "closed_bar" if bool(args.only_on_new_bar) else "bar"
 
-                    # Flag suspicious “same output across bars”
+
                     stuck_flags: List[str] = []
                     if new_closed:
-                        # 2+ consecutive repeats is highly suspicious in live (unless market is dead flat)
+
                         for k in ("expert_signals", "committee_state", "trading_mode_state"):
                             n = same_hash_streak.get(k, 0)
                             if n >= 2:
@@ -1098,7 +1063,7 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
                     if stuck_flags:
                         explanation_lines.append("SUSPECT: " + " | ".join(stuck_flags))
 
-                    # Quick conflict hint (helps find "bad info" sources)
+
                     try:
                         comm_action = str(committee_state.get("action", "flat")).lower()
                         if ppo_intent in ("long", "short") and comm_action in ("long", "short") and comm_action != ppo_intent:
@@ -1196,10 +1161,10 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
                         logger.warning("Snapshot dump failed: %s", e)
 
                 if order_item and executor is not None:
-                    # Fill missing symbol if we were flat (translate uses "")
+
                     order_item["instrument"] = primary_mt5_symbol
 
-                    # ---- Set pending flags BEFORE process() to avoid double-submit on laggy position refresh ----
+
                     act = str(order_item.get("action", "")).lower()
                     if act.startswith("open_"):
                         has_pending_entry = True
@@ -1216,7 +1181,7 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
 
                     await executor.process()
 
-                # Best-effort stat updates from execution reports (even if we didn't place an order)
+
                 if executor is not None:
                     try:
                         fills = bus.get("execution_reports", "LiveTrainingPipeline", default=[]) or []
@@ -1224,7 +1189,7 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
                             act = str(f.get("action", "")).lower().strip()
                             realized = float(f.get("realized_pnl", f.get("pnl", 0.0)) or 0.0)
 
-                            # Entries: count towards trade budgets
+
                             is_close = "close" in act
                             if (not is_close) and (
                                 act.startswith("open")
@@ -1236,7 +1201,7 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
                                 session_trades += 1
                                 last_entry_time = now_dt
 
-                            # Closes: update win/loss streaks and win rate
+
                             if is_close:
                                 total_trades += 1
                                 if realized > 0:
@@ -1253,7 +1218,7 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
             except Exception as e:
                 logger.error("Training loop error: %s", e)
 
-            # pacing
+
             elapsed = time.time() - t0
             await asyncio.sleep(max(0.1, float(args.poll_s) - elapsed))
 
@@ -1312,8 +1277,7 @@ async def _amain() -> int:
     Path("logs").mkdir(exist_ok=True)
     Path("state").mkdir(exist_ok=True)
 
-    # Use the project's centralized logging setup so other modules (e.g. LiveDataConnector)
-    # don't override our handlers after startup.
+
     try:
         from config.logging_config import setup_logging
         from config.models import LoggingConfig

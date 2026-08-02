@@ -1,25 +1,4 @@
-# -------------------------------------------------------------
-# File: modules/position/smart_position_manager.py
-# Smart Position Management - Professional Net Position System
-#
-# Design Principles:
-#   1. ONE position per symbol (net position approach)
-#   2. No hedging (BUY+SELL same symbol = waste of spread)
-#   3. Signal reversal = CLOSE existing, then open new direction
-#   4. Smart scaling: add to winners, cut losers early (optional)
-#   5. Time-aware exits: aging positions get scrutinized
-#
-# EXIT LOGIC: Uses unified ExitStrategyEngine (single source of truth)
-# This ensures consistency with PositionManager (training) and eliminates
-# duplicate exit code. See exit_engine.py for all exit strategy logic.
-#
-# Enhancements in this version:
-#   - Single cached YAML loader (no repeated disk reads, consistent overrides)
-#   - Correct SL/TP selection when netting tickets (choose representative ticket)
-#   - Breakeven + profit-lock ladder available in BOTH decide() and manage_position()
-#   - Reduced duplication via shared helpers (final-exit, PPO overrides, SL logic)
-#   - Safer parsing + defensive guards (never block trading on non-critical failures)
-# -------------------------------------------------------------
+
 
 from __future__ import annotations
 
@@ -34,15 +13,10 @@ import yaml
 
 from modules.utils.audit_utils import RotatingLogger, format_operator_message
 
-# UNIFIED EXIT LOGIC - Single source of truth for all exit decisions
 from .exit_engine import (
     PositionContext,
     get_exit_engine,
 )
-
-# =========================================================
-# YAML CONFIG LOADING (CACHED + CONSISTENT)
-# =========================================================
 
 _RISK_POLICY_PATH = Path(__file__).resolve().parents[2] / "config" / "risk_policy.yaml"
 
@@ -65,7 +39,6 @@ def _load_risk_policy_yaml() -> Dict[str, Any]:
 
 
 def refresh_risk_policy_cache() -> None:
-    """Clear cached risk_policy.yaml. Useful if you hot-edit YAML during runtime."""
     try:
         _load_risk_policy_yaml_cached.cache_clear()
     except Exception:
@@ -73,7 +46,6 @@ def refresh_risk_policy_cache() -> None:
 
 
 def load_config_from_yaml() -> Dict[str, Any]:
-    """Load smart position config block from risk_policy.yaml."""
     try:
         policy = _load_risk_policy_yaml()
         smart_pos = policy.get("smart_position", {}) or {}
@@ -83,7 +55,6 @@ def load_config_from_yaml() -> Dict[str, Any]:
 
 
 def load_lot_config_from_yaml() -> Dict[str, Any]:
-    """Load unified lot sizing config from risk_policy.yaml."""
     try:
         policy = _load_risk_policy_yaml()
         lot = policy.get("lot_sizing", {}) or {}
@@ -92,33 +63,27 @@ def load_lot_config_from_yaml() -> Dict[str, Any]:
         return {}
 
 
-# =========================================================
-# CORE TYPES
-# =========================================================
-
 class PositionAction(Enum):
-    """Clean action types for position management."""
     HOLD = "HOLD"
     OPEN_LONG = "OPEN_LONG"
     OPEN_SHORT = "OPEN_SHORT"
     CLOSE = "CLOSE"
     SCALE_UP = "SCALE_UP"
     SCALE_DOWN = "SCALE_DOWN"
-    REVERSE = "REVERSE"  # Close + Open opposite
-    # Position management actions (new)
+    REVERSE = "REVERSE"
+
     ADJUST_SL = "ADJUST_SL"
     ADJUST_TP = "ADJUST_TP"
-    TIGHTEN_PROTECTION = "TIGHTEN_PROTECTION"  # Move SL to breakeven or better
+    TIGHTEN_PROTECTION = "TIGHTEN_PROTECTION"
 
 
 @dataclass
 class ExpertSignal:
-    """Rich signal data from an expert for position management."""
     expert_name: str
-    action: str  # BUY, SELL, HOLD
+    action: str
     confidence: float
     reasoning: str = ""
-    supports_position: bool = True  # Does this expert support holding the position?
+    supports_position: bool = True
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -132,17 +97,16 @@ class ExpertSignal:
 
 @dataclass
 class PositionManagementSignal:
-    """Full signal context for position management decisions."""
     symbol: str
     expert_signals: List[ExpertSignal] = field(default_factory=list)
-    consensus_action: str = "HOLD"  # BUY, SELL, HOLD
+    consensus_action: str = "HOLD"
     consensus_confidence: float = 0.5
-    consensus_score: float = 0.5  # Agreement level among experts
-    fragility: float = 0.5  # How fragile is the consensus
+    consensus_score: float = 0.5
+    fragility: float = 0.5
     regime: str = "unknown"
     volatility_level: str = "medium"
-    # Position-specific context
-    position_side: int = 0  # 1=LONG, -1=SHORT, 0=FLAT
+
+    position_side: int = 0
     position_pnl: float = 0.0
     position_age_hours: float = 0.0
 
@@ -180,16 +144,11 @@ class PositionManagementSignal:
 
 @dataclass
 class PositionFocusContext:
-    """
-    Position Focus Context - Tells all modules what position(s) to focus on.
-
-    Published to SmartInfoBus as "position_focus_context" by Executor.
-    """
     focus_mode_active: bool = False
     positions: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
     primary_instrument: Optional[str] = None
-    primary_side: int = 0  # 1=LONG, -1=SHORT
+    primary_side: int = 0
     primary_entry_price: float = 0.0
     primary_current_price: float = 0.0
     primary_pnl: float = 0.0
@@ -201,8 +160,8 @@ class PositionFocusContext:
     primary_tp: float = 0.0
 
     total_exposure: float = 0.0
-    risk_level: str = "normal"  # normal, elevated, critical
-    evaluation_mode: str = "position_management"  # "new_signals" | "position_management"
+    risk_level: str = "normal"
+    evaluation_mode: str = "position_management"
 
     def has_position(self, instrument: str) -> bool:
         return instrument in self.positions
@@ -241,7 +200,7 @@ class PositionFocusContext:
         if not positions:
             return cls(focus_mode_active=False)
 
-        # Find primary position by notional
+
         primary_inst = None
         primary_notional = 0.0
         for inst, pos in positions.items():
@@ -257,7 +216,7 @@ class PositionFocusContext:
             evaluation_mode="position_management",
         )
 
-        # Fill primary position fields
+
         if primary_inst and primary_inst in positions:
             pos = positions[primary_inst]
             ctx.primary_side = int(pos.get("side", 0))
@@ -302,14 +261,13 @@ class PositionFocusContext:
 
 @dataclass
 class LivePosition:
-    """Represents a live net position from MT5."""
     symbol: str
-    side: int  # 1 = BUY, -1 = SELL
+    side: int
     lots: float
     entry_price: float
     current_price: float
     unrealized_pnl: float
-    open_time: float  # Unix timestamp (seconds)
+    open_time: float
     ticket: int = 0
     sl: float = 0.0
     tp: float = 0.0
@@ -333,19 +291,13 @@ class LivePosition:
 
 @dataclass
 class PPODecisionView:
-    """
-    Normalised view of Arbiter → PPO decision for one symbol.
+    direction: str = "flat"
+    confidence: float = 0.0
+    position_size: float = 0.0
+    action_intent: str = ""
 
-    Version: v5.2 - Supports PPO explicit close/reverse intents from ArbiterLogic
-    """
-    direction: str = "flat"          # "long" / "short" / "flat"
-    confidence: float = 0.0          # 0–1
-    position_size: float = 0.0       # 0–1
-    action_intent: str = ""          # "open_long", "close", "reverse", ...
 
-    # Discrete-action metadata (MaskablePPO): HOLD vs CLOSE are distinct in training,
-    # but both map to a (0,0) continuous proxy. Use this to respect true CLOSE only.
-    discrete_intent: str = ""        # "hold" | "long" | "short" | "close"
+    discrete_intent: str = ""
     discrete_action_id: int = -1
 
     explicit_close: bool = False
@@ -365,11 +317,10 @@ class PPODecisionView:
 
 @dataclass
 class SmartDecision:
-    """Result of smart position analysis."""
     action: PositionAction
     symbol: str
     lots: float = 0.0
-    side: int = 0  # 1 = BUY, -1 = SELL
+    side: int = 0
     confidence: float = 0.5
     reasons: List[str] = field(default_factory=list)
     close_first: bool = False
@@ -396,12 +347,6 @@ class SmartDecision:
 
 @dataclass
 class SmartPositionConfig:
-    """
-    Configuration for smart position management (v4.0).
-
-    Exit thresholds are managed by ExitStrategyEngine (exit_engine.py).
-    Lot sizing uses UnifiedLotCalculator as the single source of truth.
-    """
     max_positions_per_symbol: int = 1
     max_total_positions: int = 4
 
@@ -425,18 +370,18 @@ class SmartPositionConfig:
     reversal_signal_threshold: float = 0.45
 
     ppo_exit_conf_threshold: float = 0.60
-    ppo_reversal_conf_threshold: float = 0.60  # legacy alias
+    ppo_reversal_conf_threshold: float = 0.60
 
     enable_smart_scale_down: bool = False
 
-    # R-based scaling
+
     use_r_based_scaling: bool = True
     scale_up_min_r: float = 1.0
     scale_down_trigger_r: float = -0.5
     scale_down_aggressive_r: float = -1.0
     scale_down_emergency_r: float = -1.5
 
-    # Lifecycle
+
     probe_max_age_hours: float = 0.5
     probe_max_profit_r: float = 0.3
     build_max_age_hours: float = 2.0
@@ -444,7 +389,7 @@ class SmartPositionConfig:
     ride_min_profit_r: float = 0.5
     defend_trigger_drawdown_pct: float = 0.20
 
-    # Drawdown-aware aggression
+
     dd_aggression_enabled: bool = True
     mild_dd_threshold: float = 0.015
     moderate_dd_threshold: float = 0.025
@@ -453,14 +398,14 @@ class SmartPositionConfig:
     moderate_aggression_mult: float = 0.65
     severe_aggression_mult: float = 0.40
 
-    # Startup grace
+
     default_startup_grace_calls: int = 3
 
-    # Adaptive protection (beyond breakeven)
+
     enable_profit_lock: bool = True
     profit_lock_min_r: float = 1.2
-    profit_lock_min_eur_mult: float = 1.5  # relative to breakeven_activation_eur
-    # (r_threshold, lock_fraction_of_open_profit)
+    profit_lock_min_eur_mult: float = 1.5
+
     profit_lock_ladder: Tuple[Tuple[float, float], ...] = (
         (1.2, 0.10),
         (1.6, 0.18),
@@ -470,10 +415,6 @@ class SmartPositionConfig:
     )
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# POSITION LIFECYCLE STATE MACHINE (v4.0)
-# ═══════════════════════════════════════════════════════════════════════
-
 class PositionLifecycle(Enum):
     PROBE = "probe"
     BUILD = "build"
@@ -482,20 +423,7 @@ class PositionLifecycle(Enum):
     EXIT = "exit"
 
 
-# =========================================================
-# MAIN MANAGER
-# =========================================================
-
 class SmartPositionManager:
-    """
-    Professional net position management system (v4.0).
-
-    Responsibilities:
-      - Net MT5 tickets into 1 logical position per symbol
-      - Delegate exits to ExitStrategyEngine (single source of truth)
-      - Respect PPO explicit exit/reversal intents (PPO is master)
-      - Optional: breakeven + adaptive profit-lock stop management
-    """
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         self.config = SmartPositionConfig()
@@ -507,18 +435,18 @@ class SmartPositionManager:
             max_lines=5000,
         )
 
-        # InfoBus for state persistence
+
         try:
             from modules.utils.info_bus import InfoBusManager
             self._smart_bus = InfoBusManager.get_instance()
         except Exception:
             self._smart_bus = None
 
-        # Load YAML if no external config provided
+
         if config is None:
             config = load_config_from_yaml()
 
-        # Apply scalar top-level overrides
+
         if isinstance(config, dict) and config:
             for key, value in config.items():
                 if isinstance(value, dict):
@@ -529,12 +457,7 @@ class SmartPositionManager:
                     except Exception:
                         pass
 
-            # Optional advanced adaptive lock ladder from YAML:
-            # smart_position:
-            #   profit_lock:
-            #     enabled: true
-            #     min_r: 1.2
-            #     ladder: [[1.2, 0.10], [1.6, 0.18], ...]
+
             profit_lock = config.get("profit_lock", {})
             if isinstance(profit_lock, dict):
                 if profit_lock.get("enabled") is not None:
@@ -557,7 +480,7 @@ class SmartPositionManager:
                     if parsed:
                         self.config.profit_lock_ladder = tuple(parsed)
 
-        # Lot sizing overrides from unified lot sizing
+
         lot_config = load_lot_config_from_yaml()
         if isinstance(lot_config, dict) and lot_config:
             if "max_lot" in lot_config:
@@ -566,10 +489,10 @@ class SmartPositionManager:
                 except Exception:
                     pass
 
-        # Initialize unified lot calculator (lazy)
+
         self._lot_calculator = None
 
-        # STATE TRACKING
+
         self._positions: Dict[str, LivePosition] = {}
         self._actual_mt5_position_count: int = 0
         self._profit_peaks: Dict[str, float] = self._load_peaks_from_bus()
@@ -579,23 +502,19 @@ class SmartPositionManager:
 
         self._decide_call_count_by_symbol: Dict[str, int] = {}
         self._decide_call_count: int = 0
-        self._startup_grace_calls: int = 3  # deprecated
+        self._startup_grace_calls: int = 3
 
         self._initial_risk_by_symbol: Dict[str, float] = self._load_initial_risk_from_bus()
         self._lifecycle_states: Dict[str, PositionLifecycle] = {}
 
-        # PPO decision noise suppression
+
         self._last_ppo_decision: Dict[str, str] = {}
 
-        # Per-instrument overrides
+
         self._per_instrument_cfg: Dict[str, Dict[str, Any]] = self._load_per_instrument_config()
 
-    # =========================================================
-    # CONFIG HELPERS
-    # =========================================================
 
     def _load_per_instrument_config(self) -> Dict[str, Dict[str, Any]]:
-        """Load per-instrument configuration and lifecycle/DD overrides from YAML."""
         try:
             data = _load_risk_policy_yaml()
             smart_pos = data.get("smart_position", {}) or {}
@@ -606,14 +525,14 @@ class SmartPositionManager:
             if not isinstance(per_inst, dict):
                 per_inst = {}
 
-            # Lifecycle overrides (flattened)
+
             lifecycle = smart_pos.get("lifecycle", {}) or {}
             if isinstance(lifecycle, dict):
                 for key, val in lifecycle.items():
                     if hasattr(self.config, key):
                         setattr(self.config, key, val)
 
-            # Drawdown aggression overrides
+
             dd_agg = smart_pos.get("drawdown_aggression", {}) or {}
             if isinstance(dd_agg, dict) and dd_agg:
                 if dd_agg.get("enabled") is not None:
@@ -632,7 +551,7 @@ class SmartPositionManager:
                         except Exception:
                             pass
 
-            # R-based toggles
+
             for key in (
                 "use_r_based_scaling",
                 "scale_up_min_r",
@@ -656,7 +575,7 @@ class SmartPositionManager:
             if "enable_scale_up" in smart_pos:
                 self.config.enable_scale_up = bool(smart_pos.get("enable_scale_up", False))
 
-            # Profit lock tuning (optional)
+
             profit_lock = smart_pos.get("profit_lock", {})
             if isinstance(profit_lock, dict):
                 if profit_lock.get("enabled") is not None:
@@ -686,7 +605,6 @@ class SmartPositionManager:
             return {}
 
     def _get_symbol_cfg(self, symbol: str) -> Dict[str, Any]:
-        """Single source of truth for per-symbol overrides merged over global defaults."""
         cfg: Dict[str, Any] = {
             "scale_up_min_profit_eur": self.config.scale_up_min_profit_eur,
             "scale_down_trigger_loss_eur": self.config.scale_down_trigger_loss_eur,
@@ -713,9 +631,6 @@ class SmartPositionManager:
 
         return cfg
 
-    # =========================================================
-    # SEASONALITY / TRADING WINDOW CHECKS
-    # =========================================================
 
     def _check_no_new_trades(self) -> Tuple[bool, str]:
         try:
@@ -761,9 +676,6 @@ class SmartPositionManager:
             pass
         return 100_000.0
 
-    # =========================================================
-    # STATE PERSISTENCE (PEAKS & INITIAL RISK)
-    # =========================================================
 
     def _load_peaks_from_bus(self) -> Dict[str, float]:
         try:
@@ -820,9 +732,6 @@ class SmartPositionManager:
             self._initial_risk_by_symbol[symbol] = float(risk_eur)
             self._persist_initial_risk_to_bus()
 
-    # =========================================================
-    # LIFECYCLE & AGGRESSION
-    # =========================================================
 
     def _get_lifecycle_state(self, position: LivePosition) -> PositionLifecycle:
         symbol = position.symbol
@@ -876,9 +785,6 @@ class SmartPositionManager:
             return self.config.mild_aggression_mult
         return 1.0
 
-    # =========================================================
-    # STARTUP GRACE
-    # =========================================================
 
     def _get_symbol_call_count(self, symbol: str) -> int:
         return self._decide_call_count_by_symbol.get(symbol, 0)
@@ -892,9 +798,6 @@ class SmartPositionManager:
         grace_calls = int(cfg.get("startup_grace_calls", self.config.default_startup_grace_calls) or 0)
         return self._get_symbol_call_count(symbol) >= grace_calls
 
-    # =========================================================
-    # PPO DECISION AWARENESS (v5.2+)
-    # =========================================================
 
     def _get_ppo_decision(self, symbol: str, position_side: Optional[str] = None) -> PPODecisionView:
         view = PPODecisionView()
@@ -974,7 +877,7 @@ class SmartPositionManager:
 
                 view.direction = direction
                 view.confidence = max(0.0, min(1.0, confidence))
-                view.position_size = max(0.0, min(1.0, position_size))    
+                view.position_size = max(0.0, min(1.0, position_size))
                 view.action_intent = action_intent
                 view.discrete_intent = discrete_intent
                 view.discrete_action_id = discrete_action_id
@@ -984,7 +887,7 @@ class SmartPositionManager:
                 view.is_reversal = is_reversal
 
                 decision_sig = f"{direction}|{action_intent}|{discrete_intent}|{explicit_close}|{explicit_reverse}"
-                last_sig = self._last_ppo_decision.get(symbol, "")        
+                last_sig = self._last_ppo_decision.get(symbol, "")
                 if decision_sig != last_sig:
                     self._last_ppo_decision[symbol] = decision_sig
                     if action_intent not in ("hold", "no_position", "") or explicit_close or explicit_reverse:
@@ -1042,16 +945,13 @@ class SmartPositionManager:
         support_ratio: Optional[float] = None,
         management_ctx: Optional[Dict[str, Any]] = None,
     ) -> Optional[SmartDecision]:
-        """Centralized PPO explicit-close / reversal handling."""
         side_str = "long" if position.side > 0 else "short"
         ppo_view = self._get_ppo_decision(symbol, side_str)
 
         sym_cfg = self._get_symbol_cfg(symbol)
         ppo_exit_threshold = float(sym_cfg.get("ppo_exit_conf_threshold", self.config.ppo_exit_conf_threshold))
 
-        # For MaskablePPO discrete actions, treat explicit CLOSE as authoritative even if
-        # the derived confidence is low (flat score). For continuous models, keep the
-        # confidence threshold to avoid churn from noisy near-zero outputs.
+
         if ppo_view.explicit_close and (
             ppo_view.discrete_intent == "close" or ppo_view.confidence >= ppo_exit_threshold
         ):
@@ -1072,7 +972,7 @@ class SmartPositionManager:
             if should_respect:
                 target_side = int(getattr(ppo_view, "direction_int", 0) or 0)
 
-                # If PPO wants to reverse but we can't infer a target side, fall back to a safe close.
+
                 if target_side == 0:
                     reasons.append(f"🎯 {ppo_reason} (no target side; closing)")
                     self.logger.info(
@@ -1088,7 +988,7 @@ class SmartPositionManager:
                         expert_support_ratio=(support_ratio if support_ratio is not None else 0.5),
                     )
 
-                # Respect trading window: allow close, but block opening a new reversed position.
+
                 no_new_trades, no_new_reason = self._check_no_new_trades()
                 if no_new_trades:
                     reasons.append(f"⚠️ PPO reversal blocked: {no_new_reason} (closing only)")
@@ -1102,7 +1002,7 @@ class SmartPositionManager:
                         expert_support_ratio=(support_ratio if support_ratio is not None else 0.5),
                     )
 
-                # Respect reversal cooldown: if too soon, close only (avoid flip-flop).
+
                 last_trade = float(self._last_trade_time.get(symbol, 0.0) or 0.0)
                 if last_trade > 0.0:
                     elapsed = time.time() - last_trade
@@ -1137,9 +1037,6 @@ class SmartPositionManager:
 
         return None
 
-    # =========================================================
-    # LOT CALCULATOR
-    # =========================================================
 
     @property
     def lot_calculator(self):
@@ -1151,9 +1048,6 @@ class SmartPositionManager:
                 self.logger.warning(f"Failed to load UnifiedLotCalculator: {e}")
         return self._lot_calculator
 
-    # =========================================================
-    # POSITION SYNC
-    # =========================================================
 
     def sync_positions(self, mt5_positions: List[Dict[str, Any]]) -> Dict[str, LivePosition]:
         self._positions.clear()
@@ -1172,7 +1066,7 @@ class SmartPositionManager:
                 prev_peak = self._profit_peaks.get(symbol, net_pos.unrealized_pnl)
                 self._profit_peaks[symbol] = max(prev_peak, net_pos.unrealized_pnl)
 
-        # Cleanup peaks for closed symbols + reset ExitEngine peak
+
         closed_symbols = set(self._profit_peaks.keys()) - set(self._positions.keys())
         if closed_symbols:
             exit_engine = get_exit_engine()
@@ -1197,8 +1091,8 @@ class SmartPositionManager:
         earliest_time = float("inf")
         current_price = 0.0
 
-        # Track the largest-ticket per side (for representative SL/TP)
-        best_buy: Tuple[float, int, float, float] = (0.0, 0, 0.0, 0.0)   # (lots, ticket, sl, tp)
+
+        best_buy: Tuple[float, int, float, float] = (0.0, 0, 0.0, 0.0)
         best_sell: Tuple[float, int, float, float] = (0.0, 0, 0.0, 0.0)
 
         for pos in positions:
@@ -1239,7 +1133,7 @@ class SmartPositionManager:
         side = 1 if net_lots > 0 else -1
         abs_lots = abs(net_lots)
 
-        # VWAP entry for net side
+
         if side > 0 and buy_lots > 0:
             entry_price = buy_value / buy_lots
         elif side < 0 and sell_lots > 0:
@@ -1247,7 +1141,7 @@ class SmartPositionManager:
         else:
             entry_price = current_price
 
-        # Representative SL/TP should come from the dominant ticket on the NET side
+
         if side > 0:
             _, ticket, position_sl, position_tp = best_buy
         else:
@@ -1266,9 +1160,6 @@ class SmartPositionManager:
             tp=position_tp,
         )
 
-    # =========================================================
-    # DECISION FABRIC
-    # =========================================================
 
     def _make_decision(
         self,
@@ -1298,7 +1189,7 @@ class SmartPositionManager:
             management_context=management_context or {},
         )
 
-        # Reset state for hard exits / reversals
+
         if dec.action in (PositionAction.CLOSE, PositionAction.REVERSE):
             self._profit_peaks.pop(dec.symbol, None)
             self._lifecycle_states.pop(dec.symbol, None)
@@ -1346,15 +1237,12 @@ class SmartPositionManager:
         except Exception:
             pass
 
-    # =========================================================
-    # SL / PROTECTION HELPERS (BREAKEVEN + PROFIT LOCK)
-    # =========================================================
 
     def _calculate_breakeven_sl(self, position: LivePosition) -> Optional[float]:
         try:
             if position.entry_price <= 0:
                 return None
-            buffer = position.entry_price * 0.0002  # ~2 pips for FX, ~0.4 for XAU @ 2000
+            buffer = position.entry_price * 0.0002
             if position.side > 0:
                 return round(position.entry_price + buffer, 5)
             return round(position.entry_price - buffer, 5)
@@ -1379,22 +1267,17 @@ class SmartPositionManager:
         lifecycle: PositionLifecycle,
         r_mult: float,
     ) -> Optional[float]:
-        """
-        Adaptive profit-lock ladder:
-        - after breakeven is plausible, lock a fraction of open profit
-        - in DEFEND, lock more aggressively to avoid "late trailing" exits
-        """
         if not self.config.enable_profit_lock:
             return None
 
-        # Gate 1: profit must be meaningful (R-based AND EUR-based fallback)
+
         sym_cfg = self._get_symbol_cfg(position.symbol)
         be_eur = float(sym_cfg.get("breakeven_activation_eur", self.config.breakeven_activation_eur))
         eur_gate = be_eur * float(self.config.profit_lock_min_eur_mult)
         if position.unrealized_pnl < eur_gate and r_mult < self.config.profit_lock_min_r:
             return None
 
-        # Determine lock fraction from ladder
+
         lock_frac = 0.0
         for r_thr, frac in self.config.profit_lock_ladder:
             if r_mult >= float(r_thr):
@@ -1403,11 +1286,11 @@ class SmartPositionManager:
         if lock_frac <= 0.0:
             return None
 
-        # DEFEND mode: tighten more
+
         if lifecycle == PositionLifecycle.DEFEND:
             lock_frac = min(0.80, lock_frac + 0.12)
 
-        # Compute price-based profit and lock fraction of it
+
         if position.current_price <= 0 or position.entry_price <= 0:
             return None
 
@@ -1428,7 +1311,6 @@ class SmartPositionManager:
         return round(new_sl, 5)
 
     def _calculate_tightened_sl(self, position: LivePosition, signal: PositionManagementSignal) -> Optional[float]:
-        """Fallback tightened SL (simple, price-based) when experts support holding but risk rises."""
         try:
             if position.current_price <= 0 or position.entry_price <= 0:
                 return None
@@ -1447,9 +1329,6 @@ class SmartPositionManager:
         except Exception:
             return None
 
-    # =========================================================
-    # FINAL EXIT WINDOW HELPER
-    # =========================================================
 
     def _maybe_force_final_exit(
         self,
@@ -1506,9 +1385,6 @@ class SmartPositionManager:
         )
         return None
 
-    # =========================================================
-    # PUBLIC DECISION API - SIMPLE MODE
-    # =========================================================
 
     def decide(
         self,
@@ -1523,7 +1399,7 @@ class SmartPositionManager:
         self._increment_symbol_call_count(symbol)
         signal_valid = self._is_signal_valid_for_symbol(symbol)
 
-        # Sanitise inputs
+
         signal_direction = 1 if signal_direction > 0 else (-1 if signal_direction < 0 else 0)
         signal_strength = float(max(0.0, min(1.0, float(signal_strength))))
         consensus_confidence = float(max(0.0, min(1.0, float(consensus_confidence))))
@@ -1531,7 +1407,7 @@ class SmartPositionManager:
         position = self._positions.get(symbol)
         reasons: List[str] = []
 
-        # No position
+
         if position is None:
             return self._decide_new_position(
                 symbol=symbol,
@@ -1541,12 +1417,12 @@ class SmartPositionManager:
                 reasons=reasons,
             )
 
-        # Update local peak
+
         current_peak = self._profit_peaks.get(symbol, position.unrealized_pnl)
         if position.unrealized_pnl > current_peak:
             self._profit_peaks[symbol] = position.unrealized_pnl
 
-        # Final exit window can force close
+
         forced = self._maybe_force_final_exit(symbol, position, reasons)
         if forced is not None:
             return forced
@@ -1554,7 +1430,7 @@ class SmartPositionManager:
         lifecycle = self._get_lifecycle_state(position)
         r_mult = self._get_r_multiple(symbol, position.unrealized_pnl)
 
-        # PRIORITY -1: Breakeven + profit-lock BEFORE ExitEngine trailing close can trigger
+
         be_threshold = float(sym_cfg.get("breakeven_activation_eur", cfg.breakeven_activation_eur))
         if position.unrealized_pnl >= be_threshold:
             be_sl = self._calculate_breakeven_sl(position)
@@ -1588,7 +1464,7 @@ class SmartPositionManager:
                     new_sl=lock_sl,
                 )
 
-        # ExitEngine evaluation
+
         exit_ctx = PositionContext(
             symbol=symbol,
             side=position.side,
@@ -1618,11 +1494,11 @@ class SmartPositionManager:
                 reasons=reasons,
             )
 
-        # Align/oppose checks
+
         signal_aligns = (position.side > 0 and signal_direction > 0) or (position.side < 0 and signal_direction < 0)
         signal_against = (position.side > 0 and signal_direction < 0) or (position.side < 0 and signal_direction > 0)
 
-        # Aligning -> scale logic
+
         if signal_aligns and signal_direction != 0:
             return self._decide_scale(
                 symbol=symbol,
@@ -1632,12 +1508,12 @@ class SmartPositionManager:
                 reasons=reasons,
             )
 
-        # PPO override even if ExitEngine said HOLD
+
         ppo_override = self._maybe_apply_ppo_exit_override(symbol, position, reasons)
         if ppo_override is not None:
             return ppo_override
 
-        # Strong opposing signal -> reversal/close logic
+
         if signal_against and signal_strength >= cfg.strong_signal_threshold:
             reasons.append(f"REVERSAL: Strong opposing signal ({signal_strength:.2f}) vs {position.direction} position")
 
@@ -1693,9 +1569,6 @@ class SmartPositionManager:
             reasons=reasons,
         )
 
-    # =========================================================
-    # NEW POSITION LOGIC
-    # =========================================================
 
     def _decide_new_position(
         self,
@@ -1812,9 +1685,6 @@ class SmartPositionManager:
         except Exception:
             pass
 
-    # =========================================================
-    # SCALE LOGIC (ALIGNING SIGNALS)
-    # =========================================================
 
     def _decide_scale(
         self,
@@ -1887,7 +1757,7 @@ class SmartPositionManager:
                     reasons=reasons,
                 )
 
-        # Optional smart scale-down for losers
+
         scale_result = self._smart_scale_down_common(position=position, expert_signal_strength=signal_strength, support_ratio=None)
         if scale_result is not None:
             action, reduce_lots, scale_reason = scale_result
@@ -1907,9 +1777,6 @@ class SmartPositionManager:
         )
         return self._make_decision(PositionAction.HOLD, symbol, confidence=0.60, reasons=reasons)
 
-    # =========================================================
-    # SMART SCALE DOWN (OPTIONAL, LOSING POSITIONS)
-    # =========================================================
 
     def _smart_scale_down_common(
         self,
@@ -1994,9 +1861,6 @@ class SmartPositionManager:
 
         return None
 
-    # =========================================================
-    # COOPERATIVE MANAGEMENT MODE (manage_position)
-    # =========================================================
 
     def manage_position(self, signal: PositionManagementSignal) -> SmartDecision:
         symbol = signal.symbol
@@ -2021,7 +1885,7 @@ class SmartPositionManager:
         lifecycle = self._get_lifecycle_state(position)
         r_mult = self._get_r_multiple(symbol, position.unrealized_pnl)
 
-        # Expert alignment
+
         position_action = "BUY" if position.side > 0 else "SELL"
         supporting_experts: List[ExpertSignal] = []
         opposing_experts: List[ExpertSignal] = []
@@ -2051,7 +1915,7 @@ class SmartPositionManager:
         if forced is not None:
             return forced
 
-        # PPO explicit exits/reversals (if any) should override management heuristics.
+
         ppo_override = self._maybe_apply_ppo_exit_override(
             symbol,
             position,
@@ -2062,7 +1926,7 @@ class SmartPositionManager:
         if ppo_override is not None:
             return ppo_override
 
-        # PRIORITY -1: Breakeven + Profit-lock ladder
+
         be_threshold = float(sym_cfg.get("breakeven_activation_eur", cfg.breakeven_activation_eur))
         if position.unrealized_pnl >= be_threshold:
             be_sl = self._calculate_breakeven_sl(position)
@@ -2095,7 +1959,7 @@ class SmartPositionManager:
                     expert_support_ratio=support_ratio,
                 )
 
-        # ExitEngine
+
         signal_dir = 1 if signal.consensus_action == "BUY" else (-1 if signal.consensus_action == "SELL" else 0)
         exit_ctx = PositionContext(
             symbol=symbol,
@@ -2141,7 +2005,7 @@ class SmartPositionManager:
                     expert_support_ratio=support_ratio,
                 )
 
-            # PPO override opportunity
+
             ppo_override = self._maybe_apply_ppo_exit_override(symbol, position, reasons, support_ratio=support_ratio, management_ctx=management_ctx)
             if ppo_override is not None:
                 return ppo_override
@@ -2183,12 +2047,12 @@ class SmartPositionManager:
                 expert_support_ratio=support_ratio,
             )
 
-        # ExitEngine HOLD: PPO override still allowed
+
         ppo_override = self._maybe_apply_ppo_exit_override(symbol, position, reasons, support_ratio=support_ratio, management_ctx=management_ctx)
         if ppo_override is not None:
             return ppo_override
 
-        # Scale-up when strongly supported + sufficiently profitable (still gated by enable_scale_up)
+
         scale_up_min_profit = float(sym_cfg.get("scale_up_min_profit_eur", cfg.scale_up_min_profit_eur))
         scale_up_min_r = float(sym_cfg.get("scale_up_min_r", cfg.scale_up_min_r))
         use_r_based = bool(cfg.use_r_based_scaling)
@@ -2215,7 +2079,7 @@ class SmartPositionManager:
                             expert_support_ratio=support_ratio,
                         )
 
-            # If profit is very high, tighten further (beyond ladder, fallback tightening)
+
             if position.unrealized_pnl >= be_threshold * 1.8:
                 new_sl = self._calculate_tightened_sl(position, signal)
                 if new_sl is not None and self._is_sl_improvement(position, new_sl):
@@ -2233,7 +2097,7 @@ class SmartPositionManager:
                         expert_support_ratio=support_ratio,
                     )
 
-        # Optional smart scale-down
+
         scale_result = self._smart_scale_down_common(
             position=position,
             expert_signal_strength=signal.consensus_confidence,
@@ -2266,9 +2130,6 @@ class SmartPositionManager:
             expert_support_ratio=support_ratio,
         )
 
-    # =========================================================
-    # SCALE LOTS HELPER
-    # =========================================================
 
     def _calculate_scale_lots(self, position: LivePosition, signal: PositionManagementSignal) -> float:
         try:
@@ -2285,9 +2146,6 @@ class SmartPositionManager:
         except Exception:
             return 0.0
 
-    # =========================================================
-    # PUBLIC UTILS
-    # =========================================================
 
     def record_trade(self, symbol: str, is_scale: bool = False) -> None:
         now = time.time()

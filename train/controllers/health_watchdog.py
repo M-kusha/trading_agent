@@ -1,10 +1,3 @@
-"""
-train/controllers/health_watchdog.py
-
-Training Health Watchdog - monitors training metrics and alerts on issues.
-Upgraded: robust slopes via regression, warmup gating, optional normalized entropy,
-and cleaner alert semantics.
-"""
 
 from __future__ import annotations
 
@@ -26,10 +19,6 @@ def _is_finite(x: float) -> bool:
 
 
 def _slope(values: List[float]) -> float:
-    """
-    Least-squares slope of values against index.
-    Returns 0.0 if insufficient data or non-finite values.
-    """
     if len(values) < 3:
         return 0.0
     y = np.array(values, dtype=float)
@@ -44,9 +33,6 @@ def _slope(values: List[float]) -> float:
 
 
 def _normalize_entropy(raw_entropy: float, n_valid_actions: int, min_valid_floor: int = 4) -> float:
-    """
-    Normalize entropy to [0,1] using log(K_eff). Defensive against bad K.
-    """
     if not _is_finite(raw_entropy):
         return 0.5
     k = max(min_valid_floor, int(n_valid_actions))
@@ -57,32 +43,23 @@ def _normalize_entropy(raw_entropy: float, n_valid_actions: int, min_valid_floor
 
 
 class TrainingHealthWatchdog:
-    """
-    Monitors training health metrics and alerts/stops if critical issues arise.
-
-    Signals:
-    - Explained variance collapse (critic not learning)
-    - Sustained reward decline (policy degradation)
-    - Win rate stuck near breakeven (no learning)
-    - Entropy collapse/explosion (degenerate policy)
-    """
 
     def __init__(
         self,
         ev_critical_threshold: float = -0.5,
         ev_warning_threshold: float = 0.05,
         ev_consecutive_failures: int = 5,
-        reward_slope_threshold: float = -0.02,   # slope per check step (regression on history window)
+        reward_slope_threshold: float = -0.02,
         reward_consecutive_declines: int = 10,
         winrate_stuck_range: tuple = (0.45, 0.55),
         winrate_stuck_checks: int = 200,
         check_interval_steps: int = 20_000,
         auto_stop: bool = False,
-        warmup_checks: int = 20,  # do not emit severe alerts before enough history
-        # Entropy thresholds:
+        warmup_checks: int = 20,
+
         entropy_low_raw: float = 0.10,
         entropy_high_raw: float = 2.00,
-        # Optional normalized entropy thresholds (if mask info supplied)
+
         entropy_low_norm: float = 0.08,
         entropy_high_norm: float = 0.85,
     ):
@@ -105,7 +82,7 @@ class TrainingHealthWatchdog:
         self.entropy_low_norm = float(entropy_low_norm)
         self.entropy_high_norm = float(entropy_high_norm)
 
-        # History
+
         self._ev_history: Deque[float] = deque(maxlen=30)
         self._reward_history: Deque[float] = deque(maxlen=80)
         self._winrate_history: Deque[float] = deque(maxlen=200)
@@ -124,14 +101,10 @@ class TrainingHealthWatchdog:
         win_rate: float,
         entropy: float,
         timestep: int,
-        # Optional mask-aware entropy normalization:
+
         n_valid_actions: Optional[int] = None,
         n_actions: Optional[int] = None,
     ) -> Tuple[bool, Optional[str]]:
-        """
-        Returns:
-            (should_stop, reason)
-        """
         try:
             timestep = int(timestep)
         except Exception:
@@ -142,7 +115,7 @@ class TrainingHealthWatchdog:
         self._last_check_step = timestep
         self._checks_done += 1
 
-        # Update histories (store even if values are non-finite; slope funcs will guard)
+
         self._ev_history.append(float(explained_variance) if _is_finite(explained_variance) else float("nan"))
         self._reward_history.append(float(mean_reward) if _is_finite(mean_reward) else float("nan"))
         self._winrate_history.append(float(win_rate) if _is_finite(win_rate) else float("nan"))
@@ -151,7 +124,7 @@ class TrainingHealthWatchdog:
         should_stop = False
         in_warmup = self._checks_done < self.warmup_checks
 
-        # --- Check 1: Explained Variance ---
+
         if _is_finite(explained_variance):
             if explained_variance < self.ev_critical:
                 self._consecutive_ev_failures += 1
@@ -170,7 +143,7 @@ class TrainingHealthWatchdog:
         else:
             alerts.append("WARNING: explained_variance is non-finite")
 
-        # --- Check 2: Reward trend (regression slope) ---
+
         recent_rewards = [x for x in list(self._reward_history)[-40:] if _is_finite(x)]
         if len(recent_rewards) >= 10:
             s = _slope(recent_rewards)
@@ -185,7 +158,7 @@ class TrainingHealthWatchdog:
             else:
                 self._consecutive_reward_declines = 0
 
-        # --- Check 3: Win rate stuck ---
+
         if _is_finite(win_rate) and self.winrate_range[0] <= win_rate <= self.winrate_range[1]:
             self._winrate_stuck_count += 1
             if self._winrate_stuck_count >= self.winrate_stuck_needed and not in_warmup:
@@ -196,8 +169,7 @@ class TrainingHealthWatchdog:
         else:
             self._winrate_stuck_count = 0
 
-        # --- Check 4: Entropy ---
-        # Prefer normalized entropy when mask info is available (more portable).
+
         if n_valid_actions is not None:
             k = int(max(1, n_valid_actions))
             norm_h = _normalize_entropy(entropy, k)
@@ -218,7 +190,7 @@ class TrainingHealthWatchdog:
             else:
                 alerts.append("WARNING: entropy is non-finite")
 
-        # Logging
+
         for alert in alerts:
             if alert.startswith("CRITICAL"):
                 logger.error(alert)

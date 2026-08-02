@@ -1,8 +1,3 @@
-"""
-Enhanced Compliance Module with SmartInfoBus Integration
-Comprehensive trade validation and regulatory compliance monitoring
-(Contract-tight, production-ready, instrument-aware)
-"""
 
 from __future__ import annotations
 
@@ -30,11 +25,7 @@ from modules.utils.info_bus import InfoBusManager
 from modules.utils.system_utilities import EnglishExplainer, SystemUtilities
 
 
-# ─────────────────────────────────────────────────────────────
-# Typed, lint-safe config + namespaced health/status keys
-# ─────────────────────────────────────────────────────────────
 def _load_compliance_config_from_yaml() -> Dict[str, Any]:
-    """Load compliance config values from risk_policy.yaml."""
     import yaml
 
     defaults: Dict[str, Any] = {}
@@ -49,61 +40,57 @@ def _load_compliance_config_from_yaml() -> Dict[str, Any]:
             limits = policy.get("limits", {})
             lot_sizing = policy.get("lot_sizing", {})
 
-            # Core limits from risk_policy.yaml
+
             defaults["max_leverage"] = float(limits.get("max_leverage", 30.0))
             defaults["max_position_risk"] = float(limits.get("max_position_size", 0.05))
             defaults["max_total_risk"] = float(
                 limits.get("max_exposure_pct", 0.05) * 2
-            )  # Total = 2x position
+            )
             defaults["max_drawdown"] = float(limits.get("max_drawdown", 0.085))
             defaults["max_daily_loss"] = float(limits.get("max_daily_loss", 0.042))
 
-            # Lot sizing constraints
+
             defaults["min_trade_size"] = float(lot_sizing.get("min_lot", 0.01))
             defaults["max_trade_size"] = float(lot_sizing.get("max_lot", 10.0))
     except Exception:
-        # On any failure we just keep dataclass defaults
+
         pass
     return defaults
 
 
 @dataclass
 class ComplianceConfig:
-    # Monitoring / health
+
     health_check_interval: int = 30
     circuit_breaker_threshold: int = 5
     max_processing_time_ms: float = 50.0
     status_key: str = "compliance_module_status"
     health_key: str = "compliance_module_health"
 
-    # Core limits - defaults loaded from risk_policy.yaml
-    max_leverage: float = 5.0          # From limits.max_leverage
-    max_position_risk: float = 0.05    # From limits.max_position_size
-    max_total_risk: float = 0.10       # 2x max_position_size
-    max_daily_trades: int = 100
-    min_trade_size: float = 0.01       # From lot_sizing.min_lot
-    max_trade_size: float = 10.0       # From lot_sizing.max_lot
-    # Drawdown / daily loss, usually checked by global DD guardian,
-    # but exposed here in risk_limits for env / dashboard.
-    max_drawdown: float = 0.085
-    max_daily_loss: float = 0.042      # From limits.max_daily_loss
 
-    # Flags
+    max_leverage: float = 5.0
+    max_position_risk: float = 0.05
+    max_total_risk: float = 0.10
+    max_daily_trades: int = 100
+    min_trade_size: float = 0.01
+    max_trade_size: float = 10.0
+
+
+    max_drawdown: float = 0.085
+    max_daily_loss: float = 0.042
+
+
     enabled: bool = True
     dynamic_limits: bool = True
     regime_aware: bool = True
 
     def __post_init__(self):
-        """Override defaults with values from risk_policy.yaml."""
         yaml_config = _load_compliance_config_from_yaml()
         for key, value in yaml_config.items():
             if hasattr(self, key):
                 setattr(self, key, value)
 
 
-# ─────────────────────────────────────────────────────────────
-# Module
-# ─────────────────────────────────────────────────────────────
 @module(
     **module_args(
         "ComplianceModule",
@@ -119,28 +106,16 @@ class ComplianceConfig:
 class ComplianceModule(
     BaseModule, SmartInfoBusRiskMixin, SmartInfoBusStateMixin, SmartInfoBusTradingMixin
 ):
-    """
-    Contract guarantees:
-    - Writes ONLY its 'provides' keys to SmartInfoBus. Health/status use namespaced keys.
-    - Returns ALL 'provides' keys plus '_thesis' and 'success' on success, fallback, or error.
-    - Numpy → Python scalars/lists; timestamps are ISO-8601.
-    - Background monitor posts namespaced health/status; circuit breaker with safe fallback.
 
-    Risk design:
-    - Instrument-aware notional via INSTRUMENT_META (contract_size/category).
-    - Per-instrument max_position_risk on top of global limits.
-    - Global exposure / leverage + per-instrument exposure snapshot.
-    """
 
-    # Default allowed instruments (normalized, we’ll accept EURUSD/EUR_USD/EUR/USD, etc.)
     DEFAULT_ALLOWED_INSTRUMENTS = {
         "EURUSD",
         "XAUUSD",
     }
 
-    # ── init & systems ───────────────────────────────────────
+
     def __init__(self, config: Optional[Dict[str, Any]] = None, **kwargs):
-        # Merge typed config with dict overrides (only known keys)
+
         cfg_dict = asdict(ComplianceConfig())
         if isinstance(config, dict):
             for k, v in config.items():
@@ -148,13 +123,13 @@ class ComplianceModule(
                     cfg_dict[k] = v
         self._cfg = ComplianceConfig(**cfg_dict)
 
-        # Keep raw config for feature-specific items (e.g., allowlist, instrument overrides)
+
         self.config: Dict[str, Any] = config or {}
 
-        # Initialize low-level systems BEFORE BaseModule may call _initialize()
+
         self._initialize_advanced_systems()
 
-        # Circuit breaker & health state
+
         self.circuit_breaker: Dict[str, Any] = {
             "failures": 0,
             "last_failure": 0.0,
@@ -162,12 +137,12 @@ class ComplianceModule(
             "threshold": int(self._cfg.circuit_breaker_threshold),
             "cooldown_sec": 20.0,
         }
-        self._processing_times: deque[float] = deque(maxlen=100)  # store seconds per cycle
+        self._processing_times: deque[float] = deque(maxlen=100)
         self._health_status: str = "healthy"
         self._monitoring_active: bool = False
         self._lock = threading.RLock()
 
-        # Core compliance configuration (honor overrides or typed defaults)
+
         self.max_leverage = float(self.config.get("max_leverage", self._cfg.max_leverage))
         self.max_position_risk = float(
             self.config.get("max_position_risk", self._cfg.max_position_risk)
@@ -186,30 +161,30 @@ class ComplianceModule(
         )
         self.enabled = bool(self.config.get("enabled", self._cfg.enabled))
 
-        # Dynamic risk management
+
         self.dynamic_limits = bool(
             self.config.get("dynamic_limits", self._cfg.dynamic_limits)
         )
         self.regime_aware = bool(self.config.get("regime_aware", self._cfg.regime_aware))
 
-        # Allowed instruments & restrictions
+
         self.allowed_instruments: Set[str] = self._initialize_allowed_instruments()
         self.restricted_hours: Set[int] = set(self.config.get("restricted_hours", []))
 
-        # Instrument meta and per-instrument limits
+
         self.instrument_meta: Dict[str, Dict[str, Any]] = self._initialize_instrument_meta()
         self.max_position_risk_by_instrument: Dict[str, float] = (
             self._initialize_per_instrument_limits()
         )
 
-        # State tracking
+
         self.daily_trade_count: int = 0
         self.last_trade_date: Optional[datetime.date] = None
         self.total_exposure: float = 0.0
         self.current_leverage: float = 0.0
         self.exposure_by_instrument: Dict[str, float] = {}
 
-        # Risk/compliance stats
+
         self.risk_budget_usage: float = 0.0
         self.position_limits: Dict[str, Any] = {}
         self.compliance_score: float = 1.0
@@ -224,7 +199,7 @@ class ComplianceModule(
         self.approval_rate_history: deque[float] = deque(maxlen=50)
         self.compliance_violations: deque[Dict[str, Any]] = deque(maxlen=200)
 
-        # Regime-aware limit tweaks
+
         self.regime_adjustments: Dict[str, Dict[str, float]] = {
             "volatile": {"leverage": 0.7, "position_risk": 0.8, "daily_trades": 1.2},
             "trending": {"leverage": 1.1, "position_risk": 1.0, "daily_trades": 0.9},
@@ -232,9 +207,9 @@ class ComplianceModule(
             "crisis": {"leverage": 0.5, "position_risk": 0.6, "daily_trades": 0.7},
         }
 
-        super().__init__()  # may call _initialize()
+        super().__init__()
 
-        # Start background heartbeat AFTER BaseModule init
+
         self._start_monitoring()
 
         self.logger.info(
@@ -249,9 +224,8 @@ class ComplianceModule(
             )
         )
 
-    # ── advanced systems ─────────────────────────────────────
+
     def _initialize_advanced_systems(self) -> None:
-        """Initialize advanced monitoring and error handling systems."""
         self.smart_bus = InfoBusManager.get_instance()
         self.logger = RotatingLogger(
             name="ComplianceModule",
@@ -266,9 +240,8 @@ class ComplianceModule(
         self.system_utilities = SystemUtilities()
         self.performance_tracker = PerformanceTracker()
 
-    # ── BaseModule hook ──────────────────────────────────────
+
     def _initialize(self) -> None:
-        """Initialize the compliance module (required by BaseModule)."""
         try:
             status = {
                 "enabled": bool(self.enabled),
@@ -283,7 +256,7 @@ class ComplianceModule(
                 thesis="Initial compliance module status",
             )
 
-            # Publish a safe, contract-compliant baseline so consumers don't BUS MISS
+
             baseline = self._fallback_payload("Initial compliance safe defaults")
             self._write_bus_from_payload(
                 baseline, baseline.get("_thesis", "Initial compliance baseline")
@@ -295,7 +268,7 @@ class ComplianceModule(
             )
             self.logger.error(f"Compliance initialization failed: {error_context}")
 
-    # ── background monitor ───────────────────────────────────
+
     def _start_monitoring(self) -> None:
         if self._monitoring_active:
             return
@@ -307,7 +280,7 @@ class ComplianceModule(
                 try:
                     self._update_compliance_health()
 
-                    # publish namespaced health snapshot
+
                     health = self.get_health_status()
                     self.smart_bus.set(
                         self._cfg.health_key,
@@ -316,7 +289,7 @@ class ComplianceModule(
                         thesis="Compliance health heartbeat",
                     )
 
-                    # circuit breaker cooldown auto-reset
+
                     if self.circuit_breaker["state"] == "OPEN":
                         if (
                             time.time() - self.circuit_breaker["last_failure"]
@@ -340,13 +313,13 @@ class ComplianceModule(
     def _update_compliance_health(self) -> None:
         try:
             self._health_status = "healthy"
-            # processing time check
+
             if len(self._processing_times) >= 10:
                 avg_ms = float(np.mean(list(self._processing_times)[-10:]) * 1000.0)
                 if avg_ms > float(self._cfg.max_processing_time_ms):
                     self._health_status = "warning"
 
-            # approval trend check
+
             if self.approval_rate_history:
                 avg_approval = float(np.mean(self.approval_rate_history))
                 if avg_approval < 0.5:
@@ -371,7 +344,7 @@ class ComplianceModule(
             "ts": datetime.datetime.now().isoformat(),
         }
 
-    # ── contract-safe process ────────────────────────────────
+
     async def process(self, **kwargs: Any) -> Dict[str, Any]:
         start_time = time.time()
         try:
@@ -380,51 +353,51 @@ class ComplianceModule(
                 self._write_bus_from_payload(payload, payload["_thesis"])
                 return payload
 
-            # Circuit breaker gating
+
             if self.circuit_breaker["state"] == "OPEN":
                 thesis = "Circuit breaker OPEN; compliance safe fallback emitted."
                 payload = self._fallback_payload(thesis)
                 self._write_bus_from_payload(payload, thesis)
                 return payload
 
-            # Extract inputs from bus (single source of truth)
+
             market_context = self.smart_bus.get("market_context", "ComplianceModule") or {}
             positions = self.smart_bus.get("positions", "ComplianceModule") or []
             pending_orders = self.smart_bus.get("pending_orders", "ComplianceModule") or []
             balance = self.smart_bus.get("balance", "ComplianceModule") or 10000.0
 
-            # Harden types to match contract expectations
+
             market_context, positions, pending_orders, balance = self._coerce_bus_inputs(
                 market_context, positions, pending_orders, balance
             )
 
-            # Update daily tracking
+
             self._update_daily_tracking()
 
-            # Adjust limits based on market context
+
             current_limits = self._calculate_dynamic_limits(market_context)
 
-            # Validate pending orders
+
             validation_results = await self._validate_pending_orders_comprehensive(
                 pending_orders, positions, float(balance), market_context, current_limits
             )
 
-            # Assess current risk exposure (global + per-instrument)
+
             risk_assessment = self._assess_current_risk_exposure(
                 positions, float(balance), current_limits
             )
 
-            # Calculate compliance metrics
+
             compliance_metrics = self._calculate_compliance_metrics(
                 validation_results, risk_assessment
             )
 
-            # Generate thesis (human readable)
+
             thesis = await self._generate_compliance_thesis(
                 validation_results, risk_assessment, market_context
             )
 
-            # Format payload (strict)
+
             payload = self._format_provides_output(
                 validation_results,
                 risk_assessment,
@@ -433,14 +406,14 @@ class ComplianceModule(
                 thesis,
             )
 
-            # Publish to SmartInfoBus (single-writer for provides)
+
             self._write_bus_from_payload(payload, thesis)
 
-            # Success metrics
+
             processing_time_sec = float(time.time() - start_time)
             self._record_success(processing_time_sec)
 
-            # Performance tracker (non-critical)
+
             try:
                 self.performance_tracker.record_metric(
                     "ComplianceModule",
@@ -464,7 +437,7 @@ class ComplianceModule(
                 pass
             return payload
 
-    # ── SmartInfoBus I/O (single-writer) ─────────────────────
+
     def _write_bus_from_payload(self, payload: Dict[str, Any], thesis: str) -> None:
         try:
             self.smart_bus.set(
@@ -495,7 +468,7 @@ class ComplianceModule(
             err = self.error_pinpointer.analyze_error(e, "bus_write")
             self.logger.error(f"SmartInfoBus update failed: {err}")
 
-    # ── payload formatter (contract enforcer) ────────────────
+
     def _format_provides_output(
         self,
         validation_results: Dict[str, Any],
@@ -504,7 +477,7 @@ class ComplianceModule(
         current_limits: Dict[str, float],
         thesis: str,
     ) -> Dict[str, Any]:
-        # Compliance status view (all python types)
+
         status_payload = {
             "compliance_score": float(
                 risk_assessment.get("compliance_score", self.compliance_score)
@@ -588,7 +561,7 @@ class ComplianceModule(
             "timestamp": datetime.datetime.now().isoformat(),
         }
 
-        # top violations (type → count) for compact `compliance` summary
+
         vio_counts: Dict[str, int] = {}
         for v in validation_results.get("violations", []):
             t = str(v.get("type", "unknown"))
@@ -596,14 +569,14 @@ class ComplianceModule(
         top_vios = sorted(vio_counts.items(), key=lambda kv: kv[1], reverse=True)[:5]
         top_vios_payload = [{"type": k, "count": int(v)} for k, v in top_vios]
 
-        # Validation results (provides)
+
         vr_payload = {
             "approved_orders": list(validation_results.get("approved", []))[:200],
             "rejected_orders": list(validation_results.get("rejected", []))[:200],
             "approval_rate": float(compliance_metrics.get("approval_rate", 1.0)),
         }
 
-        # Risk limits (provides)
+
         rl_payload = {
             "max_leverage": float(
                 current_limits.get("max_leverage", self.max_leverage)
@@ -623,7 +596,7 @@ class ComplianceModule(
             "risk_budget_usage": float(self.risk_budget_usage),
         }
 
-        # Compliance (provides) — compact summary used by downstream risk modules
+
         comp_status = "ok"
         if self.circuit_breaker["state"] == "OPEN":
             comp_status = "open_circuit"
@@ -660,13 +633,12 @@ class ComplianceModule(
             "success": True,
         }
 
-    # ── daily tracking ───────────────────────────────────────
+
     def _update_daily_tracking(self) -> None:
-        """Update daily trade count tracking."""
         try:
             current_date = datetime.datetime.now().date()
 
-            # Reset counter for new day
+
             if self.last_trade_date != current_date:
                 if self.last_trade_date and self.daily_trade_count > 0:
                     self.logger.info(
@@ -686,13 +658,12 @@ class ComplianceModule(
             error_context = self.error_pinpointer.analyze_error(e, "daily_tracking")
             self.logger.warning(f"Daily tracking update failed: {error_context}")
 
-    # ── dynamic limits ───────────────────────────────────────
+
     def _calculate_dynamic_limits(
         self, market_context: Dict[str, Any]
     ) -> Dict[str, float]:
-        """Calculate dynamic limits based on market context."""
         try:
-            # Start with base limits
+
             current_limits: Dict[str, float] = {
                 "max_leverage": float(self.max_leverage),
                 "max_position_risk": float(self.max_position_risk),
@@ -700,7 +671,7 @@ class ComplianceModule(
                 "max_daily_trades": int(self.max_daily_trades),
                 "min_trade_size": float(self.min_trade_size),
                 "max_trade_size": float(self.max_trade_size),
-                # Provide drawdown limit even if not dynamically adjusted
+
                 "max_drawdown": float(self._cfg.max_drawdown),
             }
 
@@ -710,7 +681,7 @@ class ComplianceModule(
             regime = str(market_context.get("regime", "unknown"))
             volatility_level = str(market_context.get("volatility_level", "medium"))
 
-            # Regime adjustments
+
             if regime in self.regime_adjustments:
                 adjustments = self.regime_adjustments[regime]
                 current_limits["max_leverage"] *= float(adjustments["leverage"])
@@ -722,7 +693,7 @@ class ComplianceModule(
                     * float(adjustments["daily_trades"])
                 )
 
-            # Volatility adjustments
+
             volatility_multipliers: Dict[str, Dict[str, float]] = {
                 "low": {"leverage": 1.1, "position_risk": 1.1, "trade_size": 1.0},
                 "medium": {"leverage": 1.0, "position_risk": 1.0, "trade_size": 1.0},
@@ -738,7 +709,7 @@ class ComplianceModule(
                 )
                 current_limits["max_trade_size"] *= float(vol_adj["trade_size"])
 
-            # Apply bounds to prevent extreme adjustments
+
             current_limits["max_leverage"] = max(
                 1.0, min(100.0, current_limits["max_leverage"])
             )
@@ -768,7 +739,7 @@ class ComplianceModule(
                 "max_drawdown": float(self._cfg.max_drawdown),
             }
 
-    # ── validations ──────────────────────────────────────────
+
     async def _validate_pending_orders_comprehensive(
         self,
         pending_orders: List[Dict[str, Any]],
@@ -777,7 +748,6 @@ class ComplianceModule(
         market_context: Dict[str, Any],
         current_limits: Dict[str, float],
     ) -> Dict[str, Any]:
-        """Comprehensive validation of pending orders."""
         start_time = datetime.datetime.now()
 
         validation_results: Dict[str, Any] = {
@@ -805,7 +775,7 @@ class ComplianceModule(
                         order_validation["violations"]
                     )
 
-                    # Track rejection reasons
+
                     for violation in order_validation["violations"]:
                         self.validation_stats["violations"][
                             violation["type"]
@@ -813,13 +783,13 @@ class ComplianceModule(
 
                 self.validation_stats["total_validations"] += 1
 
-            # Calculate processing time
+
             processing_time = (
                 datetime.datetime.now() - start_time
             ).total_seconds() * 1000.0
             validation_results["processing_time_ms"] = float(processing_time)
 
-            # Update approval rate
+
             if self.validation_stats["total_validations"] > 0:
                 approval_rate = (
                     self.validation_stats["approved"]
@@ -834,7 +804,7 @@ class ComplianceModule(
                 e, "order_validation"
             )
             self.logger.error(f"Order validation failed: {error_context}")
-            # Return a contract-complete but empty result on error
+
             return {
                 "error": error_context,
                 "total_orders": len(pending_orders),
@@ -853,7 +823,6 @@ class ComplianceModule(
         market_context: Dict[str, Any],
         current_limits: Dict[str, float],
     ) -> Dict[str, Any]:
-        """Validate a single order with comprehensive checks."""
         order_details: Dict[str, Any] = {
             "instrument": "UNKNOWN",
             "size": 0.0,
@@ -889,7 +858,7 @@ class ComplianceModule(
                 }
             )
 
-            # 1. Daily trade limit check
+
             if self.daily_trade_count >= int(current_limits["max_daily_trades"]):
                 violations.append(
                     {
@@ -902,7 +871,7 @@ class ComplianceModule(
                     }
                 )
 
-            # 2. Instrument allowlist check
+
             if not self._is_instrument_allowed(instrument):
                 violations.append(
                     {
@@ -912,7 +881,7 @@ class ComplianceModule(
                     }
                 )
 
-            # 3. Trading hours check
+
             if self._is_trading_restricted():
                 violations.append(
                     {
@@ -922,49 +891,49 @@ class ComplianceModule(
                     }
                 )
 
-            # 4. Trade size validation
+
             size_violations = self._validate_trade_size(size, current_limits)
             violations.extend(size_violations)
 
-            # 5. Position risk validation (instrument-aware)
+
             position_risk_violations = self._validate_position_risk(
                 order_details, positions, balance, current_limits
             )
             violations.extend(position_risk_violations)
 
-            # 6. Total exposure validation (global + per instrument)
+
             exposure_violations = self._validate_total_exposure(
                 order_details, positions, balance, current_limits
             )
             violations.extend(exposure_violations)
 
-            # 7. Leverage validation (using updated total_exposure)
+
             leverage_violations = self._validate_leverage_limits(
                 order_details, positions, balance, current_limits
             )
             violations.extend(leverage_violations)
 
-            # 8. Market context validation
+
             context_violations = self._validate_market_context(
                 order_details, market_context
             )
             violations.extend(context_violations)
 
-            # Determine approval status
+
             critical_violations = [
                 v for v in violations if v.get("severity") == "critical"
             ]
             approved = len(critical_violations) == 0
 
             if approved:
-                # Increment trade counter on approval
+
                 self.daily_trade_count += 1
 
             return {
                 "order_details": order_details,
                 "approved": bool(approved),
                 "violations": violations,
-                "risk_score": float(len(violations) / 8.0),  # Normalize by number of checks
+                "risk_score": float(len(violations) / 8.0),
                 "validation_timestamp": datetime.datetime.now().isoformat(),
             }
 
@@ -986,14 +955,12 @@ class ComplianceModule(
                 "error": error_context,
             }
 
-    # ── atomic validation helpers ────────────────────────────
+
     def _is_instrument_allowed(self, instrument: str) -> bool:
-        """Check if instrument is in allowlist (normalized)."""
         symbol = self._normalize_single_instrument(instrument)
         return symbol in self.allowed_instruments
 
     def _is_trading_restricted(self) -> bool:
-        """Check if trading is restricted at current hour."""
         if not self.restricted_hours:
             return False
         current_hour = datetime.datetime.now().hour
@@ -1002,7 +969,6 @@ class ComplianceModule(
     def _validate_trade_size(
         self, size: float, current_limits: Dict[str, float]
     ) -> List[Dict[str, Any]]:
-        """Validate trade size against limits."""
         violations: List[Dict[str, Any]] = []
 
         if size < float(current_limits["min_trade_size"]):
@@ -1038,7 +1004,6 @@ class ComplianceModule(
         balance: float,
         current_limits: Dict[str, float],
     ) -> List[Dict[str, Any]]:
-        """Validate position risk limits (instrument-aware)."""
         violations: List[Dict[str, Any]] = []
 
         try:
@@ -1052,10 +1017,10 @@ class ComplianceModule(
                 instrument, size, price
             )
 
-            # Calculate risk as percentage of balance
+
             position_risk = position_value / max(float(balance), 1.0)
 
-            # Per-instrument override, fallback to global limit
+
             inst_limit = self.max_position_risk_by_instrument.get(instrument)
             max_risk_allowed = float(
                 inst_limit
@@ -1096,14 +1061,13 @@ class ComplianceModule(
         balance: float,
         current_limits: Dict[str, float],
     ) -> List[Dict[str, Any]]:
-        """Validate total portfolio exposure (instrument-aware notional)."""
         violations: List[Dict[str, Any]] = []
 
         try:
             existing_exposure = 0.0
             exposure_by_instrument: Dict[str, float] = {}
 
-            # Existing positions
+
             for position in positions:
                 raw_inst = position.get("instrument", position.get("symbol", "UNKNOWN"))
                 instrument = self._normalize_single_instrument(raw_inst)
@@ -1121,7 +1085,7 @@ class ComplianceModule(
                     exposure_by_instrument.get(instrument, 0.0) + notional
                 )
 
-            # New order exposure
+
             new_instrument = self._normalize_single_instrument(
                 order_details.get("instrument", "UNKNOWN")
             )
@@ -1136,7 +1100,7 @@ class ComplianceModule(
                 exposure_by_instrument.get(new_instrument, 0.0) + new_notional
             )
 
-            # Calculate total risk
+
             total_risk = total_exposure / max(float(balance), 1.0)
 
             if total_risk > float(current_limits["max_total_risk"]):
@@ -1151,7 +1115,7 @@ class ComplianceModule(
                     }
                 )
 
-            # Update exposure tracking
+
             self.total_exposure = float(total_exposure)
             self.exposure_by_instrument = {
                 str(k): float(v) for k, v in exposure_by_instrument.items()
@@ -1178,11 +1142,10 @@ class ComplianceModule(
         balance: float,
         current_limits: Dict[str, float],
     ) -> List[Dict[str, Any]]:
-        """Validate leverage limits."""
         violations: List[Dict[str, Any]] = []
 
         try:
-            # Leverage after applying _validate_total_exposure (includes new order)
+
             leverage = self.total_exposure / max(float(balance), 1.0)
             self.current_leverage = float(leverage)
 
@@ -1215,7 +1178,6 @@ class ComplianceModule(
     def _validate_market_context(
         self, order_details: Dict[str, Any], market_context: Dict[str, Any]
     ) -> List[Dict[str, Any]]:
-        """Validate against market context restrictions."""
         violations: List[Dict[str, Any]] = []
 
         try:
@@ -1224,7 +1186,7 @@ class ComplianceModule(
 
             size = float(order_details["size"])
 
-            # Restrict large trades during extreme volatility
+
             if (
                 volatility_level == "extreme"
                 and size > float(self.max_trade_size) * 0.5
@@ -1237,7 +1199,7 @@ class ComplianceModule(
                     }
                 )
 
-            # Crisis regime restrictions
+
             if regime == "crisis" and size > float(self.max_trade_size) * 0.3:
                 violations.append(
                     {
@@ -1261,16 +1223,15 @@ class ComplianceModule(
 
         return violations
 
-    # ── risk & metrics ───────────────────────────────────────
+
     def _assess_current_risk_exposure(
         self,
         positions: List[Dict[str, Any]],
         balance: float,
         current_limits: Dict[str, float],
     ) -> Dict[str, Any]:
-        """Assess current risk exposure and compliance status."""
         try:
-            # Recompute exposures from current positions (no pending orders)
+
             exposure_by_instrument: Dict[str, float] = {}
             total_exposure = 0.0
 
@@ -1305,7 +1266,7 @@ class ComplianceModule(
             )
             self.current_leverage = float(current_leverage)
 
-            # Calculate risk budget usage
+
             leverage_usage = current_leverage / max(
                 float(current_limits.get("max_leverage", self.max_leverage)), 1e-6
             )
@@ -1317,12 +1278,12 @@ class ComplianceModule(
                 int(current_limits.get("max_daily_trades", self.max_daily_trades)), 1
             )
 
-            # Overall risk budget usage
+
             self.risk_budget_usage = float(
                 max(leverage_usage, exposure_usage, daily_trades_usage)
             )
 
-            # Violations so far
+
             violations_count = int(
                 sum(self.validation_stats["violations"].values())
             )
@@ -1331,7 +1292,7 @@ class ComplianceModule(
             )
             violation_rate = float(violations_count / total_validations)
 
-            # Score is diminished by violation rate and by budget usage beyond 1.0
+
             overuse_penalty = max(0.0, (self.risk_budget_usage - 1.0) * 0.5)
             self.compliance_score = float(
                 max(0.0, 1.0 - violation_rate - overuse_penalty)
@@ -1367,9 +1328,8 @@ class ComplianceModule(
         validation_results: Dict[str, Any],
         risk_assessment: Dict[str, Any],
     ) -> Dict[str, Any]:
-        """Calculate comprehensive compliance metrics."""
         try:
-            # Validation metrics
+
             total_orders = int(validation_results.get("total_orders", 0))
             approved_orders = len(validation_results.get("approved", []))
             rejected_orders = len(validation_results.get("rejected", []))
@@ -1377,7 +1337,7 @@ class ComplianceModule(
             approval_rate = float(approved_orders / max(total_orders, 1))
             rejection_rate = float(rejected_orders / max(total_orders, 1))
 
-            # Risk metrics
+
             risk_budget_usage = float(
                 risk_assessment.get("risk_budget_usage", 0.0)
             )
@@ -1385,14 +1345,14 @@ class ComplianceModule(
                 risk_assessment.get("compliance_score", 1.0)
             )
 
-            # Historical metrics
+
             avg_approval_rate = (
                 float(np.mean(self.approval_rate_history))
                 if self.approval_rate_history
                 else 1.0
             )
 
-            # Violation breakdown
+
             violation_breakdown = dict(self.validation_stats["violations"])
 
             return {
@@ -1422,18 +1382,17 @@ class ComplianceModule(
             )
             return {"compliance_score": 0.5, "error": error_context}
 
-    # ── thesis & recommendations ─────────────────────────────
+
     async def _generate_compliance_thesis(
         self,
         validation_results: Dict[str, Any],
         risk_assessment: Dict[str, Any],
         market_context: Dict[str, Any],
     ) -> str:
-        """Generate intelligent thesis explaining compliance decisions."""
         try:
             thesis_parts: List[str] = []
 
-            # Validation overview
+
             total_orders = int(validation_results.get("total_orders", 0))
             approved = len(validation_results.get("approved", []))
             rejected = len(validation_results.get("rejected", []))
@@ -1446,7 +1405,7 @@ class ComplianceModule(
             else:
                 thesis_parts.append("No pending orders to validate")
 
-            # Risk assessment
+
             compliance_score = float(
                 risk_assessment.get("compliance_score", 1.0)
             )
@@ -1471,7 +1430,7 @@ class ComplianceModule(
                     f"POOR compliance requiring immediate attention ({compliance_score:.1%})"
                 )
 
-            # Risk budget analysis
+
             if risk_budget_usage > 0.8:
                 thesis_parts.append(
                     f"HIGH risk budget utilization ({risk_budget_usage:.1%}) - approaching limits"
@@ -1485,7 +1444,7 @@ class ComplianceModule(
                     f"Conservative risk budget usage ({risk_budget_usage:.1%})"
                 )
 
-            # Violation analysis
+
             violations = validation_results.get("violations", [])
             if violations:
                 violation_types = {
@@ -1496,7 +1455,7 @@ class ComplianceModule(
                     f"{', '.join(list(violation_types)[:3])}"
                 )
 
-            # Market context impact
+
             regime = str(market_context.get("regime", "unknown"))
             volatility = str(market_context.get("volatility_level", "medium"))
 
@@ -1505,7 +1464,7 @@ class ComplianceModule(
                     f"Dynamic limits adjusted for {regime} regime and {volatility} volatility"
                 )
 
-            # Daily trading status
+
             daily_usage = self.daily_trade_count / max(
                 self.max_daily_trades, 1
             )
@@ -1522,9 +1481,8 @@ class ComplianceModule(
             )
             return f"Thesis generation failed: {error_context}"
 
-    # ── instruments & config helpers ─────────────────────────
+
     def _normalize_single_instrument(self, instrument: Union[str, Any]) -> str:
-        """Normalize instrument symbol to a stable key (e.g., EURUSD, XAUUSD)."""
         s = str(instrument).strip().upper()
         if not s:
             return "UNKNOWN"
@@ -1533,16 +1491,15 @@ class ComplianceModule(
         return s or "UNKNOWN"
 
     def _initialize_allowed_instruments(self) -> Set[str]:
-        """Initialize allowed instruments from config or environment."""
         try:
-            # Environment variable wins
+
             env_instruments = os.getenv("COMPLIANCE_INSTRUMENTS")
             if env_instruments:
                 instruments = [
                     inst.strip() for inst in env_instruments.split(",")
                 ]
             else:
-                # Use config or defaults
+
                 config_instruments = self.config.get(
                     "allowed_instruments",
                     list(self.DEFAULT_ALLOWED_INSTRUMENTS),
@@ -1571,16 +1528,9 @@ class ComplianceModule(
             return normalized
 
     def _initialize_instrument_meta(self) -> Dict[str, Dict[str, Any]]:
-        """
-        Initialize instrument metadata including contract_size and category.
-
-        Defaults:
-        - FX pairs (e.g., EURUSD): contract_size ≈ 100_000
-        - XAUUSD: contract_size ≈ 100
-        """
         meta: Dict[str, Dict[str, Any]] = {}
 
-        # Sensible defaults
+
         default_meta: Dict[str, Dict[str, Any]] = {
             "EURUSD": {"contract_size": 100_000.0, "category": "fx"},
             "XAUUSD": {"contract_size": 100.0, "category": "metal"},
@@ -1590,7 +1540,7 @@ class ComplianceModule(
             norm = self._normalize_single_instrument(sym)
             meta[norm] = dict(info)
 
-        # Config-level overrides
+
         cfg_meta = self.config.get("instrument_meta", {})
         if isinstance(cfg_meta, dict):
             for key, info in cfg_meta.items():
@@ -1608,7 +1558,7 @@ class ComplianceModule(
                         base["category"] = str(info["category"])
                 meta[norm] = base
 
-        # risk_policy.yaml overrides
+
         try:
             import yaml
 
@@ -1647,16 +1597,9 @@ class ComplianceModule(
         return meta
 
     def _initialize_per_instrument_limits(self) -> Dict[str, float]:
-        """
-        Initialize per-instrument max position risk (fraction of balance).
-
-        Order of precedence:
-        - config["max_position_risk_by_instrument"]
-        - risk_policy.yaml["limits_by_instrument"][symbol]["max_position_size"]
-        """
         limits: Dict[str, float] = {}
 
-        # Config-level mapping
+
         cfg_limits = self.config.get("max_position_risk_by_instrument", {})
         if isinstance(cfg_limits, dict):
             for key, val in cfg_limits.items():
@@ -1668,7 +1611,7 @@ class ComplianceModule(
                 except Exception:
                     continue
 
-        # risk_policy.yaml mapping
+
         try:
             import yaml
 
@@ -1706,20 +1649,13 @@ class ComplianceModule(
     def _calculate_notional_value(
         self, instrument: str, size: float, price: float
     ) -> float:
-        """
-        Compute notional exposure for a given instrument/size/price using
-        instrument_meta.contract_size where available.
-
-        If metadata is missing, falls back to 100_000 as a generic contract size.
-        """
         norm = self._normalize_single_instrument(instrument)
         meta = self.instrument_meta.get(norm, {})
         contract_size = float(meta.get("contract_size", 100_000.0))
         return float(size) * float(price) * contract_size
 
-    # ── fallbacks & errors (contract-safe) ───────────────────
+
     def _fallback_payload(self, thesis: str) -> Dict[str, Any]:
-        """Build a minimal but contract-complete snapshot."""
         compliance_score = float(self.compliance_score)
         risk_budget_usage = float(self.risk_budget_usage)
         status = (
@@ -1821,8 +1757,7 @@ class ComplianceModule(
     def _handle_compliance_error(
         self, error: Exception, processing_time_sec: float
     ) -> Dict[str, Any]:
-        """Handle unexpected errors in a contract-safe manner."""
-        # circuit breaker update
+
         self.circuit_breaker["failures"] += 1
         self.circuit_breaker["last_failure"] = time.time()
         if self.circuit_breaker["failures"] >= int(
@@ -1846,17 +1781,17 @@ class ComplianceModule(
         )
         self._record_failure(error)
 
-        # Keep state minimally pessimistic
+
         self.compliance_score = float(max(0.5, float(self.compliance_score)))
         return self._fallback_payload(
             thesis=f"Compliance error fallback: {error!s}"
         )
 
-    # ── bookkeeping ──────────────────────────────────────────
+
     def _record_success(self, processing_time_sec: float) -> None:
         try:
             self._processing_times.append(float(processing_time_sec))
-            # On successful cycles, ease circuit breaker a bit
+
             if self.circuit_breaker["state"] == "CLOSED":
                 self.circuit_breaker["failures"] = max(
                     0, self.circuit_breaker["failures"] - 1
@@ -1872,9 +1807,8 @@ class ComplianceModule(
         except Exception:
             pass
 
-    # ── state & health API ───────────────────────────────────
+
     def get_state(self) -> Dict[str, Any]:
-        """Get complete module state for hot-reload."""
         return {
             "daily_trade_count": int(self.daily_trade_count),
             "last_trade_date": self.last_trade_date.isoformat()
@@ -1901,7 +1835,6 @@ class ComplianceModule(
         }
 
     def set_state(self, state: Dict[str, Any]) -> None:
-        """Set module state for hot-reload."""
         self.daily_trade_count = int(state.get("daily_trade_count", 0))
         last_date_str = state.get("last_trade_date")
         self.last_trade_date = (
@@ -1914,7 +1847,7 @@ class ComplianceModule(
         self.risk_budget_usage = float(state.get("risk_budget_usage", 0.0))
         self.compliance_score = float(state.get("compliance_score", 1.0))
 
-        # validation stats
+
         vs = state.get("validation_stats", {})
         self.validation_stats["total_validations"] = int(
             vs.get("total_validations", 0)
@@ -1925,11 +1858,10 @@ class ComplianceModule(
         for k, v in dict(vs.get("violations", {})).items():
             self.validation_stats["violations"][str(k)] = int(v)
 
-        # config passthrough (non-critical)
+
         self.config.update(dict(state.get("config", {})))
 
     def get_health_metrics(self) -> Dict[str, Any]:
-        """Get health metrics for monitoring."""
         try:
             approval_rate = self.validation_stats["approved"] / max(
                 self.validation_stats["total_validations"], 1
@@ -1948,9 +1880,8 @@ class ComplianceModule(
             "enabled": bool(self.enabled),
         }
 
-    # ── Trading mixin contract (no-op implementations) ───────
+
     async def propose_action(self, **inputs: Any) -> Dict[str, Any]:
-        """Compliance module doesn't place trades; return a well-formed no-op action."""
         return {
             "action": "noop",
             "module": "ComplianceModule",
@@ -1962,19 +1893,18 @@ class ComplianceModule(
     async def calculate_confidence(
         self, action: Dict[str, Any], **inputs: Any
     ) -> float:
-        """Return a deterministic confidence score in [0,1]."""
         try:
             score = float(self.compliance_score)
         except Exception:
             score = 1.0
-        # clip to [0,1]
+
         if score < 0.0:
             score = 0.0
         elif score > 1.0:
             score = 1.0
         return score
 
-    # ── input hardening ──────────────────────────────────────
+
     def _coerce_bus_inputs(
         self,
         market_context: Any,
@@ -1987,7 +1917,6 @@ class ComplianceModule(
         List[Dict[str, Any]],
         float,
     ]:
-        """Coerce bus inputs to safe types per contract."""
         mc = market_context if isinstance(market_context, dict) else {}
         pos = positions if isinstance(positions, list) else []
         po = pending_orders if isinstance(pending_orders, list) else []

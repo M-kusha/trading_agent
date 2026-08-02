@@ -1,22 +1,4 @@
-# envs/curriculum/config/stages.py
-"""
-Curriculum stage definitions and enums.
 
-Contains:
-- CurriculumStage: 10-stage curriculum progression
-- TradingSkill: Decomposed trading competencies
-- MarketRegime: Market regime classification
-- CurriculumStageConfig: Configuration dataclass for a curriculum stage
-
-Upgrades (Jan 2026):
-- CurriculumStageConfig now auto-exposes:
-    - env_overrides
-    - reward_overrides
-    - execution_overrides
-  so PropFirmTradingEnv._sync_curriculum_stage_overrides() can apply stage settings
-  without needing bespoke adapter code. These dicts are generated defensively and
-  remain optional for backward compatibility.
-"""
 
 from __future__ import annotations
 
@@ -43,9 +25,6 @@ if TYPE_CHECKING:
 
 
 class CurriculumStage(IntEnum):
-    """
-    10-Stage Curriculum: "First Grade to University"
-    """
     EXPLORER = 0
     EXPERIMENTER = 1
 
@@ -88,7 +67,6 @@ class MarketRegime(Enum):
 
 @dataclass
 class CurriculumStageConfig:
-    """Configuration for a curriculum stage."""
     stage: CurriculumStage
     name: str
     description: str
@@ -111,7 +89,7 @@ class CurriculumStageConfig:
     data_difficulty: "DataDifficulty" = field(default_factory=lambda: _default_data_difficulty())
     transition: "TransitionSettings" = field(default_factory=lambda: _default_transition_settings())
 
-    # v2.0 configs
+
     skill_requirements: "SkillRequirements" = field(default_factory=lambda: _default_skill_requirements())
     entropy_targets: "EntropyTargets" = field(default_factory=lambda: _default_entropy_targets())
     composite_scoring: "CompositeScoringConfig" = field(default_factory=lambda: _default_composite_scoring())
@@ -121,16 +99,16 @@ class CurriculumStageConfig:
     review_session: "ReviewSessionConfig" = field(default_factory=lambda: _default_review_session())
     validation: "ValidationConfig" = field(default_factory=lambda: _default_validation())
 
-    # Optional override dicts (auto-generated if None)
+
     env_overrides: Optional[Dict[str, Any]] = None
     reward_overrides: Optional[Dict[str, Any]] = None
     execution_overrides: Optional[Dict[str, Any]] = None
 
-    # Optional generic overrides (kept for compatibility with older managers)
+
     overrides: Optional[Dict[str, Any]] = None
 
     def __post_init__(self) -> None:
-        # Auto-generate override dicts so PropFirmTradingEnv._sync_curriculum_stage_overrides can work directly.
+
         if self.env_overrides is None:
             self.env_overrides = self._compute_env_overrides()
         if self.reward_overrides is None:
@@ -143,8 +121,7 @@ class CurriculumStageConfig:
         e = self.execution
         out: Dict[str, Any] = {}
 
-        # Critical: keep env episode length consistent with stage definition
-        # (PropFirmTradingEnv reads this from PropFirmConfig.max_steps_per_episode).
+
         try:
             max_steps = int(self.max_steps_per_episode)
             if max_steps > 0:
@@ -152,14 +129,14 @@ class CurriculumStageConfig:
         except Exception:
             pass
 
-        # Constraints -> PropFirmConfig fields
+
         for k in (
             "max_positions",
             "max_trades_per_day",
             "max_trades_per_session",
             "max_consecutive_losses",
             "loss_layer_stop",
-            # Session budget constraints (v5.5)
+
             "session_loss_limit_pct",
             "session_consecutive_loss_limit",
             "enforce_no_new_trades_window",
@@ -187,16 +164,16 @@ class CurriculumStageConfig:
             if hasattr(c, k):
                 out[k] = getattr(c, k)
 
-        # Backward compat: enforce_session_windows (coarse) maps to the newer fine-grained toggles
+
         if getattr(c, "enforce_session_windows", False):
             out.setdefault("enforce_no_new_trades_window", True)
             out.setdefault("enforce_hard_close", True)
 
-        # ExecutionDifficulty -> PropFirmConfig domain randomization fields
+
         if hasattr(e, "enable_randomization"):
             out["domain_randomization_enabled"] = bool(e.enable_randomization)
 
-        # These names match PropFirmConfig in env_types.py
+
         if hasattr(e, "spread_mult_range"):
             out["spread_mult_range"] = tuple(e.spread_mult_range)
         if hasattr(e, "slippage_mult_range"):
@@ -210,56 +187,56 @@ class CurriculumStageConfig:
 
     def _compute_reward_overrides(self) -> Dict[str, Any]:
         r = self.rewards
-        # Pass through only attributes that exist (defensive)
+
         keys = [
-            # Core
+
             "reward_scale", "loss_multiplier",
-            # v6.0 PnL DOMINANCE (CRITICAL FOR PROFITABILITY)
+
             "pnl_scale_factor",
             "max_shaping_to_pnl_ratio",
-            # v6.0 Execution cost visibility
+
             "execution_cost_visibility_enabled",
             "execution_cost_reward_scale",
-            # v6.0 Good loss cut rewards
+
             "good_loss_cut_enabled",
             "good_loss_cut_bonus",
             "good_loss_cut_efficiency_threshold",
             "good_loss_cut_max_bonus",
-            # v6.0 Cost erosion penalty
+
             "cost_erosion_penalty_enabled",
             "cost_erosion_threshold",
             "cost_erosion_penalty_scale",
             "cost_erosion_penalty_cap",
-            # R-multiple / MAE / time
+
             "r_multiple_bonus_threshold", "r_multiple_bonus_scale", "r_multiple_bonus_cap",
             "mae_efficiency_enabled", "mae_efficiency_scale", "mae_efficiency_threshold",
             "time_efficiency_enabled", "time_efficiency_scale", "optimal_trade_bars", "max_trade_bars_for_bonus",
-            # Exit quality + premature close
+
             "exit_quality_enabled", "trailing_stop_bonus", "agent_close_bonus", "hard_stop_penalty", "risk_liquidation_penalty",
             "premature_close_capture_threshold", "premature_close_penalty_scale", "premature_close_penalty_cap",
-            # Truncation
+
             "truncation_winner_discount", "truncation_loser_extra_penalty",
-            # Entry quality
+
             "entry_quality_integration", "entry_quality_weight",
-            # Setup quality / certainty
+
             "setup_quality_enabled", "setup_quality_threshold", "setup_quality_bonus_scale", "hasty_entry_penalty",
             "certainty_threshold", "entry_certainty_bonus", "low_certainty_penalty",
-            # Session timing
+
             "session_timing_enabled", "off_hours_trade_penalty", "prime_hours_trade_bonus", "time_of_day_quality",
-            # v5.3 features
+
             "market_structure_enabled", "sr_proximity_bonus", "sr_proximity_penalty", "structure_alignment_bonus",
             "bos_alignment_bonus", "order_block_entry_bonus",
             "divergence_awareness_enabled", "divergence_contra_penalty", "divergence_aligned_bonus",
             "overbought_long_penalty", "oversold_short_penalty",
             "regime_awareness_enabled", "risk_off_aggressive_penalty", "high_vol_size_penalty",
-            # Drawdown / streak / churn
+
             "dd_shaping_enabled", "dd_threshold", "dd_penalty_scale", "dd_severity_exponent", "dd_severity_cap",
             "streak_modifier_enabled", "win_streak_bonus_per_win", "loss_streak_penalty_per_loss",
             "anti_churn_enabled", "daily_trade_soft_limit", "churn_penalty_per_trade", "churn_action_cost",
-            # Activity consistency
+
             "activity_consistency_enabled", "target_trades_per_1k_steps", "stage_activity_targets",
             "activity_deviation_penalty_scale", "activity_deviation_penalty_cap", "min_trades_penalty",
-            # Block penalties / per-step shaping
+
             "hard_block_penalty", "soft_block_penalty",
             "per_step_shaping_enabled", "holding_cost_per_bar", "opportunity_bonus_scale",
             "patience_shaping_enabled", "patience_bonus_per_bar", "patience_quality_threshold",
@@ -276,9 +253,9 @@ class CurriculumStageConfig:
             "compounding_success_enabled", "consecutive_quality_trades_bonus",
             "quality_trade_r_multiple", "quality_trade_entry_quality", "quality_trade_exit_type",
             "per_step_min", "per_step_max",
-            # Clipping
+
             "min_reward", "max_reward",
-            # C4 FIX: Exploration bonus (was missing, causing stage config to be silently ignored)
+
             "exploration_bonus",
             "directional_accuracy_weight",
         ]
@@ -298,11 +275,11 @@ class CurriculumStageConfig:
             "max_slippage_points",
             "commission_per_lot",
             "latency_bars",
-            # spread shock support if ExecutionConfig supports it
+
             "spread_shock_enabled",
             "spread_shock_probability",
             "spread_shock_multiplier",
-            # Data spread control (Jan 2026)
+
             "use_data_spread",
             "data_spread_scale",
         ):
@@ -311,7 +288,6 @@ class CurriculumStageConfig:
         return out
 
 
-# Default factory functions to avoid circular imports
 def _default_data_difficulty():
     from envs.curriculum.config.execution import DataDifficulty
     return DataDifficulty()
