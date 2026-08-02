@@ -104,6 +104,7 @@ class CurriculumTrainingCallback(BaseCallback):
         self._ep_pnls: deque = deque(maxlen=MAX_EPISODE_HISTORY)
         self._ep_win_rates: deque = deque(maxlen=MAX_EPISODE_HISTORY)
         self._ep_drawdowns: deque = deque(maxlen=MAX_EPISODE_HISTORY)
+        self._ep_consecutive_losses: deque = deque(maxlen=MAX_EPISODE_HISTORY)
         self._ep_trades: deque = deque(maxlen=MAX_EPISODE_HISTORY)
         self._ep_lens: deque = deque(maxlen=MAX_EPISODE_HISTORY)
 
@@ -1136,6 +1137,16 @@ class CurriculumTrainingCallback(BaseCallback):
             self._ep_drawdowns.append(dd)
             self._ep_trades.append(trades)
 
+            # The env tracks this per episode and curriculum_manager already
+            # gates promotion on it. Recording it here too is what lets the
+            # dashboard show a measured streak instead of a default.
+            self._ep_consecutive_losses.append(
+                int(ep_stats.get(
+                    "max_consecutive_losses_reached",
+                    finfo.get("consecutive_losses", info.get("consecutive_losses", 0)),
+                ))
+            )
+
 
             self._reward_history.append(ep_reward)
             if self._smart_lr_controller is not None:
@@ -1621,6 +1632,26 @@ class CurriculumTrainingCallback(BaseCallback):
             "total_stages_visited": len(stages_data),
         }
 
+    def _consecutive_loss_stats(self) -> Dict[str, Any]:
+        """Losing-streak stats over the same 50-episode window episode_callback uses.
+
+        A streak of 3+ is the threshold the streak rate counts, matching
+        episode_callback so both writers of live_metrics.json mean the same
+        thing by these keys.
+        """
+        window = list(self._ep_consecutive_losses)[-50:]
+        if not window:
+            return {
+                "max_consecutive_losses": None,
+                "avg_consecutive_losses": None,
+                "consecutive_loss_streak_rate": None,
+            }
+        return {
+            "max_consecutive_losses": int(max(window)),
+            "avg_consecutive_losses": float(np.mean(window)),
+            "consecutive_loss_streak_rate": float(sum(1 for x in window if x >= 3) / len(window)),
+        }
+
     def _get_stage_config_version(self) -> Dict[str, Any]:
         if self.curriculum_manager is None:
             return {"stage": "N/A", "hash": "N/A"}
@@ -1796,10 +1827,16 @@ class CurriculumTrainingCallback(BaseCallback):
                     "direction_ratio": self._direction_stats["long_count"] / max(self._direction_stats["short_count"], 1),
                 },
 
+                # Without the consecutive-loss fields the dashboard fell back to
+                # q.get(key, 0), so an unmeasured streak rendered as a flawless
+                # zero - the same way absence read as health during the blind
+                # observation outage. Definitions match episode_callback so the
+                # panel means one thing regardless of which callback wrote last.
                 "quality": {
                     "mean_profit_factor": mean_profit_factor,
                     "mean_r_multiple": mean_r_multiple,
                     "mean_entry_quality": mean_entry_quality,
+                    **self._consecutive_loss_stats(),
                 },
 
                 "exit_stats": {"distribution": dict(self._exit_reason_counts)},

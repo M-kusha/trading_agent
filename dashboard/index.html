@@ -1527,8 +1527,14 @@
     
     // Also get raw consecutive losses from quality section for context
     const quality = data.quality || {};
-    const maxConsecLosses = quality.max_consecutive_losses || 0;
-    const avgConsecLosses = quality.avg_consecutive_losses || 0;
+    // null means the writing callback never reported a streak. `|| 0` used to
+    // turn that into a flawless "Max streak: 0", which is exactly the kind of
+    // absence-reads-as-health display that hid the blind-observation outage.
+    const streakKnown = quality.streak_data_available === true
+      && quality.max_consecutive_losses !== null
+      && quality.max_consecutive_losses !== undefined;
+    const maxConsecLosses = streakKnown ? quality.max_consecutive_losses : null;
+    const avgConsecLosses = streakKnown ? quality.avg_consecutive_losses : null;
     
     // Determine overall governor status
     const getGovernorStatus = () => {
@@ -1590,7 +1596,7 @@
                 <span className="mono text-xs font-bold text-slate-300">{(lossLayerRatio * 100).toFixed(0)}%</span>
               </div>
               <div className="text-[9px] text-slate-600 mt-1.5">
-                Level {Math.round(lossLayerLevel * 5)}/5 • Max streak: {maxConsecLosses}
+                Level {Math.round(lossLayerLevel * 5)}/5 • Max streak: {streakKnown ? maxConsecLosses : "n/a"}
               </div>
             </div>
 
@@ -1641,7 +1647,7 @@
                 <span className="mono text-xs font-bold text-slate-300">{(sessionConsecLossRatio * 100).toFixed(0)}%</span>
               </div>
               <div className="text-[9px] text-slate-600 mt-1.5">
-                Avg: {avgConsecLosses.toFixed(1)} losses
+                Avg: {streakKnown ? `${avgConsecLosses.toFixed(1)} losses` : "not reported"}
               </div>
             </div>
           </div>

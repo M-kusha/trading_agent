@@ -481,30 +481,8 @@ class MetricsReader:
         }
 
 
-        q = self._safe_dict(raw.get("quality", {}))
-        mean_r_multiple = self._safe_float(q.get("mean_r_multiple", raw.get("mean_r_multiple", 0)))
-        mean_profit_factor = self._safe_float(q.get("mean_profit_factor", raw.get("mean_profit_factor", 0)))
-        mean_entry_quality = self._safe_float(q.get("mean_entry_quality", raw.get("mean_entry_quality", 0.5)))
-
-
-        max_consecutive_losses = self._safe_int(q.get("max_consecutive_losses", 0))
-        avg_consecutive_losses = self._safe_float(q.get("avg_consecutive_losses", 0))
-        consecutive_loss_streak_rate = self._safe_float(q.get("consecutive_loss_streak_rate", 0))
-
-        self._append_history("r_multiples", mean_r_multiple)
-
-        quality = {
-            "mean_r_multiple": mean_r_multiple,
-            "mean_r_multiple_status": get_status_color(mean_r_multiple, THRESHOLDS.r_mult_good, THRESHOLDS.r_mult_ok, True),
-            "mean_profit_factor": mean_profit_factor,
-            "mean_profit_factor_status": get_status_color(mean_profit_factor, THRESHOLDS.pf_good, THRESHOLDS.pf_ok, True),
-            "mean_entry_quality": mean_entry_quality,
-            "mean_entry_quality_status": get_status_color(mean_entry_quality, THRESHOLDS.eq_good, THRESHOLDS.eq_ok, True),
-
-            "max_consecutive_losses": max_consecutive_losses,
-            "avg_consecutive_losses": avg_consecutive_losses,
-            "consecutive_loss_streak_rate": consecutive_loss_streak_rate,
-        }
+        quality = self._process_quality(raw)
+        self._append_history("r_multiples", quality["mean_r_multiple"])
 
 
         exit_stats = self._safe_dict(raw.get("exit_stats", {}))
@@ -588,6 +566,39 @@ class MetricsReader:
             "recent_r_multiples": recent_r_multiples,
 
             "history": {k: v[-50:] for k, v in self._history.items()},
+        }
+
+    def _process_quality(self, raw: Dict[str, Any]) -> Dict[str, Any]:
+        q = self._safe_dict(raw.get("quality", {}))
+        mean_r_multiple = self._safe_float(q.get("mean_r_multiple", raw.get("mean_r_multiple", 0)))
+        mean_profit_factor = self._safe_float(q.get("mean_profit_factor", raw.get("mean_profit_factor", 0)))
+        mean_entry_quality = self._safe_float(q.get("mean_entry_quality", raw.get("mean_entry_quality", 0.5)))
+
+        # The streak fields defaulted to 0 when the writing callback did not
+        # supply them, so "never measured" rendered as "never had a losing
+        # streak". Zero consecutive losses across thousands of trades at a ~50%
+        # win rate is not a number any real run can produce - it was the
+        # default of a key nobody wrote. None keeps absent distinguishable from
+        # a genuine zero, in both directions.
+        has_streak_data = "max_consecutive_losses" in q and q["max_consecutive_losses"] is not None
+        max_consecutive_losses = self._safe_int(q.get("max_consecutive_losses", 0)) if has_streak_data else None
+        avg_consecutive_losses = self._safe_float(q.get("avg_consecutive_losses", 0)) if has_streak_data else None
+        consecutive_loss_streak_rate = (
+            self._safe_float(q.get("consecutive_loss_streak_rate", 0)) if has_streak_data else None
+        )
+
+        return {
+            "mean_r_multiple": mean_r_multiple,
+            "mean_r_multiple_status": get_status_color(mean_r_multiple, THRESHOLDS.r_mult_good, THRESHOLDS.r_mult_ok, True),
+            "mean_profit_factor": mean_profit_factor,
+            "mean_profit_factor_status": get_status_color(mean_profit_factor, THRESHOLDS.pf_good, THRESHOLDS.pf_ok, True),
+            "mean_entry_quality": mean_entry_quality,
+            "mean_entry_quality_status": get_status_color(mean_entry_quality, THRESHOLDS.eq_good, THRESHOLDS.eq_ok, True),
+
+            "max_consecutive_losses": max_consecutive_losses,
+            "avg_consecutive_losses": avg_consecutive_losses,
+            "consecutive_loss_streak_rate": consecutive_loss_streak_rate,
+            "streak_data_available": has_streak_data,
         }
 
     def _process_observation(self, obs: Any) -> Dict[str, Any]:
