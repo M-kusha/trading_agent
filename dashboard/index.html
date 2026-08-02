@@ -406,9 +406,20 @@
           const ok = (rm.value != null) ? (good - 0.05) : thresholds.r_multiple.ok;
           return v >= good ? "good" : v >= ok ? "ok" : "bad";
         }
-      case "trades_ep":
+      case "trades_ep": {
+        // The hand-written band contradicted the reward function. At stage 0 it
+        // painted 50-600 trades/episode green while the curriculum target was
+        // 12.5 - green up to 48x - and marked the CORRECT 12.5 as "bad, too
+        // few". The activity penalty starts at 1.5x. Prefer the producer's
+        // overtrade_ratio, which is computed against the live stage target, and
+        // fall back to the band only when the producer did not report it.
+        const ratio = data?.trading?.overtrade_ratio;
+        if (data?.trading?.frequency_data_available && ratio != null && ratio > 0) {
+          return ratio > 3.0 ? "bad" : ratio > 1.5 ? "ok" : ratio < 0.2 ? "bad" : "good";
+        }
         return (v >= thresholds.trades_ep.min && v <= thresholds.trades_ep.max) ? "good" :
                (v >= thresholds.trades_ep.min * 0.5 && v <= thresholds.trades_ep.max * 1.5) ? "ok" : "bad";
+      }
       case "total_pnl":
         // P&L thresholds scale with phase
         const pnlGood = phase === 0 ? -10000 : phase === 1 ? -2000 : phase === 2 ? 0 : 1000;
@@ -2865,7 +2876,9 @@
         status: getStageAwareKPIStatus("trades_ep", trading.mean_trades, stageIdx, data),
         delta: compareOn ? formatDelta({ current: trading.mean_trades, base: baseline?.trading?.mean_trades, format: "num", d: 1, higherIsBetter: true }) : null,
         spark: data.history?.trades_per_episode,
-        target: `${phaseThresholds.trades_ep.min}-${phaseThresholds.trades_ep.max}`,
+        target: trading.frequency_data_available && trading.stage_target_trades_per_day > 0
+          ? `${fmt.num(trading.overtrade_ratio, 1)}x stage target`
+          : `${phaseThresholds.trades_ep.min}-${phaseThresholds.trades_ep.max}`,
       },
       {
         // Trades/Ep alone cannot show over-trading: 368 trades is only alarming

@@ -52,6 +52,7 @@ THRESHOLD_FIELDS: Set[str] = {
     "max_win_rate_wilson_width",
     "max_pnl_std",
     "min_trade_count_avg",
+    "max_trade_count_avg",
     "min_entropy",
     "max_mask_collapse_rate",
     "max_stop_mode_rate",

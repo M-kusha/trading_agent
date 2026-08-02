@@ -34,6 +34,12 @@ class CompetenceThresholds:
     max_win_rate_wilson_width: float = 0.0
     max_pnl_std: float = 10000.0
     min_trade_count_avg: float = 1.0
+    # Upper edge of the acceptable trade-count band. The composite scorer used
+    # to reward trade count monotonically - min(count/min_count, 2)/2 - so a
+    # policy trading 29x the stage target scored a perfect 1.0 for activity,
+    # identical to one trading 2x. That is the promotion gate paying for the
+    # over-trading the reward function penalises. 0.0 disables the ceiling.
+    max_trade_count_avg: float = 0.0
 
 
     min_avg_bars_between_trades: float = 0.0
