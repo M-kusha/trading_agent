@@ -320,3 +320,151 @@ extract more from that budget. They do not enlarge it.
 
 The strongest argument for doing Phase A first is that it costs half an hour
 and can end the project honestly.
+
+---
+
+## 12. Diagnosed: why the last run over-traded
+
+Operator report: *"the model became a junkie which traded almost always."*
+
+That is not a mystery — it is the reward structure working exactly as written.
+Two mechanisms stack.
+
+### 12.1 There is an explicit penalty for NOT trading
+
+`min_trades_penalty` and `target_trades_per_1k_steps` penalise inactivity at
+every stage:
+
+```
+stage         0     1     2     3     4     5     6     7     8     9
+target/1k   8.0   8.0   8.0   8.0   6.0   5.0   4.0   3.5   3.0   3.0
+min_trades  0.30  0.35  0.30  0.25  0.20  0.20  0.15  0.10  0.10  0.10
+churn/trade 0.02  0.018 0.025 0.032 0.035 0.04  0.05  0.06  0.08  0.10
+soft limit    25    18    12    10    10    10    10     8     7     6
+```
+
+At Explorer the inactivity penalty is **15x the per-trade churn cost**
+(0.30 vs 0.02), and the churn cost only applies *above* 25 trades/day.
+
+### 12.2 The unpenalised band is enormous at every stage
+
+`target_trades_per_1k_steps` converts to trades/day at 96 M15 bars per 24h:
+
+```
+stage 0:  target 0.77/day   churn-free up to 25/day   ->  33x band
+stage 3:  target 0.77/day   churn-free up to 10/day   ->  13x band
+stage 6:  target 0.38/day   churn-free up to 10/day   ->  26x band
+stage 9:  target 0.29/day   churn-free up to  6/day   ->  21x band
+```
+
+**Anywhere between roughly 1 and 25 trades per day, the agent pays no activity
+penalty at all** — and at Explorer it pays essentially no market cost either
+(spread 0.01 points, commission 0, slippage 0). Trading is strictly cheaper
+than not trading, so the policy trades.
+
+The band never closes. Even at Live Ready the ceiling is ~21x the target.
+
+### 12.3 The blind observation made it inevitable
+
+The previous run trained on `np.zeros(90)`. A policy that cannot observe the
+market cannot time entries. Facing a reward that charges ~nothing for activity
+and 0.30 for inactivity, the optimal blind policy **is** to trade constantly.
+
+The observation is fixed (40 real dims, 0 dead). **The reward structure that
+paid for it is not.** Re-running training today would reduce the symptom
+without removing its cause.
+
+### 12.4 Fixes
+
+- [ ] **Delete `min_trades_penalty` entirely.** Trading frequency is an
+      *outcome*, not a target. If the agent should trade more, that belongs in
+      exploration (entropy coefficient), not in the objective.
+- [ ] **Close the band.** `daily_trade_soft_limit` should sit near
+      `target_trades_per_1k_steps` converted to trades/day, not 13-33x above it.
+- [ ] **Charge the real spread from step 0** (see 3.1 and 6). Free trading is
+      the other half of the mechanism.
+- [ ] **Enable `churn_action_cost`** (currently 0.0; the config itself
+      recommends 0.001-0.003). A small per-action cost is the cleanest possible
+      anti-churn signal and does not require a target.
+- [ ] **Track trades/day as a first-class metric** with an explicit alert band.
+      Overtrading should be visible within minutes of a run starting, not
+      discovered after it.
+
+### 12.5 Acceptance test
+
+Any run is rejected if median trades/day exceeds **3x** the stage target.
+This becomes a hard gate in the dashboard, not a post-hoc observation.
+
+---
+
+## 13. Completing training before touching live
+
+Training now depends on **zero** registry modules. The env loads five
+`modules/*` files: the observation builder, the simulation clock and their
+packages. That makes the training loop independently testable, and it should be
+finished and validated *before* any effort goes into live infrastructure.
+
+Ordered, each step gated:
+
+### 13.1 Extract `trading/state/` (shared producers)
+
+`envs/prop_firm/{signals,observation}` becomes a package both paths import.
+
+```
+trading/state/
+  ├── env calls it with replayed CSV bars
+  └── LivePPOAgent calls it with MT5 bars
+```
+
+Removes the last place train and live can diverge, and drops four bus
+dependencies from `LivePPOAgent`.
+**Gate:** deterministic replay — one recorded market state through both paths
+produces a byte-identical 40-dim observation.
+
+### 13.2 Dashboard observation-health panel
+
+`dashboard/server.py` currently has **zero** references to obs, schema, feature
+or dead-dim. It rendered healthy curves throughout the blind-agent outage and
+would do so again.
+
+Add, above every other metric:
+- observation schema version + hash
+- per-block standard deviation
+- constant-dimension count (budget: 0)
+- **median trades/day with the 12.5 alert band**
+- red banner when any block goes dead
+
+`episode_callback` writes it, the server surfaces it.
+**Gate:** inject a zero-observation fault mid-run; banner appears within one
+refresh.
+
+### 13.3 Deterministic seeding
+
+`--seed -1` defaults to a time-based seed, which undoes the reproducibility the
+simulation clock provides. Default to a fixed value; require `--seed random`
+to opt out.
+
+### 13.4 First real training run
+
+Short (300k steps). Not for performance — for diagnosis:
+- action distribution (is it just long?)
+- **median trades/day** (is it a junkie?)
+- gross vs net (what does cost eat?)
+- entropy trajectory (is the PID working?)
+
+### 13.5 Baselines in the same environment
+
+always-flat, random-valid, buy-and-hold, MA-crossover, session rule. Minutes
+each. Without them no Sharpe number means anything.
+
+### 13.6 Then the ablation (section 7)
+
+By this point the question is well-posed: not "curriculum or not" but **which
+axis carries the value**, measured against real baselines with honest costs.
+
+### Why this order
+
+Steps 13.1-13.5 need no live infrastructure, no bus, no MT5 and no registry
+modules. They answer whether the agent can learn anything before any effort
+goes into making it tradeable. Live hardening is expensive and entirely wasted
+if the answer is no.
