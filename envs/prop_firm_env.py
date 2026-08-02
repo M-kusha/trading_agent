@@ -112,6 +112,11 @@ from modules.meta.ppo_observation_builder import (
 
 OBS_BUILDER_AVAILABLE = True  # retained for backward compatibility; always True
 
+# Single source of "now" for every module. The env publishes the timestamp of
+# the bar being replayed on each step; anything that would otherwise call
+# datetime.now() reads it from here instead. See modules/utils/simulation_time.
+from modules.utils import simulation_time as simclock  # noqa: E402
+
 
 def validate_observation_version(saved_version: str, saved_size: int) -> None:
     """
@@ -1621,6 +1626,11 @@ class PropFirmTradingEnv(
 
         inst = self._episode_instrument
         dt = self._get_bar_dt(inst)
+
+        # Reset step-based cooldowns and re-anchor simulated time before the
+        # first observation of the episode is built.
+        simclock.reset()
+        simclock.set_bar_time(dt, step=int(self.current_step))
         self._maybe_roll_day_session(dt)
 
         obs = self._get_observation()
@@ -1648,6 +1658,13 @@ class PropFirmTradingEnv(
 
         inst = self._episode_instrument
         dt = self._get_bar_dt(inst)
+
+        # Publish the replayed bar's timestamp as "now" for every module in the
+        # process. Without this, any module reading datetime.now() sees the real
+        # wall clock: training overnight makes session logic believe the market
+        # is closed, and second-based cooldowns never expire because thousands of
+        # bars replay inside one real second.
+        simclock.set_bar_time(dt, step=int(self.current_step))
 
         # Step caches
         self._step_entry_quality_cache = {}

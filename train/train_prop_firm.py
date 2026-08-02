@@ -115,6 +115,7 @@ except ImportError:
     start_dashboard_server = None  # type: ignore
 
 # Extracted controllers and callbacks (Phase 1 modularization)
+from modules.utils import simulation_time as simclock
 from train.callbacks import CurriculumCheckpointCallback, CurriculumTrainingCallback, VecEpisodeTradingCallback
 
 # =============================================================================
@@ -156,6 +157,15 @@ def seed_everything(seed: int) -> None:
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     set_random_seed(seed)
+
+    # Determinism is not only about RNG. Any module that reads the wall clock
+    # makes a run depend on when it was started - session logic differs between
+    # a 02:00 and a 14:00 launch, and second-based cooldowns behave differently
+    # under load. Declaring simulation mode here makes "now" a function of the
+    # replayed bar instead, so a seeded run is genuinely reproducible.
+    simclock.set_mode(simclock.TimeMode.SIMULATION)
+    simclock.reset()
+    logger.info("[CLOCK] simulation mode enabled - modules read bar time, not wall clock")
 
 
 def pick_subproc_start_method() -> Optional[str]:
