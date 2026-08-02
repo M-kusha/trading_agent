@@ -123,7 +123,6 @@ def get_explorer_config() -> CurriculumStageConfig:
             time_efficiency_scale=0.0,
             optimal_trade_bars=12,
             max_trade_bars_for_bonus=48,
-
             exit_quality_enabled=False,
             trailing_stop_bonus=0.0,
             agent_close_bonus=0.0,
@@ -156,8 +155,6 @@ def get_explorer_config() -> CurriculumStageConfig:
             soft_block_penalty=0.0,
             per_step_shaping_enabled=False,
             holding_cost_per_bar=0.0,
-
-
             activity_consistency_enabled=True,
             target_trades_per_1k_steps=8.0,
             activity_deviation_penalty_scale=0.3,
@@ -193,7 +190,7 @@ def get_explorer_config() -> CurriculumStageConfig:
             entry_quality_threshold=0.10,
             hard_stop_loss_eur=1000.0,
             soft_stop_loss_eur=800.0,
-            trailing_activation_eur=200.0,
+            trailing_activation_eur=1200.0,
             trailing_retrace_pct=0.50,
             time_decay_hours=24.0,
             risk_per_trade_pct=0.01,
@@ -339,9 +336,8 @@ def get_experimenter_config() -> CurriculumStageConfig:
 
             time_efficiency_enabled=False,
             time_efficiency_scale=0.0,
-            optimal_trade_bars=12,
-            max_trade_bars_for_bonus=48,
-
+            optimal_trade_bars=16,
+            max_trade_bars_for_bonus=64,
             exit_quality_enabled=False,
             trailing_stop_bonus=0.0,
             agent_close_bonus=0.0,
@@ -374,8 +370,6 @@ def get_experimenter_config() -> CurriculumStageConfig:
             soft_block_penalty=0.002,
             per_step_shaping_enabled=False,
             holding_cost_per_bar=0.0,
-
-
             activity_consistency_enabled=True,
             target_trades_per_1k_steps=8.0,
             activity_deviation_penalty_scale=0.4,
@@ -411,7 +405,7 @@ def get_experimenter_config() -> CurriculumStageConfig:
             entry_quality_threshold=0.12,
             hard_stop_loss_eur=800.0,
             soft_stop_loss_eur=600.0,
-            trailing_activation_eur=150.0,
+            trailing_activation_eur=960.0,
             trailing_retrace_pct=0.45,
             time_decay_hours=18.0,
             risk_per_trade_pct=0.008,
@@ -421,7 +415,7 @@ def get_experimenter_config() -> CurriculumStageConfig:
 
             min_episodes=150,
             min_timesteps=200_000,
-            min_win_rate=0.25,
+            min_win_rate=0.2,
             min_profit_factor=0.3,
             max_avg_drawdown=0.35,
             min_avg_pnl=-3000.0,
@@ -561,9 +555,8 @@ def get_trend_student_config() -> CurriculumStageConfig:
 
             time_efficiency_enabled=False,
             time_efficiency_scale=0.0,
-            optimal_trade_bars=12,
-            max_trade_bars_for_bonus=36,
-
+            optimal_trade_bars=20,
+            max_trade_bars_for_bonus=80,
             exit_quality_enabled=True,
             trailing_stop_bonus=0.12,
             agent_close_bonus=-0.05,
@@ -605,8 +598,6 @@ def get_trend_student_config() -> CurriculumStageConfig:
             soft_block_penalty=0.005,
             per_step_shaping_enabled=False,
             holding_cost_per_bar=0.0,
-
-
             observation_period_required=True,
             min_bars_observation_before_entry=20,
             observation_completion_bonus=0.06,
@@ -652,7 +643,7 @@ def get_trend_student_config() -> CurriculumStageConfig:
             entry_quality_threshold=0.20,
             hard_stop_loss_eur=450.0,
             soft_stop_loss_eur=320.0,
-            trailing_activation_eur=100.0,
+            trailing_activation_eur=540.0,
             trailing_retrace_pct=0.40,
             time_decay_hours=12.0,
             risk_per_trade_pct=0.006,
@@ -661,11 +652,11 @@ def get_trend_student_config() -> CurriculumStageConfig:
         competence=CompetenceThresholds(
             min_episodes=200,
             min_timesteps=300_000,
-            min_win_rate=0.35,
+            min_win_rate=0.25,
             min_profit_factor=0.7,
             max_avg_drawdown=0.20,
             min_avg_pnl=-500.0,
-            min_avg_r_multiple=-0.1,
+            min_avg_r_multiple=-0.15,
             min_entropy=0.40,
             max_win_rate_std=0.30,
             max_pnl_std=10000.0,
@@ -807,10 +798,8 @@ def get_session_student_config() -> CurriculumStageConfig:
 
             time_efficiency_enabled=False,
             time_efficiency_scale=0.0,
-            optimal_trade_bars=12,
-            max_trade_bars_for_bonus=36,
-
-
+            optimal_trade_bars=24,
+            max_trade_bars_for_bonus=96,
             exit_quality_enabled=True,
             trailing_stop_bonus=0.20,
             agent_close_bonus=-0.07,
@@ -848,8 +837,6 @@ def get_session_student_config() -> CurriculumStageConfig:
             soft_block_penalty=0.008,
             per_step_shaping_enabled=False,
             holding_cost_per_bar=0.0,
-
-
             activity_consistency_enabled=True,
             target_trades_per_1k_steps=8.0,
             activity_deviation_penalty_scale=0.6,
@@ -887,7 +874,7 @@ def get_session_student_config() -> CurriculumStageConfig:
             entry_quality_threshold=0.30,
             hard_stop_loss_eur=450.0,
             soft_stop_loss_eur=350.0,
-            trailing_activation_eur=100.0,
+            trailing_activation_eur=540.0,
             trailing_retrace_pct=0.40,
             time_decay_hours=10.0,
             risk_per_trade_pct=0.006,
@@ -896,8 +883,8 @@ def get_session_student_config() -> CurriculumStageConfig:
         competence=CompetenceThresholds(
             min_episodes=250,
             min_timesteps=400_000,
-            min_win_rate=0.38,
-            min_profit_factor=0.80,
+            min_win_rate=0.28,
+            min_profit_factor=0.8,
             max_avg_drawdown=0.18,
             min_avg_pnl=-300.0,
             min_avg_r_multiple=-0.05,
@@ -1045,9 +1032,8 @@ def get_timing_student_config() -> CurriculumStageConfig:
 
             time_efficiency_enabled=False,
             time_efficiency_scale=0.0,
-            optimal_trade_bars=10,
-            max_trade_bars_for_bonus=32,
-
+            optimal_trade_bars=28,
+            max_trade_bars_for_bonus=112,
             exit_quality_enabled=True,
 
             trailing_stop_bonus=0.30,
@@ -1175,7 +1161,7 @@ def get_timing_student_config() -> CurriculumStageConfig:
             hard_stop_loss_eur=400.0,
             soft_stop_loss_eur=280.0,
 
-            trailing_activation_eur=80.0,
+            trailing_activation_eur=480.0,
             trailing_retrace_pct=0.30,
 
             time_decay_hours=6.0,
@@ -1186,11 +1172,11 @@ def get_timing_student_config() -> CurriculumStageConfig:
         competence=CompetenceThresholds(
             min_episodes=300,
             min_timesteps=500_000,
-            min_win_rate=0.40,
-            min_profit_factor=0.85,
+            min_win_rate=0.3,
+            min_profit_factor=0.9,
             max_avg_drawdown=0.15,
             min_avg_pnl=-200.0,
-            min_avg_r_multiple=-0.05,
+            min_avg_r_multiple=0.0,
             min_entropy=0.30,
             max_win_rate_std=0.25,
             max_pnl_std=8000.0,
@@ -1324,9 +1310,8 @@ def get_integrator_config() -> CurriculumStageConfig:
 
             time_efficiency_enabled=False,
             time_efficiency_scale=0.0,
-            optimal_trade_bars=10,
-            max_trade_bars_for_bonus=30,
-
+            optimal_trade_bars=32,
+            max_trade_bars_for_bonus=128,
             exit_quality_enabled=True,
             trailing_stop_bonus=0.32,
             agent_close_bonus=-0.10,
@@ -1401,7 +1386,7 @@ def get_integrator_config() -> CurriculumStageConfig:
             # Only applied when per_step_shaping_enabled is True.
             per_step_shaping_enabled=True,
             churn_action_cost=0.002,
-            holding_cost_per_bar=0.0002,
+            holding_cost_per_bar=5e-05,
             patience_shaping_enabled=True,
             patience_bonus_per_bar=0.0012,
             patience_quality_threshold=0.38,
@@ -1461,7 +1446,7 @@ def get_integrator_config() -> CurriculumStageConfig:
             min_setup_quality_for_entry=0.60,
             hard_stop_loss_eur=350.0,
             soft_stop_loss_eur=230.0,
-            trailing_activation_eur=80.0,
+            trailing_activation_eur=420.0,
             trailing_retrace_pct=0.35,
             time_decay_hours=7.0,
             risk_per_trade_pct=0.004,
@@ -1470,7 +1455,7 @@ def get_integrator_config() -> CurriculumStageConfig:
         competence=CompetenceThresholds(
             min_episodes=350,
             min_timesteps=700_000,
-            min_win_rate=0.45,
+            min_win_rate=0.32,
             min_profit_factor=1.0,
             max_avg_drawdown=0.12,
             min_avg_pnl=0.0,
@@ -1633,9 +1618,8 @@ def get_risk_manager_config() -> CurriculumStageConfig:
 
             time_efficiency_enabled=True,
             time_efficiency_scale=0.02,
-            optimal_trade_bars=9,
-            max_trade_bars_for_bonus=28,
-
+            optimal_trade_bars=36,
+            max_trade_bars_for_bonus=144,
             exit_quality_enabled=True,
             trailing_stop_bonus=0.34,
             agent_close_bonus=-0.10,
@@ -1711,7 +1695,7 @@ def get_risk_manager_config() -> CurriculumStageConfig:
             # Only applied when per_step_shaping_enabled is True.
             per_step_shaping_enabled=True,
             churn_action_cost=0.002,
-            holding_cost_per_bar=0.0003,
+            holding_cost_per_bar=5e-05,
             patience_shaping_enabled=True,
             patience_bonus_per_bar=0.002,
             patience_quality_threshold=0.40,
@@ -1777,7 +1761,7 @@ def get_risk_manager_config() -> CurriculumStageConfig:
             min_setup_quality_for_entry=0.65,
             hard_stop_loss_eur=300.0,
             soft_stop_loss_eur=200.0,
-            trailing_activation_eur=70.0,
+            trailing_activation_eur=360.0,
             trailing_retrace_pct=0.32,
             time_decay_hours=6.0,
             risk_per_trade_pct=0.0035,
@@ -1786,11 +1770,11 @@ def get_risk_manager_config() -> CurriculumStageConfig:
         competence=CompetenceThresholds(
             min_episodes=400,
             min_timesteps=900_000,
-            min_win_rate=0.48,
-            min_profit_factor=1.10,
+            min_win_rate=0.34,
+            min_profit_factor=1.1,
             max_avg_drawdown=0.08,
             min_avg_pnl=50.0,
-            min_avg_r_multiple=0.08,
+            min_avg_r_multiple=0.1,
             min_entropy=0.15,
             max_win_rate_std=0.18,
             max_pnl_std=6000.0,
@@ -1952,9 +1936,8 @@ def get_strategist_config() -> CurriculumStageConfig:
 
             time_efficiency_enabled=True,
             time_efficiency_scale=0.025,
-            optimal_trade_bars=8,
-            max_trade_bars_for_bonus=25,
-
+            optimal_trade_bars=40,
+            max_trade_bars_for_bonus=160,
             exit_quality_enabled=True,
             trailing_stop_bonus=0.36,
             agent_close_bonus=-0.10,
@@ -2028,7 +2011,7 @@ def get_strategist_config() -> CurriculumStageConfig:
             # Only applied when per_step_shaping_enabled is True.
             per_step_shaping_enabled=True,
             churn_action_cost=0.002,
-            holding_cost_per_bar=0.0004,
+            holding_cost_per_bar=0.0001,
             patience_shaping_enabled=True,
             patience_bonus_per_bar=0.003,
             patience_quality_threshold=0.42,
@@ -2101,7 +2084,7 @@ def get_strategist_config() -> CurriculumStageConfig:
             min_setup_quality_for_entry=0.70,
             hard_stop_loss_eur=280.0,
             soft_stop_loss_eur=180.0,
-            trailing_activation_eur=75.0,
+            trailing_activation_eur=336.0,
             trailing_retrace_pct=0.30,
             time_decay_hours=5.5,
             risk_per_trade_pct=0.0032,
@@ -2110,11 +2093,11 @@ def get_strategist_config() -> CurriculumStageConfig:
         competence=CompetenceThresholds(
             min_episodes=500,
             min_timesteps=1_100_000,
-            min_win_rate=0.50,
-            min_profit_factor=1.18,
+            min_win_rate=0.36,
+            min_profit_factor=1.2,
             max_avg_drawdown=0.07,
             min_avg_pnl=80.0,
-            min_avg_r_multiple=0.10,
+            min_avg_r_multiple=0.14,
             min_entropy=0.12,
             max_win_rate_std=0.16,
             max_pnl_std=5500.0,
@@ -2285,9 +2268,8 @@ def get_professional_config() -> CurriculumStageConfig:
 
             time_efficiency_enabled=True,
             time_efficiency_scale=0.03,
-            optimal_trade_bars=7,
-            max_trade_bars_for_bonus=22,
-
+            optimal_trade_bars=44,
+            max_trade_bars_for_bonus=176,
             exit_quality_enabled=True,
             trailing_stop_bonus=0.38,
             agent_close_bonus=-0.12,
@@ -2361,7 +2343,7 @@ def get_professional_config() -> CurriculumStageConfig:
             # Only applied when per_step_shaping_enabled is True.
             per_step_shaping_enabled=True,
             churn_action_cost=0.002,
-            holding_cost_per_bar=0.0005,
+            holding_cost_per_bar=0.0001,
             patience_shaping_enabled=True,
             patience_bonus_per_bar=0.003,
             patience_quality_threshold=0.45,
@@ -2440,7 +2422,7 @@ def get_professional_config() -> CurriculumStageConfig:
             min_setup_quality_for_entry=0.72,
             hard_stop_loss_eur=260.0,
             soft_stop_loss_eur=170.0,
-            trailing_activation_eur=80.0,
+            trailing_activation_eur=312.0,
             trailing_retrace_pct=0.28,
             time_decay_hours=5.0,
             risk_per_trade_pct=0.003,
@@ -2449,11 +2431,11 @@ def get_professional_config() -> CurriculumStageConfig:
         competence=CompetenceThresholds(
             min_episodes=600,
             min_timesteps=1_400_000,
-            min_win_rate=0.52,
-            min_profit_factor=1.25,
+            min_win_rate=0.38,
+            min_profit_factor=1.3,
             max_avg_drawdown=0.06,
             min_avg_pnl=100.0,
-            min_avg_r_multiple=0.12,
+            min_avg_r_multiple=0.18,
             min_entropy=0.08,
             max_win_rate_std=0.14,
             min_trades_per_episode_for_win_rate_stability=3,
@@ -2635,9 +2617,8 @@ def get_live_ready_config() -> CurriculumStageConfig:
 
             time_efficiency_enabled=True,
             time_efficiency_scale=0.035,
-            optimal_trade_bars=6,
-            max_trade_bars_for_bonus=20,
-
+            optimal_trade_bars=48,
+            max_trade_bars_for_bonus=192,
             exit_quality_enabled=True,
             trailing_stop_bonus=0.40,
             agent_close_bonus=-0.12,
@@ -2711,7 +2692,7 @@ def get_live_ready_config() -> CurriculumStageConfig:
             # Only applied when per_step_shaping_enabled is True.
             per_step_shaping_enabled=True,
             churn_action_cost=0.002,
-            holding_cost_per_bar=0.0005,
+            holding_cost_per_bar=0.0001,
             patience_shaping_enabled=True,
             patience_bonus_per_bar=0.004,
             patience_quality_threshold=0.48,
@@ -2790,7 +2771,7 @@ def get_live_ready_config() -> CurriculumStageConfig:
             min_setup_quality_for_entry=0.75,
             hard_stop_loss_eur=250.0,
             soft_stop_loss_eur=160.0,
-            trailing_activation_eur=85.0,
+            trailing_activation_eur=300.0,
             trailing_retrace_pct=0.26,
             time_decay_hours=4.5,
             risk_per_trade_pct=0.0028,
@@ -2799,11 +2780,11 @@ def get_live_ready_config() -> CurriculumStageConfig:
         competence=CompetenceThresholds(
             min_episodes=700,
             min_timesteps=1_600_000,
-            min_win_rate=0.54,
-            min_profit_factor=1.32,
+            min_win_rate=0.4,
+            min_profit_factor=1.4,
             max_avg_drawdown=0.055,
             min_avg_pnl=120.0,
-            min_avg_r_multiple=0.14,
+            min_avg_r_multiple=0.22,
             min_entropy=0.05,
             max_win_rate_std=0.12,
             min_trades_per_episode_for_win_rate_stability=3,
