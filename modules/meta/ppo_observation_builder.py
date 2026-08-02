@@ -39,17 +39,17 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-# Import canonical timeframe constants
-try:
-    from modules.voting.core.constants import (
-        CONTEXT_TIMEFRAMES,
-        PRIMARY_TIMEFRAME,
-        SUPPORTED_TIMEFRAMES,
-    )
-except Exception:
-    PRIMARY_TIMEFRAME = "M15"
-    CONTEXT_TIMEFRAMES = ("H1", "H4", "D1")
-    SUPPORTED_TIMEFRAMES = ("M15", "H1", "H4", "D1")
+# Canonical timeframe constants.
+#
+# These were imported from modules.voting.core.constants behind a try/except
+# that silently substituted these exact same values on failure. Two problems:
+# the fallback made a broken import invisible, and importing one constant from
+# the voting package pulled in its eager __init__ -> the whole voting tree ->
+# module_system -> SmartInfoBus: 40 modules loaded to read three strings.
+# Declared here instead. The observation path now depends on numpy alone.
+PRIMARY_TIMEFRAME: str = "M15"
+CONTEXT_TIMEFRAMES: tuple = ("H1", "H4", "D1")
+SUPPORTED_TIMEFRAMES: tuple = ("M15", "H1", "H4", "D1")
 
 # Import centralized trade limits
 try:
@@ -88,12 +88,26 @@ except Exception:
 #
 # ═══════════════════════════════════════════════════════════════════
 
-PPO_OBS_VERSION = "5.8"
+PPO_OBS_VERSION = "6.0"
 # Must equal len(_build_feature_names()) and max(FEATURE_GROUPS.values())[1].
-# v5.8 added the 16-dim expert_raw block (indices 90..105) but this constant was
-# left at the v5.7 value of 84, which made _build_feature_names() raise at import
-# time. tests/test_obs_schema.py now pins all three to the same number.
-PPO_OBS_SIZE = 106
+# tests/test_obs_contract.py pins all three to the same number.
+#
+# v6.0 removes the 16-dim expert_raw block that v5.8 added at indices 90..105.
+# Reasons, all measured:
+#   * It read proposal keys from the modules/voting/experts schema ("chop",
+#     "exhaustion_score", "hurst", "vol_ratio", "bias") while training feeds the
+#     envs/prop_firm/signals schema. Only "trend_slope" ever matched, so 15 of
+#     16 dims were constant - the block never functioned.
+#   * The signals behind it have no measured skill: every expert underperforms
+#     an always-long control at the daily horizon (theme +6.32 bp, committee
+#     +6.11, trend +4.50, momentum +0.64 vs always-long +10.18), hit rates sit
+#     at 49-52%, and the best information coefficient is +0.043 at p=0.089.
+#   * The dataset supports roughly 3,223 effectively independent samples, so
+#     every observation dimension that does not earn its place costs
+#     generalisation.
+# Re-add with a schema both paths produce if an ablation shows raw expert
+# metrics help.
+PPO_OBS_SIZE = 90
 
 DEFAULT_INSTRUMENT = "XAUUSD"
 
@@ -107,7 +121,8 @@ FEATURE_GROUPS: Dict[str, tuple[int, int]] = {
     "world_model": (60, 68),
     "trading_mode": (68, 82),
     "governor": (82, 90),
-    "expert_raw": (90, 106),
+    # "expert_raw": (90, 106) removed in v6.0 - never functioned (15/16 dims
+    # constant) and the signals behind it show no measured skill.
 }
 
 
@@ -233,25 +248,8 @@ def _build_feature_names() -> List[str]:
         "gov_pending_order_progress",
     ]
 
-    # 90..105: expert raw features (16)
-    names += [
-        "expert_raw_trend_adx_norm",
-        "expert_raw_trend_chop_norm",
-        "expert_raw_trend_exhaustion",
-        "expert_raw_trend_slope_norm",
-        "expert_raw_momentum_chop_norm",
-        "expert_raw_momentum_exhaustion",
-        "expert_raw_momentum_net_momentum",
-        "expert_raw_momentum_atr_z_norm",
-        "expert_raw_theme_hurst_centered",
-        "expert_raw_theme_chop_norm",
-        "expert_raw_theme_vol_ratio_norm",
-        "expert_raw_theme_bias",
-        "expert_raw_seasonality_direction_score",
-        "expert_raw_seasonality_quality_score",
-        "expert_raw_seasonality_high_impact_risk",
-        "expert_raw_seasonality_weekend_risk",
-    ]
+    # v6.0: the 16-dim expert_raw block that lived at 90..105 was removed.
+    # See the PPO_OBS_SIZE comment for the measurements behind that decision.
     if len(names) != PPO_OBS_SIZE:
         raise ValueError(f"Feature name list mismatch: {len(names)} != {PPO_OBS_SIZE}")
     return names
@@ -617,7 +615,6 @@ class PPOObservationBuilder:
         wm_feats, wm_dbg = self._build_world_model_features(world_model_state)
         mode_feats, mode_dbg = self._build_trading_mode_features(trading_mode_state)
         gov_feats, gov_dbg = self._build_governor_features(governor_state)
-        expert_raw_feats, expert_raw_dbg = self._build_expert_raw_features(expert_signals)
 
         obs[0:10] = m15_feats
         obs[10:28] = htf_feats
@@ -628,7 +625,6 @@ class PPOObservationBuilder:
         obs[60:68] = wm_feats
         obs[68:82] = mode_feats
         obs[82:90] = gov_feats
-        obs[90:106] = expert_raw_feats
 
         # Output validation (STRICT)
         self._validate_observation_strict(obs)
@@ -663,7 +659,6 @@ class PPOObservationBuilder:
                         "world_model": wm_dbg,
                         "trading_mode": mode_dbg,
                         "governor": gov_dbg,
-                        "expert_raw": expert_raw_dbg,
                     },
                     "output": {
                         "obs": obs,
@@ -1154,87 +1149,6 @@ class PPOObservationBuilder:
         )
         return feats, dbg
 
-    def _build_expert_raw_features(self, expert_signals: Dict[str, Any]) -> Tuple[np.ndarray, Dict[str, Any]]:
-        """Extract raw per-expert metrics (beyond vote/consensus)."""
-        feats = np.zeros(16, dtype=np.float32)
-        dbg: Dict[str, Any] = {}
-
-        experts = expert_signals.get("experts")
-        if not isinstance(experts, dict):
-            dbg["error"] = "expert_signals.experts must be dict"
-            dbg["feats"] = feats
-            return feats, dbg
-
-        def _proposal(name: str) -> Dict[str, Any]:
-            sig = experts.get(name)
-            if not isinstance(sig, dict):
-                raise ObservationContractError(f"experts.{name} missing for expert_raw features.")
-            proposal = sig.get("proposal")
-            if not isinstance(proposal, dict):
-                raise ObservationContractError(f"experts.{name}.proposal must be dict for expert_raw features.")
-            return proposal
-
-        trend_p = _proposal("trend")
-        mom_p = _proposal("momentum")
-        theme_p = _proposal("theme")
-        seas_p = _proposal("seasonality")
-
-        # TrendExpert raw
-        trend_adx = float(self._to_float_default(trend_p.get("adx"), 0.0))
-        trend_chop = float(self._to_float_default(trend_p.get("chop"), 50.0))
-        trend_exh = float(self._to_float_default(trend_p.get("exhaustion_score"), 0.0))
-        trend_slope = float(self._to_float_default(trend_p.get("trend_slope"), 0.0))
-
-        feats[0] = float(np.clip(trend_adx / 100.0, 0.0, 1.0))
-        feats[1] = float(np.clip(trend_chop / 100.0, 0.0, 1.0))
-        feats[2] = float(np.clip(trend_exh, 0.0, 1.0))
-        feats[3] = float(np.clip(trend_slope, -1.0, 1.0))
-
-        # MomentumExpert raw
-        mom_chop = float(self._to_float_default(mom_p.get("chop"), 50.0))
-        mom_exh = float(self._to_float_default(mom_p.get("exhaustion"), 0.0))
-        mom_net = float(self._to_float_default(mom_p.get("net_momentum"), 0.0))
-        mom_atr_z = float(self._to_float_default(mom_p.get("atr_z"), 0.0))
-
-        feats[4] = float(np.clip(mom_chop / 100.0, 0.0, 1.0))
-        feats[5] = float(np.clip(mom_exh, 0.0, 1.0))
-        feats[6] = float(np.clip(mom_net, -1.0, 1.0))
-        feats[7] = float(np.clip(mom_atr_z, -3.0, 3.0) / 3.0)
-
-        # ThemeExpert raw
-        theme_hurst = float(self._to_float_default(theme_p.get("hurst"), 0.5))
-        theme_chop_meta = theme_p.get("chop")
-        if isinstance(theme_chop_meta, dict):
-            theme_chop = float(self._to_float_default(theme_chop_meta.get("chop"), 50.0))
-        else:
-            theme_chop = float(self._to_float_default(theme_chop_meta, 50.0))
-        theme_vol_ratio = float(self._to_float_default(theme_p.get("vol_ratio"), 1.0))
-        theme_bias = float(self._to_float_default(theme_p.get("bias"), 0.0))
-
-        feats[8] = float(np.clip((theme_hurst - 0.5) * 2.0, -1.0, 1.0))
-        feats[9] = float(np.clip(theme_chop / 100.0, 0.0, 1.0))
-        feats[10] = float(np.clip((theme_vol_ratio - 0.3) / 3.2, 0.0, 1.0))
-        feats[11] = float(np.clip(theme_bias, -1.0, 1.0))
-
-        # SeasonalityRiskExpert raw
-        seas_dir = float(self._to_float_default(seas_p.get("direction_score"), 0.0))
-        seas_qual = float(self._to_float_default(seas_p.get("quality_score"), 0.0))
-        seas_high_impact = 1.0 if bool(seas_p.get("high_impact_risk", False)) else 0.0
-        seas_weekend = 1.0 if bool(seas_p.get("weekend_risk", False)) else 0.0
-
-        feats[12] = float(np.clip(seas_dir, -1.0, 1.0))
-        feats[13] = float(np.clip(seas_qual, 0.0, 1.0))
-        feats[14] = float(np.clip(seas_high_impact, 0.0, 1.0))
-        feats[15] = float(np.clip(seas_weekend, 0.0, 1.0))
-
-        dbg.update({
-            "trend": {"adx": trend_adx, "chop": trend_chop, "exhaustion_score": trend_exh, "trend_slope": trend_slope, "feats": feats[0:4]},
-            "momentum": {"chop": mom_chop, "exhaustion": mom_exh, "net_momentum": mom_net, "atr_z": mom_atr_z, "feats": feats[4:8]},
-            "theme": {"hurst": theme_hurst, "chop": theme_chop, "vol_ratio": theme_vol_ratio, "bias": theme_bias, "feats": feats[8:12]},
-            "seasonality": {"direction_score": seas_dir, "quality_score": seas_qual, "high_impact_risk": seas_high_impact, "weekend_risk": seas_weekend, "feats": feats[12:16]},
-            "feats": feats,
-        })
-        return feats, dbg
     def _build_risk_features(
         self, risk_state: Dict[str, Any], memory_state: Dict[str, Any], account_state: Dict[str, Any]
     ) -> Tuple[np.ndarray, Dict[str, Any]]:

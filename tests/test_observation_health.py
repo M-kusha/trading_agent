@@ -3,9 +3,10 @@
 test_obs_contract.py proves the observation is alive. This file pins *how*
 alive it is, so silent decay is a test failure rather than a slow leak.
 
-Current state (measured 2026-08-02, 500-step rollout): 24 of 106 dims are
-constant. They are not a mystery -- each is listed below with its cause. The
-budget exists so a change that kills further dimensions has to say so.
+Current state (measured 2026-08-02, 700-step rollout): 10 of 90 dims are
+constant, down from 25 of 106 before the v6.0 schema change. Each remaining one
+is listed below with its cause. The budget exists so a change that kills further
+dimensions has to say so.
 """
 from __future__ import annotations
 
@@ -14,15 +15,14 @@ import numpy as np
 # Dims known to be constant, with the reason. Anything outside this set that
 # goes dead is a regression.
 #
-# expert_raw (90..105): the v5.8 block reads proposal keys from the
-#   modules/voting/experts schema ("chop", "exhaustion_score", "hurst",
-#   "vol_ratio", "bias"). Training feeds the envs/prop_firm/signals schema,
-#   which emits different key names, so those dims fall back to constants.
-#   Fixed only by unifying the two expert implementations.
+# The v5.8 expert_raw block (16 dims, 15 of them constant) was removed entirely
+#   in v6.0 - it read the modules/voting/experts proposal schema while training
+#   feeds envs/prop_firm/signals, and the signals behind it showed no measured
+#   skill against an always-long control.
 # seasonality dims: the training seasonality expert is an explicit stub.
 # structure_bias / is_trained / trading_mode: heuristics that rarely or never
 #   change state over a single rollout.
-KNOWN_DEAD_MAX = 26
+KNOWN_DEAD_MAX = 12
 
 
 def test_dead_dimension_count_within_budget(rollout):

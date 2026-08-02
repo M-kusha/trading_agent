@@ -28,7 +28,6 @@ class VecEpisodeTradingCallback(BaseCallback):
     Correct per-env episode tracking for VecEnv.
     Logs trading metrics from info dict at episode end.
     
-    Also integrates with UnifiedMemory for online learning during training.
     
     AUDIT FIX (CRIT-5): Uses bounded deques instead of unbounded lists to prevent
     memory leaks during long training runs. Cumulative stats tracked separately.
@@ -91,7 +90,6 @@ class VecEpisodeTradingCallback(BaseCallback):
         self._last_metrics_save: float = 0.0  # For metrics save throttling
         
         # Memory system integration (lazy initialization)
-        self._unified_memory: Optional[Any] = None
         self._memory_init_attempted: bool = False
 
     def _on_training_start(self) -> None:
@@ -294,16 +292,9 @@ class VecEpisodeTradingCallback(BaseCallback):
                     "instrument": finfo.get("instrument", info.get("instrument", "UNKNOWN")),
                 }]
 
-            # Update memory system with episode data (now using correct ep_reward)
-            self._update_memory_from_episode(
-                episode_reward=ep_reward,
-                episode_trades=episode_trades,
-                market_context={
-                    "regime": finfo.get("regime", info.get("regime", "unknown")),
-                    "volatility": finfo.get("volatility", info.get("volatility", 0.5)),
-                    "session": finfo.get("session", info.get("session", "unknown")),
-                },
-            )
+            # UnifiedMemory integration removed 2026-08-02: it was write-only.
+            # update_from_episode() was the sole call site and nothing ever read
+            # back, so ~11,300 lines trained sub-networks that reached no decision.
 
             # Reset per-env running counters AFTER using them
             self._cur_rewards[i] = 0.0
@@ -530,76 +521,3 @@ class VecEpisodeTradingCallback(BaseCallback):
                 logger.debug(f"[Dashboard] Saved metrics: ep={len(self._ep_rewards)}, pnl={metrics['mean_pnl']:.4f}, wr={metrics['mean_win_rate']:.2%}, trades={metrics['mean_trades']:.1f}")
         except Exception as e:
             logger.warning(f"[Dashboard] Error saving metrics: {e}")
-    
-    def _get_unified_memory(self) -> Optional[Any]:
-        """Lazy-load UnifiedMemory for training integration."""
-        if self._memory_init_attempted:
-            return self._unified_memory
-        
-        self._memory_init_attempted = True
-        
-        try:
-            from modules.memory.unified_memory import UnifiedMemory, UnifiedMemoryConfig
-            
-            # Create memory with minimal config for training
-            # UnifiedMemory.__init__ expects UnifiedMemoryConfig dataclass
-            memory_config = UnifiedMemoryConfig(
-                debug=False,  # Disable debug during training for performance
-                enable_replay=False,  # Skip replay component (not needed for learning)
-                enable_budget=False,  # Skip budget optimization
-                enable_neural=True,  # Enable for encoder training
-                enable_mistakes=True,  # Enable for danger zone learning
-                enable_playbook=True,  # Enable for KNN learning
-                enable_loss_risk_head=True,  # Enable for loss prediction
-                enable_interventions=True,  # Enable for intervention learning
-                enable_compression=True,  # Enable for intuition vector
-            )
-            
-            self._unified_memory = UnifiedMemory(config=memory_config)  # type: ignore[arg-type]
-            logger.info("[Memory] UnifiedMemory initialized for training integration")
-            
-        except Exception as e:
-            logger.warning(f"[Memory] Could not initialize UnifiedMemory: {e}")
-            self._unified_memory = None
-        
-        return self._unified_memory
-    
-    def _update_memory_from_episode(
-        self,
-        episode_reward: float,
-        episode_trades: List[Dict[str, Any]],
-        market_context: Dict[str, Any],
-    ) -> None:
-        """
-        Update UnifiedMemory's learning components at episode end.
-        
-        This enables online learning of:
-        - LossRiskHead: P(loss > τ) from trade outcomes
-        - SharedEncoder: Contrastive learning (winners vs losers)
-        - Interventions: Anti-relapse patterns
-        """
-        memory = self._get_unified_memory()
-        if memory is None:
-            return
-        
-        try:
-            # Call the update_from_episode method we added to UnifiedMemory
-            if hasattr(memory, 'update_from_episode'):
-                stats = memory.update_from_episode(
-                    episode_trades=episode_trades,
-                    episode_reward=episode_reward,
-                    market_context=market_context,
-                )
-                
-                # Log occasionally (every 100 episodes)
-                if len(self._ep_rewards) % 100 == 0 and stats.get("trades_processed", 0) > 0:
-                    logger.info(
-                        f"[Memory] Episode {len(self._ep_rewards)}: "
-                        f"trades={stats.get('trades_processed', 0)}, "
-                        f"loss_head={stats.get('loss_head_updates', 0)}, "
-                        f"encoder={stats.get('encoder_updates', 0)}"
-                    )
-        except Exception as e:
-            # Non-fatal: memory update failure shouldn't crash training
-            if len(self._ep_rewards) <= 5:
-                logger.debug(f"[Memory] Episode update failed (non-fatal): {e}")
