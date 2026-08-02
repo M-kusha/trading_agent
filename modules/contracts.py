@@ -143,36 +143,6 @@ CONTRACTS: Dict[str, ModuleContract] = {
               'performance_tracking': True, 'category': 'meta', 'version': '3.0.0', 'disabled': True}
     ),
 
-    'PPOAgent': ModuleContract(
-        name='PPOAgent',
-        file='meta/ppo_agent_shell.py',
-
-
-        provides=['agent_performance', 'policy_actions', 'policy_gradients', 'rewards',
-              'training_data', 'training_metrics', 'training_signals',
-
-                  'ppo_final_decision', 'ppo_gate_passed', 'ppo_position_size',
-
-                  'ppo_multi_decision',
-                  'ppo_instrument_stats',
-
-                  'ppo_autonomy_state',
-
-                  'PPOAgent_voting_proposal', 'PPOAgent_confidence'],
-
-
-        requires=['market_data', 'market_regime',
-
-                  'committee_decision', 'committee_confidence', 'consensus_score',
-
-                  'fragility',
-
-                  'memory_gate', 'danger_zones'],
-        meta={'is_voting_member': False,
-              'is_final_arbiter': True,
-              'thesis_required': True, 'health_monitoring': True,
-              'performance_tracking': True, 'category': 'meta', 'version': '5.0.0'}
-    ),
 
     'PPOLagAgent': ModuleContract(
         name='PPOLagAgent',

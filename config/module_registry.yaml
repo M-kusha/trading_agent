@@ -242,43 +242,6 @@ modules:
 
   # ═══════════════════════════ PPO AGENT v3.0 ═══════════════════════════
   # New 3-layer architecture: PPOAgentShell -> ArbiterLogic -> PPOCore
-  PPOAgent:
-    category: meta
-    file_path: modules\meta\ppo_agent_shell.py
-    module_path: modules.meta.ppo_agent_shell
-    provides:
-    - agent_performance
-    # Training-related outputs (populated during training, defaults in inference)
-    - policy_actions
-    - policy_gradients
-    - rewards
-    - training_data
-    - training_metrics
-    - training_signals
-    # Final decision outputs (consumed by Executor)
-    - ppo_final_decision
-    - ppo_gate_passed
-    - ppo_position_size
-    # Multi-instrument outputs (v3.0)
-    - ppo_multi_decision
-    - ppo_instrument_stats
-    # Legacy voting outputs
-    - PPOAgent_voting_proposal
-    - PPOAgent_confidence
-    # FIX v5.1.0: Minimal requires - other inputs consumed via bus.get() with defaults
-    requires:
-    - market_data
-    - market_regime
-    # Committee consensus
-    - committee_decision
-    - committee_confidence
-    - consensus_score
-    # Risk/memory signals
-    - fragility
-    - memory_gate
-    - danger_zones
-
-
   RiskAdjustedReward:
     category: reward
     file_path: modules\reward\risk_adjusted_reward.py

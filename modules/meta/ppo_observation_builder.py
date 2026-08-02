@@ -133,15 +133,11 @@ class PPOObservationConfig:
 
 
     max_drawdown_clip: float = 0.5
-    max_danger_zones: int = 10
-    max_trades_per_day: int = field(default_factory=lambda: int(_TRADE_LIMITS.get("max_trades_per_day", 20)))
 
 
-    prediction_confidence_threshold: float = 0.5
 
 
     sr_threshold_pct_m15: float = 0.005
-    sr_threshold_pct_htf: float = 0.006
     sr_cluster_tol_pct: float = 0.0015
 
 
@@ -356,11 +352,8 @@ class PPOObservationBuilder:
         self,
         market_data: Optional[Dict[str, Any]] = None,
         expert_signals: Optional[Dict[str, Any]] = None,
-        committee_state: Optional[Dict[str, Any]] = None,
         risk_state: Optional[Dict[str, Any]] = None,
-        memory_state: Optional[Dict[str, Any]] = None,
         account_state: Optional[Dict[str, Any]] = None,
-        world_model_state: Optional[Dict[str, Any]] = None,
         trading_mode_state: Optional[Dict[str, Any]] = None,
         governor_state: Optional[Dict[str, Any]] = None,
         smart_bus: Optional[Any] = None,
@@ -384,11 +377,8 @@ class PPOObservationBuilder:
         if smart_bus is not None:
             market_data = self._fetch_market_data_xauusd(smart_bus, module_name, build_id=build_id)
             expert_signals = self._fetch_expert_signals_xauusd(smart_bus, module_name, build_id=build_id)
-            committee_state = self._fetch_committee_state_strict(smart_bus, module_name, build_id=build_id)
             risk_state = self._fetch_risk_state_strict(smart_bus, module_name, build_id=build_id)
-            memory_state = self._fetch_memory_state_strict(smart_bus, module_name, build_id=build_id)
             account_state = self._fetch_account_state_xauusd(smart_bus, module_name, build_id=build_id)
-            world_model_state = self._fetch_world_model_state_strict(smart_bus, module_name, build_id=build_id)
             trading_mode_state = self._fetch_trading_mode_state_xauusd(smart_bus, module_name, build_id=build_id)
             governor_state = self._fetch_governor_state_strict(smart_bus, module_name, build_id=build_id)
 
@@ -401,11 +391,8 @@ class PPOObservationBuilder:
                     "inputs": {
                         "market_data": market_data,
                         "expert_signals": expert_signals,
-                        "committee_state": committee_state,
                         "risk_state": risk_state,
-                        "memory_state": memory_state,
                         "account_state": account_state,
-                        "world_model_state": world_model_state,
                         "trading_mode_state": trading_mode_state,
                         "governor_state": governor_state,
                     },
@@ -416,11 +403,8 @@ class PPOObservationBuilder:
         self._validate_inputs_strict(
             market_data=market_data,
             expert_signals=expert_signals,
-            committee_state=committee_state,
             risk_state=risk_state,
-            memory_state=memory_state,
             account_state=account_state,
-            world_model_state=world_model_state,
             trading_mode_state=trading_mode_state,
             governor_state=governor_state,
         )
@@ -428,11 +412,8 @@ class PPOObservationBuilder:
 
         assert isinstance(market_data, dict)
         assert isinstance(expert_signals, dict)
-        assert isinstance(committee_state, dict)
         assert isinstance(risk_state, dict)
-        assert isinstance(memory_state, dict)
         assert isinstance(account_state, dict)
-        assert isinstance(world_model_state, dict)
         assert isinstance(trading_mode_state, dict)
         assert isinstance(governor_state, dict)
 
@@ -441,7 +422,7 @@ class PPOObservationBuilder:
 
         m15_feats, m15_dbg = self._build_m15_features(market_data)
         htf_feats, htf_dbg = self._build_htf_context(market_data, expert_signals)
-        risk_feats, risk_dbg = self._build_risk_features(risk_state, memory_state, account_state)
+        risk_feats, risk_dbg = self._build_risk_features(risk_state, account_state)
         account_feats, account_dbg = self._build_account_features(account_state)
         mode_feats, mode_dbg = self._build_trading_mode_features(trading_mode_state)
         gov_feats, gov_dbg = self._build_governor_features(governor_state)
@@ -468,11 +449,8 @@ class PPOObservationBuilder:
                     "inputs": {
                         "market_data": market_data,
                         "expert_signals": expert_signals,
-                        "committee_state": committee_state,
                         "risk_state": risk_state,
-                        "memory_state": memory_state,
                         "account_state": account_state,
-                        "world_model_state": world_model_state,
                         "trading_mode_state": trading_mode_state,
                         "governor_state": governor_state,
                     },
@@ -511,11 +489,8 @@ class PPOObservationBuilder:
         *,
         market_data: Optional[Dict[str, Any]],
         expert_signals: Optional[Dict[str, Any]],
-        committee_state: Optional[Dict[str, Any]],
         risk_state: Optional[Dict[str, Any]],
-        memory_state: Optional[Dict[str, Any]],
         account_state: Optional[Dict[str, Any]],
-        world_model_state: Optional[Dict[str, Any]],
         trading_mode_state: Optional[Dict[str, Any]],
         governor_state: Optional[Dict[str, Any]],
     ) -> None:
@@ -539,11 +514,6 @@ class PPOObservationBuilder:
             raise ObservationContractError("expert_signals must be a dict containing key 'experts'.")
         self._validate_expert_signals(expert_signals)
 
-        if not isinstance(committee_state, dict):
-            raise ObservationContractError("committee_state must be a dict.")
-        for k in ("action", "confidence", "consensus_score", "fragility"):
-            if k not in committee_state:
-                raise ObservationContractError(f"committee_state missing required key '{k}'.")
 
         if not isinstance(risk_state, dict):
             raise ObservationContractError("risk_state must be a dict.")
@@ -551,11 +521,6 @@ class PPOObservationBuilder:
             if k not in risk_state:
                 raise ObservationContractError(f"risk_state missing required key '{k}'.")
 
-        if not isinstance(memory_state, dict):
-            raise ObservationContractError("memory_state must be a dict.")
-        for k in ("memory_gate", "danger_zones"):
-            if k not in memory_state:
-                raise ObservationContractError(f"memory_state missing required key '{k}'.")
 
         if not isinstance(account_state, dict):
             raise ObservationContractError("account_state must be a dict.")
@@ -565,11 +530,7 @@ class PPOObservationBuilder:
             "current_drawdown",
             "current_step",
             "max_steps",
-            "win_rate",
-            "pnl_trend",
-            "trades_today",
             "position_direction",
-            "position_size",
             "unrealized_pnl",
             "time_in_position",
             "on_cooldown",
@@ -577,9 +538,6 @@ class PPOObservationBuilder:
             if k not in account_state:
                 raise ObservationContractError(f"account_state missing required key '{k}'.")
 
-        if not isinstance(world_model_state, dict):
-            raise ObservationContractError("world_model_state must be a dict.")
-        self._validate_world_model_state(world_model_state)
 
         if not isinstance(trading_mode_state, dict):
             raise ObservationContractError("trading_mode_state must be a dict.")
@@ -765,7 +723,7 @@ class PPOObservationBuilder:
 
 
     def _build_risk_features(
-        self, risk_state: Dict[str, Any], memory_state: Dict[str, Any], account_state: Dict[str, Any]
+        self, risk_state: Dict[str, Any], account_state: Dict[str, Any]
     ) -> Tuple[np.ndarray, Dict[str, Any]]:
         feats = np.zeros(3, dtype=np.float32)
         dbg: Dict[str, Any] = {}
@@ -1102,21 +1060,6 @@ class PPOObservationBuilder:
             }
         return out
 
-    def _fetch_committee_state_strict(self, bus: Any, module: str, *, build_id: int) -> Dict[str, Any]:
-        decision = self._bus_get_required(bus, "committee_decision", module, build_id=build_id)
-        if isinstance(decision, dict):
-            action = decision.get("action")
-        else:
-            action = decision
-        if action is None:
-            raise ObservationContractError("committee_decision.action missing (strict).")
-
-        return {
-            "action": str(action),
-            "confidence": float(np.clip(self._to_float_required(self._bus_get_required(bus, "committee_confidence", module, build_id=build_id), "committee_confidence"), 0.0, 1.0)),
-            "consensus_score": float(np.clip(self._to_float_required(self._bus_get_required(bus, "consensus_score", module, build_id=build_id), "consensus_score"), 0.0, 1.0)),
-            "fragility": float(np.clip(self._to_float_required(self._bus_get_required(bus, "fragility", module, build_id=build_id), "fragility"), 0.0, 1.0)),
-        }
 
     def _fetch_risk_state_strict(self, bus: Any, module: str, *, build_id: int) -> Dict[str, Any]:
         portfolio_risk = self._bus_get_required(bus, "portfolio_risk", module, build_id=build_id)
@@ -1139,10 +1082,6 @@ class PPOObservationBuilder:
 
         return {"risk_data": risk_data, "portfolio_risk": portfolio_risk, "risk_budget": rb}
 
-    def _fetch_memory_state_strict(self, bus: Any, module: str, *, build_id: int) -> Dict[str, Any]:
-        mg = self._bus_get_required(bus, "memory_gate", module, build_id=build_id)
-        dz = self._bus_get_required(bus, "danger_zones", module, build_id=build_id)
-        return {"memory_gate": mg, "danger_zones": dz}
 
     def _fetch_account_state_xauusd(self, bus: Any, module: str, *, build_id: int) -> Dict[str, Any]:
         market_state = self._bus_get_required(bus, "market_state", module, build_id=build_id)
@@ -1252,23 +1191,6 @@ class PPOObservationBuilder:
         }
         return state
 
-    def _fetch_world_model_state_strict(self, bus: Any, module: str, *, build_id: int) -> Dict[str, Any]:
-        mp = self._bus_get_required(bus, "market_predictions", module, build_id=build_id)
-        pc = self._bus_get_required(bus, "prediction_confidence", module, build_id=build_id)
-        sg = self._bus_get_required(bus, "scenario_generation", module, build_id=build_id)
-        wma = self._bus_get_required(bus, "world_model_analytics", module, build_id=build_id)
-
-        if not isinstance(mp, dict) or not isinstance(pc, dict) or not isinstance(sg, dict) or not isinstance(wma, dict):
-            raise ObservationContractError("world model bus keys must be dicts (strict).")
-
-        out = {
-            "market_predictions": mp,
-            "prediction_confidence": pc,
-            "scenario_generation": sg,
-            "world_model_analytics": wma,
-        }
-        self._validate_world_model_state(out)
-        return out
 
     def _fetch_trading_mode_state_xauusd(self, bus: Any, module: str, *, build_id: int) -> Dict[str, Any]:
         trading_mode = self._bus_get_required(bus, "trading_mode", module, build_id=build_id)
@@ -1321,49 +1243,21 @@ class PPOObservationBuilder:
         self._require_min_len(close, min_bars, f"{tf}.close")
 
     def _validate_expert_signals(self, expert_signals: Dict[str, Any]) -> None:
-        experts = expert_signals.get("experts")
-        market = expert_signals.get("market")
+        # Only htf_experts survives v7.0. The per-expert "experts" dict fed the
+        # voting, committee and expert_raw blocks, all of which were removed
+        # after measuring no skill against an always-long control - it is now
+        # read nowhere, so requiring it would force the environment to compute
+        # trend/momentum/theme signals that reach nothing.
         htf = expert_signals.get("htf_experts")
-        if not isinstance(experts, dict) or not isinstance(market, dict) or not isinstance(htf, dict):
-            raise ObservationContractError("expert_signals must include dicts: experts, market, htf_experts (strict).")
-
-        for name in ("trend", "momentum", "theme", "seasonality"):
-            sig = experts.get(name)
-            if not isinstance(sig, dict):
-                raise ObservationContractError(f"experts['{name}'] missing dict (strict).")
-            for k in ("direction", "score", "confidence", "proposal"):
-                if k not in sig:
-                    raise ObservationContractError(f"experts['{name}'] missing key '{k}' (strict).")
-            if not isinstance(sig.get("proposal"), dict):
-                raise ObservationContractError(f"experts['{name}'].proposal must be dict (strict).")
-
-        for tf in ("H1", "H4", "D1"):
-            if tf not in htf or not isinstance(htf.get(tf), dict):
+        if not isinstance(htf, dict):
+            raise ObservationContractError("expert_signals.htf_experts must be a dict (strict).")
+        for tf in CONTEXT_TIMEFRAMES:
+            if not isinstance(htf.get(tf), dict):
                 raise ObservationContractError(f"htf_experts missing dict for '{tf}' (strict).")
-            req = ("trend_direction", "trend_strength", "momentum_direction", "momentum_strength", "rsi", "ma_alignment", "structure_bias")
-            for k in req:
-                if k not in htf[tf]:
-                    raise ObservationContractError(f"htf_experts['{tf}'] missing key '{k}' (strict).")
+            for key in ("rsi", "trend_direction", "ma_alignment"):
+                if key not in htf[tf]:
+                    raise ObservationContractError(f"htf_experts.{tf} missing key '{key}' (strict).")
 
-        for k in ("regime", "regime_strength"):
-            if k not in market:
-                raise ObservationContractError(f"expert_signals.market missing '{k}' (strict).")
-
-    def _validate_world_model_state(self, wm: Dict[str, Any]) -> None:
-        mp = wm.get("market_predictions")
-        sg = wm.get("scenario_generation")
-        if not isinstance(mp, dict):
-            raise ObservationContractError("world_model_state.market_predictions must be dict (strict).")
-        if not isinstance(sg, dict):
-            raise ObservationContractError("world_model_state.scenario_generation must be dict (strict).")
-        if "latest_predictions" not in mp or not isinstance(mp.get("latest_predictions"), dict):
-            raise ObservationContractError("market_predictions.latest_predictions missing dict (strict).")
-        lp = mp["latest_predictions"]
-        for k in ("confidence", "price_changes", "volatility_predictions"):
-            if k not in lp:
-                raise ObservationContractError(f"latest_predictions missing '{k}' (strict).")
-        if "scenarios" not in sg or not isinstance(sg.get("scenarios"), list) or len(sg["scenarios"]) == 0:
-            raise ObservationContractError("scenario_generation.scenarios must be non-empty list (strict).")
 
     def _validate_trading_mode_state(self, st: Dict[str, Any]) -> None:
         for k in ("trading_mode", "mode_stats", "entry_timing", "regime_stability", "theme_transition", "regime_accuracy", "risk_scaling_factor", "liquidity_score", "theme_strength"):
@@ -1674,13 +1568,6 @@ class PPOObservationBuilder:
         except Exception:
             return default
 
-    def _signed_strength(self, direction: str, strength: float) -> float:
-        d = str(direction).lower().strip()
-        if d in ("bullish", "long", "buy"):
-            return float(strength)
-        if d in ("bearish", "short", "sell"):
-            return -float(strength)
-        return 0.0
 
     def _extract_direction(self, proposal: Any) -> float:
         if isinstance(proposal, dict):
@@ -1727,11 +1614,8 @@ def build_ppo_observation(
     return builder.build(
         market_data=market_data,
         expert_signals=expert_signals,
-        committee_state=committee_state,
         risk_state=risk_state,
-        memory_state=memory_state,
         account_state=account_state,
-        world_model_state=world_model_state,
         trading_mode_state=trading_mode_state,
         governor_state=governor_state,
         smart_bus=smart_bus,

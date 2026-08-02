@@ -1954,23 +1954,17 @@ class PropFirmTradingEnv(
         inst = self._episode_instrument
         market_data = self._prepare_market_data(inst)
         expert_signals = self._prepare_expert_signals(inst)
-        committee_state = self._prepare_committee_state(expert_signals)
         risk_state = self._prepare_risk_state()
-        memory_state = self._prepare_memory_state(inst)
         account_state = self._prepare_account_state(inst)
         trading_mode_state = self._prepare_trading_mode_state(inst)
-        world_model_state = self._prepare_world_model_state(inst, expert_signals, committee_state)
         governor_state = self._get_governor_state()
 
         assert self.obs_builder is not None
         obs = self.obs_builder.build(
             market_data=market_data,
             expert_signals=expert_signals,
-            committee_state=committee_state,
             risk_state=risk_state,
-            memory_state=memory_state,
             account_state=account_state,
-            world_model_state=world_model_state,
             trading_mode_state=trading_mode_state,
             governor_state=governor_state,
         )
