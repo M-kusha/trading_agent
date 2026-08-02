@@ -390,13 +390,27 @@ def compute_composite_score(
     components: Dict[str, float] = {}
 
 
-    wr_den = max(getattr(thresholds, "min_win_rate", 0.0), 1e-6)
-    wr_score = min(stats.mean_win_rate / wr_den, 1.5) / 1.5
-    components["win_rate"] = wr_score
+    # A stage that sets no requirement has not been passed - it has not been
+    # assessed. Dividing by an epsilon floor (1e-6, 0.01) turned "no bar to
+    # clear" into a perfect 1.000: at stage 0, where min_win_rate and
+    # min_profit_factor are both 0.0, a 49.7% coin flip and a profit factor of
+    # 1.02 each scored 1.000 and carried the composite to 0.94 with
+    # promotion_ready True. 0.5 is the honest encoding of no evidence either
+    # way, and matches how the drawdown and consistency branches below already
+    # treat an absent threshold.
+    UNASSESSED = 0.5
 
+    min_win_rate = float(getattr(thresholds, "min_win_rate", 0.0) or 0.0)
+    if min_win_rate > 0.0:
+        components["win_rate"] = min(stats.mean_win_rate / min_win_rate, 1.5) / 1.5
+    else:
+        components["win_rate"] = UNASSESSED
 
-    pf_score = min(stats.mean_profit_factor / max(thresholds.min_profit_factor, 0.01), 2.0) / 2.0
-    components["profit_factor"] = pf_score
+    min_profit_factor = float(getattr(thresholds, "min_profit_factor", 0.0) or 0.0)
+    if min_profit_factor > 0.0:
+        components["profit_factor"] = min(stats.mean_profit_factor / min_profit_factor, 2.0) / 2.0
+    else:
+        components["profit_factor"] = UNASSESSED
 
 
     if thresholds.max_avg_drawdown > 0:
