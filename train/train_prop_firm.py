@@ -1747,7 +1747,14 @@ def main() -> None:
     parser.add_argument("--timesteps", type=int, default=100_000_000, help="Total training timesteps (safety cap - goal-based stops earlier)")
     default_n_envs = 2 if platform.system() == "Windows" else 4
     parser.add_argument("--n-envs", type=int, default=default_n_envs, help="Number of envs")
-    parser.add_argument("--seed", type=int, default=-1, help="Random seed (-1 = time-based random seed for exploration variance)")
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed. Fixed by default so runs are reproducible - the simulation "
+             "clock removes wall-clock nondeterminism, and a time-based default would "
+             "put it straight back. Pass -1 for a time-based seed.",
+    )
     parser.add_argument("--test", action="store_true", help="Quick test mode")
 
     parser.add_argument("--lr", type=float, default=1e-4)

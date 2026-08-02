@@ -150,7 +150,7 @@ def get_explorer_config() -> CurriculumStageConfig:
             min_trades_penalty=0.3,
 
 
-            exploration_bonus=0.02,
+            exploration_bonus=0.0,
             directional_accuracy_weight=0.5,
             min_reward=-50.0,
             max_reward=50.0,
@@ -203,8 +203,6 @@ def get_explorer_config() -> CurriculumStageConfig:
             evaluation_window=50,
         ),
         max_steps_per_episode=1500,
-        include_memory_features=False,
-        include_world_model_features=False,
         include_expert_signals=True,
         allow_demotion=False,
         data_difficulty=DataDifficulty(
@@ -370,7 +368,7 @@ def get_experimenter_config() -> CurriculumStageConfig:
             min_trades_penalty=0.35,
 
 
-            exploration_bonus=0.015,
+            exploration_bonus=0.0,
             directional_accuracy_weight=0.7,
             min_reward=-50.0,
             max_reward=50.0,
@@ -423,8 +421,6 @@ def get_experimenter_config() -> CurriculumStageConfig:
             evaluation_window=50,
         ),
         max_steps_per_episode=1500,
-        include_memory_features=False,
-        include_world_model_features=False,
         include_expert_signals=True,
         allow_demotion=True,
         data_difficulty=DataDifficulty(
@@ -609,7 +605,7 @@ def get_trend_student_config() -> CurriculumStageConfig:
             min_trades_penalty=0.3,
 
 
-            exploration_bonus=0.015,
+            exploration_bonus=0.0,
             directional_accuracy_weight=1.2,
             min_reward=-100.0,
             max_reward=100.0,
@@ -665,8 +661,6 @@ def get_trend_student_config() -> CurriculumStageConfig:
             evaluation_window=60,
         ),
         max_steps_per_episode=1800,
-        include_memory_features=False,
-        include_world_model_features=False,
         include_expert_signals=True,
         allow_demotion=True,
         data_difficulty=DataDifficulty(
@@ -848,7 +842,7 @@ def get_session_student_config() -> CurriculumStageConfig:
             min_trades_penalty=0.25,
 
 
-            exploration_bonus=0.015,
+            exploration_bonus=0.0,
             directional_accuracy_weight=1.15,
             min_reward=-100.0,
             max_reward=100.0,
@@ -902,8 +896,6 @@ def get_session_student_config() -> CurriculumStageConfig:
             evaluation_window=70,
         ),
         max_steps_per_episode=1800,
-        include_memory_features=False,
-        include_world_model_features=False,
         include_expert_signals=True,
         allow_demotion=True,
         data_difficulty=DataDifficulty(
@@ -1128,7 +1120,7 @@ def get_timing_student_config() -> CurriculumStageConfig:
             activity_deviation_penalty_cap=20.0,
             min_trades_penalty=0.2,
 
-            exploration_bonus=0.015,
+            exploration_bonus=0.0,
             directional_accuracy_weight=1.1,
             min_reward=-100.0,
             max_reward=100.0,
@@ -1190,8 +1182,6 @@ def get_timing_student_config() -> CurriculumStageConfig:
             evaluation_window=80,
         ),
         max_steps_per_episode=2000,
-        include_memory_features=True,
-        include_world_model_features=False,
         include_expert_signals=True,
         allow_demotion=True,
         data_difficulty=DataDifficulty(
@@ -1415,7 +1405,7 @@ def get_integrator_config() -> CurriculumStageConfig:
             activity_deviation_penalty_cap=20.0,
             min_trades_penalty=0.2,
 
-            exploration_bonus=0.015,
+            exploration_bonus=0.0,
             directional_accuracy_weight=1.05,
             min_reward=-200.0,
             max_reward=200.0,
@@ -1476,8 +1466,6 @@ def get_integrator_config() -> CurriculumStageConfig:
             evaluation_window=90,
         ),
         max_steps_per_episode=2200,
-        include_memory_features=True,
-        include_world_model_features=True,
         include_expert_signals=True,
         allow_demotion=True,
         data_difficulty=DataDifficulty(
@@ -1728,7 +1716,7 @@ def get_risk_manager_config() -> CurriculumStageConfig:
             activity_deviation_penalty_cap=12.0,
             min_trades_penalty=0.15,
 
-            exploration_bonus=0.01,
+            exploration_bonus=0.0,
             directional_accuracy_weight=1.0,
             min_reward=-200.0,
             max_reward=200.0,
@@ -1789,8 +1777,6 @@ def get_risk_manager_config() -> CurriculumStageConfig:
             evaluation_window=100,
         ),
         max_steps_per_episode=2400,
-        include_memory_features=True,
-        include_world_model_features=True,
         include_expert_signals=True,
         allow_demotion=True,
         data_difficulty=DataDifficulty(
@@ -2049,7 +2035,7 @@ def get_strategist_config() -> CurriculumStageConfig:
             activity_deviation_penalty_cap=12.0,
             min_trades_penalty=0.1,
 
-            exploration_bonus=0.005,
+            exploration_bonus=0.0,
             directional_accuracy_weight=1.0,
             min_reward=-200.0,
             max_reward=200.0,
@@ -2110,8 +2096,6 @@ def get_strategist_config() -> CurriculumStageConfig:
             evaluation_window=120,
         ),
         max_steps_per_episode=2600,
-        include_memory_features=True,
-        include_world_model_features=True,
         include_expert_signals=True,
         allow_demotion=True,
         data_difficulty=DataDifficulty(
@@ -2457,8 +2441,6 @@ def get_professional_config() -> CurriculumStageConfig:
             evaluation_window=140,
         ),
         max_steps_per_episode=2800,
-        include_memory_features=True,
-        include_world_model_features=True,
         include_expert_signals=True,
         allow_demotion=True,
         data_difficulty=DataDifficulty(
@@ -2804,8 +2786,6 @@ def get_live_ready_config() -> CurriculumStageConfig:
             evaluation_window=160,
         ),
         max_steps_per_episode=3000,
-        include_memory_features=True,
-        include_world_model_features=True,
         include_expert_signals=True,
         allow_demotion=True,
         is_terminal=True,

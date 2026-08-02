@@ -330,7 +330,38 @@ Operator report: *"the model became a junkie which traded almost always."*
 That is not a mystery — it is the reward structure working exactly as written.
 Two mechanisms stack.
 
-### 12.1 There is an explicit penalty for NOT trading
+### 12.0 CORRECTION to an earlier version of this section
+
+An earlier draft claimed the unpenalised activity band was 13-33x the target.
+That was wrong: it conflated `daily_trade_soft_limit` (a separate per-trade
+churn penalty) with the activity-consistency band, which is actually 0.5-1.5x
+and roughly symmetric. Reading `prop_firm_env.py:1805-1838` gives the real
+mechanism, below.
+
+### 12.1 The agent is paid per entry, and entries are almost free
+
+`exploration_bonus` pays a flat bonus for every accepted entry
+(`rewards/shaping.py:93-104`), while at Explorer a trade costs essentially
+nothing (spread 0.01 points, commission 0, slippage 0).
+
+The activity-consistency penalty pushes back, but only above 1.5x target, and
+it loses. For a 1500-step Explorer episode (expected 12 trades):
+
+```
+ratio  trades  bonus  activity_penalty    NET
+  1.0      12   0.24              0.00   +0.24
+  2.0      24   0.48              0.15   +0.33
+  3.0      36   0.72              0.45   +0.27
+  5.0      60   1.20              1.05   +0.15
+  7.0      84   1.68              1.65   +0.03
+  8.0      96   1.92              1.95   -0.03   <- crossover
+```
+
+**The agent is paid to trade up to ~7x the target** - about 5.4 trades/day
+against a 0.77/day target. Overtrading is not a bug in the policy; it is the
+maximum of the objective.
+
+### 12.2 The old headline (kept for the record)
 
 `min_trades_penalty` and `target_trades_per_1k_steps` penalise inactivity at
 every stage:

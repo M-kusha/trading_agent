@@ -77,9 +77,6 @@ class CurriculumStageConfig:
     competence: "CompetenceThresholds"
 
     max_steps_per_episode: int = 2000
-
-    include_memory_features: bool = True
-    include_world_model_features: bool = True
     include_expert_signals: bool = True
     expert_signal_dropout: float = 0.0
 
