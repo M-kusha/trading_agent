@@ -109,6 +109,13 @@ class SmartEntropyController:
         self.min_valid_floor = int(max(2, min_valid_floor))
 
         self._valid_actions_estimate = float(self.n_actions)
+        # Tracked in log space as well. The numerator is a mean entropy over a
+        # rollout, so the matching denominator is E[log k], not log E[k]. Those
+        # differ whenever the valid-action count varies - which it always does
+        # here, since being in a position collapses the mask to hold + close -
+        # and by Jensen log E[k] >= E[log k], so averaging the counts inflates
+        # max entropy and reports the policy as more deterministic than it is.
+        self._log_valid_actions_estimate = float(np.log(max(2, self.n_actions)))
 
         self.max_relative_step = float(max(0.01, max_relative_step))
 
@@ -136,6 +143,8 @@ class SmartEntropyController:
         # this normaliser exists to remove: an EMA hovering near k.5 flips
         # between log(k) and log(k+1) on alternating updates.
         # _effective_valid_actions stays integral for display.
+        if n_valid_actions is None:
+            return float(self._log_valid_actions_estimate)
         k = self._effective_valid_actions_float(n_valid_actions)
         return float(np.log(k))
 
@@ -182,6 +191,9 @@ class SmartEntropyController:
 
         alpha = 0.10
         self._valid_actions_estimate = alpha * float(n_valid) + (1.0 - alpha) * float(self._valid_actions_estimate)
+        self._log_valid_actions_estimate = (
+            alpha * float(np.log(n_valid)) + (1.0 - alpha) * float(self._log_valid_actions_estimate)
+        )
 
 
     def on_stage_change(self, new_stage: int) -> None:
