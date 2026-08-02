@@ -533,12 +533,6 @@ def compute_adjusted_thresholds(
         adjusted.min_win_rate = base.min_win_rate * (1 - relax_factor * 0.5)
 
 
-        if hasattr(adjusted, "min_win_rate_wilson_low") and hasattr(base, "min_win_rate_wilson_low"):
-            try:
-                base_w = float(base.min_win_rate_wilson_low)
-                adjusted.min_win_rate_wilson_low = base_w * (1 - relax_factor * 0.5)
-            except Exception:
-                pass
 
     if "min_profit_factor" in config.relaxable_metrics:
         adjusted.min_profit_factor = base.min_profit_factor * (1 - relax_factor * 0.3)
@@ -567,11 +561,6 @@ def compute_adjusted_thresholds(
 
 
     adjusted.min_win_rate = _clamp(adjusted.min_win_rate, 0.0, 1.0)
-    if hasattr(adjusted, "min_win_rate_wilson_low"):
-        try:
-            adjusted.min_win_rate_wilson_low = _clamp(float(adjusted.min_win_rate_wilson_low), 0.0, 1.0)
-        except Exception:
-            pass
     adjusted.min_profit_factor = max(0.0, adjusted.min_profit_factor)
     adjusted.min_trade_count_avg = max(0.0, adjusted.min_trade_count_avg)
     adjusted.max_win_rate_std = max(0.0, adjusted.max_win_rate_std)

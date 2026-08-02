@@ -355,6 +355,26 @@ class VecEpisodeTradingCallback(BaseCallback):
             mean_profit_factor = float(np.mean(list(self._ep_profit_factors)[-50:])) if self._ep_profit_factors else 0.0
             mean_entry_quality = float(np.mean(list(self._ep_avg_entry_quality)[-50:])) if self._ep_avg_entry_quality else 0.5
 
+            # Trading frequency, in the unit a trader actually reasons in.
+            # The previous run over-traded badly and it was only noticed after
+            # the fact; 96 M15 bars = one 24h day.
+            mean_ep_len = float(np.mean(list(self._ep_lens)[-50:])) if self._ep_lens else 1.0
+            trades_per_day = (mean_trades / max(mean_ep_len, 1.0)) * 96.0
+            stage_target_per_day = (
+                float(getattr(self, "_stage_target_trades_per_1k", 0.0)) / 1000.0 * 96.0
+            )
+            if stage_target_per_day > 0.0:
+                overtrade_ratio = trades_per_day / stage_target_per_day
+                # Hard gate from CURRICULUM_PLAN 12.5: reject above 3x target.
+                trades_status = (
+                    "bad" if overtrade_ratio > 3.0
+                    else "ok" if overtrade_ratio > 1.5
+                    else "good"
+                )
+            else:
+                overtrade_ratio = 0.0
+                trades_status = "good" if 0.2 <= trades_per_day <= 5.0 else "bad"
+
 
             def status_for_win_rate(wr):
                 if wr >= 0.55: return "good"
@@ -404,7 +424,13 @@ class VecEpisodeTradingCallback(BaseCallback):
                 "trading": {
                     "total_trades": total_trades,
                     "mean_trades": mean_trades,
-                    "mean_trades_status": "good" if mean_trades >= 5 else "ok" if mean_trades >= 1 else "bad",
+                    # Was: "good" if mean_trades >= 5 - which rewarded exactly the
+                    # over-trading this project is trying to eliminate. Frequency
+                    # is now judged against the stage target, not against "more".
+                    "trades_per_day": trades_per_day,
+                    "stage_target_trades_per_day": stage_target_per_day,
+                    "overtrade_ratio": overtrade_ratio,
+                    "mean_trades_status": trades_status,
                     "mean_win_rate": mean_win_rate * 100,
                     "mean_win_rate_status": status_for_win_rate(mean_win_rate),
                     "max_drawdown": max_drawdown,

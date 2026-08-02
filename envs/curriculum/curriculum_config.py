@@ -29,6 +29,21 @@ from envs.curriculum.config import (
     is_valid_threshold_field,
 )
 
+# Ratio of the CURRENT spread regime to the one in the tracked feature CSVs.
+#
+#   XAUUSD M15 spread, 2021-09 -> 2025-12 (training data):  median  8.0 points
+#   XAUUSD M15 spread, 2025-12 -> 2026-07 (measured live):  median 41.0 points
+#
+# data_spread_scale multiplies the HISTORICAL spread column, so a terminal stage
+# at 1.0 certifies the agent against a market ~5x cheaper than the one it would
+# actually trade. Each scale below is written as `fraction * SPREAD_REGIME_SCALE`
+# so the ramp keeps its shape while ending at the real cost of trading today.
+#
+# Re-measure and update when the spread regime moves. This is a market fact,
+# not a tuning knob.
+SPREAD_REGIME_SCALE = 5.125
+
+
 TIME_OF_DAY_QUALITY = {
     "00:00-04:00": 0.3,
     "04:00-08:00": 0.5,
@@ -507,7 +522,7 @@ def get_trend_student_config() -> CurriculumStageConfig:
             volatility_scale_range=(0.95, 1.05),
 
             use_data_spread=True,
-            data_spread_scale=0.25,
+            data_spread_scale=0.25 * SPREAD_REGIME_SCALE,
         ),
         rewards=RewardShaping(
 
@@ -756,7 +771,7 @@ def get_session_student_config() -> CurriculumStageConfig:
             volatility_scale_range=(0.93, 1.08),
 
             use_data_spread=True,
-            data_spread_scale=0.40,
+            data_spread_scale=0.4 * SPREAD_REGIME_SCALE,
         ),
         rewards=RewardShaping(
             reward_scale=5.5,
@@ -994,7 +1009,7 @@ def get_timing_student_config() -> CurriculumStageConfig:
             volatility_scale_range=(0.92, 1.10),
 
             use_data_spread=True,
-            data_spread_scale=0.55,
+            data_spread_scale=0.55 * SPREAD_REGIME_SCALE,
         ),
         rewards=RewardShaping(
             reward_scale=6.0,
@@ -1102,7 +1117,12 @@ def get_timing_student_config() -> CurriculumStageConfig:
             soft_block_penalty=0.01,
 
 
+            # Per-ACTION cost of opening a position. This is the clean anti-churn
+            # signal: it charges for the act of trading without requiring a target
+            # trade count, so it cannot be gamed by trading toward a quota.
+            # Only applied when per_step_shaping_enabled is True.
             per_step_shaping_enabled=True,
+            churn_action_cost=0.002,
             holding_cost_per_bar=0.0,
             patience_shaping_enabled=True,
             patience_bonus_per_bar=0.001,
@@ -1287,7 +1307,7 @@ def get_integrator_config() -> CurriculumStageConfig:
             volatility_scale_range=(0.90, 1.12),
 
             use_data_spread=True,
-            data_spread_scale=0.70,
+            data_spread_scale=0.7 * SPREAD_REGIME_SCALE,
         ),
         rewards=RewardShaping(
             reward_scale=7.0,
@@ -1375,7 +1395,12 @@ def get_integrator_config() -> CurriculumStageConfig:
             soft_block_penalty=0.012,
 
 
+            # Per-ACTION cost of opening a position. This is the clean anti-churn
+            # signal: it charges for the act of trading without requiring a target
+            # trade count, so it cannot be gamed by trading toward a quota.
+            # Only applied when per_step_shaping_enabled is True.
             per_step_shaping_enabled=True,
+            churn_action_cost=0.002,
             holding_cost_per_bar=0.0002,
             patience_shaping_enabled=True,
             patience_bonus_per_bar=0.0012,
@@ -1592,7 +1617,7 @@ def get_risk_manager_config() -> CurriculumStageConfig:
             volatility_scale_range=(0.88, 1.15),
 
             use_data_spread=True,
-            data_spread_scale=0.85,
+            data_spread_scale=0.85 * SPREAD_REGIME_SCALE,
         ),
         rewards=RewardShaping(
             reward_scale=8.0,
@@ -1680,7 +1705,12 @@ def get_risk_manager_config() -> CurriculumStageConfig:
             soft_block_penalty=0.015,
 
 
+            # Per-ACTION cost of opening a position. This is the clean anti-churn
+            # signal: it charges for the act of trading without requiring a target
+            # trade count, so it cannot be gamed by trading toward a quota.
+            # Only applied when per_step_shaping_enabled is True.
             per_step_shaping_enabled=True,
+            churn_action_cost=0.002,
             holding_cost_per_bar=0.0003,
             patience_shaping_enabled=True,
             patience_bonus_per_bar=0.002,
@@ -1906,7 +1936,7 @@ def get_strategist_config() -> CurriculumStageConfig:
             volatility_scale_range=(0.85, 1.18),
 
             use_data_spread=True,
-            data_spread_scale=1.0,
+            data_spread_scale=1.0 * SPREAD_REGIME_SCALE,
         ),
         rewards=RewardShaping(
             reward_scale=9.0,
@@ -1992,7 +2022,12 @@ def get_strategist_config() -> CurriculumStageConfig:
             soft_block_penalty=0.018,
 
 
+            # Per-ACTION cost of opening a position. This is the clean anti-churn
+            # signal: it charges for the act of trading without requiring a target
+            # trade count, so it cannot be gamed by trading toward a quota.
+            # Only applied when per_step_shaping_enabled is True.
             per_step_shaping_enabled=True,
+            churn_action_cost=0.002,
             holding_cost_per_bar=0.0004,
             patience_shaping_enabled=True,
             patience_bonus_per_bar=0.003,
@@ -2234,7 +2269,7 @@ def get_professional_config() -> CurriculumStageConfig:
             spread_shock_multiplier=2.0,
 
             use_data_spread=True,
-            data_spread_scale=1.0,
+            data_spread_scale=1.0 * SPREAD_REGIME_SCALE,
         ),
         rewards=RewardShaping(
             reward_scale=10.0,
@@ -2320,7 +2355,12 @@ def get_professional_config() -> CurriculumStageConfig:
             soft_block_penalty=0.02,
 
 
+            # Per-ACTION cost of opening a position. This is the clean anti-churn
+            # signal: it charges for the act of trading without requiring a target
+            # trade count, so it cannot be gamed by trading toward a quota.
+            # Only applied when per_step_shaping_enabled is True.
             per_step_shaping_enabled=True,
+            churn_action_cost=0.002,
             holding_cost_per_bar=0.0005,
             patience_shaping_enabled=True,
             patience_bonus_per_bar=0.003,
@@ -2579,7 +2619,7 @@ def get_live_ready_config() -> CurriculumStageConfig:
             spread_shock_multiplier=2.5,
 
             use_data_spread=True,
-            data_spread_scale=1.0,
+            data_spread_scale=1.0 * SPREAD_REGIME_SCALE,
         ),
         rewards=RewardShaping(
             reward_scale=10.0,
@@ -2665,7 +2705,12 @@ def get_live_ready_config() -> CurriculumStageConfig:
             soft_block_penalty=0.022,
 
 
+            # Per-ACTION cost of opening a position. This is the clean anti-churn
+            # signal: it charges for the act of trading without requiring a target
+            # trade count, so it cannot be gamed by trading toward a quota.
+            # Only applied when per_step_shaping_enabled is True.
             per_step_shaping_enabled=True,
+            churn_action_cost=0.002,
             holding_cost_per_bar=0.0005,
             patience_shaping_enabled=True,
             patience_bonus_per_bar=0.004,

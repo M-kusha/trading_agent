@@ -244,13 +244,16 @@ class DataDifficultyMixin:
 
         if len(valid_indices) == 0:
 
+            # _data_difficulty is Optional; this branch can be reached before it
+            # is set, so read through a local rather than dereferencing it twice.
+            diff = self._data_difficulty
             logger.warning(
                 f"DataDifficulty filter found 0 valid indices with settings: "
-                f"volatility_range={self._data_difficulty.volatility_percentile_range}, "
-                f"min_trend_clarity={self._data_difficulty.min_trend_clarity}, "
-                f"sessions=(asia={getattr(self._data_difficulty, 'include_asian_session', True)}, "
-                f"london={getattr(self._data_difficulty, 'include_london_session', True)}, "
-                f"ny={getattr(self._data_difficulty, 'include_ny_session', True)}). "
+                f"volatility_range={getattr(diff, 'volatility_percentile_range', None)}, "
+                f"min_trend_clarity={getattr(diff, 'min_trend_clarity', None)}, "
+                f"sessions=(asia={getattr(diff, 'include_asian_session', True)}, "
+                f"london={getattr(diff, 'include_london_session', True)}, "
+                f"ny={getattr(diff, 'include_ny_session', True)}). "
                 f"Falling back to full dataset ({max_end - buffer} bars)."
             )
             self._valid_start_indices = np.arange(buffer, max_end)

@@ -819,12 +819,12 @@ class CurriculumTrainingCallback(BaseCallback):
                             while hasattr(base_env, 'env'):
                                 if hasattr(base_env, 'action_masks') and callable(base_env.action_masks):
                                     mask = base_env.action_masks()
-                                    n_valid_actions = int(np.sum(mask))
+                                    n_valid_actions = int(np.asarray(mask, dtype=np.bool_).sum())
                                     break
                                 base_env = base_env.env
                             if n_valid_actions is None and hasattr(base_env, 'action_masks'):
                                 mask = base_env.action_masks()
-                                n_valid_actions = int(np.sum(mask))
+                                n_valid_actions = int(np.asarray(mask, dtype=np.bool_).sum())
         except Exception as e:
             logger.debug(f"Could not get action masks for entropy normalization: {e}")
 
