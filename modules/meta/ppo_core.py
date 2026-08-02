@@ -13,6 +13,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
+from modules.meta.ppo_observation_builder import PPO_OBS_SIZE, PPO_OBS_VERSION
+
 try:
     from sb3_contrib import MaskablePPO
     MASKABLE_PPO_AVAILABLE = True
@@ -23,9 +25,11 @@ except ImportError:
 
 @dataclass
 class PPOCoreConfig:
-
-
-    obs_size: int = 84
+    # Sourced from the observation builder rather than hardcoded. This default
+    # was 84 - the v5.7 width - while the builder now produces 40. Combined with
+    # the old _validate_obs behaviour (silent zero-padding) that meant the live
+    # network saw 40 real values followed by 44 zeros, with no error raised.
+    obs_size: int = PPO_OBS_SIZE
     act_size: int = 2
     hidden_size: int = 128
 
@@ -289,12 +293,22 @@ class PPOCore:
 
 
     def _normalize_obs(self, obs: np.ndarray) -> np.ndarray:
+        # Despite the name this performs no statistical normalisation - it only
+        # checks shape. It previously zero-padded or truncated a mismatched
+        # observation and returned it, so a policy trained on one schema would
+        # silently run on another: 40 real values plus 44 zeros, no error. A
+        # shape mismatch means the model and the builder disagree, which is
+        # never recoverable at inference time.
         arr = np.asarray(obs, dtype=np.float32).reshape(-1)
         if arr.shape[0] != self.config.obs_size:
-            new_obs = np.zeros(self.config.obs_size, dtype=np.float32)
-            copy_size = min(arr.shape[0], self.config.obs_size)
-            new_obs[:copy_size] = arr[:copy_size]
-            arr = new_obs
+            raise ValueError(
+                f"observation width {arr.shape[0]} != model obs_size "
+                f"{self.config.obs_size}. The policy and the observation builder "
+                f"disagree - reload a checkpoint built for schema v{PPO_OBS_VERSION}."
+            )
+        if not np.all(np.isfinite(arr)):
+            bad = int((~np.isfinite(arr)).sum())
+            raise ValueError(f"observation contains {bad} non-finite value(s)")
         return arr
 
     def _action_name(self, action_id: int) -> str:
@@ -450,13 +464,20 @@ class PPOCore:
         return action_np, log_prob_np, value_np
 
     def _slice_sb3_action(self, action: np.ndarray, instrument: Optional[str]) -> np.ndarray:
+        # An action the policy produced but we cannot decode is a contract
+        # failure, not a hold. This previously caught every exception and
+        # returned zeros, which decodes to "do nothing" - so a broken policy
+        # output was indistinguishable from a deliberate flat decision.
         try:
             arr = np.asarray(action, dtype=np.float32).reshape(-1)
-        except Exception:
-            arr = np.zeros(0, dtype=np.float32)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"policy returned an undecodable action of type "
+                f"{type(action).__name__}: {exc}"
+            ) from exc
 
         if arr.size <= 0:
-            return np.zeros(self.config.act_size, dtype=np.float32)
+            raise ValueError("policy returned an empty action array")
 
 
         if arr.size <= self.config.act_size:
