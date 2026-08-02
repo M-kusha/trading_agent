@@ -253,6 +253,10 @@ class PropFirmTradingEnv(
         self._episode_execution_cfg: Optional[ExecutionConfig] = None
 
 
+        # id(DataFrame) -> int64 nanosecond timestamps. See _df_time_ns: without
+        # this the timestamp conversion dominated 75% of env step time.
+        self._time_ns_cache: Dict[int, Optional[np.ndarray]] = {}
+
         self._ohlcv_cache_key: Optional[Tuple[str, str, int]] = None
         self._ohlcv_cache: Dict[int, Dict[str, Any]] = {}
 
@@ -644,8 +648,29 @@ class PropFirmTradingEnv(
 
 
     def _df_time_ns(self, df: pd.DataFrame) -> Optional[np.ndarray]:
+        # Cached per DataFrame. The conversion below runs tz_convert +
+        # tz_localize + sort_values across the WHOLE frame (99,908 rows for
+        # XAUUSD M15), and this method is called ~12x per env step. Profiling a
+        # 400-step run showed tz_localize alone accounting for 156 s of 209 s
+        # total - 75% of all time spent stepping the environment.
+        #
+        # The time column is static for the lifetime of the run, so the result
+        # is computed once per frame and reused. Keyed by id() because
+        # DataFrames are unhashable and these objects are held for the whole
+        # run by self.data.
         if df is None or df.empty:
             return None
+
+        cache_key = id(df)
+        cached = self._time_ns_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        result = self._compute_df_time_ns(df)
+        self._time_ns_cache[cache_key] = result
+        return result
+
+    def _compute_df_time_ns(self, df: pd.DataFrame) -> Optional[np.ndarray]:
 
 
         if isinstance(df.index, pd.DatetimeIndex):

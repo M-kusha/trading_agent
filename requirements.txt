@@ -21,6 +21,9 @@ stable-baselines3>=2.0.0
 sb3-contrib>=2.0.0          # MaskablePPO - required by the action-mask design
 gymnasium>=0.28.0
 optuna>=3.5.0
+# Not imported directly, but stable-baselines3 requires it whenever
+# tensorboard_log is configured - which train_prop_firm.py does.
+tensorboard>=2.12.0
 
 # ── Backend / dashboard services ─────────────────────────────────────────────
 fastapi>=0.100.0
@@ -58,6 +61,5 @@ pytest>=7.4.0
 # requests          not imported anywhere
 # aiofiles          not imported anywhere
 # websockets        not imported directly (transitive via uvicorn[standard])
-# tensorboard       not imported directly; add back when TB logging is wired up
 # scipy             not imported by tracked source (only by diagnostics)
 # flake8/black/mypy dev tooling - belongs in a separate requirements-dev.txt

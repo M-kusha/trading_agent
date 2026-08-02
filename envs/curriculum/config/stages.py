@@ -57,7 +57,12 @@ class TradingSkill(Enum):
     ADAPTATION = "adaptation"
 
 
-class MarketRegime(Enum):
+class MarketRegime(str, Enum):
+    # str-based so `List[MarketRegime]` satisfies the `List[str]` annotation on
+    # ExecutionDifficulty.allowed_regimes. Stage configs pass enum members while
+    # the consumer (envs/prop_firm/data/difficulty.py) normalises via str() and
+    # a "." split, so both forms already worked at runtime - only the type was
+    # wrong, which pyright reported at 10 call sites.
     TRENDING_UP = "trending_up"
     TRENDING_DOWN = "trending_down"
     RANGING = "ranging"
