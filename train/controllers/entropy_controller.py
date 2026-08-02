@@ -23,9 +23,17 @@ def _clamp(x: float, lo: float, hi: float) -> float:
 class SmartEntropyController:
 
 
+    # Stages 0-1 previously targeted 0.85 / 0.75 normalised entropy. The PID
+    # drove ent_coef to 0.169 chasing 0.85 and the entropy term reached ~128x
+    # the policy-gradient term, so after 140 updates clip_fraction was 9.8e-05,
+    # entropy was flat at 0.945 and explained_variance was 0.024 - the policy
+    # could not move off uniform. A uniform policy over 9 actions enters on
+    # roughly every other flat bar, which is where 366 trades per episode came
+    # from. 0.60 still explores broadly while leaving the policy gradient room
+    # to act; the anneal below it is unchanged.
     STAGE_TARGETS_NORMALIZED: Dict[int, float] = {
-        0: 0.85,
-        1: 0.75,
+        0: 0.60,
+        1: 0.52,
         2: 0.60,
         3: 0.50,
         4: 0.42,
@@ -37,9 +45,13 @@ class SmartEntropyController:
     }
 
 
+    # The stage 0-1 ceilings of 0.25 / 0.20 are what let the entropy bonus
+    # dominate the policy gradient by two orders of magnitude. Capping them at
+    # 0.06 / 0.05 keeps a real exploration bonus - still well above the 0.0-0.01
+    # typical for discrete PPO - without freezing the policy at uniform.
     STAGE_ENT_COEF_BOUNDS: Dict[int, Tuple[float, float]] = {
-        0: (0.08, 0.25),
-        1: (0.06, 0.20),
+        0: (0.010, 0.060),
+        1: (0.008, 0.050),
         2: (0.04, 0.15),
         3: (0.03, 0.12),
         4: (0.025, 0.10),

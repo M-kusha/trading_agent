@@ -2341,6 +2341,18 @@ class PropFirmTradingEnv(
                     "bars_held": int(r.bars_held),
                     "mae": float(r.mae),
                     "mfe": float(r.mfe),
+                    # In R, the unit that decides whether a reward:risk target
+                    # is reachable. mfe_r is how far the trade ran in our
+                    # favour before we closed it; net_pnl/mfe is how much of
+                    # that run we actually kept, which is the number that says
+                    # whether winners are being cut short.
+                    "mae_r": float(abs(r.mae) / max(r.initial_risk_eur, 1.0)),
+                    "mfe_r": float(abs(r.mfe) / max(r.initial_risk_eur, 1.0)),
+                    # What the trade actually risked, so size selection is
+                    # visible rather than inferred from P&L.
+                    "risk_eur": float(r.initial_risk_eur),
+                    "lot_size": float(r.lot_size),
+                    "fees_eur": float(getattr(r, "total_fees", 0.0)),
                     "entry_quality": float(r.entry_quality),
                     "exit_type": r.close_reason.value,
                     "volatility_regime": vol_regime,

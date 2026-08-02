@@ -616,7 +616,51 @@ class MetricsReader:
             "avg_consecutive_losses": avg_consecutive_losses,
             "consecutive_loss_streak_rate": consecutive_loss_streak_rate,
             "streak_data_available": has_streak_data,
+            **self._excursions(q),
         }
+
+    def _excursions(self, q: Dict[str, Any]) -> Dict[str, Any]:
+        """Biggest win/loss and MAE/MFE, in R.
+
+        reward_risk_ratio is mean winner over mean loser - the "lose 50, win
+        200" number. mfe_capture is how much of a winner's favourable run was
+        kept; well below 1.0 means winners are closed before the run finishes,
+        which caps the reward:risk ratio no matter what the target says.
+        """
+        available = bool(q.get("excursion_data_available"))
+        keys = (
+            "best_trade_r", "worst_trade_r", "best_trade_eur", "worst_trade_eur",
+            "mean_mae_r", "mean_mfe_r", "mean_winner_r", "mean_loser_r",
+            "reward_risk_ratio", "mfe_capture",
+            "mean_pnl_per_trade", "median_pnl_per_trade", "expectancy_r",
+            "mean_risk_eur", "median_risk_eur", "mean_lot_size", "max_lot_size",
+            "mean_commission_eur", "mean_bars_held", "median_bars_held",
+            "expectancy_r_early", "expectancy_r_late", "expectancy_r_delta",
+            "win_rate_delta",
+        )
+        out: Dict[str, Any] = {"excursion_data_available": available}
+        for k in keys:
+            v = q.get(k)
+            out[k] = self._safe_float(v, 0.0) if (available and v is not None) else None
+
+        rr = out.get("reward_risk_ratio")
+        out["reward_risk_status"] = (
+            "unknown" if rr is None
+            else "good" if rr >= 2.0
+            else "ok" if rr >= 1.3
+            else "bad"
+        )
+
+        improving = q.get("improving") if available else None
+        out["improving"] = improving if isinstance(improving, bool) else None
+        delta = out.get("expectancy_r_delta")
+        out["improvement_status"] = (
+            "unknown" if delta is None
+            else "good" if delta > 0.02
+            else "ok" if delta > -0.02
+            else "bad"
+        )
+        return out
 
     def _process_observation(self, obs: Any) -> Dict[str, Any]:
         """Observation health: schema identity and whether the agent can see.

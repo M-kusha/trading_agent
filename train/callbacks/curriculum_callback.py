@@ -105,6 +105,7 @@ class CurriculumTrainingCallback(BaseCallback):
         self._ep_win_rates: deque = deque(maxlen=MAX_EPISODE_HISTORY)
         self._ep_drawdowns: deque = deque(maxlen=MAX_EPISODE_HISTORY)
         self._ep_consecutive_losses: deque = deque(maxlen=MAX_EPISODE_HISTORY)
+        self._trade_excursions: deque = deque(maxlen=2000)
         self._ep_trades: deque = deque(maxlen=MAX_EPISODE_HISTORY)
         self._ep_lens: deque = deque(maxlen=MAX_EPISODE_HISTORY)
 
@@ -1147,6 +1148,20 @@ class CurriculumTrainingCallback(BaseCallback):
                 ))
             )
 
+            for trade in ep_stats.get("trades_with_regime", []) or []:
+                if not isinstance(trade, dict):
+                    continue
+                self._trade_excursions.append({
+                    "pnl": float(trade.get("pnl", 0.0)),
+                    "r_multiple": float(trade.get("r_multiple", 0.0)),
+                    "mae_r": float(trade.get("mae_r", 0.0)),
+                    "mfe_r": float(trade.get("mfe_r", 0.0)),
+                    "risk_eur": float(trade.get("risk_eur", 0.0)),
+                    "lot_size": float(trade.get("lot_size", 0.0)),
+                    "fees_eur": float(trade.get("fees_eur", 0.0)),
+                    "bars_held": int(trade.get("bars_held", 0)),
+                })
+
 
             self._reward_history.append(ep_reward)
             if self._smart_lr_controller is not None:
@@ -1632,6 +1647,106 @@ class CurriculumTrainingCallback(BaseCallback):
             "total_stages_visited": len(stages_data),
         }
 
+    def _excursion_stats(self) -> Dict[str, Any]:
+        """Best/worst trade and MAE/MFE, in R.
+
+        Answers what the single biggest win and loss were, and - via
+        mfe_capture - how much of a winner's favourable run was actually kept.
+        A capture well below 1.0 means winners are being closed early, which is
+        what caps the achievable reward:risk ratio.
+        """
+        window = list(self._trade_excursions)[-2000:]
+        if not window:
+            return {
+                "excursion_data_available": False,
+                "best_trade_r": None,
+                "worst_trade_r": None,
+                "best_trade_eur": None,
+                "worst_trade_eur": None,
+                "mean_mae_r": None,
+                "mean_mfe_r": None,
+                "mean_winner_r": None,
+                "mean_loser_r": None,
+                "reward_risk_ratio": None,
+                "mfe_capture": None,
+            }
+
+        r_mult = np.array([t["r_multiple"] for t in window], dtype=float)
+        pnl = np.array([t["pnl"] for t in window], dtype=float)
+        mae_r = np.array([t["mae_r"] for t in window], dtype=float)
+        mfe_r = np.array([t["mfe_r"] for t in window], dtype=float)
+
+        winners = r_mult[r_mult > 0]
+        losers = r_mult[r_mult <= 0]
+        mean_win = float(winners.mean()) if winners.size else 0.0
+        mean_loss = float(abs(losers.mean())) if losers.size else 0.0
+
+        captured = []
+        for t in window:
+            if t["pnl"] > 0 and t["mfe_r"] > 1e-9:
+                captured.append(t["r_multiple"] / t["mfe_r"])
+
+        return {
+            "excursion_data_available": True,
+            "best_trade_r": float(r_mult.max()),
+            "worst_trade_r": float(r_mult.min()),
+            "best_trade_eur": float(pnl.max()),
+            "worst_trade_eur": float(pnl.min()),
+            "mean_mae_r": float(mae_r.mean()),
+            "mean_mfe_r": float(mfe_r.mean()),
+            "mean_winner_r": mean_win,
+            "mean_loser_r": mean_loss,
+            "reward_risk_ratio": float(mean_win / mean_loss) if mean_loss > 1e-9 else None,
+            "mfe_capture": float(np.mean(captured)) if captured else None,
+            "sample_trades": len(window),
+            **self._per_trade_economics(window, r_mult, pnl),
+        }
+
+    def _per_trade_economics(self, window, r_mult, pnl) -> Dict[str, Any]:
+        """Expectancy, risk actually deployed, and whether it is improving.
+
+        Mean P&L per trade is skewed by outliers, so the median is reported
+        alongside it. The trend halves the window: a positive delta means the
+        later trades are better than the earlier ones, which is the only
+        direct read on whether the policy is learning to trade rather than
+        just trading more.
+        """
+        risk = np.array([t["risk_eur"] for t in window], dtype=float)
+        lots = np.array([t["lot_size"] for t in window], dtype=float)
+        fees = np.array([t["fees_eur"] for t in window], dtype=float)
+        bars = np.array([t["bars_held"] for t in window], dtype=float)
+
+        out: Dict[str, Any] = {
+            "mean_pnl_per_trade": float(pnl.mean()),
+            "median_pnl_per_trade": float(np.median(pnl)),
+            "expectancy_r": float(r_mult.mean()),
+            "mean_risk_eur": float(risk.mean()),
+            "median_risk_eur": float(np.median(risk)),
+            "mean_lot_size": float(lots.mean()),
+            "max_lot_size": float(lots.max()),
+            # Commission only. Spread is charged through the fill price and is
+            # already inside net_pnl, so it does not appear here - naming this
+            # "fees" would understate the real cost of a trade.
+            "mean_commission_eur": float(fees.mean()),
+            "mean_bars_held": float(bars.mean()),
+            "median_bars_held": float(np.median(bars)),
+        }
+
+        # Improvement: later half vs earlier half of the same window.
+        if len(window) >= 40:
+            half = len(window) // 2
+            early, late = r_mult[:half], r_mult[half:]
+            out["expectancy_r_early"] = float(early.mean())
+            out["expectancy_r_late"] = float(late.mean())
+            out["expectancy_r_delta"] = float(late.mean() - early.mean())
+            out["win_rate_delta"] = float((late > 0).mean() - (early > 0).mean()) * 100.0
+            out["improving"] = bool(late.mean() > early.mean())
+        else:
+            for k in ("expectancy_r_early", "expectancy_r_late", "expectancy_r_delta", "win_rate_delta"):
+                out[k] = None
+            out["improving"] = None
+        return out
+
     def _stage_target_trades_per_1k(self) -> float:
         """The active stage's trade-frequency target, or 0.0 if unavailable.
 
@@ -1863,6 +1978,7 @@ class CurriculumTrainingCallback(BaseCallback):
                     "mean_r_multiple": mean_r_multiple,
                     "mean_entry_quality": mean_entry_quality,
                     **self._consecutive_loss_stats(),
+                    **self._excursion_stats(),
                 },
 
                 "exit_stats": {"distribution": dict(self._exit_reason_counts)},
