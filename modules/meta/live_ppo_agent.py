@@ -31,12 +31,14 @@ from modules.contracts import module_args
 from modules.core.module_base import BaseModule, module
 from modules.meta.live_action_mask import LiveActionMaskBuilder, LiveMaskConfig
 from modules.meta.ppo_observation_builder import (
+    DEFAULT_INSTRUMENT,
     PPO_OBS_SIZE,
     PPO_OBS_VERSION,
     ObservationContractError,
     PPOObservationBuilder,
 )
 from modules.utils.info_bus import InfoBusManager, SmartInfoBus
+from trading.state import LiveStateHost
 from modules.utils import simulation_time as simclock
 
 
@@ -52,6 +54,10 @@ class LivePPOAgent(BaseModule):
         self.logger = logging.getLogger("LivePPOAgent")
         self.smart_bus = getattr(self, "smart_bus", None) or InfoBusManager.get_instance()
         self.obs_builder = PPOObservationBuilder()
+        # Live observation state is produced by the SAME environment class that
+        # training uses, fed a rolling window of broker bars. There is therefore
+        # no second implementation to drift - see trading/state/live_state_host.
+        self.state_host = LiveStateHost(instrument=DEFAULT_INSTRUMENT)
         self.mask_builder = LiveActionMaskBuilder(LiveMaskConfig())
         self.core: Optional[Any] = None
         self._last_decision: Dict[str, Any] = {}
@@ -87,14 +93,7 @@ class LivePPOAgent(BaseModule):
 
         state = self._collect_state()
         try:
-            obs = self.obs_builder.build(
-                market_data=state["market_data"],
-                expert_signals=state["expert_signals"],
-                risk_state=state["risk_state"],
-                account_state=state["account_state"],
-                trading_mode_state=state["trading_mode_state"],
-                governor_state=state["governor_state"],
-            )
+            obs = self.obs_builder.build(**state)
         except ObservationContractError:
             # A malformed observation is never tradeable. Surfacing it stops the
             # loop rather than letting a padded or partial vector reach the
@@ -122,36 +121,43 @@ class LivePPOAgent(BaseModule):
         self._publish(decision, mask)
         return decision
 
-    def _collect_state(self) -> Dict[str, Dict[str, Any]]:
-        """Gather the builder's inputs from the bus.
+    def _collect_state(self) -> Dict[str, Any]:
+        """Build the observation inputs from live bars.
 
-        Every key here has a live producer. Missing data raises rather than
-        defaulting: a decision made on absent market state is worse than no
-        decision.
+        Previously this read six pre-computed dicts off the bus, which meant a
+        second implementation of every state producer and the drift that came
+        with it. Now only raw bars and account state come from the bus, and the
+        training environment derives everything else - so a schema change lands
+        on both paths at once or neither.
         """
         name = "LivePPOAgent"
-        required = {
-            "market_data": "market_data",
-            "expert_signals": "expert_signals",
-            "risk_state": "risk_data",
-            "account_state": "account_state",
-            "trading_mode_state": "trading_mode_state",
-            "governor_state": "governor_state",
-        }
-        state: Dict[str, Dict[str, Any]] = {}
-        missing = []
-        for arg, bus_key in required.items():
-            value = self.smart_bus.get(bus_key, name)
-            if not isinstance(value, dict) or not value:
-                missing.append(bus_key)
-            else:
-                state[arg] = value
-        if missing:
+
+        frames = self.smart_bus.get("ohlcv_frames", name)
+        if not isinstance(frames, dict) or not frames:
             raise RuntimeError(
-                f"LivePPOAgent cannot build an observation - bus keys absent or "
-                f"empty: {', '.join(missing)}"
+                "LivePPOAgent has no bar window. MarketDataProvider must publish "
+                "'ohlcv_frames' as {timeframe: DataFrame} before a decision can "
+                "be made - an observation built from absent market data is not "
+                "tradeable."
             )
-        return state
+        self.state_host.update(frames)
+
+        account = self.smart_bus.get("account_state", name)
+        if isinstance(account, dict) and account:
+            self.state_host.sync_account(
+                balance=float(account.get("balance", 0.0) or 0.0),
+                equity=float(account.get("equity", 0.0) or 0.0),
+                position=account.get("position"),
+                daily_trades=int(account.get("trades_today", 0) or 0),
+                consecutive_losses=int(account.get("consecutive_losses", 0) or 0),
+            )
+        else:
+            raise RuntimeError(
+                "LivePPOAgent has no account state. Sizing and risk dimensions "
+                "would describe a simulated account rather than the live one."
+            )
+
+        return self.state_host.observation_inputs()
 
     def _build_mask(self, account_state: Dict[str, Any]) -> np.ndarray:
         return self.mask_builder.get_action_mask(

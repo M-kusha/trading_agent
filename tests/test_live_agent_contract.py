@@ -19,8 +19,10 @@ def test_registers_with_the_expected_contract():
     assert meta.name == "LivePPOAgent"
     for key in ("ppo_final_decision", "ppo_gate_passed", "ppo_position_size"):
         assert key in meta.provides, f"{key} must be published for the executor chain"
-    for key in ("market_data", "account_state", "governor_state"):
-        assert key in meta.requires
+    # Raw bars and account state only. Everything else is derived by the
+    # training environment through LiveStateHost, so there is no second
+    # implementation of the state producers to drift.
+    assert set(meta.requires) == {"ohlcv_frames", "account_state"}
 
 
 def test_uses_the_shared_observation_builder():
@@ -106,5 +108,15 @@ def test_missing_bus_inputs_raise_and_name_the_keys():
     from modules.meta.live_ppo_agent import LivePPOAgent
 
     agent = LivePPOAgent()
-    with pytest.raises(RuntimeError, match="bus keys absent or empty"):
+    with pytest.raises(RuntimeError, match="no bar window"):
         agent._collect_state()
+
+
+def test_uses_the_shared_state_host():
+    """Live derives its observation inputs from the training environment."""
+    from trading.state import LiveStateHost
+
+    from modules.meta.live_ppo_agent import LivePPOAgent
+
+    agent = LivePPOAgent()
+    assert isinstance(agent.state_host, LiveStateHost)

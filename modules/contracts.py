@@ -24,12 +24,11 @@ CONTRACTS: Dict[str, ModuleContract] = {
             'action_mask',
         ],
         requires=[
-            'market_data',
-            'expert_signals',
-            'risk_data',
+            # Raw bars and account state only. Everything else is derived by the
+            # training environment via LiveStateHost, so live cannot drift from
+            # training by construction.
+            'ohlcv_frames',
             'account_state',
-            'trading_mode_state',
-            'governor_state',
         ],
         meta={'category': 'meta', 'version': '1.0.0'},
     ),

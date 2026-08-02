@@ -17,12 +17,8 @@ modules:
     - ppo_position_size
     - action_mask
     requires:
-    - market_data
-    - expert_signals
-    - risk_data
+    - ohlcv_frames
     - account_state
-    - trading_mode_state
-    - governor_state
   ActiveTradeMonitor:
     category: risk
     file_path: modules\risk\active_trade_monitor.py
