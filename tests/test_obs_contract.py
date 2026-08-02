@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import itertools
+
 import numpy as np
 import pytest
 
@@ -25,7 +27,7 @@ def test_feature_groups_are_contiguous_and_non_overlapping():
 
     spans = sorted(FEATURE_GROUPS.values())
     assert spans[0][0] == 0, "feature groups must start at index 0"
-    for (_, prev_end), (next_start, _) in zip(spans, spans[1:]):
+    for (_, prev_end), (next_start, _) in itertools.pairwise(spans):
         assert prev_end == next_start, f"gap or overlap at index {prev_end}"
     assert spans[-1][1] == PPO_OBS_SIZE
 

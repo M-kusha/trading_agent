@@ -114,9 +114,8 @@ def test_missing_bus_inputs_raise_and_name_the_keys():
 
 def test_uses_the_shared_state_host():
     """Live derives its observation inputs from the training environment."""
-    from trading.state import LiveStateHost
-
     from modules.meta.live_ppo_agent import LivePPOAgent
+    from trading.state import LiveStateHost
 
     agent = LivePPOAgent()
     assert isinstance(agent.state_host, LiveStateHost)

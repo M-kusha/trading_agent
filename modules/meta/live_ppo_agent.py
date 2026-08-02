@@ -37,9 +37,9 @@ from modules.meta.ppo_observation_builder import (
     ObservationContractError,
     PPOObservationBuilder,
 )
+from modules.utils import simulation_time as simclock
 from modules.utils.info_bus import InfoBusManager, SmartInfoBus
 from trading.state import LiveStateHost
-from modules.utils import simulation_time as simclock
 
 
 @module(**module_args("LivePPOAgent"))
