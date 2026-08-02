@@ -430,10 +430,11 @@ def create_eval_vec_env(
             if use_action_masking and MASKABLE_AVAILABLE and ActionMasker is not None:
                 env = ActionMasker(env, _mask_fn)
 
-            try:
-                env.reset(seed=seed)
-            except Exception as e:
-                logger.debug(f"Could not seed eval env with seed={seed}: {e}")
+            # reset() is where the observation is built, so every contract
+            # violation surfaces here. Swallowing it at debug level meant an env
+            # that could never produce a valid observation was still handed to
+            # the trainer. Let it raise.
+            env.reset(seed=seed)
             return env
         return _init
 
@@ -446,16 +447,27 @@ def create_eval_vec_env(
 
 
 def _mask_fn(env: Any) -> np.ndarray:
-
+    # Walk the wrapper chain to the env that owns action_masks(). The result is
+    # asserted to be a bool array: a malformed mask would silently un-gate
+    # actions the environment considers illegal, which is worse than crashing.
     current = env
-    while hasattr(current, 'env'):
-        if hasattr(current, 'action_masks') and callable(current.action_masks):
-            return current.action_masks()
-        current = current.env
-
-    if hasattr(current, 'action_masks') and callable(current.action_masks):
-        return current.action_masks()
-    raise AttributeError(f"Could not find action_masks() on env or wrapped envs: {type(env)}")
+    while True:
+        fn = getattr(current, "action_masks", None)
+        if callable(fn):
+            mask = np.asarray(fn(), dtype=np.bool_)
+            if mask.ndim != 1 or mask.size == 0:
+                raise ValueError(
+                    f"action_masks() returned shape {mask.shape}; expected a "
+                    f"non-empty 1-D boolean array"
+                )
+            if not mask.any():
+                raise ValueError("action_masks() returned an all-False mask - no legal action")
+            return mask
+        current = getattr(current, "env", None)
+        if current is None:
+            raise AttributeError(
+                f"Could not find action_masks() on env or wrapped envs: {type(env)}"
+            )
 
 
 def create_vec_envs(
@@ -479,10 +491,9 @@ def create_vec_envs(
                 env = ActionMasker(env, _mask_fn)
 
 
-            try:
-                env.reset(seed=seed + rank)
-            except Exception as e:
-                logger.debug(f"Could not seed env {rank}: {e}")
+            # See create_eval_vec_env: a failed reset means a broken observation
+            # contract, not a seeding inconvenience.
+            env.reset(seed=seed + rank)
             return env
         return _init
 
@@ -1284,10 +1295,10 @@ def create_curriculum_env(
     if use_action_masking and MASKABLE_AVAILABLE and ActionMasker is not None:
         env = ActionMasker(env, _mask_fn)
 
-    try:
-        env.reset(seed=seed)
-    except Exception:
-        pass
+    # Was `except Exception: pass` - the most silent form. A curriculum env that
+    # cannot reset cannot produce an observation, and training would have
+    # started against it regardless.
+    env.reset(seed=seed)
 
     return env
 
