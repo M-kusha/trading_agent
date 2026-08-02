@@ -155,6 +155,12 @@ class PropFirmTradingEnv(
                 self._curriculum_stage_idx = getattr(current_stage, "value", 0)
 
         self.data = data_dict
+        # Mirrored frames are built on first use, not here: constructing them
+        # doubles the resident dataset and most callers never enable them.
+        self._base_data = data_dict
+        self._mirrored_data: Optional[Dict[str, Dict[str, pd.DataFrame]]] = None
+        self._mirror_anchors: Dict[str, float] = {}
+        self._mirror_active: bool = False
         self.instruments = [i for i in self.config.instruments if i in self.data]
         if not self.instruments:
             self.instruments = list(self.data.keys())[:1]
@@ -677,6 +683,92 @@ class PropFirmTradingEnv(
         if full_upper in df.columns:
             return full_upper
         raise KeyError(f"Column '{col}' not found (tried: {col}, {upper_col}, {full_upper})")
+
+    def _build_mirrored_data(self) -> Dict[str, Dict[str, pd.DataFrame]]:
+        """A price-mirrored copy of the dataset: p' = anchor - p.
+
+        Linear reflection, so every bar-to-bar move is exactly negated and an
+        uptrend becomes an identical downtrend. Absolute point moves are
+        preserved exactly, which is what P&L depends on - a log-space
+        reflection would preserve percentage returns instead and shrink the
+        point moves, changing trade economics.
+
+        high and low swap: reflecting a bar turns its high into its low.
+
+        The anchor is 2x the global maximum high, shared across every timeframe
+        of an instrument so they stay aligned, and large enough that mirrored
+        prices are always positive.
+        """
+        mirrored: Dict[str, Dict[str, pd.DataFrame]] = {}
+
+        for instrument, frames in self.data.items():
+            if not isinstance(frames, dict):
+                continue
+
+            highs = []
+            for df in frames.values():
+                if df is None or getattr(df, "empty", True):
+                    continue
+                try:
+                    highs.append(float(df[self._resolve_column(df, "high")].max()))
+                except (KeyError, ValueError):
+                    continue
+            if not highs:
+                continue
+            anchor = 2.0 * max(highs)
+
+            out: Dict[str, pd.DataFrame] = {}
+            for tf, df in frames.items():
+                if df is None or getattr(df, "empty", True):
+                    out[tf] = df
+                    continue
+                try:
+                    o = self._resolve_column(df, "open")
+                    h = self._resolve_column(df, "high")
+                    low = self._resolve_column(df, "low")
+                    c = self._resolve_column(df, "close")
+                except KeyError:
+                    out[tf] = df
+                    continue
+
+                m = df.copy(deep=True)
+                m[o] = anchor - df[o].to_numpy(dtype=np.float64)
+                m[c] = anchor - df[c].to_numpy(dtype=np.float64)
+                # Swapped: the reflection of the high is the low.
+                m[h] = anchor - df[low].to_numpy(dtype=np.float64)
+                m[low] = anchor - df[h].to_numpy(dtype=np.float64)
+                out[tf] = m
+
+            mirrored[instrument] = out
+            self._mirror_anchors[instrument] = anchor
+
+        return mirrored
+
+    def _select_episode_data(self) -> None:
+        """Pick the original or mirrored dataset for this episode."""
+        prob = float(getattr(self.config, "mirror_augmentation_prob", 0.0) or 0.0)
+        if prob <= 0.0:
+            self._mirror_active = False
+            return
+
+        if self._mirrored_data is None:
+            self._mirrored_data = self._build_mirrored_data()
+            if not self._mirrored_data:
+                logger.warning("Mirror augmentation requested but no frame could be mirrored")
+                self._mirror_active = False
+                return
+            self._original_data = self._base_data
+
+        use_mirror = bool(self.np_random.random() < prob)
+        if use_mirror == self._mirror_active:
+            return
+
+        self._mirror_active = use_mirror
+        self.data = self._mirrored_data if use_mirror else self._base_data
+        # Frame identity changed, so anything keyed on it must be recomputed.
+        self._time_ns_cache = {}
+        self._ohlcv_cache_key = None
+        self._ohlcv_cache = {}
 
     def _get_price_mid(self, instrument: str) -> float:
         tf = self._primary_tf()
@@ -1283,6 +1375,10 @@ class PropFirmTradingEnv(
             self._last_stage_name = getattr(self.curriculum.current_stage, "name", "")
             self._last_stage_epoch = int(getattr(self.curriculum, "current_stage_epoch", 0))
 
+
+        # Before anything reads prices this episode: swaps self.data between
+        # the original and its mirror, so direction is symmetric across the run.
+        self._select_episode_data()
 
         self._episode_instrument = str(self.instruments[0])
 
@@ -2286,6 +2382,9 @@ class PropFirmTradingEnv(
             "trades_with_regime": self._build_trades_with_regime(results),
 
             "governor_state": self._get_governor_state(),
+            # So the augmentation is observable rather than an invisible
+            # mechanism nobody can confirm is running.
+            "mirrored_episode": bool(self._mirror_active),
         }
 
     def _build_trades_with_regime(self, results: List[TradeResult]) -> List[Dict[str, Any]]:

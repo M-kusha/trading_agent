@@ -106,6 +106,7 @@ class CurriculumTrainingCallback(BaseCallback):
         self._ep_drawdowns: deque = deque(maxlen=MAX_EPISODE_HISTORY)
         self._ep_consecutive_losses: deque = deque(maxlen=MAX_EPISODE_HISTORY)
         self._trade_excursions: deque = deque(maxlen=2000)
+        self._mirrored_episodes: deque = deque(maxlen=MAX_EPISODE_HISTORY)
         self._ep_trades: deque = deque(maxlen=MAX_EPISODE_HISTORY)
         self._ep_lens: deque = deque(maxlen=MAX_EPISODE_HISTORY)
 
@@ -1148,6 +1149,8 @@ class CurriculumTrainingCallback(BaseCallback):
                 ))
             )
 
+            self._mirrored_episodes.append(bool(ep_stats.get("mirrored_episode", False)))
+
             for trade in ep_stats.get("trades_with_regime", []) or []:
                 if not isinstance(trade, dict):
                     continue
@@ -1966,6 +1969,14 @@ class CurriculumTrainingCallback(BaseCallback):
                     "long_win_rate": (self._direction_stats["long_wins"] / max(self._direction_stats["long_count"], 1)) * 100,
                     "short_win_rate": (self._direction_stats["short_wins"] / max(self._direction_stats["short_count"], 1)) * 100,
                     "direction_ratio": self._direction_stats["long_count"] / max(self._direction_stats["short_count"], 1),
+                    # Share of recent episodes run on mirrored prices. Sits
+                    # beside the long/short split because the two are only
+                    # meaningful together: a long bias is expected at 0%
+                    # mirroring and is a real finding at 50%.
+                    "mirror_rate": (
+                        float(np.mean(list(self._mirrored_episodes)[-50:]))
+                        if self._mirrored_episodes else None
+                    ),
                 },
 
                 # Without the consecutive-loss fields the dashboard fell back to

@@ -298,6 +298,16 @@ class PropFirmConfig:
     max_drawdown_limit: float = 0.10
     trailing_drawdown: bool = False
 
+    # Probability that an episode runs on a price-mirrored copy of the data.
+    # XAUUSD rose 149.8% across this dataset (1,735 -> 4,332), so a random long
+    # held 96 bars earns +241 points and a random short loses the same. Long
+    # P&L was +26,553 against short -17,591 purely from that drift, and the
+    # holdout is also a bull market (+32.8%), so nothing anywhere in the
+    # pipeline punishes a permanently-long policy. Mirroring half the episodes
+    # makes direction symmetric, so edge has to come from structure rather than
+    # from knowing gold went up. 0.0 disables.
+    mirror_augmentation_prob: float = 0.5
+
 
     live_mode: bool = False
     debug: bool = False
