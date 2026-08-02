@@ -2296,13 +2296,22 @@ class PropFirmTradingEnv(
             vol_regime = entry_context.get("volatility_regime", "medium")
             risk_regime = entry_context.get("risk_regime", "neutral")
 
-            trend_strength = float(entry_context.get("structure_trend", 0.0))
-            if abs(trend_strength) > 0.5:
-                trend_regime = "strong_trend"
-            elif abs(trend_strength) > 0.2:
-                trend_regime = "weak_trend"
-            else:
+            # structure_trend is a direction, not a magnitude: the producer
+            # emits exactly -1.0, 0.0 or +1.0 (HH+HL, LL+LH, neither). Banding
+            # it by |v| > 0.5 / > 0.2 therefore made "weak_trend" unreachable -
+            # 2,000 trades produced 1,104 strong_trend, 896 ranging and zero
+            # weak_trend, and the trend_following skill score was computed over
+            # a permanently empty bucket. structure_strength is the continuous
+            # 0..1 magnitude the band actually wanted, and travels in the same
+            # entry context.
+            trend_direction = float(entry_context.get("structure_trend", 0.0))
+            trend_strength = float(entry_context.get("structure_strength", 0.0))
+            if trend_direction == 0.0:
                 trend_regime = "ranging"
+            elif trend_strength > 0.5:
+                trend_regime = "strong_trend"
+            else:
+                trend_regime = "weak_trend"
 
             session_regime = "off_hours"
             if r.entry_dt:
