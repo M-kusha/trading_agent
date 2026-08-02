@@ -1,17 +1,18 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import time
 from collections import deque
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Deque, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback
+
+from train.obs_health import ObservationHealthTracker
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +82,7 @@ class VecEpisodeTradingCallback(BaseCallback):
         # through the outage where every observation was np.zeros(90) - nothing
         # on screen distinguished a blind agent from a learning one. These
         # samples make that impossible to miss again.
-        self._obs_samples: Deque[np.ndarray] = deque(maxlen=512)
+        self._obs_tracker = ObservationHealthTracker()
         self._obs_health: Dict[str, Any] = {}
 
     def _on_training_start(self) -> None:
@@ -167,72 +168,11 @@ class VecEpisodeTradingCallback(BaseCallback):
 
     def _collect_obs_sample(self) -> None:
         """Keep a rolling sample of raw observations for the health panel."""
-        obs = self.locals.get("new_obs")
-        if obs is None:
-            return
-        arr = np.asarray(obs, dtype=np.float64)
-        if arr.ndim == 2 and arr.shape[0] > 0:
-            self._obs_samples.append(arr[0].copy())
-        elif arr.ndim == 1:
-            self._obs_samples.append(arr.copy())
+        self._obs_tracker.observe(self.locals.get("new_obs"))
 
     def _compute_obs_health(self) -> Dict[str, Any]:
-        """Schema identity plus the statistics that reveal a dead observation."""
-        from modules.meta.ppo_observation_builder import (
-            FEATURE_GROUPS,
-            PPO_OBS_FEATURE_NAMES,
-            PPO_OBS_SIZE,
-            PPO_OBS_VERSION,
-        )
-
-        health: Dict[str, Any] = {
-            "schema_version": PPO_OBS_VERSION,
-            "schema_size": int(PPO_OBS_SIZE),
-            "schema_hash": hashlib.sha256(
-                "|".join(PPO_OBS_FEATURE_NAMES).encode("utf-8")
-            ).hexdigest()[:12],
-            "samples": len(self._obs_samples),
-        }
-        if len(self._obs_samples) < 32:
-            health["status"] = "warming_up"
-            return health
-
-        stacked = np.asarray(self._obs_samples, dtype=np.float64)
-        std = stacked.std(axis=0)
-        dead_idx = np.flatnonzero(std < 1e-9)
-
-        health["dead_dims"] = int(dead_idx.size)
-        health["dead_dim_names"] = [
-            PPO_OBS_FEATURE_NAMES[i] for i in dead_idx[:8]
-            if i < len(PPO_OBS_FEATURE_NAMES)
-        ]
-        health["nan_count"] = int(np.isnan(stacked).sum())
-        health["mean_abs"] = float(np.abs(stacked).mean())
-        health["blocks"] = {
-            name: {
-                "dims": end - start,
-                "dead": int((std[start:end] < 1e-9).sum()),
-                "std": float(std[start:end].mean()),
-            }
-            for name, (start, end) in FEATURE_GROUPS.items()
-        }
-
-        # The canary: a constant observation means the agent is blind.
-        if float(stacked.std()) < 1e-9:
-            health["status"] = "blind"
-            health["alert"] = "OBSERVATION IS CONSTANT - the agent cannot see the market"
-        elif health["nan_count"] > 0:
-            health["status"] = "bad"
-            health["alert"] = f"{health['nan_count']} NaN values in observation"
-        elif dead_idx.size > int(PPO_OBS_SIZE) // 2:
-            health["status"] = "bad"
-            health["alert"] = f"{dead_idx.size}/{PPO_OBS_SIZE} observation dims are constant"
-        elif dead_idx.size > 0:
-            health["status"] = "ok"
-            health["alert"] = f"{dead_idx.size} constant dim(s): {', '.join(health['dead_dim_names'][:3])}"
-        else:
-            health["status"] = "good"
-        return health
+        """Delegates to train.obs_health so both callbacks report identically."""
+        return self._obs_tracker.report()
 
     def _on_step(self) -> bool:
         self._collect_obs_sample()

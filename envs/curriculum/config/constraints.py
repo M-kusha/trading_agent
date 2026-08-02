@@ -205,9 +205,6 @@ class RewardShaping:
 
 
     exploration_bonus: float = 0.0
-    directional_accuracy_weight: float = 1.0
-
-
 @dataclass
 class TradingConstraints:
     max_positions: int = 1

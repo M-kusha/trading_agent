@@ -14,7 +14,6 @@ intermittently, depending on which start the sampler happened to pick.
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 from envs.core.shared_utils import timeframe_to_minutes
 

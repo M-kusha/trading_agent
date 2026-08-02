@@ -197,6 +197,12 @@ class RewardConfig:
     target_trades_per_1k_steps: float = 10.0
     stage_activity_targets: Optional[Dict[int, float]] = None
     activity_deviation_penalty_scale: float = 0.2
+    # Every stage sets this (10.0 -> 20.0 -> 10.0 across the curriculum) but the
+    # field was missing here, so _apply_overrides_to_object dropped it silently
+    # and the env fell back to the getattr default of 2.0. The over-trading
+    # penalty saturated at -2.0 per episode regardless of how badly the stage
+    # target was exceeded.
+    activity_deviation_penalty_cap: float = 2.0
     min_trades_penalty: float = 0.3
 
 

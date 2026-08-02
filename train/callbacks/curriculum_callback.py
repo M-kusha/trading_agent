@@ -12,6 +12,8 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback
 
+from train.obs_health import ObservationHealthTracker
+
 try:
     from sb3_contrib.common.maskable.utils import get_action_masks as sb3_get_action_masks
     SB3_MASK_UTILS_AVAILABLE = True
@@ -56,6 +58,12 @@ class CurriculumTrainingCallback(BaseCallback):
         self.log_interval_steps = log_interval_steps
         self.save_path = Path(save_path)
         self.metrics_file = Path(metrics_file)
+
+        # This callback writes live_metrics.json LAST in curriculum mode, so it
+        # must publish observation health itself - otherwise it silently
+        # overwrites the episode callback's payload and the panel disappears
+        # from exactly the runs that matter most.
+        self._obs_tracker = ObservationHealthTracker()
         self.enable_lr_warmup = enable_lr_warmup
         self.enable_checkpoints = enable_checkpoints
         self.enable_entropy_schedule = enable_entropy_schedule
@@ -848,8 +856,11 @@ class CurriculumTrainingCallback(BaseCallback):
             )
 
 
+        # ent_coef/clip_range/vf_coef are PPO fields, not BaseAlgorithm fields,
+        # so self.model is not statically known to have them. The hasattr guard
+        # is the real contract here; setattr states that plainly.
         if should_apply and hasattr(self.model, 'ent_coef'):
-            self.model.ent_coef = new_ent_coef
+            setattr(self.model, 'ent_coef', new_ent_coef)
             if self.verbose >= 1:
                 norm_target = self._smart_entropy_controller.STAGE_TARGETS_NORMALIZED[stage_value]
                 max_h = self._smart_entropy_controller._get_max_entropy(n_valid_actions)
@@ -917,7 +928,7 @@ class CurriculumTrainingCallback(BaseCallback):
             def constant_clip_schedule(progress: float, val: float = new_clip) -> float:
                 return val
 
-            self.model.clip_range = constant_clip_schedule
+            setattr(self.model, 'clip_range', constant_clip_schedule)
             if self.verbose >= 1:
                 logger.info(
                     f"🎚️ Clip PID Applied [Stage {stage}]: {reason} | "
@@ -976,7 +987,7 @@ class CurriculumTrainingCallback(BaseCallback):
 
 
         if hasattr(self.model, 'vf_coef') and abs(current_vf_coef - target_vf_coef) > 0.02:
-            self.model.vf_coef = target_vf_coef
+            setattr(self.model, 'vf_coef', target_vf_coef)
             if self.verbose >= 1:
                 logger.info(
                     f"🎛️ Adaptive vf_coef: {adjustment_reason} | "
@@ -1064,6 +1075,7 @@ class CurriculumTrainingCallback(BaseCallback):
                 )
 
     def _on_step(self) -> bool:
+        self._obs_tracker.observe(self.locals.get("new_obs"))
         rewards = self.locals.get("rewards", None)
         dones = self.locals.get("dones", None)
         infos = self.locals.get("infos", None)
@@ -1747,6 +1759,8 @@ class CurriculumTrainingCallback(BaseCallback):
                     "total_episodes": len(self._ep_rewards),
                     "eta_seconds": eta_seconds,
                 },
+                "observation": self._obs_tracker.report(),
+
                 "learning": {
                     "fps": fps,
                     "n_updates": self._n_updates,

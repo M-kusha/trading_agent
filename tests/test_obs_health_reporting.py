@@ -11,8 +11,6 @@ waiting for a real one.
 
 from __future__ import annotations
 
-from collections import deque
-
 import numpy as np
 import pytest
 
@@ -20,13 +18,22 @@ from modules.meta.ppo_observation_builder import PPO_OBS_SIZE, PPO_OBS_VERSION
 
 
 def _callback_with(samples):
-    """A VecEpisodeTradingCallback with a pre-loaded observation sample buffer."""
-    from train.callbacks.episode_callback import VecEpisodeTradingCallback
+    """A tracker pre-loaded with observations.
 
-    cb = VecEpisodeTradingCallback.__new__(VecEpisodeTradingCallback)
-    cb._obs_samples = deque(samples, maxlen=512)
-    cb._obs_health = {}
-    return cb
+    Targets train.obs_health directly rather than a callback: both
+    VecEpisodeTradingCallback and CurriculumTrainingCallback delegate here, so
+    this is the single implementation under test.
+    """
+    from train.obs_health import ObservationHealthTracker
+
+    tracker = ObservationHealthTracker()
+    for row in samples:
+        tracker.observe(row)
+
+    class _Adapter:
+        _compute_obs_health = staticmethod(tracker.report)
+
+    return _Adapter()
 
 
 def test_detects_a_constant_observation():

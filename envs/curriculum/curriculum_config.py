@@ -166,7 +166,6 @@ def get_explorer_config() -> CurriculumStageConfig:
 
 
             exploration_bonus=0.0,
-            directional_accuracy_weight=0.5,
             min_reward=-50.0,
             max_reward=50.0,
         ),
@@ -384,7 +383,6 @@ def get_experimenter_config() -> CurriculumStageConfig:
 
 
             exploration_bonus=0.0,
-            directional_accuracy_weight=0.7,
             min_reward=-50.0,
             max_reward=50.0,
         ),
@@ -621,7 +619,6 @@ def get_trend_student_config() -> CurriculumStageConfig:
 
 
             exploration_bonus=0.0,
-            directional_accuracy_weight=1.2,
             min_reward=-100.0,
             max_reward=100.0,
         ),
@@ -858,7 +855,6 @@ def get_session_student_config() -> CurriculumStageConfig:
 
 
             exploration_bonus=0.0,
-            directional_accuracy_weight=1.15,
             min_reward=-100.0,
             max_reward=100.0,
         ),
@@ -1141,7 +1137,6 @@ def get_timing_student_config() -> CurriculumStageConfig:
             min_trades_penalty=0.2,
 
             exploration_bonus=0.0,
-            directional_accuracy_weight=1.1,
             min_reward=-100.0,
             max_reward=100.0,
         ),
@@ -1431,7 +1426,6 @@ def get_integrator_config() -> CurriculumStageConfig:
             min_trades_penalty=0.2,
 
             exploration_bonus=0.0,
-            directional_accuracy_weight=1.05,
             min_reward=-200.0,
             max_reward=200.0,
         ),
@@ -1747,7 +1741,6 @@ def get_risk_manager_config() -> CurriculumStageConfig:
             min_trades_penalty=0.15,
 
             exploration_bonus=0.0,
-            directional_accuracy_weight=1.0,
             min_reward=-200.0,
             max_reward=200.0,
         ),
@@ -2071,7 +2064,6 @@ def get_strategist_config() -> CurriculumStageConfig:
             min_trades_penalty=0.1,
 
             exploration_bonus=0.0,
-            directional_accuracy_weight=1.0,
             min_reward=-200.0,
             max_reward=200.0,
         ),
@@ -2410,7 +2402,6 @@ def get_professional_config() -> CurriculumStageConfig:
             min_trades_penalty=0.1,
 
             exploration_bonus=0.0,
-            directional_accuracy_weight=1.0,
             min_reward=-300.0,
             max_reward=300.0,
         ),
@@ -2760,7 +2751,6 @@ def get_live_ready_config() -> CurriculumStageConfig:
             min_trades_penalty=0.1,
 
             exploration_bonus=0.0,
-            directional_accuracy_weight=1.0,
             min_reward=-300.0,
             max_reward=300.0,
         ),

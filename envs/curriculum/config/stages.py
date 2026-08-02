@@ -259,7 +259,6 @@ class CurriculumStageConfig:
             "min_reward", "max_reward",
 
             "exploration_bonus",
-            "directional_accuracy_weight",
         ]
         out: Dict[str, Any] = {}
         for k in keys:

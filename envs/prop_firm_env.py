@@ -138,6 +138,7 @@ class PropFirmTradingEnv(
 
         self.curriculum: Any = None
         self._apply_curriculum_overrides = bool(apply_curriculum_overrides)
+        self._reported_dropped_overrides: set = set()
         self._pending_stage_apply: bool = False
         self._last_stage_name: str = ""
         self._last_stage_epoch: int = 0
@@ -331,6 +332,11 @@ class PropFirmTradingEnv(
         self._scenario_latency_add = 0
 
 
+    # Overrides that legitimately have no matching attribute on the target.
+    # commission_per_lot is translated into config.execution.commission_spec by
+    # _sync_curriculum_stage_overrides rather than assigned directly.
+    _OVERRIDE_KEYS_HANDLED_ELSEWHERE = frozenset({"commission_per_lot"})
+
     def _apply_overrides_to_object(self, target: Any, overrides: Dict[str, Any]) -> None:
         if not isinstance(overrides, dict):
             return
@@ -352,6 +358,19 @@ class PropFirmTradingEnv(
                     setattr(target, k, v)
                 except Exception as e:
                     logger.debug(f"Override {k}={v} failed: {e}")
+            elif k not in self._OVERRIDE_KEYS_HANDLED_ELSEWHERE:
+                # A curriculum key with no home on the target used to vanish
+                # here without a word. activity_deviation_penalty_cap did
+                # exactly that on all 10 stages: the curriculum looked tuned
+                # while the env silently used its own default.
+                if k not in self._reported_dropped_overrides:
+                    self._reported_dropped_overrides.add(k)
+                    logger.error(
+                        "Curriculum override %r=%r has no attribute on %s - the "
+                        "configured value is NOT in effect. Declare the field on "
+                        "the config dataclass or stop emitting the override.",
+                        k, v, type(target).__name__,
+                    )
 
     def _sync_curriculum_stage_overrides(self) -> None:
         if not (self.curriculum and CURRICULUM_AVAILABLE and self._apply_curriculum_overrides):
