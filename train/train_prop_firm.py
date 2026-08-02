@@ -376,6 +376,59 @@ def slice_data_by_index(
     return out
 
 
+def _primary_frame(tfs: Dict[str, pd.DataFrame]) -> Optional[pd.DataFrame]:
+    for tf in ("M15", "M5", "M30", "H1", "H4", "D1"):
+        df = tfs.get(tf)
+        if df is not None and not df.empty:
+            return df
+    return next((df for df in tfs.values() if df is not None and not df.empty), None)
+
+
+def split_data_by_time(
+    data: Dict[str, Dict[str, pd.DataFrame]],
+    ratio: float,
+) -> Tuple[Dict[str, Dict[str, pd.DataFrame]], Dict[str, Dict[str, pd.DataFrame]], Optional[Any]]:
+    """Chronological train/holdout split at a shared timestamp.
+
+    The previous split was index-based off _min_len_across(data), which is the
+    D1 row count (1,091) rather than M15's 99,908, and slice_data_by_index then
+    applied that same index range to every timeframe - so a split at index 927
+    would have cut M15 down to 927 of its 99,908 bars. The "insufficient bars"
+    guard masked it by disabling the holdout entirely, which is why runs
+    trained and evaluated on the same data with no out-of-sample check at all.
+
+    Splitting on a timestamp keeps the timeframes aligned: each one is cut
+    wherever that instant falls in its own index.
+    """
+    train: Dict[str, Dict[str, pd.DataFrame]] = {}
+    holdout: Dict[str, Dict[str, pd.DataFrame]] = {}
+    split_ts: Optional[Any] = None
+
+    for inst, tfs in data.items():
+        primary = _primary_frame(tfs)
+        if primary is None or "time" not in primary.columns:
+            train[inst], holdout[inst] = dict(tfs), {}
+            continue
+
+        cut = int(len(primary) * (1.0 - ratio))
+        cut = int(np.clip(cut, 1, len(primary) - 1))
+        inst_split = primary["time"].iloc[cut]
+        if split_ts is None:
+            split_ts = inst_split
+
+        train[inst], holdout[inst] = {}, {}
+        for tf, df in tfs.items():
+            if df is None or df.empty or "time" not in df.columns:
+                train[inst][tf] = df
+                holdout[inst][tf] = df
+                continue
+            mask = df["time"] < inst_split
+            train[inst][tf] = df.loc[mask].copy().reset_index(drop=True)
+            holdout[inst][tf] = df.loc[~mask].copy().reset_index(drop=True)
+
+    return train, holdout, split_ts
+
+
 def build_walk_forward_folds(
     data: Dict[str, Dict[str, pd.DataFrame]],
     n_folds: int = 3,
@@ -1426,28 +1479,38 @@ def train_curriculum_agent(
         except Exception:
             max_steps_required = stage_max_steps
 
-    min_holdout_len = max(1500, max_steps_required + 800)
-    holdout_len = int(max(min_holdout_len, int(n_bars * holdout_ratio))) if holdout_ratio > 0 else 0
+    # Sized against the PRIMARY timeframe, not _min_len_across. The old length
+    # checks used the D1 row count (1,091 vs M15's 99,908) and concluded there
+    # were not enough bars for a 15% holdout, so every run silently trained and
+    # evaluated on the same data.
+    primary = _primary_frame(next(iter(data.values()))) if data else None
+    n_primary = len(primary) if primary is not None else n_bars
 
+    min_holdout_len = max(1500, max_steps_required + 800)
     min_train_len = max(3000, max_steps_required + 2000)
-    if holdout_len <= 0 or (n_bars - holdout_len) < min_train_len:
-        if holdout_len > 0:
+    holdout_len = int(n_primary * holdout_ratio) if holdout_ratio > 0 else 0
+
+    if holdout_len < min_holdout_len or (n_primary - holdout_len) < min_train_len:
+        if holdout_ratio > 0:
             logger.warning(
-                "Holdout disabled: insufficient bars for requested holdout "
-                f"(n={n_bars}, holdout_len={holdout_len}, min_train_len={min_train_len}). "
-                "Using full data for training/evaluation."
+                "Holdout disabled: insufficient bars on the primary timeframe "
+                f"(n={n_primary}, holdout_len={holdout_len}, "
+                f"min_holdout={min_holdout_len}, min_train={min_train_len}). "
+                "Training and evaluation will use the SAME data - results are "
+                "in-sample and cannot show generalisation."
             )
         train_data = data
         holdout_data = data
         holdout_enabled = False
     else:
-        train_end = int(n_bars - holdout_len)
-        train_data = slice_data_by_index(data, 0, train_end)
-        holdout_data = slice_data_by_index(data, train_end, n_bars)
+        train_data, holdout_data, split_ts = split_data_by_time(data, holdout_ratio)
         holdout_enabled = True
+        tr = len(_primary_frame(next(iter(train_data.values()))) or [])
+        ho = len(_primary_frame(next(iter(holdout_data.values()))) or [])
         logger.info(
-            f"Holdout split: train=[0:{train_end}] ({train_end} bars), "
-            f"holdout=[{train_end}:{n_bars}] ({holdout_len} bars, ratio={holdout_ratio:.0%})"
+            f"Holdout split at {split_ts}: train={tr} primary bars, "
+            f"holdout={ho} ({holdout_ratio:.0%}), split by timestamp so every "
+            f"timeframe is cut at the same instant"
         )
 
     train_env = create_curriculum_vec_envs(
