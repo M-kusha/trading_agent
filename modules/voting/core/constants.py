@@ -525,17 +525,9 @@ class VotingBusKeys:
 
 
 KNOWN_VOTING_MEMBERS = [
-    "TrendExpert",
-    "MomentumExpert",
-    "ThemeExpert",
-    "SeasonalityRiskExpert",
     "PPOAgent",
 ]
 
 EXPERT_KEY_PREFIXES = {
-    "TrendExpert": "TrendExpert",
-    "MomentumExpert": "MomentumExpert",
-    "ThemeExpert": "ThemeExpert",
-    "SeasonalityRiskExpert": "SeasonalityRiskExpert",
     "PPOAgent": "PPOAgent",
 }

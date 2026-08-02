@@ -288,21 +288,6 @@ class ConfigurationManager:
         # --- BEGIN your existing specs block ---
         # Market Analysis Modules
 
-        self.module_specs['AdvancedFeatureEngine'] = ModuleConfigSpec(
-            name='AdvancedFeatureEngine',
-            category='features',
-            config_section='modules.AdvancedFeatureEngine.config',
-            default_config={
-                'feature_sets': ['technical', 'statistical', 'momentum', 'volatility'],
-                'normalization': 'z_score',
-                'feature_selection': True,
-                'timeout_ms': 100
-            },
-            required_keys=['feature_sets'],
-            validation_rules={
-                'feature_sets': lambda x: isinstance(x, list) and len(x) > 0
-            }
-        )
 
         # Strategy Modules
         self.module_specs['StrategyGenomePool'] = ModuleConfigSpec(
@@ -518,27 +503,6 @@ class ConfigurationManager:
         )
 
         # Voting System Modules
-        self.module_specs['StrategyArbiter'] = ModuleConfigSpec(
-            name='StrategyArbiter',
-            category='voting',
-            config_section='modules.StrategyArbiter.config',
-            default_config={
-                'action_dim': 4,
-                'adapt_rate': 0.01,
-                'min_confidence': 0.55,  # Raised for expert trading
-                'bootstrap_steps': 50,
-                'debug': True,
-                'reinforce_lr': 0.001,
-                'prior_blend': 0.30,
-                'timeout_ms': 3000
-            },
-            required_keys=['action_dim'],
-            validation_rules={
-                'action_dim': lambda x: x > 0,
-                'min_confidence': lambda x: 0 < x < 1,
-                'adapt_rate': lambda x: x > 0
-            }
-        )
 
         self.module_specs['AlternativeRealitySampler'] = ModuleConfigSpec(
             name='AlternativeRealitySampler',
@@ -559,96 +523,10 @@ class ConfigurationManager:
             }
         )
 
-        self.module_specs['CollusionAuditor'] = ModuleConfigSpec(
-            name='CollusionAuditor',
-            category='voting',
-            config_section='modules.CollusionAuditor.config',
-            default_config={
-                'detection_threshold': 0.8,
-                'correlation_window': 30,
-                'independence_threshold': 0.5,
-                'audit_frequency': 10,
-                'suspicious_threshold': 0.7,
-                'timeout_ms': 6000
-            },
-            required_keys=['detection_threshold'],
-            validation_rules={
-                'detection_threshold': lambda x: 0 < x < 1,
-                'independence_threshold': lambda x: 0 < x < 1
-            }
-        )
 
-        self.module_specs['ConsensusDetector'] = ModuleConfigSpec(
-            name='ConsensusDetector',
-            category='voting',
-            config_section='modules.ConsensusDetector.config',
-            default_config={
-                'consensus_threshold': 0.7,
-                'quality_threshold': 0.6,
-                'member_weight_decay': 0.95,
-                'confidence_weight': 0.4,
-                'timeout_ms': 1000
-            },
-            required_keys=['consensus_threshold'],
-            validation_rules={
-                'consensus_threshold': lambda x: 0 < x < 1,
-                'quality_threshold': lambda x: 0 < x < 1
-            }
-        )
 
-        self.module_specs['TimeHorizonAligner'] = ModuleConfigSpec(
-            name='TimeHorizonAligner',
-            category='voting',
-            config_section='modules.TimeHorizonAligner.config',
-            default_config={
-                'alignment_threshold': 0.8,
-                'horizon_weights': [1.0, 0.8, 0.6, 0.4],
-                'adaptation_rate': 0.05,
-                'regime_sensitivity': 1.2,
-                'timeout_ms': 6000
-            },
-            required_keys=['alignment_threshold'],
-            validation_rules={
-                'alignment_threshold': lambda x: 0 < x < 1,
-                'adaptation_rate': lambda x: x > 0
-            }
-        )
 
-        self.module_specs['VotingKernel'] = ModuleConfigSpec(
-            name='VotingKernel',
-            category='voting',
-            config_section='modules.VotingKernel.config',
-            default_config={
-                'voting_method': 'weighted_average',
-                'min_votes': 3,
-                'confidence_weighting': True,
-                'consensus_threshold': 0.6,
-                'timeout_ms': 2000
-            },
-            required_keys=['voting_method'],
-            validation_rules={
-                'min_votes': lambda x: x > 0,
-                'consensus_threshold': lambda x: 0 < x < 1
-            }
-        )
 
-        self.module_specs['EnhancedVotingCommitteeCoordinator'] = ModuleConfigSpec(
-            name='EnhancedVotingCommitteeCoordinator',
-            category='voting',
-            config_section='modules.EnhancedVotingCommitteeCoordinator.config',
-            default_config={
-                'committee_size': 5,
-                'rotation_frequency': 50,
-                'performance_weight': 0.6,
-                'diversity_weight': 0.4,
-                'timeout_ms': 3000
-            },
-            required_keys=['committee_size'],
-            validation_rules={
-                'committee_size': lambda x: x > 0,
-                'performance_weight': lambda x: 0 < x < 1
-            }
-        )
         # Strategy Modules
         self.module_specs['BiasAuditor'] = ModuleConfigSpec(
             name='BiasAuditor',
@@ -837,99 +715,6 @@ class ConfigurationManager:
         )
 
         # Memory System
-        self.module_specs['UnifiedMemory'] = ModuleConfigSpec(
-            name='UnifiedMemory',
-            category='memory',
-            config_section='modules.UnifiedMemory.config',
-            default_config={
-                # Legacy settings
-                'memory_capacity': 100000,
-                'compression_ratio': 0.1,
-                'retrieval_threshold': 0.7,
-                'pattern_recognition_depth': 5,
-                'forgetting_rate': 0.001,
-                'timeout_ms': 200,
-
-                # Debug settings
-                'debug': True,
-                'debug_level': 'DEBUG',
-                'debug_log_path': 'logs/memory/unified_debug.log',
-                'enable_combined_log': True,
-                'enable_trace_log': True,
-                'trace_file_path': None,
-                'enable_debug_log': True,
-                'debug_file_path': None,
-                'enable_info_log': True,
-                'info_file_path': None,
-                'enable_warning_log': True,
-                'warning_file_path': None,
-                'enable_error_log': True,
-                'error_file_path': None,
-
-                # Core settings
-                'max_memory_size': 10000,
-                'batch_size': 32,
-                'parallel_processing': True,
-                'cache_size': 1000,
-
-                # Component enable flags
-                'enable_replay': True,
-                'enable_compression': True,
-                'enable_mistakes': True,
-                'enable_neural': True,
-                'enable_playbook': True,
-                'enable_budget': True,
-
-                # Performance settings
-                'max_processing_time_ms': 500,
-                'circuit_breaker_threshold': 3,
-                'health_check_interval': 30,
-
-                # Replay settings
-                'replay_interval': 10,
-                'replay_decay': 0.9,
-                'sequence_len': 5,
-                'replay_profit_threshold': 10.0,
-
-                # Compression settings
-                'n_components': 8,
-                'compress_interval': 10,
-
-                # Mistakes settings
-                'n_clusters': 5,
-                'danger_threshold': 0.7,
-                'avoidance_sensitivity': 1.0,
-                'mistake_profit_threshold': 10.0,
-
-                # Neural settings
-                'embed_dim': 32,
-                'num_heads': 4,
-                'memory_decay': 0.95,
-                'importance_threshold': 0.3,
-
-                # Playbook settings
-                'k_neighbors': 5,
-                'similarity_threshold': 0.7,
-                'pattern_memory_size': 50,
-
-                # Budget settings
-                'rebalance_interval': 50,
-                'utilization_target': 0.8,
-                'efficiency_weight': 0.7,
-                'recency_weight': 0.3
-            },
-            required_keys=['memory_capacity', 'cache_size'],
-            validation_rules={
-                'memory_capacity': lambda x: x > 0,
-                'compression_ratio': lambda x: 0 < x < 1,
-                'cache_size': lambda x: x > 0,
-                'max_memory_size': lambda x: x > 0,
-                'batch_size': lambda x: x > 0,
-                'max_processing_time_ms': lambda x: x > 0,
-                'circuit_breaker_threshold': lambda x: x > 0,
-                'health_check_interval': lambda x: x > 0
-            }
-        )
 
         # External Data Modules
         self.module_specs['SessionManager'] = ModuleConfigSpec(
@@ -1099,23 +884,6 @@ class ConfigurationManager:
         )
 
         # Features Modules
-        self.module_specs['MultiScaleFeatureEngine'] = ModuleConfigSpec(
-            name='MultiScaleFeatureEngine',
-            category='features',
-            config_section='modules.MultiScaleFeatureEngine.config',
-            default_config={
-                'scales': [1, 5, 15, 60],
-                'feature_dimensions': 50,
-                'neural_layers': [128, 64, 32],
-                'dropout_rate': 0.2,
-                'timeout_ms': 300
-            },
-            required_keys=['scales'],
-            validation_rules={
-                'scales': lambda x: isinstance(x, list) and len(x) > 0,
-                'dropout_rate': lambda x: 0 < x < 1
-            }
-        )
 
 
         self.module_specs['FractalRegimeConfirmation'] = ModuleConfigSpec(
@@ -1187,23 +955,6 @@ class ConfigurationManager:
             }
         )
 
-        self.module_specs['UnifiedMarketModule'] = ModuleConfigSpec(
-            name='UnifiedMarketModule',
-            category='market',
-            config_section='modules.UnifiedMarketModule.config',
-            default_config={
-                'analysis_depth': 'comprehensive',
-                'regime_detection': True,
-                'liquidity_analysis': True,
-                'theme_detection': True,
-                'fractal_analysis': True,
-                'timeout_ms': 600
-            },
-            required_keys=['analysis_depth'],
-            validation_rules={
-                'analysis_depth': lambda x: x in ['basic', 'standard', 'comprehensive']
-            }
-        )
 
         self.module_specs['PPOLagAgent'] = ModuleConfigSpec(
             name='PPOLagAgent',
@@ -1225,26 +976,6 @@ class ConfigurationManager:
             }
         )
 
-        self.module_specs['EnhancedWorldModel'] = ModuleConfigSpec(
-            name='EnhancedWorldModel',
-            category='models',
-            config_section='modules.EnhancedWorldModel.config',
-            default_config={
-                'model_complexity': 'medium',
-                'prediction_horizon': 50,
-                'state_dimensions': 128,
-                'action_dimensions': 32,
-                'learning_rate': 0.001,
-                'update_frequency': 10,
-                'timeout_ms': 800
-            },
-            required_keys=['model_complexity', 'prediction_horizon'],
-            validation_rules={
-                'model_complexity': lambda x: x in ['low', 'medium', 'high'],
-                'prediction_horizon': lambda x: x > 0,
-                'learning_rate': lambda x: x > 0
-            }
-        )
 
         self.module_specs['VisualizationInterface'] = ModuleConfigSpec(
             name='VisualizationInterface',
@@ -1326,41 +1057,7 @@ class ConfigurationManager:
         )
 
         # Missing modules from contracts.py
-        self.module_specs['EnhancedSeasonalityRiskExpert'] = ModuleConfigSpec(
-            name='EnhancedSeasonalityRiskExpert',
-            category='voting',
-            config_section='modules.EnhancedSeasonalityRiskExpert.config',
-            default_config={
-                'seasonal_analysis_depth': 'comprehensive',
-                'historical_lookback_years': 5,
-                'risk_seasonality_threshold': 0.6,
-                'adaptive_weighting': True,
-                'timeout_ms': 300
-            },
-            required_keys=['seasonal_analysis_depth'],
-            validation_rules={
-                'seasonal_analysis_depth': lambda x: x in ['basic', 'standard', 'comprehensive'],
-                'historical_lookback_years': lambda x: x > 0
-            }
-        )
 
-        self.module_specs['EnhancedThemeExpert'] = ModuleConfigSpec(
-            name='EnhancedThemeExpert',
-            category='voting',
-            config_section='modules.EnhancedThemeExpert.config',
-            default_config={
-                'theme_detection_threshold': 0.7,
-                'theme_categories': ['bullish', 'bearish', 'neutral', 'breakout'],
-                'confidence_weighting': True,
-                'adaptation_speed': 0.1,
-                'timeout_ms': 250
-            },
-            required_keys=['theme_detection_threshold'],
-            validation_rules={
-                'theme_detection_threshold': lambda x: 0 < x < 1,
-                'adaptation_speed': lambda x: 0 < x < 1
-            }
-        )
 
         self.module_specs['TradeMapVisualizer'] = ModuleConfigSpec(
             name='TradeMapVisualizer',
@@ -1383,170 +1080,16 @@ class ConfigurationManager:
 
         # New Modular Voting System Components
         # These are the slim/focused versions used in the new voting pipeline
-        self.module_specs['MomentumExpert'] = ModuleConfigSpec(
-            name='MomentumExpert',
-            category='voting',
-            config_section='modules.MomentumExpert.config',
-            default_config={
-                'lookback_periods': [5, 10, 20],
-                'momentum_threshold': 0.02,
-                'confidence_scaling': True,
-                'timeout_ms': 300
-            },
-            required_keys=[],
-            validation_rules={
-                'momentum_threshold': lambda x: x > 0
-            }
-        )
 
-        self.module_specs['TrendExpert'] = ModuleConfigSpec(
-            name='TrendExpert',
-            category='voting',
-            config_section='modules.TrendExpert.config',
-            default_config={
-                'trend_periods': [20, 50, 200],
-                'trend_strength_threshold': 0.6,
-                'use_ema': True,
-                'timeout_ms': 300
-            },
-            required_keys=[],
-            validation_rules={
-                'trend_strength_threshold': lambda x: 0 < x < 1
-            }
-        )
 
-        self.module_specs['ThemeExpert'] = ModuleConfigSpec(
-            name='ThemeExpert',
-            category='voting',
-            config_section='modules.ThemeExpert.config',
-            default_config={
-                'theme_detection_threshold': 0.7,
-                'theme_categories': ['bullish', 'bearish', 'neutral'],
-                'timeout_ms': 300
-            },
-            required_keys=[],
-            validation_rules={
-                'theme_detection_threshold': lambda x: 0 < x < 1
-            }
-        )
 
-        self.module_specs['SeasonalityRiskExpert'] = ModuleConfigSpec(
-            name='SeasonalityRiskExpert',
-            category='voting',
-            config_section='modules.SeasonalityRiskExpert.config',
-            default_config={
-                'seasonal_patterns': ['daily', 'weekly', 'monthly'],
-                'risk_adjustment_factor': 0.8,
-                'timeout_ms': 300
-            },
-            required_keys=[],
-            validation_rules={
-                'risk_adjustment_factor': lambda x: 0 < x <= 1
-            }
-        )
 
-        self.module_specs['SlimVotingKernel'] = ModuleConfigSpec(
-            name='SlimVotingKernel',
-            category='voting',
-            config_section='modules.SlimVotingKernel.config',
-            default_config={
-                'min_votes_required': 2,
-                'consensus_threshold': 0.6,
-                'timeout_ms': 800
-            },
-            required_keys=[],
-            validation_rules={
-                'consensus_threshold': lambda x: 0 < x < 1
-            }
-        )
 
-        self.module_specs['FinalArbiter'] = ModuleConfigSpec(
-            name='FinalArbiter',
-            category='voting',
-            config_section='modules.FinalArbiter.config',
-            default_config={
-                'decision_threshold': 0.5,
-                'veto_threshold': 0.8,
-                'require_unanimous': False,
-                'timeout_ms': 400
-            },
-            required_keys=[],
-            validation_rules={
-                'decision_threshold': lambda x: 0 < x < 1
-            }
-        )
 
-        self.module_specs['CommitteeCoordinator'] = ModuleConfigSpec(
-            name='CommitteeCoordinator',
-            category='voting',
-            config_section='modules.CommitteeCoordinator.config',
-            default_config={
-                'coordination_strategy': 'weighted',
-                'max_members': 10,
-                'timeout_ms': 500
-            },
-            required_keys=[],
-            validation_rules={}
-        )
 
-        self.module_specs['ConsensusAnalyzer'] = ModuleConfigSpec(
-            name='ConsensusAnalyzer',
-            category='voting',
-            config_section='modules.ConsensusAnalyzer.config',
-            default_config={
-                'agreement_threshold': 0.7,
-                'dissent_penalty': 0.1,
-                'timeout_ms': 300
-            },
-            required_keys=[],
-            validation_rules={
-                'agreement_threshold': lambda x: 0 < x < 1
-            }
-        )
 
-        self.module_specs['CollusionDetector'] = ModuleConfigSpec(
-            name='CollusionDetector',
-            category='voting',
-            config_section='modules.CollusionDetector.config',
-            default_config={
-                'correlation_threshold': 0.9,
-                'detection_window': 50,
-                'timeout_ms': 300
-            },
-            required_keys=[],
-            validation_rules={
-                'correlation_threshold': lambda x: 0 < x < 1
-            }
-        )
 
-        self.module_specs['HorizonAligner'] = ModuleConfigSpec(
-            name='HorizonAligner',
-            category='voting',
-            config_section='modules.HorizonAligner.config',
-            default_config={
-                'horizons': [1, 5, 15, 30, 60, 120, 240],  # Time horizons in minutes
-                'adaptive_scaling': True,
-                'regime_awareness': True,
-                'timeout_ms': 300
-            },
-            required_keys=[],
-            validation_rules={}
-        )
 
-        self.module_specs['UncertaintySampler'] = ModuleConfigSpec(
-            name='UncertaintySampler',
-            category='voting',
-            config_section='modules.UncertaintySampler.config',
-            default_config={
-                'sample_count': 100,
-                'uncertainty_threshold': 0.3,
-                'timeout_ms': 300
-            },
-            required_keys=[],
-            validation_rules={
-                'uncertainty_threshold': lambda x: 0 < x < 1
-            }
-        )
 
         # --- END your existing specs block ---
 
