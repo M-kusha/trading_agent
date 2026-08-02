@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import platform
 import socket
@@ -13,6 +14,8 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 PRIMARY_TIMEFRAME: str = "M15"
 CONTEXT_TIMEFRAMES: tuple = ("H1", "H4", "D1")
@@ -148,8 +151,16 @@ class PPOObservationConfig:
     use_forming_bar: bool = False
 
 
-    debug: bool = True
+    # Off by default. This writes one JSON record per observation with no
+    # rotation, so a single training run produced a 43 GB
+    # logs/ppo_obs_debug_xauusd.jsonl and filled a 98 GB disk, which then took
+    # the run down with OSError 28. It is a diagnostic for one-off inspection,
+    # not something a multi-million-step run should carry.
+    debug: bool = False
     debug_output_path: str = "logs/ppo_obs_debug_xauusd.jsonl"
+    # Hard ceiling even when deliberately enabled, so the default is not the
+    # only thing standing between a debug session and a full disk.
+    debug_max_file_mb: float = 256.0
 
 
     debug_full_dump: bool = True
@@ -169,9 +180,19 @@ class _DebugTrace:
         self.path = str(path)
         self.cfg = cfg
         self.session_id = uuid.uuid4().hex
+        self._max_bytes = int(max(0.0, float(getattr(cfg, "debug_max_file_mb", 256.0))) * 1024 * 1024)
+        self._cap_reported = False
 
         if not self.enabled:
+            self._bytes_written = 0
             return
+
+        # Count what is already on disk: appending across runs is what let the
+        # file reach 43 GB.
+        try:
+            self._bytes_written = os.path.getsize(self.path)
+        except OSError:
+            self._bytes_written = 0
 
         d = os.path.dirname(self.path) or "."
         os.makedirs(d, exist_ok=True)
@@ -202,9 +223,25 @@ class _DebugTrace:
     def _append(self, obj: Dict[str, Any]) -> None:
         if not self.enabled:
             return
+
+        # Stop at the ceiling rather than raise: a diagnostic must never be the
+        # reason training dies. Filling the disk previously killed a run with
+        # OSError 28 several hours in.
+        if self._bytes_written >= self._max_bytes:
+            if not self._cap_reported:
+                self._cap_reported = True
+                logger.warning(
+                    "Observation debug trace hit its %.0f MB cap at '%s'; "
+                    "further records dropped. Training continues.",
+                    self._max_bytes / (1024 * 1024), self.path,
+                )
+            return
+
         try:
+            line = json.dumps(obj, ensure_ascii=False) + "\n"
             with open(self.path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+                f.write(line)
+            self._bytes_written += len(line.encode("utf-8"))
         except Exception as e:
             raise ObservationContractError(
                 f"[DEBUG] Failed to write debug trace file '{self.path}': {e}"

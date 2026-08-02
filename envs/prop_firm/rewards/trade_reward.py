@@ -112,17 +112,25 @@ class TradeRewardMixin:
                 add("missed_profit_penalty", -missed_profit_penalty)
 
 
+        # Peaks AT optimal_trade_bars. The previous shape was
+        # scale * (1 - bars/optimal * 0.5), which is largest at zero bars and
+        # falls to half AT the optimum - it paid most for exiting instantly and
+        # least for holding to target. With optimal=16 a 1-bar exit collected
+        # 0.969 of the bonus and a 16-bar hold collected 0.500, so the reward
+        # actively taught the 1-bar scalping the median hold showed.
+        #
+        # Winners only: cutting a loser fast stays free, which is correct.
         if cfg.time_efficiency_enabled and net_pnl > 0:
-            if bars_held <= cfg.optimal_trade_bars:
-                time_bonus = cfg.time_efficiency_scale * (
-                    1.0 - (bars_held / max(cfg.optimal_trade_bars, 1)) * 0.5
-                )
-                add("time_efficiency", time_bonus)
-            elif bars_held <= cfg.max_trade_bars_for_bonus:
-                denom = max(cfg.max_trade_bars_for_bonus - cfg.optimal_trade_bars, 1)
-                duration_factor = 1.0 - (bars_held - cfg.optimal_trade_bars) / denom
-                time_bonus = cfg.time_efficiency_scale * 0.3 * duration_factor
-                add("time_efficiency", time_bonus)
+            optimal = max(cfg.optimal_trade_bars, 1)
+            if bars_held <= optimal:
+                # Ramps up to the optimum, so exiting early forfeits the bonus.
+                duration_factor = bars_held / optimal
+            else:
+                denom = max(cfg.max_trade_bars_for_bonus - optimal, 1)
+                duration_factor = 1.0 - (bars_held - optimal) / denom
+            duration_factor = max(0.0, min(1.0, duration_factor))
+            if duration_factor > 0.0:
+                add("time_efficiency", cfg.time_efficiency_scale * duration_factor)
 
         elif cfg.time_efficiency_enabled and net_pnl < 0 and bars_held > cfg.max_trade_bars_for_bonus:
             time_penalty = 0.05 * min(
