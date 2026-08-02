@@ -319,6 +319,7 @@ class MetricsReader:
             "datetime": datetime.now().isoformat(),
             "progress": {"timesteps": 0, "total_timesteps": 0, "progress_pct": 0, "total_episodes": 0},
             "learning": {},
+            "observation": {"status": "waiting"},
             "trading": {},
             "quality": {},
             "exit_stats": {"distribution": {}},
@@ -558,6 +559,11 @@ class MetricsReader:
             "raw_timestamp": raw.get("timestamp", ""),
 
             "progress": progress,
+            # Surfaced ABOVE learning and trading on purpose. During the outage
+            # where every observation was np.zeros(90), reward and win-rate
+            # curves looked entirely normal - nothing on this dashboard
+            # distinguished a blind agent from a learning one.
+            "observation": self._process_observation(raw.get("observation")),
             "learning": learning,
             "trading": trading,
             "quality": quality,
@@ -583,6 +589,47 @@ class MetricsReader:
 
             "history": {k: v[-50:] for k, v in self._history.items()},
         }
+
+    def _process_observation(self, obs: Any) -> Dict[str, Any]:
+        """Observation health: schema identity and whether the agent can see.
+
+        `status` drives the banner:
+          blind   - observation is constant; the agent cannot see the market
+          bad     - NaNs, or more than half the dimensions constant
+          ok      - some constant dimensions (documented stubs)
+          good    - every dimension carries information
+        """
+        if not isinstance(obs, dict) or not obs:
+            return {
+                "status": "unknown",
+                "alert": "No observation health reported - training may predate this metric",
+                # Absent data is not a fault, but it is also not health. No
+                # banner, and the status says "unknown" rather than "good" -
+                # silence reading as health is how the outage stayed hidden.
+                "banner": False,
+                "schema_version": "?",
+                "schema_size": 0,
+                "dead_dims": 0,
+                "blocks": {},
+            }
+
+        status = str(obs.get("status", "unknown"))
+        out: Dict[str, Any] = {
+            "status": status,
+            "alert": obs.get("alert", ""),
+            "schema_version": obs.get("schema_version", "?"),
+            "schema_size": self._safe_int(obs.get("schema_size"), 0),
+            "schema_hash": obs.get("schema_hash", ""),
+            "dead_dims": self._safe_int(obs.get("dead_dims"), 0),
+            "dead_dim_names": self._safe_list(obs.get("dead_dim_names")),
+            "nan_count": self._safe_int(obs.get("nan_count"), 0),
+            "mean_abs": self._safe_float(obs.get("mean_abs"), 0.0),
+            "samples": self._safe_int(obs.get("samples"), 0),
+            "blocks": self._safe_dict(obs.get("blocks")),
+        }
+        # A blind agent is not a degraded run, it is a stopped one.
+        out["banner"] = status in ("blind", "bad")
+        return out
 
     def _process_curriculum_progress(self, cp: Dict[str, Any]) -> Dict[str, Any]:
         if not cp:
