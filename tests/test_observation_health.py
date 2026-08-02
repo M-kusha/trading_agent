@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-KNOWN_DEAD_MAX = 12
+KNOWN_DEAD_MAX = 0
 
 
 def test_dead_dimension_count_within_budget(rollout):

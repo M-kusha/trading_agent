@@ -28,25 +28,20 @@ except Exception:
     _TRADE_LIMITS = {"max_trades_per_day": 20}
 
 
-PPO_OBS_VERSION = "6.0"
+PPO_OBS_VERSION = "7.0"
 
 
-PPO_OBS_SIZE = 90
+PPO_OBS_SIZE = 40
 
 DEFAULT_INSTRUMENT = "XAUUSD"
 
 FEATURE_GROUPS: Dict[str, tuple[int, int]] = {
     "m15_price": (0, 10),
-    "htf_context": (10, 28),
-    "voting": (28, 36),
-    "committee": (36, 44),
-    "risk": (44, 52),
-    "account": (52, 60),
-    "world_model": (60, 68),
-    "trading_mode": (68, 82),
-    "governor": (82, 90),
-
-
+    "htf_context": (10, 22),
+    "risk": (22, 25),
+    "account": (25, 30),
+    "trading_mode": (30, 35),
+    "governor": (35, 40),
 }
 
 
@@ -56,7 +51,6 @@ class ObservationContractError(RuntimeError):
 
 def _build_feature_names() -> List[str]:
     names: List[str] = []
-
 
     names += [
         "m15_price_vs_mean",
@@ -68,9 +62,8 @@ def _build_feature_names() -> List[str]:
         "m15_atr_norm_x10",
         "m15_trend_slope_norm",
         "m15_roc_x10",
-        "m15_volatility_std_x100",
+        "m15_volatility_norm",
     ]
-
 
     for tf in ("H1", "H4", "D1"):
         names += [
@@ -78,100 +71,37 @@ def _build_feature_names() -> List[str]:
             f"htf_{tf}_momentum",
             f"htf_{tf}_rsi_norm",
             f"htf_{tf}_atr_norm",
-            f"htf_{tf}_sr_proximity",
-            f"htf_{tf}_structure_bias",
         ]
 
-
     names += [
-        "expert_trend_signed_strength",
-        "expert_trend_confidence",
-        "expert_momentum_signed_strength",
-        "expert_momentum_confidence_adj",
-        "expert_theme_signed_strength",
-        "expert_theme_confidence_adj",
-        "expert_seasonality_signed_strength",
-        "expert_seasonality_confidence",
-    ]
-
-
-    names += [
-        "committee_signed_consensus",
-        "committee_confidence",
-        "committee_expert_agreement",
-        "committee_expert_conf_mean",
-        "committee_fragility",
-        "committee_market_regime",
-        "committee_market_regime_strength",
-        "committee_structure_composite",
-    ]
-
-
-    names += [
-        "risk_memory_gate",
-        "risk_danger_zone_count",
         "risk_drawdown_norm",
-        "risk_balance_ratio",
-        "risk_portfolio_exposure",
         "risk_budget",
-        "risk_win_rate",
-        "risk_pnl_trend",
+        "risk_portfolio_exposure",
     ]
-
 
     names += [
         "account_step_ratio",
-        "account_episode_return_norm",
         "account_position_direction",
-        "account_position_size_norm",
         "account_unrealized_pnl_norm",
         "account_time_in_position_norm",
-        "account_trades_today_norm",
         "account_on_cooldown",
     ]
 
-
     names += [
-        "wm_model_confidence",
-        "wm_m15_price_change",
-        "wm_weighted_price_change",
-        "wm_volatility_pred",
-        "wm_regime_signal",
-        "wm_is_trained",
-        "wm_bullish_probability",
-        "wm_stability_score",
-    ]
-
-
-    names += [
-        "mode_trading_mode",
         "mode_entry_allowed",
-        "mode_entry_quality",
-        "mode_theme_stability",
-        "mode_zone_quality",
-        "mode_vol_state",
-        "mode_liquidity_score",
-        "mode_effectiveness",
+        "mode_entry_quality_avg",
         "mode_setup_quality_avg",
         "mode_entry_certainty_avg",
         "mode_confluence_norm",
-        "mode_bars_since_setup_norm",
-        "mode_setup_quality_trend_norm",
-        "mode_confluence_increasing",
     ]
-
 
     names += [
         "gov_loss_layer_ratio",
-        "gov_loss_layer_level",
-        "gov_win_streak_ratio",
         "gov_session_pnl_headroom",
         "gov_session_trade_budget",
         "gov_session_consec_loss_ratio",
         "gov_session_progress",
-        "gov_pending_order_progress",
     ]
-
 
     if len(names) != PPO_OBS_SIZE:
         raise ValueError(f"Feature name list mismatch: {len(names)} != {PPO_OBS_SIZE}")
@@ -511,23 +441,17 @@ class PPOObservationBuilder:
 
         m15_feats, m15_dbg = self._build_m15_features(market_data)
         htf_feats, htf_dbg = self._build_htf_context(market_data, expert_signals)
-        voting_feats, voting_dbg = self._build_voting_features(expert_signals)
-        committee_feats, committee_dbg = self._build_committee_features(committee_state, expert_signals)
         risk_feats, risk_dbg = self._build_risk_features(risk_state, memory_state, account_state)
         account_feats, account_dbg = self._build_account_features(account_state)
-        wm_feats, wm_dbg = self._build_world_model_features(world_model_state)
         mode_feats, mode_dbg = self._build_trading_mode_features(trading_mode_state)
         gov_feats, gov_dbg = self._build_governor_features(governor_state)
 
         obs[0:10] = m15_feats
-        obs[10:28] = htf_feats
-        obs[28:36] = voting_feats
-        obs[36:44] = committee_feats
-        obs[44:52] = risk_feats
-        obs[52:60] = account_feats
-        obs[60:68] = wm_feats
-        obs[68:82] = mode_feats
-        obs[82:90] = gov_feats
+        obs[10:22] = htf_feats
+        obs[22:25] = risk_feats
+        obs[25:30] = account_feats
+        obs[30:35] = mode_feats
+        obs[35:40] = gov_feats
 
 
         self._validate_observation_strict(obs)
@@ -555,11 +479,8 @@ class PPOObservationBuilder:
                     "internals": {
                         "m15": m15_dbg,
                         "htf": htf_dbg,
-                        "voting": voting_dbg,
-                        "committee": committee_dbg,
                         "risk": risk_dbg,
                         "account": account_dbg,
-                        "world_model": wm_dbg,
                         "trading_mode": mode_dbg,
                         "governor": gov_dbg,
                     },
@@ -741,7 +662,8 @@ class PPOObservationBuilder:
         curr = close[-19:]
         rets = (curr - prev) / np.maximum(np.abs(prev), self._eps)
         vol = float(np.std(rets))
-        feats[9] = float(np.clip(vol * 100.0, 0.0, 1.0))
+        ref = float(np.median(np.abs(rets - np.median(rets)))) * 1.4826
+        feats[9] = float(np.clip((vol / ref) / 3.0, 0.0, 1.0)) if ref > 1e-12 else 0.33
 
         dbg.update(
             {
@@ -775,7 +697,7 @@ class PPOObservationBuilder:
     def _build_htf_context(
         self, market_data: Dict[str, Any], expert_signals: Dict[str, Any]
     ) -> Tuple[np.ndarray, Dict[str, Any]]:
-        feats = np.zeros(18, dtype=np.float32)
+        feats = np.zeros(12, dtype=np.float32)
         dbg: Dict[str, Any] = {"tfs": list(CONTEXT_TIMEFRAMES)}
 
         htf_experts = expert_signals.get("htf_experts", {})
@@ -795,7 +717,7 @@ class PPOObservationBuilder:
             self._require_min_len(close, self.config.min_bars_htf, f"{tf}.close")
             self._require_same_len([close, high, low], ["close", "high", "low"], tf)
 
-            base_idx = tf_idx * 6
+            base_idx = tf_idx * 4
             c = float(close[-1])
 
             htf_sig = htf_experts.get(tf)
@@ -818,17 +740,6 @@ class PPOObservationBuilder:
             atr_norm = atr / max(c, self._eps)
             feats[base_idx + 3] = float(np.clip(atr_norm * 50.0, 0.0, 1.0))
 
-            support, resistance = self._find_sr_levels(high[-30:], low[-30:])
-            ns, nr = self._compute_sr_proximity(
-                current_price=c,
-                support=support,
-                resistance=resistance,
-                threshold_pct=self.config.sr_threshold_pct_htf,
-            )
-            feats[base_idx + 4] = float(np.clip(ns - nr, -1.0, 1.0))
-
-            sb = float(self._to_float_required(htf_sig.get("structure_bias"), f"htf_experts.{tf}.structure_bias"))
-            feats[base_idx + 5] = float(np.clip(sb, -1.0, 1.0))
 
             per_tf_dbg[tf] = {
                 "last_close": c,
@@ -836,10 +747,8 @@ class PPOObservationBuilder:
                 "momentum_norm": mom_norm,
                 "rsi": rsi,
                 "atr": atr,
-                "sr": {"support": support, "resistance": resistance, "near_support": ns, "near_resistance": nr},
-                "structure_bias": sb,
                 "htf_sig": htf_sig,
-                "feats": feats[base_idx : base_idx + 6],
+                "feats": feats[base_idx : base_idx + 4],
 
                 "raw": {
                     "close": close,
@@ -853,225 +762,21 @@ class PPOObservationBuilder:
         dbg["feats"] = feats
         return feats, dbg
 
-    def _build_voting_features(self, expert_signals: Dict[str, Any]) -> Tuple[np.ndarray, Dict[str, Any]]:
-        feats = np.zeros(8, dtype=np.float32)
-        dbg: Dict[str, Any] = {}
 
-        experts = expert_signals.get("experts")
-        if not isinstance(experts, dict):
-            raise ObservationContractError("expert_signals.experts must be a dict in strict mode.")
-
-        expert_names = ["trend", "momentum", "theme", "seasonality"]
-        per_dbg: Dict[str, Any] = {}
-
-        for i, name in enumerate(expert_names):
-            sig = experts.get(name)
-            if not isinstance(sig, dict):
-                raise ObservationContractError(f"expert_signals.experts['{name}'] must be a dict.")
-
-            strength_raw = sig.get("score", sig.get("strength", sig.get("magnitude")))
-            strength_val = abs(self._to_float_required(strength_raw, f"experts.{name}.score/strength"))
-            strength_val = float(np.clip(strength_val, 0.0, 1.0))
-
-            direction = str(sig.get("direction")).lower().strip()
-            signed_strength = self._signed_strength(direction, strength_val)
-
-            conf_val = self._to_float_required(sig.get("confidence"), f"experts.{name}.confidence")
-            conf_val = float(np.clip(conf_val, 0.0, 1.0))
-
-            proposal = sig.get("proposal")
-            if not isinstance(proposal, dict):
-                raise ObservationContractError(f"experts.{name}.proposal must be a dict (strict).")
-
-            if name == "momentum":
-                divergence = proposal.get("divergence_signal")
-                if divergence == "bullish":
-                    signed_strength = min(max(signed_strength, 0.3) + 0.2, 1.0)
-                elif divergence == "bearish":
-                    signed_strength = max(min(signed_strength, -0.3) - 0.2, -1.0)
-
-                feats[i * 2] = float(np.clip(signed_strength, -1.0, 1.0))
-
-                overbought = float(self._to_float_default(proposal.get("overbought"), 0.0))
-                oversold = float(self._to_float_default(proposal.get("oversold"), 0.0))
-                ob_signal = oversold - overbought
-                feats[i * 2 + 1] = float(np.clip(conf_val + ob_signal * 0.3, 0.0, 1.0))
-
-            elif name == "theme":
-                feats[i * 2] = float(np.clip(signed_strength, -1.0, 1.0))
-
-                risk_regime = str(proposal.get("risk_regime")).lower()
-                vol_regime = str(proposal.get("volatility_regime")).lower()
-
-                regime_bonus = 0.0
-                if risk_regime == "risk_on":
-                    regime_bonus = 0.2
-                elif risk_regime == "risk_off":
-                    regime_bonus = -0.1
-                if vol_regime == "high":
-                    regime_bonus -= 0.1
-
-                feats[i * 2 + 1] = float(np.clip(conf_val + regime_bonus, 0.0, 1.0))
-
-            else:
-                feats[i * 2] = float(np.clip(signed_strength, -1.0, 1.0))
-                feats[i * 2 + 1] = float(np.clip(conf_val, 0.0, 1.0))
-
-            per_dbg[name] = {
-                "direction": direction,
-                "strength": strength_val,
-                "signed_strength": signed_strength,
-                "confidence": conf_val,
-                "proposal": proposal,
-                "feat_pair": [float(feats[i * 2]), float(feats[i * 2 + 1])],
-                "raw_sig": sig,
-            }
-
-        dbg["per_expert"] = per_dbg
-        dbg["feats"] = feats
-        return feats, dbg
-
-    def _build_committee_features(
-        self, committee_state: Dict[str, Any], expert_signals: Dict[str, Any]
-    ) -> Tuple[np.ndarray, Dict[str, Any]]:
-        feats = np.zeros(8, dtype=np.float32)
-        dbg: Dict[str, Any] = {}
-
-        consensus_score = self._to_float_required(
-            committee_state.get("consensus_score"), "committee_state.consensus_score"
-        )
-        consensus_action = str(committee_state.get("action")).lower().strip()
-        signed_consensus = 0.0
-        if consensus_action in ("long", "bullish", "buy"):
-            signed_consensus = abs(consensus_score)
-        elif consensus_action in ("short", "bearish", "sell"):
-            signed_consensus = -abs(consensus_score)
-        feats[0] = float(np.clip(signed_consensus, -1.0, 1.0))
-
-        feats[1] = float(
-            np.clip(self._to_float_required(committee_state.get("confidence"), "committee_state.confidence"), 0.0, 1.0)
-        )
-        feats[4] = float(
-            np.clip(self._to_float_required(committee_state.get("fragility"), "committee_state.fragility"), 0.0, 1.0)
-        )
-
-        experts = expert_signals.get("experts")
-        if not isinstance(experts, dict):
-            raise ObservationContractError("expert_signals.experts must be dict for committee features.")
-
-        signed_expert_scores: List[float] = []
-        expert_confidences: List[float] = []
-
-        for name in ["trend", "momentum", "theme", "seasonality"]:
-            sig = experts.get(name)
-            if not isinstance(sig, dict):
-                raise ObservationContractError(f"experts.{name} missing for committee features.")
-            strength = abs(self._to_float_required(sig.get("score"), f"experts.{name}.score"))
-            direction = str(sig.get("direction")).lower().strip()
-            signed_expert_scores.append(self._signed_strength(direction, strength))
-            expert_confidences.append(
-                float(np.clip(self._to_float_required(sig.get("confidence"), f"experts.{name}.confidence"), 0.0, 1.0))
-            )
-
-        variance = float(np.var(np.asarray(signed_expert_scores, dtype=np.float64)))
-        feats[2] = float(np.clip(1.0 / (1.0 + variance * 10.0), 0.0, 1.0))
-        feats[3] = float(np.clip(float(np.mean(expert_confidences)), 0.0, 1.0))
-
-        market = expert_signals.get("market")
-        if not isinstance(market, dict):
-            raise ObservationContractError("expert_signals.market must be dict in strict mode.")
-
-        regime = str(market.get("regime")).lower()
-        regime_strength = float(
-            np.clip(self._to_float_required(market.get("regime_strength"), "market.regime_strength"), 0.0, 1.0)
-        )
-
-        regime_map = {
-            "trending": 0.8,
-            "uptrend": 0.8,
-            "downtrend": 0.8,
-            "mean_reverting": 0.3,
-            "ranging": 0.2,
-            "volatile": 0.5,
-            "unknown": 0.5,
-        }
-        feats[5] = float(regime_map.get(regime, 0.5))
-        feats[6] = float(regime_strength)
-
-        trend_sig = experts.get("trend")
-        if not isinstance(trend_sig, dict):
-            raise ObservationContractError("experts.trend missing for structure composite.")
-        proposal = trend_sig.get("proposal")
-        if not isinstance(proposal, dict):
-            raise ObservationContractError("experts.trend.proposal must be dict for structure composite.")
-
-        near_support = float(self._to_float_required(proposal.get("near_support"), "trend.proposal.near_support"))
-        near_resistance = float(self._to_float_required(proposal.get("near_resistance"), "trend.proposal.near_resistance"))
-        structure_trend = float(self._to_float_required(proposal.get("structure_trend"), "trend.proposal.structure_trend"))
-        bos_signal = float(self._to_float_required(proposal.get("bos_signal"), "trend.proposal.bos_signal"))
-        ob_bull = float(self._to_float_required(proposal.get("order_block_bull"), "trend.proposal.order_block_bull"))
-        ob_bear = float(self._to_float_required(proposal.get("order_block_bear"), "trend.proposal.order_block_bear"))
-
-        sr_signal = near_support - near_resistance
-        ob_signal = ob_bull - ob_bear
-        composite = (sr_signal * 0.40 + structure_trend * 0.30 + bos_signal * 0.20 + ob_signal * 0.10)
-        feats[7] = float(np.clip(composite, -1.0, 1.0))
-
-        dbg.update(
-            {
-                "consensus": {"action": consensus_action, "score": consensus_score, "signed": signed_consensus},
-                "signed_expert_scores": signed_expert_scores,
-                "expert_conf_mean": float(np.mean(expert_confidences)),
-                "variance": variance,
-                "market": {"regime": regime, "regime_strength": regime_strength},
-                "structure": {
-                    "near_support": near_support,
-                    "near_resistance": near_resistance,
-                    "structure_trend": structure_trend,
-                    "bos_signal": bos_signal,
-                    "order_block_bull": ob_bull,
-                    "order_block_bear": ob_bear,
-                    "composite": composite,
-                },
-                "feats": feats,
-                "raw": {
-                    "committee_state": committee_state,
-                    "expert_signals_market": market,
-                    "experts": experts,
-                },
-            }
-        )
-        return feats, dbg
 
     def _build_risk_features(
         self, risk_state: Dict[str, Any], memory_state: Dict[str, Any], account_state: Dict[str, Any]
     ) -> Tuple[np.ndarray, Dict[str, Any]]:
-        feats = np.zeros(8, dtype=np.float32)
+        feats = np.zeros(3, dtype=np.float32)
         dbg: Dict[str, Any] = {}
-
-        memory_gate = memory_state.get("memory_gate")
-        if isinstance(memory_gate, dict):
-            memory_gate = memory_gate.get("risk_multiplier")
-        mem_val = float(np.clip(self._to_float_required(memory_gate, "memory_state.memory_gate"), 0.0, 1.0))
-        feats[0] = mem_val
-
-        dz = memory_state.get("danger_zones")
-        if isinstance(dz, dict):
-            count = int(self._to_int_default(dz.get("zone_count"), 0))
-        elif isinstance(dz, list):
-            count = len(dz)
-        else:
-            raise ObservationContractError("memory_state.danger_zones must be dict or list in strict mode.")
-        feats[1] = float(np.clip(count / max(self.config.max_danger_zones, 1), 0.0, 1.0))
 
         drawdown = float(
             np.clip(self._to_float_required(account_state.get("current_drawdown"), "account_state.current_drawdown"), 0.0, 10.0)
         )
-        feats[2] = float(np.clip(drawdown / max(self.config.max_drawdown_clip, self._eps), 0.0, 1.0))
+        feats[0] = float(np.clip(drawdown / max(self.config.max_drawdown_clip, self._eps), 0.0, 1.0))
 
-        balance = self._to_float_required(account_state.get("balance"), "account_state.balance")
-        initial = self._to_float_required(account_state.get("initial_balance"), "account_state.initial_balance")
-        feats[3] = float(np.clip(balance / max(initial, self._eps), 0.0, 2.0))
+        rb_val = float(np.clip(self._to_float_required(risk_state.get("risk_budget"), "risk_state.risk_budget"), 0.0, 1.0))
+        feats[1] = rb_val
 
         portfolio_risk = risk_state.get("portfolio_risk")
         if not isinstance(portfolio_risk, dict):
@@ -1079,321 +784,77 @@ class PPOObservationBuilder:
         exposure = float(
             np.clip(self._to_float_required(portfolio_risk.get("total_exposure"), "portfolio_risk.total_exposure"), 0.0, 1.0)
         )
-        feats[4] = exposure
+        feats[2] = exposure
 
-        rb_val = float(np.clip(self._to_float_required(risk_state.get("risk_budget"), "risk_state.risk_budget"), 0.0, 1.0))
-        feats[5] = rb_val
-
-        win_rate = float(np.clip(self._to_float_required(account_state.get("win_rate"), "account_state.win_rate"), 0.0, 1.0))
-        feats[6] = win_rate
-
-        pnl_trend = float(np.clip(self._to_float_required(account_state.get("pnl_trend"), "account_state.pnl_trend"), -1.0, 1.0))
-        feats[7] = pnl_trend
-
-        dbg.update(
-            {
-                "memory_gate": mem_val,
-                "danger_zone_count": count,
-                "drawdown": drawdown,
-                "balance_ratio": float(balance / max(initial, self._eps)),
-                "exposure": exposure,
-                "risk_budget": rb_val,
-                "win_rate": win_rate,
-                "pnl_trend": pnl_trend,
-                "feats": feats,
-                "raw": {"risk_state": risk_state, "memory_state": memory_state, "account_state": account_state},
-            }
-        )
+        dbg.update({"drawdown": drawdown, "risk_budget": rb_val, "exposure": exposure, "feats": feats})
         return feats, dbg
 
     def _build_account_features(self, account_state: Dict[str, Any]) -> Tuple[np.ndarray, Dict[str, Any]]:
-        feats = np.zeros(8, dtype=np.float32)
+        feats = np.zeros(5, dtype=np.float32)
         dbg: Dict[str, Any] = {}
 
         step = int(self._to_int_default(account_state.get("current_step"), 0))
         max_steps = int(self._to_int_default(account_state.get("max_steps"), 1))
         feats[0] = float(np.clip(step / max(max_steps, 1), 0.0, 1.0))
 
-        ep_ret = float(np.clip(self._to_float_required(account_state.get("episode_return"), "account_state.episode_return"), -1e6, 1e6))
-        feats[1] = float(np.clip(ep_ret / 100.0, -1.0, 1.0))
-
         pos_dir = account_state.get("position_direction")
         if isinstance(pos_dir, str):
             pos_dir = self._extract_direction(pos_dir)
-        feats[2] = float(np.clip(self._to_float_required(pos_dir, "account_state.position_direction"), -1.0, 1.0))
-
-        pos_size = float(np.clip(self._to_float_required(account_state.get("position_size"), "account_state.position_size"), 0.0, 1.0))
-        feats[3] = pos_size
+        feats[1] = float(np.clip(self._to_float_required(pos_dir, "account_state.position_direction"), -1.0, 1.0))
 
         unreal = self._to_float_required(account_state.get("unrealized_pnl"), "account_state.unrealized_pnl")
         initial = self._to_float_required(account_state.get("initial_balance"), "account_state.initial_balance")
-        feats[4] = float(np.clip(unreal / max(initial * 0.01, self._eps), -1.0, 1.0))
+        feats[2] = float(np.clip(unreal / max(initial * 0.01, self._eps), -1.0, 1.0))
 
         tip = float(np.clip(self._to_float_required(account_state.get("time_in_position"), "account_state.time_in_position"), 0.0, 1e9))
-        feats[5] = float(np.clip(tip / 100.0, 0.0, 1.0))
+        feats[3] = float(np.clip(tip / 100.0, 0.0, 1.0))
 
-        trades = float(np.clip(self._to_float_required(account_state.get("trades_today"), "account_state.trades_today"), 0.0, 1e6))
-        feats[6] = float(np.clip(trades / max(self.config.max_trades_per_day, 1), 0.0, 1.0))
+        feats[4] = float(np.clip(self._to_float_required(account_state.get("on_cooldown"), "account_state.on_cooldown"), 0.0, 1.0))
 
-        on_cd = float(np.clip(self._to_float_required(account_state.get("on_cooldown"), "account_state.on_cooldown"), 0.0, 1.0))
-        feats[7] = on_cd
-
-        dbg.update(
-            {
-                "step": step,
-                "max_steps": max_steps,
-                "episode_return": ep_ret,
-                "pos_dir": float(feats[2]),
-                "pos_size": pos_size,
-                "unreal_norm": float(feats[4]),
-                "time_in_pos": tip,
-                "trades_today": trades,
-                "on_cooldown": on_cd,
-                "feats": feats,
-                "raw": account_state,
-            }
-        )
+        dbg.update({"step": step, "max_steps": max_steps, "feats": feats})
         return feats, dbg
 
-    def _build_world_model_features(self, world_model_state: Dict[str, Any]) -> Tuple[np.ndarray, Dict[str, Any]]:
-        feats = np.zeros(8, dtype=np.float32)
-        dbg: Dict[str, Any] = {}
-
-        predictions = world_model_state.get("market_predictions")
-        if not isinstance(predictions, dict):
-            raise ObservationContractError("world_model_state.market_predictions must be dict in strict mode.")
-
-        latest = predictions.get("latest_predictions")
-        if not isinstance(latest, dict):
-            raise ObservationContractError("market_predictions.latest_predictions must be dict in strict mode.")
-
-        base_conf = self._to_float_required(predictions.get("model_confidence"), "market_predictions.model_confidence")
-        latest_conf = self._to_float_required(latest.get("confidence"), "latest_predictions.confidence")
-        conf = float(np.clip((base_conf + latest_conf) * 0.5, 0.0, 1.0))
-        feats[0] = conf
-
-        price_changes = latest.get("price_changes")
-        if not isinstance(price_changes, (list, np.ndarray)) or len(price_changes) < 1:
-            raise ObservationContractError("latest_predictions.price_changes must be a list/array with at least 1 element.")
-        pc = np.asarray(price_changes, dtype=np.float64)
-
-        m15_change = float(pc[0])
-        feats[1] = float(np.clip(m15_change * 100.0, -1.0, 1.0))
-
-        weights = np.asarray([0.5, 0.25, 0.15, 0.10], dtype=np.float64)
-        use_n = min(4, int(pc.size))
-        weighted = float(np.sum(pc[:use_n] * weights[:use_n]))
-        feats[2] = float(np.clip(weighted * 100.0, -1.0, 1.0))
-
-        vol_preds = latest.get("volatility_predictions")
-        if not isinstance(vol_preds, (list, np.ndarray)) or len(vol_preds) < 1:
-            raise ObservationContractError("latest_predictions.volatility_predictions must be list/array with >=1 element.")
-        feats[3] = float(np.clip(float(vol_preds[0]), 0.0, 1.0))
-
-        predicted_regime = latest.get("predicted_regime")
-        regime_probs = latest.get("regime_probabilities")
-        regime_map = {0: 0.8, 1: -0.8, 2: 0.3, 3: 0.0}
-
-        if isinstance(predicted_regime, int) and predicted_regime in regime_map:
-            feats[4] = float(regime_map[predicted_regime])
-            regime_idx = int(predicted_regime)
-        else:
-            if not isinstance(regime_probs, (list, np.ndarray)) or len(regime_probs) < 4:
-                raise ObservationContractError("latest_predictions.regime_probabilities must be list/array with >=4 elements.")
-            rp = np.asarray(regime_probs, dtype=np.float64)
-            regime_idx = int(np.argmax(rp))
-            feats[4] = float(regime_map.get(regime_idx, 0.0))
-
-        is_trained = bool(predictions.get("is_trained"))
-        feats[5] = 1.0 if is_trained else 0.0
-
-        scenarios = world_model_state.get("scenario_generation")
-        if not isinstance(scenarios, dict):
-            raise ObservationContractError("world_model_state.scenario_generation must be dict (strict).")
-        scenarios_list = scenarios.get("scenarios")
-        if not isinstance(scenarios_list, list) or len(scenarios_list) == 0:
-            raise ObservationContractError("scenario_generation.scenarios must be a non-empty list (strict).")
-
-        bullish_total = 0.0
-        for s in scenarios_list:
-            if not isinstance(s, dict):
-                raise ObservationContractError("Each scenario must be a dict (strict).")
-            prob = float(self._to_float_required(s.get("probability"), "scenario.probability"))
-            outcome = float(self._to_float_required(s.get("outcome"), "scenario.outcome"))
-            if outcome > 0:
-                bullish_total += prob
-        bullish_prob = float(np.clip(bullish_total, 0.0, 1.0))
-        feats[6] = bullish_prob
-
-        stability = self._to_float_required(predictions.get("stability_score"), "market_predictions.stability_score")
-        feats[7] = float(np.clip(stability, 0.0, 1.0))
-
-        if conf < self.config.prediction_confidence_threshold or not is_trained:
-            feats[1] = 0.0
-            feats[2] = 0.0
-            feats[3] = 0.5
-            feats[4] = 0.0
-            feats[6] = float(np.clip(feats[6], 0.25, 0.75))
-
-        dbg.update(
-            {
-                "conf": conf,
-                "m15_change": m15_change,
-                "weighted_change": weighted,
-                "vol_pred": float(feats[3]),
-                "regime_idx": regime_idx,
-                "is_trained": is_trained,
-                "bullish_prob": bullish_prob,
-                "stability": float(feats[7]),
-                "feats": feats,
-                "raw": world_model_state,
-            }
-        )
-        return feats, dbg
 
     def _build_trading_mode_features(self, trading_mode_state: Dict[str, Any]) -> Tuple[np.ndarray, Dict[str, Any]]:
-        feats = np.zeros(14, dtype=np.float32)
+        feats = np.zeros(5, dtype=np.float32)
         dbg: Dict[str, Any] = {}
-
-        mode = str(trading_mode_state.get("trading_mode")).lower().strip()
-        mode_map = {"safe": 0.25, "normal": 0.5, "aggressive": 0.75, "extreme": 1.0}
-        feats[0] = float(mode_map.get(mode, 0.5))
 
         timing = trading_mode_state.get("entry_timing")
         if not isinstance(timing, dict):
             raise ObservationContractError("trading_mode_state.entry_timing must be dict (strict).")
 
-        feats[1] = 1.0 if bool(timing.get("entry_allowed")) else 0.0
-
-        regime_stability = float(np.clip(self._to_float_required(trading_mode_state.get("regime_stability"), "trading_mode_state.regime_stability"), 0.0, 1.0))
-        theme_transition = float(np.clip(self._to_float_required(trading_mode_state.get("theme_transition"), "trading_mode_state.theme_transition"), 0.0, 1.0))
-        theme_strength = float(np.clip(self._to_float_required(trading_mode_state.get("theme_strength"), "trading_mode_state.theme_strength"), 0.0, 1.0))
-        regime_accuracy_raw = trading_mode_state.get("regime_accuracy")
-        if isinstance(regime_accuracy_raw, dict):
-            if "value" in regime_accuracy_raw:
-                regime_accuracy_raw = regime_accuracy_raw.get("value")
-            elif "current_regime_accuracy" in regime_accuracy_raw:
-                regime_accuracy_raw = regime_accuracy_raw.get("current_regime_accuracy")
-            elif "accuracy" in regime_accuracy_raw:
-                regime_accuracy_raw = regime_accuracy_raw.get("accuracy")
-            else:
-                by_regime = regime_accuracy_raw.get("by_regime")
-                if isinstance(by_regime, dict) and by_regime:
-                    vals = []
-                    for v in by_regime.values():
-                        try:
-                            vals.append(float(v))
-                        except Exception:
-                            continue
-                    if vals:
-                        regime_accuracy_raw = float(np.mean(vals))
-
-        regime_accuracy = float(np.clip(self._to_float_required(regime_accuracy_raw, "trading_mode_state.regime_accuracy"), 0.0, 1.0))
-        risk_scaling_factor = float(self._to_float_required(trading_mode_state.get("risk_scaling_factor"), "trading_mode_state.risk_scaling_factor"))
-        liquidity_score = float(np.clip(self._to_float_required(trading_mode_state.get("liquidity_score"), "trading_mode_state.liquidity_score"), 0.0, 1.0))
+        feats[0] = 1.0 if bool(timing.get("entry_allowed")) else 0.0
 
         eql = float(np.clip(self._to_float_required(timing.get("entry_quality_long"), "entry_timing.entry_quality_long"), 0.0, 1.0))
         eqs = float(np.clip(self._to_float_required(timing.get("entry_quality_short"), "entry_timing.entry_quality_short"), 0.0, 1.0))
-        avg_quality = (eql + eqs) * 0.5
-        feats[2] = float(np.clip(avg_quality * (0.5 + 0.5 * regime_stability), 0.0, 1.0))
-
-        theme_stability = theme_strength * (1.0 - min(theme_transition, 1.0))
-        feats[3] = float(np.clip(theme_stability, 0.0, 1.0))
-
-        zone_type = str(timing.get("zone_type")).lower().strip()
-        zone_map = {"hot": 0.9, "good": 0.5, "bad": 0.1}
-        base_zone = float(zone_map.get(zone_type, 0.5))
-        feats[4] = float(np.clip(base_zone * (0.5 + 0.5 * regime_accuracy), 0.0, 1.0))
-
-        vol_state = str(timing.get("vol_state")).lower().strip()
-        vol_map = {"low": 0.0, "normal": 0.33, "high": 0.66, "extreme": 1.0}
-        base_vol = float(vol_map.get(vol_state, 0.33))
-        rsf_norm = float(np.clip((risk_scaling_factor - 0.5) / 1.5, 0.0, 1.0))
-        feats[5] = float(np.clip((base_vol + rsf_norm) * 0.5, 0.0, 1.0))
-
-        feats[6] = float(np.clip(liquidity_score, 0.0, 1.0))
-
-        mode_stats = trading_mode_state.get("mode_stats")
-        if not isinstance(mode_stats, dict):
-            raise ObservationContractError("trading_mode_state.mode_stats must be dict (strict).")
-        mode_eff = float(np.clip(self._to_float_required(mode_stats.get("mode_effectiveness"), "mode_stats.mode_effectiveness"), 0.0, 1.0))
-
-        prime_bonus = float(np.clip(self._to_float_required(timing.get("in_prime_window"), "entry_timing.in_prime_window"), 0.0, 1.0))
-        time_quality = 0.5 + 0.3 * prime_bonus
-        feats[7] = float(np.clip(mode_eff * 0.35 + regime_stability * 0.25 + time_quality * 0.40, 0.0, 1.0))
-
+        feats[1] = float(np.clip((eql + eqs) * 0.5, 0.0, 1.0))
 
         setup_long = float(np.clip(self._to_float_required(timing.get("setup_quality_long"), "entry_timing.setup_quality_long"), 0.0, 1.0))
         setup_short = float(np.clip(self._to_float_required(timing.get("setup_quality_short"), "entry_timing.setup_quality_short"), 0.0, 1.0))
+        feats[2] = float(np.clip((setup_long + setup_short) * 0.5, 0.0, 1.0))
+
         cert_long = float(np.clip(self._to_float_required(timing.get("entry_certainty_long"), "entry_timing.entry_certainty_long"), 0.0, 1.0))
         cert_short = float(np.clip(self._to_float_required(timing.get("entry_certainty_short"), "entry_timing.entry_certainty_short"), 0.0, 1.0))
+        feats[3] = float(np.clip((cert_long + cert_short) * 0.5, 0.0, 1.0))
 
         confluence_count = float(self._to_float_required(timing.get("confluence_count"), "entry_timing.confluence_count"))
-        bars_since_setup = float(self._to_float_required(timing.get("bars_since_setup"), "entry_timing.bars_since_setup"))
-        setup_trend_raw = float(self._to_float_required(timing.get("setup_quality_trend"), "entry_timing.setup_quality_trend"))
-        confluence_increasing = float(self._to_float_required(timing.get("confluence_increasing"), "entry_timing.confluence_increasing"))
+        feats[4] = float(np.clip(confluence_count / 8.0, 0.0, 1.0))
 
-        setup_avg = float(np.clip((setup_long + setup_short) * 0.5, 0.0, 1.0))
-        cert_avg = float(np.clip((cert_long + cert_short) * 0.5, 0.0, 1.0))
-        confluence_norm = float(np.clip(confluence_count / 8.0, 0.0, 1.0))
-        bars_since_setup_norm = float(np.clip(bars_since_setup / 50.0, 0.0, 1.0))
-        setup_trend = float(np.clip(setup_trend_raw, -0.5, 0.5))
-        setup_trend_norm = float(np.clip((setup_trend + 0.5) / 1.0, 0.0, 1.0))
-        confluence_inc = float(np.clip(confluence_increasing, 0.0, 1.0))
-
-        feats[8] = setup_avg
-        feats[9] = cert_avg
-        feats[10] = confluence_norm
-        feats[11] = bars_since_setup_norm
-        feats[12] = setup_trend_norm
-        feats[13] = confluence_inc
-
-        dbg.update(
-            {
-                "mode": mode,
-                "entry_allowed": bool(timing.get("entry_allowed")),
-                "entry_quality": {"long": eql, "short": eqs, "avg": avg_quality},
-                "setup_quality": {"long": setup_long, "short": setup_short, "avg": setup_avg},
-                "entry_certainty": {"long": cert_long, "short": cert_short, "avg": cert_avg},
-                "confluence": {
-                    "count": confluence_count,
-                    "norm": confluence_norm,
-                    "increasing": confluence_inc,
-                },
-                "setup_context": {
-                    "bars_since_setup": bars_since_setup,
-                    "bars_since_setup_norm": bars_since_setup_norm,
-                    "setup_quality_trend": setup_trend_raw,
-                    "setup_quality_trend_norm": setup_trend_norm,
-                },
-                "regime_stability": regime_stability,
-                "theme": {"strength": theme_strength, "transition": theme_transition, "stability": theme_stability},
-                "zone": {"type": zone_type, "base": base_zone, "quality": float(feats[4])},
-                "vol": {"state": vol_state, "base": base_vol, "rsf": risk_scaling_factor, "rsf_norm": rsf_norm},
-                "liquidity_score": liquidity_score,
-                "mode_eff": mode_eff,
-                "prime_bonus": prime_bonus,
-                "feats": feats,
-                "raw": trading_mode_state,
-            }
-        )
+        dbg.update({"entry_allowed": bool(timing.get("entry_allowed")), "feats": feats})
         return feats, dbg
 
     def _build_governor_features(self, governor_state: Dict[str, Any]) -> Tuple[np.ndarray, Dict[str, Any]]:
-        feats = np.zeros(8, dtype=np.float32)
+        feats = np.zeros(5, dtype=np.float32)
         dbg: Dict[str, Any] = {}
 
         feats[0] = float(np.clip(self._to_float_required(governor_state.get("loss_layer_ratio"), "governor.loss_layer_ratio"), 0.0, 1.0))
-        feats[1] = float(np.clip(self._to_float_required(governor_state.get("loss_layer_level"), "governor.loss_layer_level"), 0.0, 1.0))
-        feats[2] = float(np.clip(self._to_float_required(governor_state.get("win_streak_ratio"), "governor.win_streak_ratio"), 0.0, 1.0))
 
         raw_headroom = self._to_float_required(governor_state.get("session_pnl_headroom"), "governor.session_pnl_headroom")
-        feats[3] = float(np.clip(raw_headroom / 2.0, 0.0, 1.0))
+        feats[1] = float(np.clip(raw_headroom / 2.0, 0.0, 1.0))
 
-        feats[4] = float(np.clip(self._to_float_required(governor_state.get("session_trade_budget"), "governor.session_trade_budget"), 0.0, 1.0))
-        feats[5] = float(np.clip(self._to_float_required(governor_state.get("session_consec_loss_ratio"), "governor.session_consec_loss_ratio"), 0.0, 1.0))
-        feats[6] = float(np.clip(self._to_float_required(governor_state.get("session_progress"), "governor.session_progress"), 0.0, 1.0))
-        feats[7] = float(np.clip(self._to_float_required(governor_state.get("pending_order_progress"), "governor.pending_order_progress"), 0.0, 1.0))
+        feats[2] = float(np.clip(self._to_float_required(governor_state.get("session_trade_budget"), "governor.session_trade_budget"), 0.0, 1.0))
+        feats[3] = float(np.clip(self._to_float_required(governor_state.get("session_consec_loss_ratio"), "governor.session_consec_loss_ratio"), 0.0, 1.0))
+        feats[4] = float(np.clip(self._to_float_required(governor_state.get("session_progress"), "governor.session_progress"), 0.0, 1.0))
 
         dbg.update({"raw": governor_state, "feats": feats})
         return feats, dbg
