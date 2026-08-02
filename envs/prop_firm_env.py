@@ -1008,14 +1008,52 @@ class PropFirmTradingEnv(
             return 50.0, 1.0   # XAGUSD: $50 per pip, 1 pip = $0.001 move
         return 10.0, 10000.0   # Standard FX: $10 per pip, 1 pip = 0.0001 move
 
+    # Short window whose volatility we report, and the longer window that
+    # calibrates what "normal" means for this instrument.
+    _VOL_SHORT_BARS = 20
+    _VOL_REF_BARS = 260
+    # Ratio of short-window vol to the instrument's own typical vol that maps to
+    # a full-scale reading of 1.0. 3.0 puts typical vol at ~0.33 and 2x typical
+    # at ~0.67, which straddles the 'low'/'normal'/'high' cut points at 0.3/0.7.
+    _VOL_FULL_SCALE_RATIO = 3.0
+
     def _atr_vol_proxy(self, instrument: str) -> float:
-        o = self._get_ohlcv(instrument, lookback=40, timeframe=None)
-        if not o or len(o.get("close", [])) < 20:
+        """Volatility in [0, 1], normalised against this instrument's own history.
+
+        The previous implementation returned ``clip(std(returns) * 100, 0, 1)``.
+        That constant is calibrated for an asset with ~1% per-bar volatility;
+        XAUUSD M15 runs about 0.07%. Measured over the tracked data the 20-bar
+        return std has p50 = 0.00069 and a maximum of 0.0045, so the old mapping
+        produced p50 = 0.069 and could never exceed 0.45. Downstream that meant
+        ``vol_state`` was 'low' on ~99% of bars, 'high' (> 0.7) was unreachable,
+        and the observation dims fed by both were effectively constant.
+
+        Scaling against a rolling reference instead of a magic constant also
+        makes the proxy instrument-agnostic, which multi-asset support requires:
+        an index and a currency pair have very different absolute volatilities
+        but the same notion of "twice as volatile as usual".
+        """
+        o = self._get_ohlcv(instrument, lookback=self._VOL_REF_BARS, timeframe=None)
+        if not o or len(o.get("close", [])) < self._VOL_SHORT_BARS + 1:
             return 0.3
+
         close = np.asarray(o["close"], dtype=np.float64)
-        returns = np.diff(close[-20:]) / np.maximum(close[-20:-1], 1e-8)
-        vol = float(np.std(returns))
-        vol = float(np.clip(vol * 100.0, 0.0, 1.0))
+        rets = np.diff(close) / np.maximum(close[:-1], 1e-8)
+        if rets.size < self._VOL_SHORT_BARS:
+            return 0.3
+
+        short_vol = float(np.std(rets[-self._VOL_SHORT_BARS:]))
+
+        # Reference = this instrument's typical volatility over the long window.
+        # Median absolute deviation is robust to the spikes we are trying to detect.
+        ref_vol = float(np.median(np.abs(rets - np.median(rets)))) * 1.4826
+        if not np.isfinite(ref_vol) or ref_vol <= 1e-12:
+            ref_vol = float(np.std(rets))
+        if not np.isfinite(ref_vol) or ref_vol <= 1e-12:
+            return 0.3
+
+        ratio = short_vol / ref_vol
+        vol = float(np.clip(ratio / self._VOL_FULL_SCALE_RATIO, 0.0, 1.0))
         return float(np.clip(vol * self._episode_vol_scale, 0.0, 2.0))
 
     def _get_current_data_spread(self, instrument: str) -> Optional[float]:

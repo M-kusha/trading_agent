@@ -187,6 +187,14 @@ class ExpertSignalsMixin(MarketStructureMixin):
                         "order_block_bull": float(adv_struct["order_block_bull"]),
                         "order_block_bear": float(adv_struct["order_block_bear"]),
                         # Trend indicators
+                        # "adx" duplicates "adx_value" under the key the
+                        # observation builder's expert_raw block actually reads.
+                        # That block (obs dims 90..105) was written against the
+                        # modules/voting/experts proposal schema, not this one, so
+                        # 15 of its 16 dims currently fall back to constants. This
+                        # alias recovers one of them; the rest need the train/live
+                        # expert unification, not more aliases.
+                        "adx": float(trend_result["adx"]),
                         "adx_value": float(trend_result["adx"]),
                         "plus_di": float(trend_result["plus_di"]),
                         "minus_di": float(trend_result["minus_di"]),
