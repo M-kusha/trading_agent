@@ -1202,12 +1202,24 @@ def start_dashboard_server(
     _config = DashboardConfig(host=host, port=port, metrics_file=metrics_file)
     _metrics_reader = MetricsReader(metrics_file)
 
+    # A Windows console defaults to cp1252, which cannot encode the emoji this
+    # banner used to print - the server died in the banner before it ever bound
+    # the port. Reconfigure to UTF-8 where the stream supports it, and fall back
+    # to plain ASCII where it does not.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
+        banner_ok = True
+    except Exception:
+        banner_ok = False
+
+    rocket, chart, folder = ("🚀", "📊", "📁") if banner_ok else ("*", "-", "-")
+
     print()
     print("=" * 70)
-    print("  🚀 PROPFIRM PPO TRAINING DASHBOARD v2.2")
+    print(f"  {rocket} PROPFIRM PPO TRAINING DASHBOARD v2.2")
     print("=" * 70)
-    print(f"  📊 Open http://localhost:{port} in your browser")
-    print(f"  📁 Reading metrics from: {metrics_file}")
+    print(f"  {chart} Open http://localhost:{port} in your browser")
+    print(f"  {folder} Reading metrics from: {metrics_file}")
     print("=" * 70)
     print()
 
