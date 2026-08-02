@@ -130,8 +130,26 @@ class SmartEntropyController:
 
 
     def _get_max_entropy(self, n_valid_actions: Optional[int] = None) -> float:
-        k = self._effective_valid_actions(n_valid_actions)
+        # Deliberately the unrounded estimate. The effective action count is
+        # genuinely fractional when averaged over a rollout that mixes flat
+        # states with in-position ones, and rounding it re-introduced the swing
+        # this normaliser exists to remove: an EMA hovering near k.5 flips
+        # between log(k) and log(k+1) on alternating updates.
+        # _effective_valid_actions stays integral for display.
+        k = self._effective_valid_actions_float(n_valid_actions)
         return float(np.log(k))
+
+    def _effective_valid_actions_float(self, n_valid_actions: Optional[int]) -> float:
+        if n_valid_actions is not None:
+            try:
+                n_valid = float(n_valid_actions)
+            except Exception:
+                n_valid = float(self.min_valid_floor)
+        else:
+            n_valid = float(self._valid_actions_estimate)
+
+        n_valid = max(float(self.min_valid_floor), n_valid)
+        return min(n_valid, float(self.n_actions))
 
     def _effective_valid_actions(self, n_valid_actions: Optional[int]) -> int:
         if n_valid_actions is not None:
@@ -220,9 +238,21 @@ class SmartEntropyController:
         if n_valid_actions is not None:
             self.update_valid_actions_estimate(n_valid_actions)
 
-        norm_entropy = self._normalize_entropy(current_entropy, n_valid_actions)
-        k_eff = self._effective_valid_actions(n_valid_actions)
-        max_h = self._get_max_entropy(n_valid_actions)
+        # current_entropy is SB3's rollout MEAN policy entropy - averaged over
+        # thousands of steps that mix flat states (hold + K longs + K shorts
+        # valid) with in-position states (hold + close). n_valid_actions is a
+        # single instantaneous mask read at callback time. Dividing a batch mean
+        # by a point sample made the same raw entropy normalise to 0.42 or 0.67
+        # depending only on whether a position happened to be open at that
+        # instant, and the PID chased the swing: ent_coef climbed 0.100 -> 0.130
+        # -> 0.169 across three consecutive updates on a stationary policy.
+        #
+        # The EMA is already maintained above and reflects the average valid
+        # action count over the rollout, which is the denominator that matches
+        # the numerator. Passing None selects it.
+        norm_entropy = self._normalize_entropy(current_entropy, None)
+        k_eff = self._effective_valid_actions(None)
+        max_h = self._get_max_entropy(None)
 
 
         if self.cooldown_steps > 0:
