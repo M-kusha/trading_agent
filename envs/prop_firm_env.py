@@ -479,12 +479,37 @@ class PropFirmTradingEnv(
         except Exception:
             return 15
 
+    # Higher-timeframe bars requested by _prepare_market_data. The observation
+    # contract requires at least min_bars_htf (30) of each, so an episode may
+    # not start before this much history exists.
+    _HTF_LOOKBACK_BARS: Dict[str, int] = {"H1": 60, "H4": 40, "D1": 40}
+
     def _episode_start_buffer(self) -> int:
+        """Bars of history an episode start must have behind it.
+
+        This previously counted only the M15 lookbacks and returned 230 bars.
+        The higher timeframes were never considered, and D1 is the binding
+        constraint by a wide margin: 40 D1 bars is 40 * (1440/15) = 3,840 M15
+        bars. Episodes sampled near the start of the dataset therefore had as
+        few as 24 D1 bars, and the observation build raised
+
+            ObservationContractError: D1.close must have >= 30 bars. Got 24
+
+        Intermittently, depending on the sampled start - the kind of fault that
+        surfaces hours into a run rather than at launch.
+        """
         obs_lb = 120
         expert_lb = int(getattr(self, "_MIN_LOOKBACK", 220) or 220)
         struct_lb = int(getattr(self, "_STRUCTURE_LOOKBACK", 0) or 0)
         margin = 10
-        return int(max(obs_lb, expert_lb, struct_lb, 50) + margin)
+
+        primary_minutes = max(1, self._tf_minutes())
+        htf_bars_required = 0
+        for tf, bars in self._HTF_LOOKBACK_BARS.items():
+            ratio = max(1, timeframe_to_minutes(tf) // primary_minutes)
+            htf_bars_required = max(htf_bars_required, bars * ratio)
+
+        return int(max(obs_lb, expert_lb, struct_lb, htf_bars_required, 50) + margin)
 
 
     def _loss_layer(self) -> int:
