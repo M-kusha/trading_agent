@@ -1505,8 +1505,11 @@ def train_curriculum_agent(
     else:
         train_data, holdout_data, split_ts = split_data_by_time(data, holdout_ratio)
         holdout_enabled = True
-        tr = len(_primary_frame(next(iter(train_data.values()))) or [])
-        ho = len(_primary_frame(next(iter(holdout_data.values()))) or [])
+        # `frame or []` would invoke DataFrame.__bool__, which raises.
+        tr_frame = _primary_frame(next(iter(train_data.values())))
+        ho_frame = _primary_frame(next(iter(holdout_data.values())))
+        tr = 0 if tr_frame is None else len(tr_frame)
+        ho = 0 if ho_frame is None else len(ho_frame)
         logger.info(
             f"Holdout split at {split_ts}: train={tr} primary bars, "
             f"holdout={ho} ({holdout_ratio:.0%}), split by timestamp so every "
