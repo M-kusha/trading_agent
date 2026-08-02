@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback
 
-from train.obs_health import ObservationHealthTracker
+from train.obs_health import ObservationHealthTracker, trading_frequency
 
 try:
     from sb3_contrib.common.maskable.utils import get_action_masks as sb3_get_action_masks
@@ -1632,6 +1632,18 @@ class CurriculumTrainingCallback(BaseCallback):
             "total_stages_visited": len(stages_data),
         }
 
+    def _stage_target_trades_per_1k(self) -> float:
+        """The active stage's trade-frequency target, or 0.0 if unavailable.
+
+        Read live from the stage config rather than cached, so the panel tracks
+        promotions instead of reporting the target the run started with.
+        """
+        try:
+            rewards = self.curriculum_manager.stage_config.rewards  # type: ignore[union-attr]
+            return float(getattr(rewards, "target_trades_per_1k_steps", 0.0) or 0.0)
+        except Exception:
+            return 0.0
+
     def _consecutive_loss_stats(self) -> Dict[str, Any]:
         """Losing-streak stats over the same 50-episode window episode_callback uses.
 
@@ -1769,6 +1781,11 @@ class CurriculumTrainingCallback(BaseCallback):
             max_drawdown = float(np.max(list(self._ep_drawdowns)[-50:])) if self._ep_drawdowns else 0.0
             mean_trades = float(np.mean(list(self._ep_trades)[-50:])) if self._ep_trades else 0.0
             total_trades = self._cumulative_trades
+            trade_freq = trading_frequency(
+                mean_trades=mean_trades,
+                mean_episode_len=float(np.mean(list(self._ep_lens)[-50:])) if self._ep_lens else 1.0,
+                stage_target_per_1k=self._stage_target_trades_per_1k(),
+            )
 
 
             mean_profit_factor = float(np.mean(list(self._ep_profit_factors)[-50:])) if self._ep_profit_factors else 0.0
@@ -1807,12 +1824,21 @@ class CurriculumTrainingCallback(BaseCallback):
                     "explained_variance": self._ppo_diagnostics.get('explained_variance', 0),
                     "learning_rate": self._ppo_diagnostics.get('learning_rate', self._current_lr or 0),
                 },
+                # trades_per_day/overtrade_ratio were written only by
+                # episode_callback, whose payload the curriculum callback
+                # overwrites - so the over-trading panel was missing from
+                # curriculum runs, the only runs where the stage target exists
+                # to compare against.
                 "trading": {
                     "total_trades": total_trades,
                     "mean_trades": mean_trades,
                     "mean_win_rate": mean_win_rate * 100,
 
                     "max_drawdown": max_drawdown,
+                    "trades_per_day": trade_freq["trades_per_day"],
+                    "stage_target_trades_per_day": trade_freq["stage_target_trades_per_day"],
+                    "overtrade_ratio": trade_freq["overtrade_ratio"],
+                    "mean_trades_status": trade_freq["status"],
                 },
 
                 "direction_stats": {

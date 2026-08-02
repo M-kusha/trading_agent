@@ -2868,6 +2868,25 @@
         target: `${phaseThresholds.trades_ep.min}-${phaseThresholds.trades_ep.max}`,
       },
       {
+        // Trades/Ep alone cannot show over-trading: 368 trades is only alarming
+        // once you know the episode was 1,564 bars and the stage asked for 12.
+        // This tile carries the ratio the promotion gate actually uses.
+        id: "trades_day",
+        label: "Trades/Day",
+        value: trading.frequency_data_available
+          ? fmt.num(trading.trades_per_day, 1)
+          : "n/a",
+        rawValue: trading.trades_per_day,
+        status: trading.frequency_data_available
+          ? (trading.overtrade_ratio > 3 ? "bad" : trading.overtrade_ratio > 1.5 ? "ok" : "good")
+          : "unknown",
+        delta: null,
+        spark: null,
+        target: trading.frequency_data_available && trading.stage_target_trades_per_day > 0
+          ? `${fmt.num(trading.stage_target_trades_per_day, 1)}/day (${fmt.num(trading.overtrade_ratio, 1)}x)`
+          : null,
+      },
+      {
         id: "r_multiple",
         label: "R-Multiple",
         value: fmt.num(quality.mean_r_multiple, 2),

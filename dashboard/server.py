@@ -238,6 +238,9 @@ class MetricsReader:
     def _safe_bool(self, val: Any, default: bool = False) -> bool:
         return val if isinstance(val, bool) else default
 
+    def _safe_str(self, val: Any, default: str = "") -> str:
+        return val if isinstance(val, str) and val else default
+
     def _normalize_drawdown_percent(self, raw: Dict[str, Any], trading: Dict[str, Any]) -> float:
         root_dd = self._safe_float(raw.get("max_drawdown", 0.0))
         trading_dd = self._safe_float(trading.get("max_drawdown", 0.0))
@@ -470,14 +473,28 @@ class MetricsReader:
 
         self._append_history("trades_per_episode", mean_trades)
 
+        # Trade frequency in the unit a trader reasons in, judged against the
+        # active stage's target. The old status came from get_range_status(
+        # mean_trades, 3, 15) - a fixed band on trades-per-episode that ignores
+        # both episode length and the stage target, so it read "good" for 15
+        # trades whether the stage asked for 12 or for 1.
+        trades_per_day = t.get("trades_per_day")
+        has_frequency = trades_per_day is not None
+        stage_target_per_day = self._safe_float(t.get("stage_target_trades_per_day", 0.0))
+        overtrade_ratio = self._safe_float(t.get("overtrade_ratio", 0.0))
+
         trading = {
             "mean_win_rate": mean_win_rate,
             "mean_win_rate_status": get_status_color(mean_win_rate, THRESHOLDS.win_rate_good, THRESHOLDS.win_rate_ok, True),
             "max_drawdown": max_drawdown,
             "max_drawdown_status": get_status_color(max_drawdown, THRESHOLDS.drawdown_good, THRESHOLDS.drawdown_ok, False),
             "mean_trades": mean_trades,
-            "mean_trades_status": get_range_status(mean_trades, 3, 15),
+            "mean_trades_status": self._safe_str(t.get("mean_trades_status"), get_range_status(mean_trades, 3, 15)),
             "total_trades": total_trades,
+            "trades_per_day": self._safe_float(trades_per_day, 0.0) if has_frequency else None,
+            "stage_target_trades_per_day": stage_target_per_day if has_frequency else None,
+            "overtrade_ratio": overtrade_ratio if has_frequency else None,
+            "frequency_data_available": has_frequency,
         }
 
 

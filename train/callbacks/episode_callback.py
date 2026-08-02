@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback
 
-from train.obs_health import ObservationHealthTracker
+from train.obs_health import ObservationHealthTracker, trading_frequency
 
 logger = logging.getLogger(__name__)
 
@@ -378,21 +378,15 @@ class VecEpisodeTradingCallback(BaseCallback):
             # The previous run over-traded badly and it was only noticed after
             # the fact; 96 M15 bars = one 24h day.
             mean_ep_len = float(np.mean(list(self._ep_lens)[-50:])) if self._ep_lens else 1.0
-            trades_per_day = (mean_trades / max(mean_ep_len, 1.0)) * 96.0
-            stage_target_per_day = (
-                float(getattr(self, "_stage_target_trades_per_1k", 0.0)) / 1000.0 * 96.0
+            freq = trading_frequency(
+                mean_trades=mean_trades,
+                mean_episode_len=mean_ep_len,
+                stage_target_per_1k=float(getattr(self, "_stage_target_trades_per_1k", 0.0)),
             )
-            if stage_target_per_day > 0.0:
-                overtrade_ratio = trades_per_day / stage_target_per_day
-                # Hard gate from CURRICULUM_PLAN 12.5: reject above 3x target.
-                trades_status = (
-                    "bad" if overtrade_ratio > 3.0
-                    else "ok" if overtrade_ratio > 1.5
-                    else "good"
-                )
-            else:
-                overtrade_ratio = 0.0
-                trades_status = "good" if 0.2 <= trades_per_day <= 5.0 else "bad"
+            trades_per_day = freq["trades_per_day"]
+            stage_target_per_day = freq["stage_target_trades_per_day"]
+            overtrade_ratio = freq["overtrade_ratio"]
+            trades_status = freq["status"]
 
 
             def status_for_win_rate(wr):
