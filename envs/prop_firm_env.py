@@ -598,6 +598,38 @@ class PropFirmTradingEnv(
         return float([1.00, 0.90, 0.75, 0.60, 0.45, 0.30][layer])
 
 
+    def _win_streak_risk_multiplier(self) -> float:
+        """Scale risk up on a winning run, mirroring the loss-layer brake.
+
+        loss_layer_risk_mult already cuts risk to 0.90/0.75/0.60/0.45/0.30
+        through a losing streak; this is the other half. Anti-martingale: press
+        while the account is proving itself, not while it is bleeding.
+
+        Gated on drawdown headroom, because scaling up is only sound with room
+        to be wrong. Inside half the max-drawdown limit the multiplier is
+        withdrawn entirely - a winning streak is not evidence when the account
+        is already down.
+        """
+        cfg = self.config
+        if not bool(getattr(cfg, "win_streak_risk_enabled", True)):
+            return 1.0
+
+        wins = int(getattr(self, "consecutive_wins", 0) or 0)
+        if wins < int(getattr(cfg, "win_streak_risk_min_wins", 2)):
+            return 1.0
+
+        current_dd, _daily = self._calc_dds()
+        limit = max(float(cfg.max_drawdown_limit), 1e-9)
+        headroom = 1.0 - (current_dd / limit)
+        if headroom < 0.5:
+            return 1.0
+
+        mults = getattr(cfg, "win_streak_risk_mult", None)
+        if not isinstance(mults, (list, tuple)) or len(mults) < 4:
+            mults = [1.0, 1.15, 1.30, 1.45]
+        idx = min(wins - int(getattr(cfg, "win_streak_risk_min_wins", 2)), len(mults) - 1)
+        return float(mults[max(0, idx)])
+
     def _decode_action(self, action_id: int) -> Tuple[str, float]:
         a = int(action_id)
         if a == self._ACTION_HOLD:
@@ -1075,6 +1107,7 @@ class PropFirmTradingEnv(
         base_risk = self.balance * self.config.risk_per_trade_pct
 
         base_risk *= self._loss_layer_risk_multiplier()
+        base_risk *= self._win_streak_risk_multiplier()
         risk_eur = base_risk * float(np.clip(size_mult, 0.25, 1.25))
         risk_eur = min(risk_eur, self.balance * self.config.max_risk_per_trade_pct)
 
@@ -1427,6 +1460,7 @@ class PropFirmTradingEnv(
 
         self._episode_reward_components = {}
         self._episode_reward_component_counts = {}
+        self._episode_reward_total = 0.0
 
 
         self._episode_gross_profit = 0.0
@@ -1956,14 +1990,23 @@ class PropFirmTradingEnv(
         if dd_breach or daily_dd_breach:
             terminated = True
             truncated = False
+            # A breach used to cost -1.5 (or -1.0 daily) against episodes worth
+            # +23 to +140, so blowing the account was 1-5% of a good episode and
+            # the policy had no reason to avoid it. It also went unpunished
+            # entirely whenever a trade happened to close on the breaching step.
+            #
+            # In reality a breach ends the account: every gain in the episode is
+            # forfeited and all future profit is zero. Price it that way - strip
+            # the episode's earnings and leave a clear deficit, so no sequence of
+            # wins can make a breach worth risking.
+            earned = max(0.0, float(getattr(self, "_episode_reward_total", 0.0)))
+            breach_penalty = float(getattr(self.config.reward, "dd_breach_penalty", 25.0))
             if dd_breach:
                 termination_reason = "max_drawdown_breach"
-                if (not trade_closed) and (not did_risk_liquidate_this_step):
-                    reward -= 1.5
+                reward -= earned + breach_penalty
             else:
                 termination_reason = "daily_limit_breach"
-                if (not trade_closed) and (not did_risk_liquidate_this_step):
-                    reward -= 1.0
+                reward -= earned + breach_penalty * 0.6
 
 
         reward_cfg = self.config.reward
@@ -2101,6 +2144,10 @@ class PropFirmTradingEnv(
             },
         }
         info.update(self._curriculum_step_metadata())
+
+        # Running total, used to price a drawdown breach against what the
+        # episode actually earned.
+        self._episode_reward_total = float(getattr(self, "_episode_reward_total", 0.0)) + float(reward)
 
         if terminated or truncated:
             info["episode_stats"] = self.get_episode_stats()

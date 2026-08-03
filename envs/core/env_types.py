@@ -165,6 +165,12 @@ class RewardConfig:
     high_vol_size_penalty: float = 0.08
 
 
+    # Fixed deficit left after a drawdown breach forfeits the episode's
+    # earnings. Sized against observed episode rewards (mean 37, max 140)
+    # so no run of wins makes a breach worth risking - a real breach ends
+    # the account and zeroes all future profit.
+    dd_breach_penalty: float = 25.0
+
     dd_shaping_enabled: bool = True
     dd_threshold: float = 0.02
     dd_penalty_scale: float = 1.0
@@ -323,6 +329,14 @@ class PropFirmConfig:
 
     risk_per_trade_pct: float = 0.003
     max_risk_per_trade_pct: float = 0.007
+    # Anti-martingale, the mirror of loss_layer_risk_mult: press while the
+    # account is proving itself. Gated on drawdown headroom in
+    # _win_streak_risk_multiplier - a winning streak is not evidence when
+    # the account is already halfway to its limit. max_risk_per_trade_pct
+    # still binds, so this raises typical risk without raising the cap.
+    win_streak_risk_enabled: bool = True
+    win_streak_risk_min_wins: int = 2
+    win_streak_risk_mult: Tuple[float, ...] = (1.0, 1.15, 1.30, 1.45)
     max_positions: int = 1
 
 
