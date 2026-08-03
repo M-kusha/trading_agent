@@ -134,3 +134,38 @@ a 1.4R edge survives.
 
 Sample sizes: 175 / 95 / 64 trades over 10 episodes each. The FTMO section is
 the smallest and the most important; its conclusion deserves a longer run.
+
+---
+
+## Follow-up: the FTMO loss is not a cost problem
+
+Same model, same bars, only the spread changed:
+
+| spread | P&L | PF | WR% | trades |
+|---|---|---|---|---|
+| ~14 pts (a quarter of live) | -5,683 | 0.83 | 38.4 | 73 |
+| ~28 pts (what it trained at) | -7,414 | 0.75 | 34.4 | 64 |
+| ~40 pts (FTMO median) | -8,245 | 0.73 | 34.4 | 64 |
+| ~50 pts | -933 | 0.97 | 34.8 | 69 |
+
+It loses at every level, including one far cheaper than it ever trained against,
+and 50 points scores better than 40 - which cannot happen if cost is the driver.
+At 64-69 trades the differences between these conditions are noise.
+
+This retracts the earlier "under-hardened on costs" explanation. Two further
+measurements support the retraction: FTMO spread over 15,779 bars is p50 40 /
+p75 47 / p90 55, and stage 9 trains at roughly p75; and the training data's
+spread is proportionally WIDER than FTMO's (p90/p50 of 2.88 against 1.38), with
+shocks enabled at stage 9. Costs were approximately right all along.
+
+### What it actually means
+
+The edge does not transfer across time periods. It earned +25.70% on May-Dec
+2025 and +2.90% on the same months with prices mirrored, but loses on Dec
+2025-Aug 2026 regardless of friction. Mirroring fixed direction, not regime:
+the model works on inverted prices from the period it was trained beside, and
+fails on a different period.
+
+Finishing stages 6-9 will therefore probably NOT fix this. It is a
+generalisation problem, not a hardening problem, and the likeliest cause is
+that all 99,908 training bars come from a single 149.8% bull regime.
