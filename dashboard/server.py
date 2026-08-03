@@ -252,29 +252,43 @@ class MetricsReader:
     def _safe_str(self, val: Any, default: str = "") -> str:
         return val if isinstance(val, str) and val else default
 
-    def _normalize_drawdown_percent(self, raw: Dict[str, Any], trading: Dict[str, Any]) -> float:
-        root_dd = self._safe_float(raw.get("max_drawdown", 0.0))
-        trading_dd = self._safe_float(trading.get("max_drawdown", 0.0))
+    def _percent(
+        self,
+        trading: Dict[str, Any],
+        raw: Dict[str, Any],
+        explicit_key: str,
+        legacy_key: str,
+        *,
+        legacy_is_fraction: bool,
+    ) -> float:
+        """Read a percentage from an explicitly-named key, or convert a known legacy one.
 
-        recent_dds = self._safe_list(raw.get("recent_drawdowns", []))
-        recent_last = self._safe_float(recent_dds[-1], 0.0) if recent_dds else 0.0
+        The previous approach guessed the unit from magnitude: values at or below
+        0.5 were treated as fractions and multiplied by 100, values above 1.0 were
+        passed through as percentages. That is undecidable by construction - a
+        genuine 0.8% drawdown and a catastrophic 80% one are the same number under
+        those rules, and the producers disagreed anyway, emitting `mean_win_rate`
+        as a fraction at the top level and a percent inside `trading`.
 
+        Producers now name the unit. A legacy payload is converted by its known
+        historical convention rather than by inspecting the value.
+        """
+        for source in (trading, raw):
+            if explicit_key in source and source[explicit_key] is not None:
+                return self._safe_float(source[explicit_key], 0.0)
 
-        for candidate in (root_dd, recent_last, trading_dd):
-            if 0.0 < candidate <= 0.5:
-                return candidate * 100.0
-
-
-        for candidate in (root_dd, trading_dd):
-            if 1.0 < candidate <= 100.0:
-                return candidate
-
-
-        for candidate in (root_dd, recent_last, trading_dd):
-            if 0.0 < candidate <= 1.0:
-                return candidate * 100.0
+        for source in (trading, raw):
+            if legacy_key in source and source[legacy_key] is not None:
+                value = self._safe_float(source[legacy_key], 0.0)
+                return value * 100.0 if legacy_is_fraction else value
 
         return 0.0
+
+    def _normalize_drawdown_percent(self, raw: Dict[str, Any], trading: Dict[str, Any]) -> float:
+        # Drawdown has always been emitted as a fraction of the balance.
+        return self._percent(
+            trading, raw, "drawdown_pct", "max_drawdown", legacy_is_fraction=True
+        )
 
     def _append_history(self, key: str, value: float) -> None:
         if key not in self._history:
@@ -437,6 +451,48 @@ class MetricsReader:
         return out
 
 
+    def _effective_stage_requirements(self, raw: Dict[str, Any]) -> Dict[str, Any]:
+        """Competence gates for the current stage, plus any runtime overrides.
+
+        Returns `available: False` rather than a guess when the curriculum cannot
+        be read - a missing requirement must not silently become a permissive one.
+        """
+        stage_name = str(raw.get("curriculum_stage", "") or "")
+        cp = self._safe_dict(raw.get("curriculum_progress", {}))
+        stage_index = cp.get("stage_index")
+
+        payload = get_requirements_by_stage()
+        if not payload.get("available"):
+            return {
+                "available": False,
+                "reason": payload.get("error") or "curriculum requirements unavailable",
+                "stage": stage_name,
+            }
+
+        stages = payload.get("stages") or {}
+        entry = stages.get(stage_name)
+        if entry is None and stage_index is not None:
+            entry = next(
+                (v for v in stages.values() if v.get("stage_index") == stage_index),
+                None,
+            )
+        if entry is None:
+            return {
+                "available": False,
+                "reason": f"no requirements recorded for stage {stage_name!r}",
+                "stage": stage_name,
+            }
+
+        requirements = entry.get("requirements", {})
+        return {
+            "available": True,
+            "stage": stage_name,
+            "stage_index": entry.get("stage_index"),
+            "competence": requirements.get("competence", {}),
+            "entropy_targets": requirements.get("entropy_targets", {}),
+            "source": payload.get("source"),
+        }
+
     def _process(self, raw: Dict[str, Any]) -> Dict[str, Any]:
 
         p = self._safe_dict(raw.get("progress", {}))
@@ -520,9 +576,15 @@ class MetricsReader:
 
 
         t = self._safe_dict(raw.get("trading", {}))
-        mean_win_rate = self._safe_float(t.get("mean_win_rate", raw.get("mean_win_rate", 0)))
-        if 0 < mean_win_rate < 1:
-            mean_win_rate *= 100
+        # `trading.mean_win_rate` was already a percent while the top-level key was
+        # a fraction, so the old `if 0 < x < 1: x *= 100` silently multiplied a
+        # genuine sub-1% win rate by a hundred.
+        mean_win_rate = self._percent(
+            t, raw, "win_rate_pct", "mean_win_rate", legacy_is_fraction=False
+        )
+        if "win_rate_pct" not in t and "win_rate_pct" not in raw and 0 < mean_win_rate < 1:
+            # Only the top-level legacy key is a fraction; recover it explicitly.
+            mean_win_rate = self._safe_float(raw.get("mean_win_rate", 0.0)) * 100.0
 
         max_drawdown = self._normalize_drawdown_percent(raw, t)
 
@@ -616,6 +678,12 @@ class MetricsReader:
             "message": "" if liveness["training_live"] else liveness["reason"],
             "run": run_stamp,
             "liveness": liveness,
+            # The effective gates for the stage actually being trained, read from
+            # the curriculum rather than from a table copied into the frontend.
+            # That table still carried the pre-rebuild ladder - 53% win rate and
+            # 1.28 profit factor - while the curriculum had moved to 40% and 1.40,
+            # so the panel was grading against requirements that no longer existed.
+            "stage_requirements": self._effective_stage_requirements(raw),
             "timestamp": time.time(),
             "datetime": datetime.now().isoformat(),
             "raw_timestamp": raw.get("timestamp", ""),

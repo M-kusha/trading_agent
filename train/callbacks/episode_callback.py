@@ -448,6 +448,13 @@ class VecEpisodeTradingCallback(BaseCallback):
                     "stage_target_trades_per_day": stage_target_per_day,
                     "overtrade_ratio": overtrade_ratio,
                     "mean_trades_status": trades_status,
+                    # Units in the name. `mean_win_rate` was a fraction at the
+                    # top level and a percent inside this block, in the same
+                    # payload, which forced the consumer to guess from
+                    # magnitude - and a genuine 0.8% drawdown is
+                    # indistinguishable from 80% by that method.
+                    "win_rate_pct": mean_win_rate * 100.0,
+                    "drawdown_pct": max_drawdown * 100.0,
                     "mean_win_rate": mean_win_rate * 100,
                     "mean_win_rate_status": status_for_win_rate(mean_win_rate),
                     "max_drawdown": max_drawdown,
@@ -507,6 +514,8 @@ class VecEpisodeTradingCallback(BaseCallback):
                 "mean_reward": mean_reward,
                 "mean_pnl": mean_pnl,
                 "total_pnl": total_pnl,
+                "win_rate_pct": mean_win_rate * 100.0,
+                "drawdown_pct": max_drawdown * 100.0,
                 "mean_win_rate": mean_win_rate,
                 "max_drawdown": max_drawdown,
                 "mean_trades": mean_trades,

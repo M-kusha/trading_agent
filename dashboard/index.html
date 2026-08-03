@@ -322,6 +322,33 @@
   // - Stage 9 (LIVE_READY):      Phase 3 - Mastery
   //
   // Thresholds use PROMOTION REQUIREMENTS as "good" targets
+  // Build KPI thresholds from the curriculum's live competence gates, falling
+  // back to the static table only when the runtime cannot supply them.
+  function effectiveThresholds(data, phase) {
+    const fallback = STAGE_KPI_THRESHOLDS[phase];
+    const req = data?.stage_requirements;
+    if (!req?.available) return fallback;
+
+    const c = req.competence || {};
+    const pct = (x) => (typeof x === "number" ? x * 100 : undefined);
+    const out = JSON.parse(JSON.stringify(fallback));
+
+    if (typeof c.min_win_rate === "number") {
+      out.win_rate = { good: pct(c.min_win_rate), ok: pct(c.min_win_rate) - 5 };
+    }
+    if (typeof c.min_profit_factor === "number") {
+      out.profit_factor = { good: c.min_profit_factor, ok: c.min_profit_factor * 0.85 };
+    }
+    if (typeof c.max_avg_drawdown === "number") {
+      out.max_dd = { good: pct(c.max_avg_drawdown), ok: pct(c.max_avg_drawdown) * 1.5 };
+    }
+    if (typeof c.min_avg_r_multiple === "number") {
+      out.r_multiple = { good: c.min_avg_r_multiple, ok: c.min_avg_r_multiple - 0.1 };
+    }
+    out.__source = "curriculum";
+    return out;
+  }
+
   const STAGE_KPI_THRESHOLDS = {
     // Phase 0: DISCOVERY (Stages 0-1) - Explorer/Experimenter
     // Explorer: min_win_rate=0.0, min_pf=0.0, entropy 0.60-1.50
@@ -386,7 +413,11 @@
       ? normalizePctValue(value)
       : Number(value);
     const phase = getPhaseFromStage(stageIdx);
-    const thresholds = STAGE_KPI_THRESHOLDS[phase];
+    // Prefer the curriculum's own effective gates over the table below.  That
+    // table is a copy, and it drifted: it still graded against a 53% win rate
+    // and 1.28 profit factor after the ladder moved to 40% and 1.40, so the
+    // panel was judging the agent by requirements that no longer existed.
+    const thresholds = effectiveThresholds(data, phase);
     
     switch(metricId) {
       case "win_rate":

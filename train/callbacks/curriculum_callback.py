@@ -2202,6 +2202,13 @@ class CurriculumTrainingCallback(BaseCallback):
                 "trading": {
                     "total_trades": total_trades,
                     "mean_trades": mean_trades,
+                    # Units in the name. `mean_win_rate` was a fraction at the
+                    # top level and a percent inside this block, in the same
+                    # payload, which forced the consumer to guess from
+                    # magnitude - and a genuine 0.8% drawdown is
+                    # indistinguishable from 80% by that method.
+                    "win_rate_pct": mean_win_rate * 100.0,
+                    "drawdown_pct": max_drawdown * 100.0,
                     "mean_win_rate": mean_win_rate * 100,
 
                     "max_drawdown": max_drawdown,
