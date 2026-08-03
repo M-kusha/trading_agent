@@ -67,7 +67,7 @@ class RewardShaping:
 
 
     setup_quality_enabled: bool = False
-    setup_quality_threshold: float = 0.70
+    setup_quality_threshold: float = 0.55
     setup_quality_bonus_scale: float = 0.15
     hasty_entry_penalty: float = 0.08
 

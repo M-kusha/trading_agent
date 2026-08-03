@@ -1050,7 +1050,7 @@ def get_timing_student_config() -> CurriculumStageConfig:
 
 
             setup_quality_enabled=True,
-            setup_quality_threshold=0.70,
+            setup_quality_threshold=0.55,
             setup_quality_bonus_scale=0.15,
             hasty_entry_penalty=0.08,
 
@@ -1326,7 +1326,7 @@ def get_integrator_config() -> CurriculumStageConfig:
 
 
             setup_quality_enabled=True,
-            setup_quality_threshold=0.70,
+            setup_quality_threshold=0.55,
             setup_quality_bonus_scale=0.15,
             hasty_entry_penalty=0.08,
 
@@ -1469,7 +1469,7 @@ def get_integrator_config() -> CurriculumStageConfig:
             min_setup_skipped_per_episode=2.0,
             min_entry_certainty_avg=0.55,
             min_avg_setup_quality=0.60,
-            max_fomo_trade_rate=0.20,
+            max_fomo_trade_rate=0.65,
             max_revenge_trade_rate=0.20,
             max_dd_breach_rate=0.15,
             max_consecutive_loss_rate=0.18,
@@ -1634,7 +1634,7 @@ def get_risk_manager_config() -> CurriculumStageConfig:
 
 
             setup_quality_enabled=True,
-            setup_quality_threshold=0.70,
+            setup_quality_threshold=0.55,
             setup_quality_bonus_scale=0.15,
             hasty_entry_penalty=0.08,
 
@@ -1784,7 +1784,7 @@ def get_risk_manager_config() -> CurriculumStageConfig:
             min_setup_skipped_per_episode=2.0,
             min_entry_certainty_avg=0.60,
             min_avg_setup_quality=0.65,
-            max_fomo_trade_rate=0.15,
+            max_fomo_trade_rate=0.55,
             max_revenge_trade_rate=0.15,
             max_dd_breach_rate=0.10,
             max_consecutive_loss_rate=0.16,
@@ -1952,7 +1952,7 @@ def get_strategist_config() -> CurriculumStageConfig:
 
 
             setup_quality_enabled=True,
-            setup_quality_threshold=0.70,
+            setup_quality_threshold=0.55,
             setup_quality_bonus_scale=0.15,
             hasty_entry_penalty=0.08,
 
@@ -2107,7 +2107,7 @@ def get_strategist_config() -> CurriculumStageConfig:
             min_setup_skipped_per_episode=2.5,
             min_entry_certainty_avg=0.62,
             min_avg_setup_quality=0.70,
-            max_fomo_trade_rate=0.12,
+            max_fomo_trade_rate=0.45,
             max_revenge_trade_rate=0.12,
             max_dd_breach_rate=0.08,
             max_consecutive_loss_rate=0.14,
@@ -2284,7 +2284,7 @@ def get_professional_config() -> CurriculumStageConfig:
 
 
             setup_quality_enabled=True,
-            setup_quality_threshold=0.70,
+            setup_quality_threshold=0.55,
             setup_quality_bonus_scale=0.15,
             hasty_entry_penalty=0.08,
 
@@ -2447,7 +2447,7 @@ def get_professional_config() -> CurriculumStageConfig:
             min_setup_skipped_per_episode=3.0,
             min_entry_certainty_avg=0.65,
             min_avg_setup_quality=0.75,
-            max_fomo_trade_rate=0.10,
+            max_fomo_trade_rate=0.40,
             max_revenge_trade_rate=0.10,
             max_dd_breach_rate=0.06,
             max_consecutive_loss_rate=0.14,
@@ -2633,7 +2633,7 @@ def get_live_ready_config() -> CurriculumStageConfig:
 
 
             setup_quality_enabled=True,
-            setup_quality_threshold=0.70,
+            setup_quality_threshold=0.55,
             setup_quality_bonus_scale=0.15,
             hasty_entry_penalty=0.08,
 
@@ -2796,7 +2796,7 @@ def get_live_ready_config() -> CurriculumStageConfig:
             min_setup_skipped_per_episode=3.0,
             min_entry_certainty_avg=0.68,
             min_avg_setup_quality=0.78,
-            max_fomo_trade_rate=0.08,
+            max_fomo_trade_rate=0.35,
             max_revenge_trade_rate=0.08,
             max_dd_breach_rate=0.05,
             max_consecutive_loss_rate=0.12,
