@@ -31,10 +31,10 @@ except Exception:
     _TRADE_LIMITS = {"max_trades_per_day": 20}
 
 
-PPO_OBS_VERSION = "7.0"
+PPO_OBS_VERSION = "8.0"
 
 
-PPO_OBS_SIZE = 40
+PPO_OBS_SIZE = 45
 
 DEFAULT_INSTRUMENT = "XAUUSD"
 
@@ -45,6 +45,12 @@ FEATURE_GROUPS: Dict[str, tuple[int, int]] = {
     "account": (25, 30),
     "trading_mode": (30, 35),
     "governor": (35, 40),
+    # v8.0: market session and liquidity. Everything above is derived from
+    # XAUUSD price alone; nothing told the agent whether it was trading the
+    # thin Asian session or the London/NY overlap. Measured FTMO spread runs
+    # 37 points at 09-12 UTC against 47 at 01 UTC, so the cost of the same
+    # trade varies by a quarter depending on the hour.
+    "session": (40, 45),
 }
 
 
@@ -106,8 +112,17 @@ def _build_feature_names() -> List[str]:
         "gov_session_progress",
     ]
 
+    names += [
+        "session_hour_sin",
+        "session_hour_cos",
+        "session_is_prime",
+        "session_spread_norm",
+        "session_overlap",
+    ]
+
     if len(names) != PPO_OBS_SIZE:
         raise ValueError(f"Feature name list mismatch: {len(names)} != {PPO_OBS_SIZE}")
+
     return names
 
 
@@ -393,6 +408,7 @@ class PPOObservationBuilder:
         account_state: Optional[Dict[str, Any]] = None,
         trading_mode_state: Optional[Dict[str, Any]] = None,
         governor_state: Optional[Dict[str, Any]] = None,
+        session_state: Optional[Dict[str, Any]] = None,
         smart_bus: Optional[Any] = None,
         module_name: str = "PPOObservationBuilder",
     ) -> np.ndarray:
@@ -463,6 +479,7 @@ class PPOObservationBuilder:
         account_feats, account_dbg = self._build_account_features(account_state)
         mode_feats, mode_dbg = self._build_trading_mode_features(trading_mode_state)
         gov_feats, gov_dbg = self._build_governor_features(governor_state)
+        session_feats, session_dbg = self._build_session_features(session_state or {})
 
         obs[0:10] = m15_feats
         obs[10:22] = htf_feats
@@ -470,6 +487,7 @@ class PPOObservationBuilder:
         obs[25:30] = account_feats
         obs[30:35] = mode_feats
         obs[35:40] = gov_feats
+        obs[40:45] = session_feats
 
 
         self._validate_observation_strict(obs)
@@ -837,6 +855,43 @@ class PPOObservationBuilder:
 
         dbg.update({"entry_allowed": bool(timing.get("entry_allowed")), "feats": feats})
         return feats, dbg
+
+    def _build_session_features(self, session_state: Dict[str, Any]) -> Tuple[np.ndarray, Dict[str, Any]]:
+        """Market session and liquidity.
+
+        Every other block is derived from XAUUSD price. None of them tell the
+        agent whether it is trading the thin Asian session or the London/NY
+        overlap, yet measured FTMO spread runs 37 points at 09-12 UTC against 47
+        at 01 UTC - the same trade costs a quarter more depending on the hour.
+
+        Hour is encoded cyclically so 23:00 and 00:00 are adjacent rather than
+        maximally distant.
+        """
+        feats = np.zeros(5, dtype=np.float32)
+
+        hour = self._to_float_required(session_state.get("hour_utc"), "session_state.hour_utc")
+        hour = float(np.clip(hour, 0.0, 23.999))
+        angle = 2.0 * np.pi * hour / 24.0
+        feats[0] = float(np.sin(angle))
+        feats[1] = float(np.cos(angle))
+
+        # London 07-16, New York 12-21 UTC.
+        in_london = 7.0 <= hour < 16.0
+        in_ny = 12.0 <= hour < 21.0
+        feats[2] = 1.0 if (in_london or in_ny) else 0.0
+        feats[4] = 1.0 if (in_london and in_ny) else 0.0
+
+        # Current spread against its own typical level: 1.0 is normal, above is
+        # expensive. Clipped to [0, 2] then scaled so the feature sits in [0, 1].
+        spread_ratio = self._to_float_default(session_state.get("spread_ratio"), 1.0)
+        feats[3] = float(np.clip(spread_ratio, 0.0, 2.0) / 2.0)
+
+        return feats, {
+            "hour_utc": hour,
+            "in_london": in_london,
+            "in_ny": in_ny,
+            "spread_ratio": spread_ratio,
+        }
 
     def _build_governor_features(self, governor_state: Dict[str, Any]) -> Tuple[np.ndarray, Dict[str, Any]]:
         feats = np.zeros(5, dtype=np.float32)

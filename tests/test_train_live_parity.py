@@ -88,6 +88,7 @@ def test_live_host_matches_the_training_environment(frames, market_data):
         account_state=train_env._prepare_account_state("XAUUSD"),
         trading_mode_state=train_env._prepare_trading_mode_state("XAUUSD"),
         governor_state=train_env._get_governor_state(),
+        session_state=train_env._prepare_session_state("XAUUSD"),
     )
 
     assert np.array_equal(live_obs, train_obs), (

@@ -336,6 +336,11 @@ class PropFirmConfig:
     # the agent 10% exposure to the market it now has to trade.
     high_vol_oversample_prob: float = 0.40
 
+    # Share of the drawdown budget that may be spent before new entries are
+    # refused by the action mask. 0.75 leaves a quarter of the limit as
+    # reserve to trade out of an existing position. 0.0 disables the veto.
+    dd_entry_veto_fraction: float = 0.75
+
     atr_stop_enabled: bool = True
     atr_stop_multiplier: float = 1.5
 

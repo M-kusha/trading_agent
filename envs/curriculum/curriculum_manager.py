@@ -74,6 +74,11 @@ from envs.curriculum.validation_gates import (
 
 logger = get_envs_logger("curriculum_manager")
 
+# Below this many trades in the evaluation window, a win rate or profit factor
+# is not a measurement. Used to decide whether a low-activity policy has
+# earned the right to have its trade-count floor waived.
+MIN_TRADES_FOR_VALID_RATE = 30
+
 STATE_VERSION = "2.2"
 DEFAULT_TZ = "Europe/Berlin"
 
@@ -1551,11 +1556,25 @@ class CurriculumManager:
         }
         all_passed = all_passed and passed
 
-        passed = stats.mean_trade_count >= thresholds.min_trade_count_avg
+        # A trade floor exists for statistical validity - a win rate over two
+        # trades means nothing - not to force activity. A selective policy that
+        # trades rarely and profitably used to be blocked here regardless of how
+        # well it performed, which is the opposite of what a prop firm wants and
+        # the opposite of what the live data showed: always-flat beat the trained
+        # model on the FTMO period.
+        #
+        # So the floor is waived once the window is profitable and the sample is
+        # large enough to trust. Unprofitable inactivity still fails.
+        enough_trades = stats.mean_trade_count >= thresholds.min_trade_count_avg
+        measurable = int(getattr(stats, "total_trades", 0)) >= MIN_TRADES_FOR_VALID_RATE
+        profitable = float(getattr(stats, "mean_pnl", 0.0)) > 0.0
+
+        passed = enough_trades or (measurable and profitable)
         results["checks"]["trade_activity"] = {
             "required": thresholds.min_trade_count_avg,
             "actual": stats.mean_trade_count,
             "passed": passed,
+            "waived_as_selective": bool(passed and not enough_trades),
         }
         all_passed = all_passed and passed
 

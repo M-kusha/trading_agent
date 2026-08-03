@@ -13,7 +13,7 @@ drift between the two paths. It holds no feature logic of its own.
 
 Flow:
     bus market/account state
-        -> PPOObservationBuilder.build()      (shared, 40 dims, v7.0)
+        -> PPOObservationBuilder.build()      (shared, 45 dims, v8.0)
         -> PPOCore.select_action()            (loaded checkpoint)
         -> decode to intent + size            (same mapping as the env)
         -> LiveActionMaskBuilder              (hard constraints)

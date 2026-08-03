@@ -691,6 +691,17 @@ class PropFirmTradingEnv(
         if self._loss_layer() >= self._loss_layer_stop():
             can_enter = False
 
+        # Drawdown veto, outside the policy.
+        #
+        # Drawdown used to be represented only as a reward term, which the
+        # optimizer can trade against: a large enough expected gain justifies
+        # breaching. A prop-firm limit is not that kind of quantity - crossing it
+        # ends the account, so it belongs in the action mask where the policy
+        # cannot negotiate with it, and where live trading enforces the identical
+        # rule. Exits stay legal; only new risk is refused.
+        if self._entry_blocked_by_drawdown():
+            can_enter = False
+
         if not can_enter:
             mask[self._ACTION_LONG_START : self._ACTION_LONG_START + self._K] = False
             mask[self._ACTION_SHORT_START : self._ACTION_SHORT_START + self._K] = False
@@ -1154,6 +1165,54 @@ class PropFirmTradingEnv(
                 if eligible.size:
                     return int(eligible[self.np_random.integers(0, eligible.size)])
         return int(self.np_random.integers(buffer, max_start))
+
+    def _prepare_session_state(self, instrument: str) -> Dict[str, Any]:
+        """Which market session it is, and how expensive the spread is right now.
+
+        Every other observation block is derived from XAUUSD price alone. Measured
+        FTMO spread runs 37 points at 09-12 UTC against 47 at 01 UTC, so the same
+        trade costs a quarter more depending on the hour, and nothing in the
+        observation carried that.
+
+        spread_ratio compares the current bar's spread to its own recent median,
+        so it reads as "normal / expensive" rather than as an absolute that would
+        change meaning between the historical and broker feeds.
+        """
+        dt = self._get_bar_dt(instrument)
+        hour = float(dt.hour + dt.minute / 60.0) if dt is not None else 12.0
+
+        spread_ratio = 1.0
+        o = self._get_ohlcv(instrument, lookback=200)
+        spreads = o.get("spread") if o else None
+        if spreads is not None and len(spreads) >= 20:
+            arr = np.asarray(spreads, dtype=np.float64)
+            median = float(np.median(arr))
+            if median > 1e-9:
+                spread_ratio = float(arr[-1] / median)
+
+        return {"hour_utc": hour, "spread_ratio": spread_ratio}
+
+    def _entry_blocked_by_drawdown(self) -> bool:
+        """True once drawdown has eaten the configured share of its budget.
+
+        Blocks opening new risk while leaving closes available, so the agent can
+        always work its way out of a position but cannot dig deeper.
+        """
+        reserve = float(getattr(self.config, "dd_entry_veto_fraction", 0.0) or 0.0)
+        if reserve <= 0.0:
+            return False
+
+        current_dd, current_daily_dd = self._calc_dds()
+
+        max_limit = float(getattr(self.config, "max_drawdown_limit", 0.0) or 0.0)
+        if max_limit > 0.0 and current_dd >= max_limit * reserve:
+            return True
+
+        daily_limit = float(getattr(self.config, "daily_drawdown_limit", 0.0) or 0.0)
+        if daily_limit > 0.0 and current_daily_dd >= daily_limit * reserve:
+            return True
+
+        return False
 
     def _atr_price(self, instrument: str, period: int = 14) -> float:
         """ATR in price units, for sizing the stop against volatility."""
@@ -2127,8 +2186,28 @@ class PropFirmTradingEnv(
             if should_apply_penalty:
                 trade_ratio = actual_trades / expected_trades
                 activity_penalty = 0.0
+                # Standing aside is charged only when it also lost money.
+                #
+                # The flat min_trades_penalty made abstention unconditionally
+                # costly, so the agent could not learn to sit out a regime that
+                # offers nothing - and on live FTMO bars, sitting out was the best
+                # available strategy: always-flat returned 0.00% against the
+                # trained model's -8.25%. Doing nothing profitably is a skill, not
+                # a failure.
+                #
+                # Trading too little AND losing is still punished, because that is
+                # incompetence rather than restraint. The profit gates already
+                # penalise a policy that never trades and therefore never earns,
+                # so no separate inactivity tax is needed.
                 if trade_ratio < 0.2:
-                    activity_penalty = getattr(reward_cfg, "min_trades_penalty", 0.0)
+                    # The account, not the reward signal: _episode_return
+                    # accumulates shaped reward, which is not the same thing as
+                    # having kept the money.
+                    protected_capital = float(self.equity) >= float(self.config.initial_balance)
+                    activity_penalty = (
+                        0.0 if protected_capital
+                        else getattr(reward_cfg, "min_trades_penalty", 0.0)
+                    )
                 elif abs(trade_ratio - 1.0) > 0.5:
                     deviation = abs(trade_ratio - 1.0) - 0.5
                     scale = getattr(reward_cfg, "activity_deviation_penalty_scale", 0.0)
@@ -2269,6 +2348,7 @@ class PropFirmTradingEnv(
         account_state = self._prepare_account_state(inst)
         trading_mode_state = self._prepare_trading_mode_state(inst)
         governor_state = self._get_governor_state()
+        session_state = self._prepare_session_state(inst)
 
         assert self.obs_builder is not None
         obs = self.obs_builder.build(
@@ -2278,6 +2358,7 @@ class PropFirmTradingEnv(
             account_state=account_state,
             trading_mode_state=trading_mode_state,
             governor_state=governor_state,
+            session_state=session_state,
         )
         return obs
 
