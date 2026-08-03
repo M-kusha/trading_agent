@@ -55,13 +55,25 @@ FTMO_PROFIT_TARGET = 0.10
 FTMO_DAILY_DD = 0.05
 FTMO_MAX_DD = 0.10
 
+# Preregistered. Below this many independent, non-overlapping windows no
+# interval is published and no verdict is issued - the June-August development
+# window yields one, which is why that section must print no conclusion at all.
+MIN_INDEPENDENT_BLOCKS = 10
+MIN_TRADES_FOR_VERDICT = 30
+BOOTSTRAP_RESAMPLES = 10_000
+BOOTSTRAP_ALPHA = 0.05
+
 
 @dataclass
 class Result:
     name: str
     episodes: int = 0
     trades: int = 0
-    total_pnl: float = 0.0
+    # Scope is part of the name. `total_pnl` held a MEAN across reset episodes
+    # while reading as a total, which is how a +2.57% mean became a published
+    # +25.70%. Every figure below states which population it summarises.
+    mean_episode_pnl_eur: float = 0.0
+    pooled_sample_pnl_eur: float = 0.0
     return_pct: float = 0.0
     win_rate: float = 0.0
     profit_factor: float = 0.0
@@ -79,6 +91,9 @@ class Result:
     overlapping_windows: bool = False
     episode_start_indices: List[int] = field(default_factory=list)
     episode_records: List[Dict[str, Any]] = field(default_factory=list)
+    reconciliation_checked: int = 0
+    ci_status: str = "not_computed"
+    passive_return_pct: Optional[float] = None
     r_multiples: List[float] = field(default_factory=list)
     # An aggregate number hides the thing that matters most: a strategy can
     # look profitable overall while losing badly in exactly the regime it now
@@ -321,8 +336,14 @@ def run_policy(
             stats = env.get_episode_stats() or {}
         if not stats and isinstance(info, dict):
             stats = info.get("episode_stats", {}) or {}
+        episode_trade_pnl = 0.0
+        episode_long_pnl = 0.0
+        episode_short_pnl = 0.0
+        episode_trade_count = 0
         for tr in stats.get("trades_with_regime", []) or []:
             res.trades += 1
+            episode_trade_count += 1
+            episode_trade_pnl += float(tr.get("pnl", 0.0))
             trade_pnls.append(float(tr.get("pnl", 0.0)))
             res.r_multiples.append(float(tr.get("r_multiple", 0.0)))
             bars_held.append(float(tr.get("bars_held", 0)))
@@ -331,8 +352,31 @@ def run_policy(
             )
 
         ds = stats.get("direction_stats", {}) or {}
-        res.long_pnl += float(ds.get("long_pnl", 0.0))
-        res.short_pnl += float(ds.get("short_pnl", 0.0))
+        episode_long_pnl = float(ds.get("long_pnl", 0.0))
+        episode_short_pnl = float(ds.get("short_pnl", 0.0))
+        res.long_pnl += episode_long_pnl
+        res.short_pnl += episode_short_pnl
+
+        # Reconciliation. A scope error is silent by nature - a mean printed as
+        # a total looks like a plausible number - so the accounting is checked
+        # against itself rather than trusted. An open position at the horizon
+        # leaves unrealised P&L outside the trade list, which is the one
+        # legitimate gap; anything else is a defect.
+        reconciliation = _reconcile_episode(
+            equity_change=episode_pnl,
+            trade_pnl=episode_trade_pnl,
+            long_pnl=episode_long_pnl,
+            short_pnl=episode_short_pnl,
+            recorded_trades=episode_trade_count,
+            reported_trades=int(stats.get("trade_count", episode_trade_count)),
+            position_open=env.position is not None,
+        )
+        if reconciliation["failures"]:
+            raise AssertionError(
+                f"{policy.name} episode {ep} accounting does not reconcile: "
+                + "; ".join(reconciliation["failures"])
+            )
+        res.reconciliation_checked += 1
         daily_dds.append(worst_daily)
         res.episode_records.append({
             "episode": ep,
@@ -347,12 +391,24 @@ def run_policy(
             "worst_daily_dd_pct": worst_daily * 100.0,
         })
 
-    res.total_pnl = float(np.mean(episode_pnls)) if episode_pnls else 0.0
+    res.mean_episode_pnl_eur = float(np.mean(episode_pnls)) if episode_pnls else 0.0
+    res.pooled_sample_pnl_eur = float(np.sum(episode_pnls)) if episode_pnls else 0.0
     res.return_pct = float(np.mean(episode_returns)) if episode_returns else 0.0
-    if len(episode_returns) >= 2:
-        ep_returns = np.asarray(episode_returns, dtype=float)
-        res.return_ci_low_pct = float(
-            ep_returns.mean() - 1.96 * ep_returns.std(ddof=1) / np.sqrt(ep_returns.size)
+    # A 1.96-sigma bound computed from two blocks is arithmetic, not inference.
+    # It requires a preregistered minimum number of independent windows, and
+    # even then a normal approximation is wrong for a small sample of serially
+    # dependent block returns - so the bound comes from a bootstrap over whole
+    # blocks, which makes no distributional assumption.
+    if len(episode_returns) >= MIN_INDEPENDENT_BLOCKS:
+        res.return_ci_low_pct = _block_bootstrap_lower_bound(
+            np.asarray(episode_returns, dtype=float), seed=seed
+        )
+        res.ci_status = "computed"
+    else:
+        res.return_ci_low_pct = None
+        res.ci_status = (
+            f"withheld: {len(episode_returns)} independent windows, "
+            f"{MIN_INDEPENDENT_BLOCKS} required"
         )
 
     arr = np.asarray(trade_pnls, dtype=float)
@@ -381,6 +437,203 @@ def run_policy(
 
     env.close()
     return res
+
+
+def evaluate_section_verdict(
+    rows: List[Dict[str, Any]],
+    meta: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Decide whether a section supports any conclusion at all.
+
+    INSUFFICIENT_EVIDENCE unless the sample can support inference;
+    NOT_SUPPORTED unless the model clears every control. Only a result that
+    survives all of it earns SUPPORTED - and even then it is development
+    evidence, never live approval.
+    """
+    by = {r.get("name"): r for r in rows}
+    model = by.get("trained-model")
+    flat = by.get("always-flat")
+
+    reasons: List[str] = []
+    blocking: List[str] = []
+
+    if model is None:
+        return {
+            "verdict": "NO_MODEL_EVALUATED",
+            "reasons": ["no trained-model row in this section"],
+            "blocking": ["model_absent"],
+        }
+
+    windows = int(meta.get("independent_windows", 0) or 0)
+    if windows < MIN_INDEPENDENT_BLOCKS:
+        blocking.append("independent_windows")
+        reasons.append(
+            f"{windows} independent windows, {MIN_INDEPENDENT_BLOCKS} required - "
+            f"no interval and no verdict can come from this sample"
+        )
+
+    trades = int(model.get("trades", 0) or 0)
+    if trades < MIN_TRADES_FOR_VERDICT:
+        blocking.append("trades")
+        reasons.append(f"{trades} trades, {MIN_TRADES_FOR_VERDICT} required")
+
+    if meta.get("overlapping_windows"):
+        blocking.append("overlapping_windows")
+        reasons.append("windows overlap, so blocks are not independent")
+
+    if int(model.get("reconciliation_checked", 0) or 0) < int(model.get("episodes", 0) or 0):
+        blocking.append("reconciliation")
+        reasons.append("not every episode passed accounting reconciliation")
+
+    if blocking:
+        return {"verdict": "INSUFFICIENT_EVIDENCE", "reasons": reasons, "blocking": blocking}
+
+    ci_low = model.get("return_ci_low_pct")
+    if ci_low is None:
+        blocking.append("confidence_interval")
+        reasons.append("no confidence bound available")
+    elif float(ci_low) <= 0.0:
+        blocking.append("positive_lower_bound")
+        reasons.append(
+            f"95% lower bound {float(ci_low):+.3f}% is not above zero - consistent "
+            f"with having no edge"
+        )
+    else:
+        reasons.append(f"95% lower bound {float(ci_low):+.3f}% is above zero")
+
+    model_ret = float(model.get("return_pct", 0.0))
+    if flat is None:
+        blocking.append("flat_control_missing")
+        reasons.append("always-flat control absent")
+    elif model_ret <= float(flat.get("return_pct", 0.0)):
+        blocking.append("beats_flat")
+        reasons.append(
+            f"model {model_ret:+.3f}% does not beat standing aside "
+            f"({float(flat.get('return_pct', 0.0)):+.3f}%)"
+        )
+    else:
+        reasons.append("beats standing aside")
+
+    passive = model.get("passive_return_pct")
+    if passive is None:
+        reasons.append("no passive market benchmark available (not blocking)")
+    elif model_ret <= float(passive):
+        blocking.append("beats_market")
+        reasons.append(
+            f"model {model_ret:+.3f}% does not beat the passive market return "
+            f"({float(passive):+.3f}%)"
+        )
+    else:
+        reasons.append("beats the passive market return")
+
+    if float(model.get("max_drawdown_pct", 0.0)) > FTMO_MAX_DD * 100.0:
+        blocking.append("drawdown")
+        reasons.append(
+            f"worst window drawdown {float(model.get('max_drawdown_pct', 0.0)):.2f}% "
+            f"breaches the {FTMO_MAX_DD * 100:.0f}% limit"
+        )
+
+    if blocking:
+        return {"verdict": "NOT_SUPPORTED", "reasons": reasons, "blocking": blocking}
+
+    reasons.append("development evidence only - not live approval")
+    return {"verdict": "SUPPORTED_DEVELOPMENT_ONLY", "reasons": reasons, "blocking": []}
+
+
+def _block_bootstrap_lower_bound(
+    block_returns: np.ndarray,
+    *,
+    seed: int,
+    alpha: float = BOOTSTRAP_ALPHA,
+    resamples: int = BOOTSTRAP_RESAMPLES,
+) -> float:
+    """Lower confidence bound by resampling whole blocks with replacement.
+
+    Blocks are the unit of independence here: bars inside a window are serially
+    dependent, so resampling bars would badly understate the interval.
+    Resampling whole windows makes no normality assumption, which matters at the
+    sample sizes this evaluation can actually produce.
+    """
+    rng = np.random.default_rng(seed)
+    n = block_returns.size
+    idx = rng.integers(0, n, size=(resamples, n))
+    means = block_returns[idx].mean(axis=1)
+    return float(np.percentile(means, 100.0 * alpha))
+
+
+def compute_passive_return_pct(
+    data: Dict[str, Dict[str, Any]],
+    instrument: str,
+    episode_starts: Sequence[int],
+    horizon: int,
+) -> Optional[float]:
+    """Mean buy-and-hold price return over the same windows, outside the env.
+
+    The `one-shot-long` policy trades through the environment, so its result is
+    shaped by stops, time decay, spread and the drawdown veto - it answers "what
+    happens if the agent only ever buys", not "what did the market do". This is
+    the market's own return over identical windows, which is the benchmark a
+    strategy actually has to beat.
+    """
+    frames = data.get(instrument) or {}
+    df = frames.get("M15")
+    if df is None or getattr(df, "empty", True) or not len(episode_starts):
+        return None
+
+    close = df["close"].to_numpy(dtype=float)
+    rets: List[float] = []
+    for start in episode_starts:
+        end = min(int(start) + int(horizon), close.size - 1)
+        if end <= start or close[start] <= 0:
+            continue
+        rets.append((close[end] / close[start] - 1.0) * 100.0)
+    return float(np.mean(rets)) if rets else None
+
+
+def _reconcile_episode(
+    *,
+    equity_change: float,
+    trade_pnl: float,
+    long_pnl: float,
+    short_pnl: float,
+    recorded_trades: int,
+    reported_trades: int,
+    position_open: bool,
+    tolerance_eur: float = 0.01,
+) -> Dict[str, Any]:
+    """Check an episode's books against themselves.
+
+    Three identities must hold: closed-trade P&L explains the change in equity,
+    the long and short decomposition sums to the same figure, and the trade
+    count the env reports matches the trades actually recorded. A position still
+    open at the horizon holds unrealised P&L that is outside the trade list -
+    that is the only tolerated discrepancy, and it is reported rather than
+    hidden.
+    """
+    failures: List[str] = []
+
+    direction_sum = long_pnl + short_pnl
+    if abs(direction_sum - trade_pnl) > tolerance_eur:
+        failures.append(
+            f"long+short {direction_sum:.4f} != trade P&L {trade_pnl:.4f}"
+        )
+
+    if recorded_trades != reported_trades:
+        failures.append(
+            f"recorded {recorded_trades} trades, env reported {reported_trades}"
+        )
+
+    residual = equity_change - trade_pnl
+    if not position_open and abs(residual) > tolerance_eur:
+        failures.append(
+            f"equity moved {equity_change:.4f} but closed trades explain "
+            f"{trade_pnl:.4f} (residual {residual:.4f}) with no open position"
+        )
+
+    return {
+        "failures": failures,
+        "unrealised_residual_eur": float(residual) if position_open else 0.0,
+    }
 
 
 def build_non_overlapping_episode_starts(
@@ -615,6 +868,7 @@ def main() -> int:
         ),
         "sections": {},
         "section_metadata": {},
+        "section_verdicts": {},
     }
     sections = []
 
@@ -663,6 +917,18 @@ def main() -> int:
             )
             for p in build_policies(model)
         ]
+
+        # The market's own return over the identical windows, computed outside
+        # the environment. one-shot-long trades through stops, time decay,
+        # spread and the drawdown veto, so it answers "what if the agent only
+        # ever bought", not "what did the market do". Only the latter is the
+        # benchmark a strategy has to clear.
+        passive = compute_passive_return_pct(
+            dset, args.instrument, episode_starts, args.max_steps
+        )
+        for r in results:
+            r.passive_return_pct = passive
+
         sections.append(format_table(results, label) + format_by_regime(results))
         report["sections"][label] = [
             vars(r)
@@ -697,14 +963,27 @@ def main() -> int:
     )
     logger.info("Report written to %s", args.out)
 
-    # The decisive comparison, stated rather than left for the reader to infer.
+    # Fail closed. The previous version compared the model to one-shot-long and
+    # printed BEATS or LOSES TO, which could return a confident verdict from a
+    # single window, from three trades, or against a benchmark that is not the
+    # market. Every condition below must hold; missing evidence is a refusal to
+    # conclude, never a pass.
+    print()
     for label, rows in report["sections"].items():
-        by = {r["name"]: r for r in rows}
-        m, bh = by.get("trained-model"), by.get("one-shot-long")
-        if m and bh:
-            verdict = "BEATS" if m["return_pct"] > bh["return_pct"] else "LOSES TO"
-            print(f"\n{label}: model {verdict} buy-and-hold "
-                  f"({m['return_pct']:.2f}% vs {bh['return_pct']:.2f}%)")
+        meta = report["section_metadata"].get(label, {})
+        verdict = evaluate_section_verdict(rows, meta)
+        report.setdefault("section_verdicts", {})[label] = verdict
+
+        print(f"{label}")
+        print(f"   VERDICT: {verdict['verdict']}")
+        for line in verdict["reasons"]:
+            print(f"     - {line}")
+        print()
+
+    Path(args.out).write_text(
+        json.dumps(_json_safe(report), indent=2, default=str, allow_nan=False),
+        encoding="utf-8",
+    )
     return 0
 
 
