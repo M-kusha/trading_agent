@@ -21,6 +21,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+# Imported after PROJECT_ROOT is on the path: the server is launched directly
+# as a script, so the package is not importable before that line runs.
+from train.run_identity import describe_liveness  # noqa: E402
+
 WEB_AVAILABLE = False
 if TYPE_CHECKING:
     import uvicorn
@@ -211,7 +215,14 @@ class MetricsReader:
             "r_multiples": [],
             "trades_per_episode": [],
         }
+        self._current_run_id: Optional[str] = None
+        self._last_sequence: Optional[int] = None
         self._lock = threading.Lock()
+
+    def _reset_history(self) -> None:
+        """A new run starts a new history rather than extending the old one."""
+        for key in self._history:
+            self._history[key] = []
 
     @staticmethod
     def _is_nan(x: float) -> bool:
@@ -302,6 +313,33 @@ class MetricsReader:
 
                 if raw is None:
                     return self._last_data if self._last_data else self._empty("Reading metrics...")
+
+                # Idempotence. The file's mtime changes on every write, but the
+                # snapshot inside may be the same one re-read; appending it again
+                # inflates history and re-fires alerts for events that happened
+                # once. (run_id, sequence) is the only reliable identity.
+                stamp = raw.get("run") or {}
+                run_id = stamp.get("run_id")
+                sequence = stamp.get("sequence")
+
+                if run_id is not None and run_id != self._current_run_id:
+                    # A different run: its history is not a continuation of this
+                    # one, so it must not be appended to.
+                    self._reset_history()
+                    self._current_run_id = run_id
+                    self._last_sequence = None
+
+                if (
+                    run_id is not None
+                    and sequence is not None
+                    and self._last_sequence is not None
+                    and sequence <= self._last_sequence
+                    and self._last_data
+                ):
+                    return self._last_data
+
+                if sequence is not None:
+                    self._last_sequence = sequence
 
                 self._last_modified = mtime
                 processed = self._process(raw)
@@ -417,41 +455,62 @@ class MetricsReader:
 
 
         l = self._safe_dict(raw.get("learning", {}))
-        mean_reward = self._safe_float(l.get("mean_reward", raw.get("mean_reward", 0)))
-        total_pnl = self._safe_float(l.get("total_pnl", raw.get("total_pnl", 0)))
+        # Absent telemetry is unknown, not zero. Defaulting policy loss, entropy,
+        # KL, clip fraction or explained variance to 0 renders "perfectly stable"
+        # for a producer that reported nothing at all, and inventing a 3e-4
+        # learning rate or a 0.2 clip range shows a number the run never used.
+        def _opt(*keys: str) -> Optional[float]:
+            for src in (l, raw):
+                for key in keys:
+                    if key in src and src[key] is not None:
+                        return self._safe_float(src[key])
+            return None
 
-        approx_kl = self._safe_float(l.get("kl_divergence", l.get("approx_kl", raw.get("approx_kl", 0))))
-        clip_fraction = self._safe_float(l.get("clip_fraction", raw.get("clip_fraction", 0)))
-        entropy = self._safe_float(l.get("entropy", raw.get("entropy", 0)))
-        explained_variance = self._safe_float(l.get("explained_variance", raw.get("explained_variance", 0)))
-        value_loss = self._safe_float(l.get("value_loss", raw.get("value_loss", 0)))
-        policy_loss = self._safe_float(l.get("policy_loss", raw.get("policy_loss", 0)))
-        learning_rate = self._safe_float(l.get("learning_rate", raw.get("learning_rate", 3e-4)))
+        mean_reward = self._safe_float(l.get("mean_reward", raw.get("mean_reward", 0)))
+        sum_episode_pnl_eur = self._safe_float(l.get("total_pnl", raw.get("total_pnl", 0)))
+
+        approx_kl = _opt("kl_divergence", "approx_kl")
+        clip_fraction = _opt("clip_fraction")
+        entropy = _opt("entropy")
+        explained_variance = _opt("explained_variance")
+        value_loss = _opt("value_loss")
+        policy_loss = _opt("policy_loss")
+        learning_rate = _opt("learning_rate")
+        clip_range = _opt("clip_range")
         fps = self._safe_float(l.get("fps", raw.get("fps", 0)))
         n_updates = self._safe_int(l.get("n_updates", raw.get("n_updates", 0)))
-        clip_range = self._safe_float(l.get("clip_range", raw.get("clip_range", 0.2)))
 
-        self._append_history("entropy", entropy)
-        self._append_history("explained_variance", explained_variance)
-        self._append_history("kl_divergence", approx_kl)
+        def _status(value: Optional[float], fn) -> str:
+            return "unknown" if value is None else fn(value)
+
+        # Only record what was actually reported; a gap must stay a gap.
+        if entropy is not None:
+            self._append_history("entropy", entropy)
+        if explained_variance is not None:
+            self._append_history("explained_variance", explained_variance)
+        if approx_kl is not None:
+            self._append_history("kl_divergence", approx_kl)
 
         learning = {
             "mean_reward": mean_reward,
             "mean_reward_status": get_status_color(mean_reward, 0.5, 0, True),
-            "total_pnl": total_pnl,
-            "total_pnl_status": get_status_color(total_pnl, 500, 0, True),
+            # A sum across independently reset episodes, which is not an account
+            # balance. The old name invited it to be read as one, and 8.36m EUR
+            # was rendered as "Total P&L".
+            "sum_episode_pnl_eur": sum_episode_pnl_eur,
+            "sum_episode_pnl_status": "neutral",
             "approx_kl": approx_kl,
-            "approx_kl_status": get_status_color(approx_kl, THRESHOLDS.kl_good, THRESHOLDS.kl_ok, False),
+            "approx_kl_status": _status(approx_kl, lambda v: get_status_color(v, THRESHOLDS.kl_good, THRESHOLDS.kl_ok, False)),
             "clip_fraction": clip_fraction,
-            "clip_fraction_status": get_range_status(clip_fraction, THRESHOLDS.clip_good_min, THRESHOLDS.clip_good_max),
+            "clip_fraction_status": _status(clip_fraction, lambda v: get_range_status(v, THRESHOLDS.clip_good_min, THRESHOLDS.clip_good_max)),
             "entropy": entropy,
-            "entropy_status": get_range_status(entropy, THRESHOLDS.entropy_good_min, THRESHOLDS.entropy_good_max),
+            "entropy_status": _status(entropy, lambda v: get_range_status(v, THRESHOLDS.entropy_good_min, THRESHOLDS.entropy_good_max)),
             "explained_variance": explained_variance,
-            "explained_variance_status": get_status_color(explained_variance, THRESHOLDS.ev_good, THRESHOLDS.ev_ok, True),
+            "explained_variance_status": _status(explained_variance, lambda v: get_status_color(v, THRESHOLDS.ev_good, THRESHOLDS.ev_ok, True)),
             "value_loss": value_loss,
-            "value_loss_status": get_status_color(value_loss, 0.1, 0.5, False),
+            "value_loss_status": _status(value_loss, lambda v: get_status_color(v, 0.1, 0.5, False)),
             "policy_loss": policy_loss,
-            "policy_loss_status": "good" if policy_loss < 0 else ("ok" if policy_loss < 0.05 else "bad"),
+            "policy_loss_status": _status(policy_loss, lambda v: "good" if v < 0 else ("ok" if v < 0.05 else "bad")),
             "learning_rate": learning_rate,
             "fps": fps,
             "fps_status": get_status_color(fps, 100, 50, True),
@@ -546,9 +605,17 @@ class MetricsReader:
 
         governor = self._safe_dict(raw.get("governor", {}))
 
+        # Identity and liveness travel with the payload. "active" previously meant
+        # "a file was readable", so a run that had finished hours earlier still
+        # reported itself as active with progress past 100% and a negative ETA.
+        run_stamp = self._safe_dict(raw.get("run", {}))
+        liveness = describe_liveness(run_stamp)
+
         return {
-            "status": "active",
-            "message": "",
+            "status": "active" if liveness["training_live"] else "inactive",
+            "message": "" if liveness["training_live"] else liveness["reason"],
+            "run": run_stamp,
+            "liveness": liveness,
             "timestamp": time.time(),
             "datetime": datetime.now().isoformat(),
             "raw_timestamp": raw.get("timestamp", ""),
@@ -686,9 +753,35 @@ class MetricsReader:
             }
 
         status = str(obs.get("status", "unknown"))
+
+        # A payload written under a different observation schema describes a
+        # different agent. It was being rendered "ok" - a 7.0/40 snapshot passed
+        # as healthy while the runtime contract was 8.0/45 - which makes a stale
+        # file look like a current, healthy run.
+        from modules.meta.ppo_observation_builder import PPO_OBS_SIZE, PPO_OBS_VERSION
+
+        payload_version = str(obs.get("schema_version", "?"))
+        payload_size = self._safe_int(obs.get("schema_size"), 0)
+        schema_matches = (
+            payload_version == str(PPO_OBS_VERSION) and payload_size == int(PPO_OBS_SIZE)
+        )
+        if not schema_matches:
+            status = "historical_incompatible"
+
         out: Dict[str, Any] = {
             "status": status,
-            "alert": obs.get("alert", ""),
+            "schema_matches_runtime": schema_matches,
+            "runtime_schema_version": str(PPO_OBS_VERSION),
+            "runtime_schema_size": int(PPO_OBS_SIZE),
+            "alert": (
+                obs.get("alert", "")
+                if schema_matches
+                else (
+                    f"telemetry uses observation schema {payload_version}/{payload_size}, "
+                    f"runtime is {PPO_OBS_VERSION}/{PPO_OBS_SIZE} - this payload "
+                    f"describes a different agent and cannot be read as current health"
+                )
+            ),
             "schema_version": obs.get("schema_version", "?"),
             "schema_size": self._safe_int(obs.get("schema_size"), 0),
             "schema_hash": obs.get("schema_hash", ""),
@@ -751,7 +844,32 @@ class MetricsReader:
             cs = cp["composite_score"]
             base_ready = self._safe_bool(cs.get("promotion_ready", False))
             hard_floors = self._safe_bool(cs.get("meets_hard_floors", False))
-            strict_ready = bool(base_ready and out["prerequisites"]["all_passed"])
+
+            # Readiness is not ours to compute. It was derived from the composite's
+            # own flag plus prerequisites, which is why the panel showed ~94% ready
+            # while four authoritative promotion checks were failing. The curriculum
+            # manager is the only thing that decides promotion; anything absent is
+            # "not ready", never "ready by omission".
+            authoritative_ready = self._safe_bool(cp.get("promotion_ready", False))
+            blockers = self._safe_list(cp.get("promotion_blockers", []))
+            blocker_names = [
+                str(b.get("metric")) if isinstance(b, dict) else str(b)
+                for b in blockers
+            ]
+            strict_ready = bool(
+                authoritative_ready
+                and not blocker_names
+                and hard_floors
+                and out["prerequisites"]["all_passed"]
+            )
+            out["promotion"] = {
+                "authoritative_ready": authoritative_ready,
+                "blockers": blocker_names,
+                "blocker_count": len(blocker_names),
+                "meets_hard_floors": hard_floors,
+                "prerequisites_passed": out["prerequisites"]["all_passed"],
+                "ready": strict_ready,
+            }
             out["composite_score"] = {
                 "total_score": self._safe_float(cs.get("total_score", 0)),
                 "meets_hard_floors": hard_floors,
@@ -1119,10 +1237,24 @@ if WEB_AVAILABLE:
     @app.get("/api/health")
     async def health_check():
         metrics = get_metrics_reader().read_metrics()
+        liveness = describe_liveness(metrics.get("run") or {})
+
+        # The server being up and training being alive are different facts. This
+        # endpoint previously answered the first while appearing to answer the
+        # second: it read `status` out of a file on disk, so a finished run kept
+        # reporting training_active=true with no process in existence.
         return {
-            "status": "healthy",
-            "version": "2.2.0",
-            "training_active": metrics.get("status") == "active",
+            "server_status": "healthy",
+            "version": "2.3.0",
+            "training": {
+                "live": liveness["training_live"],
+                "state": liveness["state"],
+                "run_id": liveness["run_id"],
+                "sequence": liveness["sequence"],
+                "telemetry_age_seconds": liveness["age_seconds"],
+                "stale": liveness["stale"],
+                "reason": liveness["reason"],
+            },
             "metrics_file": str(_config.metrics_file),
             "connected_clients": len(_connected_clients),
         }

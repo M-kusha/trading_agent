@@ -13,6 +13,7 @@ import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback
 
 from train.obs_health import ObservationHealthTracker, trading_frequency
+from train.run_identity import RunIdentity
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,7 @@ class VecEpisodeTradingCallback(BaseCallback):
         self.total_timesteps = total_timesteps
         self.log_interval_steps = log_interval_steps
         self.metrics_file = Path(metrics_file)
+        self.run_identity = RunIdentity()
         self._last_log = 0
         self._n_envs = 1
 
@@ -514,6 +516,8 @@ class VecEpisodeTradingCallback(BaseCallback):
                 "mean_entry_quality": mean_entry_quality,
             }
 
+
+            metrics["run"] = self.run_identity.stamp()
 
             tmp_file = metrics_file.with_suffix('.json.tmp')
             with open(tmp_file, 'w', encoding='utf-8') as f:

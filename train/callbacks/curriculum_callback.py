@@ -15,6 +15,7 @@ from stable_baselines3.common.callbacks import BaseCallback
 
 from envs.curriculum.config import CurriculumStage
 from train.obs_health import ObservationHealthTracker, trading_frequency
+from train.run_identity import RunIdentity
 
 try:
     from sb3_contrib.common.maskable.utils import get_action_masks as sb3_get_action_masks
@@ -60,6 +61,9 @@ class CurriculumTrainingCallback(BaseCallback):
         self.log_interval_steps = log_interval_steps
         self.save_path = Path(save_path)
         self.metrics_file = Path(metrics_file)
+        # Stamps every write so a consumer can tell which run produced it,
+        # whether the snapshot is new, and whether the producer still lives.
+        self.run_identity = RunIdentity()
 
         # This callback writes live_metrics.json LAST in curriculum mode, so it
         # must publish observation health itself - otherwise it silently
@@ -331,7 +335,23 @@ class CurriculumTrainingCallback(BaseCallback):
             except Exception as e:
                 logger.warning(f"  ⚠️ Checkpoint failed: {e}")
 
+    def _on_training_end(self) -> None:
+        """Mark the run finished and write one final stamped snapshot.
+
+        Without this the last file on disk still says "running", and a consumer
+        can only guess from its age whether the producer died or simply stopped.
+        A run that ends cleanly should say so.
+        """
+        try:
+            self.run_identity.set_state("completed")
+            self._save_live_metrics()
+        except Exception as e:  # noqa: BLE001 - never fail a finished run on telemetry
+            logger.warning("could not write the final metrics snapshot: %s", e)
+
     def _on_training_start(self) -> None:
+        # "running" is what makes a stale file distinguishable from a live
+        # one; without it a finished run keeps reporting itself as active.
+        self.run_identity.set_state("running")
         env = self.training_env
         self._n_envs = int(getattr(env, "num_envs", 1))
         self._cur_rewards = [0.0] * self._n_envs
@@ -2266,6 +2286,8 @@ class CurriculumTrainingCallback(BaseCallback):
                 },
             }
 
+
+            metrics["run"] = self.run_identity.stamp()
 
             tmp_file = metrics_file.with_suffix('.json.tmp')
             with open(tmp_file, 'w', encoding='utf-8') as f:
