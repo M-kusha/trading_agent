@@ -121,6 +121,17 @@ def test_development_report_never_labels_thresholds_as_a_pass():
         worst_daily_dd_pct=1.0,
     )
 
-    assert result.challenge_thresholds_met is True
-    assert result.challenge_threshold_diagnostic == "THRESHOLDS_MET_DIAGNOSTIC_ONLY"
-    assert "PASS" not in result.challenge_threshold_diagnostic
+    # Originally this asserted the reset-window statistics produced a
+    # diagnostic-only label rather than a PASS.  The separation is now stronger:
+    # reset windows cannot express a challenge verdict at all, because these
+    # figures are means and worst-cases across independently reset accounts and
+    # no single account ever lived through them.  Survival is answered by the
+    # continuous single-account replay.
+    import pytest
+
+    with pytest.raises(NotImplementedError, match="continuous_replay"):
+        _ = result.challenge_thresholds_met
+
+    summary = result.window_statistics_summary
+    assert "PASS" not in summary
+    assert "/window" in summary, "the scope of these figures must be on the label"

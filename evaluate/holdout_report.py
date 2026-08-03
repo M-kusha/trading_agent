@@ -196,6 +196,133 @@ def swap_cost_eur(
 
 
 @dataclass
+class AccountBreach:
+    kind: str
+    at: Optional[str]
+    drawdown_pct: float
+    limit_pct: float
+    equity: float
+
+
+class AccountLedger:
+    """A single continuous prop-firm account, with explicit reset rules.
+
+    Drawdown was previously inferred from a concatenated equity curve across
+    independently reset episodes, so the jump from one episode's closing balance
+    back to the next episode's opening balance registered as a loss that never
+    happened. A prop-firm limit is a property of one account over calendar time;
+    it cannot be recovered from a pile of resets.
+
+    Rules are stated rather than assumed:
+      * the daily anchor rolls at `rollover_hour_utc`, the broker's day boundary,
+        not at midnight local time;
+      * the maximum-loss anchor is the initial balance for a static rule, or the
+        running peak for a trailing one, matching `trailing_drawdown`;
+      * a breach is `>=` the limit, matching the environment exactly, so the
+        ledger and the env cannot disagree about whether an account died.
+    """
+
+    def __init__(
+        self,
+        initial_balance: float,
+        *,
+        max_dd_limit: float = FTMO_MAX_DD,
+        daily_dd_limit: float = FTMO_DAILY_DD,
+        trailing: bool = False,
+        rollover_hour_utc: int = 22,
+    ) -> None:
+        self.initial_balance = float(initial_balance)
+        self.max_dd_limit = float(max_dd_limit)
+        self.daily_dd_limit = float(daily_dd_limit)
+        self.trailing = bool(trailing)
+        self.rollover_hour_utc = int(rollover_hour_utc)
+
+        self.equity = float(initial_balance)
+        self.peak = float(initial_balance)
+        self.day_start = float(initial_balance)
+        self._day_key: Optional[Any] = None
+
+        self.worst_total_dd = 0.0
+        self.worst_daily_dd = 0.0
+        self.breaches: List[AccountBreach] = []
+        self.dead = False
+        self.bars = 0
+
+    def _trading_day(self, ts: Any) -> Any:
+        """Day key rolling at the broker hour, so a session is one day."""
+        import pandas as pd
+
+        t = pd.Timestamp(ts)
+        if t.tzinfo is None:
+            t = t.tz_localize("UTC")
+        return (t - pd.Timedelta(hours=self.rollover_hour_utc)).date()
+
+    def mark(self, timestamp: Any, equity: float) -> Optional[AccountBreach]:
+        """Record one bar. Returns a breach the first time the account dies."""
+        self.bars += 1
+        self.equity = float(equity)
+
+        if timestamp is not None:
+            day = self._trading_day(timestamp)
+            if self._day_key is None:
+                self._day_key = day
+            elif day != self._day_key:
+                self._day_key = day
+                self.day_start = self.equity
+
+        self.peak = max(self.peak, self.equity)
+
+        anchor = self.peak if self.trailing else self.initial_balance
+        total_dd = max(0.0, (anchor - self.equity) / max(anchor, 1.0))
+        daily_dd = max(0.0, (self.day_start - self.equity) / max(self.day_start, 1.0))
+
+        self.worst_total_dd = max(self.worst_total_dd, total_dd)
+        self.worst_daily_dd = max(self.worst_daily_dd, daily_dd)
+
+        if self.dead:
+            return None
+
+        # `>=`, matching the environment's own breach test.
+        if total_dd >= self.max_dd_limit:
+            breach = AccountBreach("max_drawdown", _iso(timestamp), total_dd * 100.0,
+                                   self.max_dd_limit * 100.0, self.equity)
+        elif daily_dd >= self.daily_dd_limit:
+            breach = AccountBreach("daily_drawdown", _iso(timestamp), daily_dd * 100.0,
+                                   self.daily_dd_limit * 100.0, self.equity)
+        else:
+            return None
+
+        self.dead = True
+        self.breaches.append(breach)
+        return breach
+
+    def summary(self) -> Dict[str, Any]:
+        return {
+            "initial_balance": self.initial_balance,
+            "final_equity": self.equity,
+            "return_pct": (self.equity - self.initial_balance) / max(self.initial_balance, 1.0) * 100.0,
+            "worst_total_drawdown_pct": self.worst_total_dd * 100.0,
+            "worst_daily_drawdown_pct": self.worst_daily_dd * 100.0,
+            "max_dd_limit_pct": self.max_dd_limit * 100.0,
+            "daily_dd_limit_pct": self.daily_dd_limit * 100.0,
+            "anchor": "peak" if self.trailing else "initial_balance",
+            "rollover_hour_utc": self.rollover_hour_utc,
+            "bars": self.bars,
+            "survived": not self.dead,
+            "breaches": [vars(b) for b in self.breaches],
+        }
+
+
+def _iso(ts: Any) -> Optional[str]:
+    if ts is None:
+        return None
+    try:
+        return ts.isoformat()
+    except AttributeError:
+        return str(ts)
+
+
+@dataclass
 class Result:
     name: str
     episodes: int = 0
@@ -233,27 +360,23 @@ class Result:
 
     @property
     def challenge_thresholds_met(self) -> bool:
-        return (
-            self.return_pct >= FTMO_PROFIT_TARGET * 100.0
-            and self.max_drawdown_pct <= FTMO_MAX_DD * 100.0
-            and self.worst_daily_dd_pct <= FTMO_DAILY_DD * 100.0
+        # Deliberately not a prop-firm verdict.  These figures are means and
+        # worst-cases over independently reset windows; no single account ever
+        # lived through them, so a challenge cannot be passed or failed here.
+        # Survival belongs to the continuous replay, which walks one account.
+        raise NotImplementedError(
+            "prop-firm thresholds do not apply to reset-window statistics; "
+            "read the continuous_replay section instead"
         )
 
     @property
-    def challenge_threshold_diagnostic(self) -> str:
-        # Historical/development paths cannot pass a broker challenge.  This
-        # label only states whether three numerical thresholds were crossed;
-        # it deliberately cannot be consumed as promotion evidence.
-        if self.challenge_thresholds_met:
-            return "THRESHOLDS_MET_DIAGNOSTIC_ONLY"
-        reasons = []
-        if self.return_pct < FTMO_PROFIT_TARGET * 100.0:
-            reasons.append(f"profit {self.return_pct:.1f}% < 10%")
-        if self.max_drawdown_pct > FTMO_MAX_DD * 100.0:
-            reasons.append(f"maxDD {self.max_drawdown_pct:.1f}% > 10%")
-        if self.worst_daily_dd_pct > FTMO_DAILY_DD * 100.0:
-            reasons.append(f"dailyDD {self.worst_daily_dd_pct:.1f}% > 5%")
-        return "THRESHOLDS_NOT_MET: " + ", ".join(reasons)
+    def window_statistics_summary(self) -> str:
+        """What these numbers are: statistics over reset windows, nothing more."""
+        pf = "n/a" if not self.trades else f"{self.profit_factor:.2f}"
+        return (
+            f"mean {self.return_pct:+.3f}%/window over {self.episodes} windows, "
+            f"PF {pf}, worst-window DD {self.max_drawdown_pct:.2f}%"
+        )
 
 
 # ── policies ────────────────────────────────────────────────────────────────
@@ -767,6 +890,75 @@ def _reconcile_episode(
     }
 
 
+def run_continuous_replay(
+    policy: Policy,
+    data: Dict[str, Dict[str, Any]],
+    cfg: PropFirmConfig,
+    *,
+    start_index: int,
+    max_bars: int,
+    instrument: str,
+    contract: ExecutionContract,
+) -> Dict[str, Any]:
+    """Walk the window once, chronologically, on ONE account.
+
+    This is the challenge-survival product and it answers a different question
+    from the reset blocks: not "what does a typical month look like" but "does
+    this account still exist at the end". Prop-firm limits belong here and only
+    here - applying them to a mean over reset episodes is a category error,
+    because no single account ever experienced that mean.
+
+    The account is never reset. If it breaches, the replay stops, because a real
+    account would be closed.
+    """
+    env = PropFirmTradingEnv(data, copy.deepcopy(cfg))
+    env.reset(seed=0)
+    env.current_step = int(start_index)
+
+    ledger = AccountLedger(
+        initial_balance=float(cfg.initial_balance),
+        trailing=bool(getattr(cfg, "trailing_drawdown", False)),
+        rollover_hour_utc=contract.rollover_hour_utc,
+    )
+
+    policy.reset()
+    obs = env._get_observation()
+    trades: List[Dict[str, Any]] = []
+    breach: Optional[AccountBreach] = None
+    bars = 0
+
+    for _ in range(int(max_bars)):
+        mask = env.action_masks()
+        action = policy.act(env, obs, mask)
+        obs, _reward, terminated, truncated, _info = env.step(int(action))
+        bars += 1
+
+        breach = ledger.mark(env._get_bar_dt(instrument), float(env.equity))
+        if breach is not None:
+            break
+        if terminated or truncated:
+            break
+
+    stats = env.get_episode_stats() or {}
+    trades = list(stats.get("trades_with_regime", []) or [])
+    env.close()
+
+    summary = ledger.summary()
+    swap = swap_cost_eur(trades, contract)
+    summary.update({
+        "policy": policy.name,
+        "bars_walked": bars,
+        "trades": len(trades),
+        "gross_return_pct": summary["return_pct"],
+        "overnight_financing_eur": swap,
+        "net_return_pct": summary["return_pct"] + swap / max(cfg.initial_balance, 1.0) * 100.0,
+        "terminated_reason": (
+            breach.kind if breach is not None else stats.get("termination_reason") or "horizon"
+        ),
+    })
+    return summary
+
+
 def build_non_overlapping_episode_starts(
     env: PropFirmTradingEnv,
     *,
@@ -979,6 +1171,24 @@ def assert_no_training_overlap(
         )
 
 
+def format_continuous(replays: List[Dict[str, Any]]) -> str:
+    """Render the single-account product, where prop-firm limits actually apply."""
+    if not replays:
+        return ""
+    nl = chr(10)
+    head = "    %-16s %9s %9s %10s %9s %8s  %s" % (
+        "strategy", "return%", "net%", "worstDD%", "dailyDD%", "trades", "outcome")
+    lines = ["", "  continuous single-account replay (challenge survival):", head,
+             "    " + "-" * (len(head) - 4)]
+    for r in replays:
+        outcome = "SURVIVED" if r.get("survived") else f"BREACHED ({r.get('terminated_reason')})"
+        lines.append("    %-16s %9.2f %9.2f %10.2f %9.2f %8d  %s" % (
+            r.get("policy", "?"), r.get("gross_return_pct", 0.0), r.get("net_return_pct", 0.0),
+            r.get("worst_total_drawdown_pct", 0.0), r.get("worst_daily_drawdown_pct", 0.0),
+            int(r.get("trades", 0)), outcome))
+    return nl.join(lines)
+
+
 def format_by_regime(results: List[Result]) -> str:
     """Break the model's P&L down by the volatility regime of each entry."""
     model = next((r for r in results if r.name == "trained-model"), None)
@@ -1000,7 +1210,7 @@ def format_by_regime(results: List[Result]) -> str:
 def format_table(results: List[Result], title: str) -> str:
     head = (
         f"{'strategy':<16}{'return%':>9}{'PF':>7}{'WR%':>7}{'expR':>8}"
-        f"{'R:R':>7}{'maxDD%':>8}{'trades':>8}{'t/day':>7}{'hold':>6}  threshold diagnostic"
+        f"{'R:R':>7}{'maxDD%':>8}{'trades':>8}{'t/day':>7}{'hold':>6}  window statistics  "
     )
     lines = [f"\n{title}", "=" * len(head), head, "-" * len(head)]
     for r in results:
@@ -1009,7 +1219,7 @@ def format_table(results: List[Result], title: str) -> str:
             f"{r.name:<16}{r.return_pct:>9.2f}{pf:>7}{r.win_rate:>7.1f}"
             f"{r.expectancy_r:>8.3f}{r.reward_risk:>7.2f}{r.max_drawdown_pct:>8.2f}"
             f"{r.trades:>8}{r.trades_per_day:>7.1f}{r.median_bars_held:>6.0f}  "
-            f"{r.challenge_threshold_diagnostic}"
+            f"{r.window_statistics_summary}"
         )
     return "\n".join(lines)
 
@@ -1056,6 +1266,11 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=99)
     ap.add_argument("--instrument", default="XAUUSD")
     ap.add_argument("--out", default="logs/holdout_report.json")
+    ap.add_argument(
+        "--continuous-bars", type=int, default=3000,
+        help="Bars for the single-account chronological replay, the product "
+             "prop-firm limits actually apply to.",
+    )
     ap.add_argument(
         "--contract-version", default=ACCEPTANCE_CONTRACT.version,
         help="Execution contract the result is produced under. Recorded in the "
@@ -1234,13 +1449,34 @@ def main() -> int:
         for r in results:
             r.passive_return_pct = passive
 
-        sections.append(format_table(results, label) + format_by_regime(results))
+        # The second, separate product: one account walked chronologically.
+        # Survival is a property of a single account over calendar time and
+        # cannot be read off a mean over reset windows.
+        replays = []
+        if episode_starts:
+            for p_ in build_policies(model):
+                replay_cfg = copy.deepcopy(cfg)
+                replay_cfg.max_steps_per_episode = int(args.continuous_bars)
+                replays.append(
+                    run_continuous_replay(
+                        p_, dset, replay_cfg,
+                        start_index=int(episode_starts[0]),
+                        max_bars=int(args.continuous_bars),
+                        instrument=args.instrument,
+                        contract=contract,
+                    )
+                )
+        report.setdefault("continuous_replay", {})[label] = replays
+
+        sections.append(
+            format_table(results, label)
+            + format_by_regime(results)
+            + format_continuous(replays)
+        )
         report["sections"][label] = [
             vars(r)
             | {
-                "challenge_threshold_diagnostic": (
-                    r.challenge_threshold_diagnostic
-                )
+                "window_statistics_summary": r.window_statistics_summary
             }
             for r in results
         ]
