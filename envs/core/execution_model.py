@@ -45,6 +45,12 @@ class ExecutionConfig:
     slippage_points_sigma: float = 0.05
     slippage_mult_range: Tuple[float, float] = (0.60, 1.80)
 
+    # Evaluation uses the analytical expectation of the configured cost
+    # distributions.  Training keeps stochastic costs.  This makes paired
+    # holdout comparisons reproducible without pretending spread/slippage are
+    # free, and leaves explicit stress multipliers fully operative.
+    deterministic_costs: bool = False
+
 
     latency_bars: int = 1
 
@@ -131,7 +137,15 @@ class ExecutionModel:
         return 1.0, 1.0
 
     def _compute_spread_points(self, vol_proxy: float, lot_size: float) -> float:
-        mult = self.rng.uniform(self.cfg.spread_mult_range[0], self.cfg.spread_mult_range[1])
+        if self.cfg.deterministic_costs:
+            mult = 0.5 * (
+                float(self.cfg.spread_mult_range[0])
+                + float(self.cfg.spread_mult_range[1])
+            )
+        else:
+            mult = self.rng.uniform(
+                self.cfg.spread_mult_range[0], self.cfg.spread_mult_range[1]
+            )
         vol_factor = 1.0 + self.cfg.spread_vol_factor * float(np.clip(vol_proxy, 0.0, 1.0))
 
         spike_mult = 1.0
@@ -151,8 +165,19 @@ class ExecutionModel:
         return float(np.clip(spread, 0.0, self.cfg.max_spread_points))
 
     def _compute_slippage_points(self, vol_proxy: float, lot_size: float) -> float:
-        base_slip = abs(self.rng.normal(0.0, self.cfg.slippage_points_sigma))
-        mult = self.rng.uniform(self.cfg.slippage_mult_range[0], self.cfg.slippage_mult_range[1])
+        if self.cfg.deterministic_costs:
+            # E|N(0, sigma)|, the mean of the half-normal distribution used by
+            # the stochastic training path.
+            base_slip = float(self.cfg.slippage_points_sigma) * np.sqrt(2.0 / np.pi)
+            mult = 0.5 * (
+                float(self.cfg.slippage_mult_range[0])
+                + float(self.cfg.slippage_mult_range[1])
+            )
+        else:
+            base_slip = abs(self.rng.normal(0.0, self.cfg.slippage_points_sigma))
+            mult = self.rng.uniform(
+                self.cfg.slippage_mult_range[0], self.cfg.slippage_mult_range[1]
+            )
         vol_factor = 1.0 + self.cfg.slippage_vol_factor * float(np.clip(vol_proxy, 0.0, 1.0))
 
         size_factor = 1.0

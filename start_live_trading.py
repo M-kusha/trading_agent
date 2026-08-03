@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import asyncio
+import argparse
 import logging
 import os
 import signal
@@ -41,7 +42,7 @@ signal.signal(signal.SIGTERM, signal_handler)
 
 class LiveTradingOrchestrated:
 
-    def __init__(self):
+    def __init__(self, model_path: str, firm_initial_balance: float, day_start_balance: float):
         self.mt5: Any = None
         self.connector: Any = None
         self.orchestrator: Any = None
@@ -50,16 +51,20 @@ class LiveTradingOrchestrated:
         self.session_tracker: Any = None
         self.instruments = ["XAUUSD"]
         self.timeframes = ["M15", "H1", "H4", "D1"]
+        self.model_path = str(model_path)
+        self.firm_initial_balance = float(firm_initial_balance)
+        self.day_start_balance = float(day_start_balance)
 
     def initialize(self) -> bool:
         logger.info("=" * 70)
         logger.info("LIVE TRADING - Orchestrator Mode")
-        logger.info("PPOAgentShell handles all model predictions")
+        logger.info("LivePPOAgent handles all model predictions")
         logger.info("=" * 70)
 
 
         os.environ["EXECUTION_MODE"] = "live"
         os.environ["TRADING_MODE"] = "live"
+        os.environ["LIVE_DAY_START_BALANCE"] = str(self.day_start_balance)
 
         try:
             from modules.core.trading_mode import TradingModeManager
@@ -76,7 +81,7 @@ class LiveTradingOrchestrated:
 
             env_config = {
                 "instruments": [f"{i[:3]}/{i[3:]}" if len(i) == 6 else i for i in self.instruments],
-                "initial_balance": 100000.0,
+                "initial_balance": self.firm_initial_balance,
                 "mode": "live",
                 "max_steps": 100000,
                 "bus_data_active": True,
@@ -127,8 +132,6 @@ class LiveTradingOrchestrated:
             logger.info(f"[OK] Connected to MT5 - Account: {MT5Credentials.ACCOUNT}, Balance: ${self.account_info.balance:.2f}")
 
 
-            env_config["initial_balance"] = self.account_info.balance
-            self.info_bus.set("environment_config", env_config, module="LiveTrading", thesis="updated with real balance")
             self.info_bus.set("account_balance", self.account_info.balance, module="LiveTrading", thesis="MT5 balance")
 
 
@@ -157,6 +160,15 @@ class LiveTradingOrchestrated:
 
 
             self.info_bus.set("market_data", hist_data, module="LiveTrading", thesis="historical data")
+            primary_frames = next(iter(hist_data.values()), None)
+            if not isinstance(primary_frames, dict) or not primary_frames:
+                raise RuntimeError("historical feed did not provide timeframe windows")
+            self.info_bus.set(
+                "ohlcv_frames",
+                primary_frames,
+                module="LiveTrading",
+                thesis="closed-bar windows for LivePPOAgent",
+            )
 
         except Exception as e:
             logger.error(f"[FAIL] Data connector setup failed: {e}")
@@ -171,14 +183,21 @@ class LiveTradingOrchestrated:
             self.orchestrator.initialize()
             logger.info(f"[OK] ModuleOrchestrator initialized - {len(self.orchestrator.modules)} modules loaded")
 
+            live_agent = self.orchestrator.modules.get("LivePPOAgent")
+            if live_agent is None:
+                raise RuntimeError("LivePPOAgent was not loaded by the orchestrator")
+            model = Path(self.model_path)
+            if not model.is_file():
+                raise FileNotFoundError(f"live policy checkpoint not found: {model}")
+            live_agent.load_model(str(model))
+            logger.info("[OK] Loaded validated live policy: %s", model)
 
-            critical_modules = ["PPOAgentShell", "Executor", "PositionManager"]
+
+            critical_modules = ["LivePPOAgent", "Executor", "PositionManager"]
             optional_modules = ["ArbiterLogic"]
             for name in critical_modules + optional_modules:
                 if name in self.orchestrator.modules:
                     logger.info(f"     ✓ {name}")
-                elif name == "ArbiterLogic" and "PPOAgentShell" in self.orchestrator.modules:
-                    logger.info("     ✓ ArbiterLogic (embedded in PPOAgentShell)")
                 else:
                     logger.warning(f"     ✗ {name} NOT LOADED - trading may not work!")
 
@@ -194,7 +213,7 @@ class LiveTradingOrchestrated:
 
         logger.info("=" * 70)
         logger.info("[OK] All systems initialized!")
-        logger.info("     → PPOAgentShell will handle all trading decisions")
+        logger.info("     → LivePPOAgent will handle all trading decisions")
         logger.info("     → Executor will execute trades via MT5")
         logger.info("=" * 70)
         return True
@@ -215,11 +234,20 @@ class LiveTradingOrchestrated:
 
             try:
 
-                market_data = self.connector.get_historical_data(n_bars=100) or {}
+                market_data = self.connector.get_historical_data(n_bars=200) or {}
 
 
                 if market_data:
                     self.info_bus.set("market_data", market_data, module="LiveTrading", thesis="market data update")
+                    primary_frames = next(iter(market_data.values()), None)
+                    if not isinstance(primary_frames, dict) or not primary_frames:
+                        raise RuntimeError("live feed did not provide timeframe windows")
+                    self.info_bus.set(
+                        "ohlcv_frames",
+                        primary_frames,
+                        module="LiveTrading",
+                        thesis="closed-bar windows for LivePPOAgent",
+                    )
 
 
                 if self.session_tracker:
@@ -244,7 +272,7 @@ class LiveTradingOrchestrated:
 
 
                 try:
-                    ppo_decision = self.info_bus.get("ppo_decision", module="LiveTrading", default=None)
+                    ppo_decision = self.info_bus.get("ppo_final_decision", module="LiveTrading", default=None)
                     if ppo_decision and step % 30 == 0:
                         logger.info(f"[PPO] Decision: {ppo_decision}")
                 except Exception:
@@ -326,7 +354,32 @@ class LiveTradingOrchestrated:
 
 
 def main():
-    trader = LiveTradingOrchestrated()
+    parser = argparse.ArgumentParser(description="Run the orchestrated MT5 live path")
+    parser.add_argument(
+        "--model",
+        required=True,
+        help="Validated 45-feature MaskablePPO checkpoint. Old 40-feature checkpoints are rejected.",
+    )
+    parser.add_argument(
+        "--firm-initial-balance",
+        type=float,
+        required=True,
+        help="Original prop-account balance used for the maximum-loss boundary.",
+    )
+    parser.add_argument(
+        "--day-start-balance",
+        type=float,
+        required=True,
+        help="Authoritative balance/equity anchor at the start of the current broker day.",
+    )
+    args = parser.parse_args()
+    if args.firm_initial_balance <= 0.0 or args.day_start_balance <= 0.0:
+        parser.error("risk anchors must be positive")
+    trader = LiveTradingOrchestrated(
+        args.model,
+        firm_initial_balance=args.firm_initial_balance,
+        day_start_balance=args.day_start_balance,
+    )
 
     if not trader.initialize():
         logger.error("Initialization failed. Exiting.")

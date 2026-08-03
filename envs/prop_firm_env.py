@@ -144,6 +144,9 @@ class PropFirmTradingEnv(
         self._last_stage_name: str = ""
         self._last_stage_epoch: int = 0
         self._curriculum_stage_idx: int = 0
+        self._episode_effective_stage_name: str = ""
+        self._episode_start_time: str = ""
+        self._episode_start_index: int = 0
         if curriculum_manager is not None and CURRICULUM_AVAILABLE:
             self.curriculum = curriculum_manager
 
@@ -296,6 +299,9 @@ class PropFirmTradingEnv(
         self._scenario_spread_mult = 1.0
         self._scenario_slippage_mult = 1.0
         self._scenario_latency_add = 0
+        self._scenario_data_difficulty: Optional[Any] = None
+        self._validation_start_schedule: Optional[np.ndarray] = None
+        self._validation_start_cursor: int = 0
 
 
         self._data_difficulty: Optional[Any] = None
@@ -338,6 +344,79 @@ class PropFirmTradingEnv(
         self._scenario_slippage_mult = 1.0
         self._scenario_latency_add = 0
 
+    def set_scenario_data_difficulty(self, difficulty: Optional[Any]) -> None:
+        """Install an explicit validation-only sampling filter.
+
+        Raw evaluation normally clears curriculum sampling bias.  A named
+        validation scenario (high-volatility, ranging, and so on) is different:
+        its filter is part of the test contract and must survive the reset that
+        starts the scenario.  Keeping it separate also prevents it leaking into
+        the following scenario or training episode.
+        """
+        self._scenario_data_difficulty = copy.deepcopy(difficulty)
+        self._validation_start_schedule = None
+        self._validation_start_cursor = 0
+
+    def configure_validation_episode_starts(
+        self,
+        *,
+        min_episodes: int,
+        max_episodes: int,
+    ) -> List[int]:
+        """Prepare chronological, non-overlapping starts for one scenario.
+
+        DummyVecEnv automatically resets immediately after a terminal step, so
+        one extra sentinel start is retained internally for that unused reset.
+        The returned list contains evidence windows only.
+        """
+        if not bool(getattr(self.config, "raw_evaluation_mode", False)):
+            raise RuntimeError("validation start schedules require raw evaluation mode")
+        required = max(1, int(min_episodes))
+        requested = max(required, int(max_episodes))
+
+        # Apply the stored scenario filter and the raw-evaluation horizon before
+        # deriving legal starts. This is idempotent and uses the manager's
+        # episode-cached effective stage.
+        self._sync_curriculum_stage_overrides()
+        latency = max(0, self._exec_latency())
+        low, high = self._episode_sampling_bounds(self._episode_start_buffer(), latency)
+        if self._valid_start_indices is None:
+            candidates = np.arange(low, high, dtype=np.int64)
+        else:
+            candidates = np.asarray(self._valid_start_indices, dtype=np.int64)
+            candidates = candidates[(candidates >= low) & (candidates < high)]
+
+        block = int(self.config.max_steps_per_episode)
+        selected: List[int] = []
+        next_legal = low
+        for candidate in np.sort(np.unique(candidates)):
+            value = int(candidate)
+            if value < next_legal:
+                continue
+            selected.append(value)
+            # An episode starting at s observes s and finishes after stepping
+            # through s+block.  The next independent path must start after that
+            # terminal bar, not on it.
+            next_legal = value + block + 1
+            if len(selected) >= requested:
+                break
+
+        if len(selected) < required:
+            raise ValueError(
+                f"only {len(selected)} independent {block}-bar validation windows "
+                f"exist for the scenario; need {required}"
+            )
+        evidence = selected[:requested]
+        self._validation_start_schedule = np.asarray(
+            [*evidence, evidence[0]], dtype=np.int64
+        )
+        self._validation_start_cursor = 0
+        return list(evidence)
+
+    def clear_validation_episode_starts(self) -> None:
+        self._validation_start_schedule = None
+        self._validation_start_cursor = 0
+
 
     # Overrides that legitimately have no matching attribute on the target.
     # commission_per_lot is translated into config.execution.commission_spec by
@@ -349,55 +428,45 @@ class PropFirmTradingEnv(
             return
         for k, v in overrides.items():
             if not isinstance(k, str):
-                continue
+                raise TypeError(f"curriculum override key must be a string, got {k!r}")
 
             if "." in k:
                 head, rest = k.split(".", 1)
-                if hasattr(target, head):
-                    sub = getattr(target, head)
-                    try:
-                        self._apply_overrides_to_object(sub, {rest: v})
-                    except Exception as e:
-                        logger.debug(f"Override {k}={v} failed: {e}")
+                if not hasattr(target, head):
+                    raise AttributeError(
+                        f"curriculum override {k!r} has no parent attribute on "
+                        f"{type(target).__name__}"
+                    )
+                sub = getattr(target, head)
+                self._apply_overrides_to_object(sub, {rest: v})
                 continue
             if hasattr(target, k):
-                try:
-                    setattr(target, k, v)
-                except Exception as e:
-                    logger.debug(f"Override {k}={v} failed: {e}")
+                setattr(target, k, v)
             elif k not in self._OVERRIDE_KEYS_HANDLED_ELSEWHERE:
-                # A curriculum key with no home on the target used to vanish
-                # here without a word. activity_deviation_penalty_cap did
-                # exactly that on all 10 stages: the curriculum looked tuned
-                # while the env silently used its own default.
-                if k not in self._reported_dropped_overrides:
-                    self._reported_dropped_overrides.add(k)
-                    logger.error(
-                        "Curriculum override %r=%r has no attribute on %s - the "
-                        "configured value is NOT in effect. Declare the field on "
-                        "the config dataclass or stop emitting the override.",
-                        k, v, type(target).__name__,
-                    )
+                raise AttributeError(
+                    f"curriculum override {k!r}={v!r} has no attribute on "
+                    f"{type(target).__name__}"
+                )
 
     def _sync_curriculum_stage_overrides(self) -> None:
         if not (self.curriculum and CURRICULUM_AVAILABLE and self._apply_curriculum_overrides):
             return
 
         try:
-
             if hasattr(self.curriculum, "get_effective_stage_config"):
-                try:
-                    stage_cfg = self.curriculum.get_effective_stage_config()
-                except Exception:
-                    stage_cfg = getattr(self.curriculum, "stage_config", None)
+                stage_cfg = self.curriculum.get_effective_stage_config()
             else:
                 stage_cfg = getattr(self.curriculum, "stage_config", None)
             if stage_cfg is None:
-                return
+                raise RuntimeError("curriculum supplied no effective stage configuration")
 
-            current_stage = getattr(self.curriculum, "current_stage", None)
-            if current_stage is not None:
-                self._curriculum_stage_idx = getattr(current_stage, "value", 0)
+            effective_stage = (
+                self.curriculum.get_effective_stage()
+                if hasattr(self.curriculum, "get_effective_stage")
+                else getattr(self.curriculum, "current_stage", None)
+            )
+            if effective_stage is not None:
+                self._curriculum_stage_idx = getattr(effective_stage, "value", 0)
             else:
                 self._curriculum_stage_idx = 0
 
@@ -420,7 +489,6 @@ class PropFirmTradingEnv(
 
                     "session_loss_limit_pct": "session_loss_limit_pct",
                     "session_consecutive_loss_limit": "session_consecutive_loss_limit",
-                    "enforce_session_windows": "enforce_session_windows",
                     "enforce_no_new_trades_window": "enforce_no_new_trades_window",
                     "enforce_weekend_block": "enforce_weekend_block",
                     "enforce_hard_close": "enforce_hard_close",
@@ -448,16 +516,19 @@ class PropFirmTradingEnv(
                 }
                 applied_constraints = {}
                 for constraint_key, config_key in constraint_mapping.items():
-                    try:
-                        value = getattr(constraints, constraint_key, None)
-                        if value is not None and hasattr(self.config, config_key):
-                            setattr(self.config, config_key, value)
-                            applied_constraints[config_key] = value
-                    except Exception:
-                        pass
+                    value = getattr(constraints, constraint_key, None)
+                    if value is None:
+                        continue
+                    if not hasattr(self.config, config_key):
+                        raise AttributeError(
+                            f"curriculum constraint {constraint_key!r} maps to missing "
+                            f"PropFirmConfig field {config_key!r}"
+                        )
+                    setattr(self.config, config_key, value)
+                    applied_constraints[config_key] = value
 
 
-                stage_name = getattr(current_stage, "name", "UNKNOWN")
+                stage_name = getattr(effective_stage, "name", "UNKNOWN")
                 loss_stop = applied_constraints.get("loss_layer_stop", "N/A")
                 max_consec = applied_constraints.get("max_consecutive_losses", "N/A")
                 logger.debug(
@@ -488,11 +559,60 @@ class PropFirmTradingEnv(
                                 mode=CommissionMode.NONE,
                                 commission_rate=0.0,
                             )
-                    except Exception:
-                        pass
-        except Exception as e:
-            logger.warning(f"_sync_curriculum_stage_overrides() failed: {type(e).__name__}: {e}")
-            return
+                    except (TypeError, ValueError) as exc:
+                        raise ValueError(
+                            "invalid curriculum commission_per_lot override"
+                        ) from exc
+
+            raw_evaluation = bool(getattr(self.config, "raw_evaluation_mode", False))
+            if raw_evaluation:
+                # Scenario filters select bars; they do not re-enable stochastic
+                # price/execution augmentation.
+                self.config.mirror_augmentation_prob = 0.0
+                self.config.high_vol_oversample_prob = 0.0
+                self.config.domain_randomization_enabled = False
+                self.config.execution.deterministic_costs = True
+                self.config.execution.rejection_enabled = False
+                self.config.execution.spread_shock_enabled = False
+                validation_steps = int(
+                    getattr(self.config, "validation_max_steps_per_episode", 0) or 0
+                )
+                if validation_steps <= 0:
+                    raise ValueError(
+                        "validation_max_steps_per_episode must be positive in raw evaluation"
+                    )
+                self.config.max_steps_per_episode = validation_steps
+
+            scenario_difficulty = getattr(self, "_scenario_data_difficulty", None)
+            if scenario_difficulty is not None:
+                desired_difficulty = copy.deepcopy(scenario_difficulty)
+            elif raw_evaluation:
+                # Raw chronological evaluation must not mirror prices, bias
+                # episode starts, or randomize execution.  Declared stress
+                # scenarios are applied separately and remain auditable.
+                desired_difficulty = None
+            else:
+                desired_difficulty = copy.deepcopy(getattr(stage_cfg, "data_difficulty", None))
+                # DataDifficulty is the single curriculum sampler; the older
+                # global high-vol branch would otherwise override Explorer's
+                # declared low-volatility curriculum from episode one.
+                self.config.high_vol_oversample_prob = 0.0
+
+            # Reward blending, recovery, review, and mixed-stage sampling can
+            # change the effective config every episode.  Do not rebuild the
+            # O(n) volatility/trend sampling cache when only reward or risk
+            # fields changed and the declared data difficulty is identical.
+            try:
+                difficulty_changed = desired_difficulty != self._data_difficulty
+            except Exception:
+                difficulty_changed = True
+            if difficulty_changed:
+                self.set_data_difficulty(desired_difficulty)
+        except Exception as exc:
+            raise RuntimeError(
+                "curriculum overrides could not be applied; refusing to run an "
+                "episode with a partially applied stage"
+            ) from exc
 
 
     def _primary_tf(self) -> str:
@@ -623,7 +743,7 @@ class PropFirmTradingEnv(
             return 1.0
 
         current_dd, _daily = self._calc_dds()
-        limit = max(float(cfg.max_drawdown_limit), 1e-9)
+        limit = max(float(getattr(cfg, "firm_max_drawdown_limit", cfg.max_drawdown_limit)), 1e-9)
         headroom = 1.0 - (current_dd / limit)
         if headroom < 0.5:
             return 1.0
@@ -858,19 +978,16 @@ class PropFirmTradingEnv(
 
         if isinstance(df.index, pd.DatetimeIndex):
             idx = df.index
-            try:
-                if idx.tz is not None:
-                    idx = idx.tz_convert(self.tz).tz_localize(None)
-            except Exception:
-                try:
-                    idx = idx.tz_localize(None)
-                except Exception:
-                    pass
-
+            idx = idx.tz_localize("UTC") if idx.tz is None else idx.tz_convert("UTC")
+            if idx.hasnans:
+                raise ValueError("market-data index contains invalid timestamps")
             if not idx.is_monotonic_increasing:
-                idx = idx.sort_values()
+                raise ValueError("market-data index timestamps are not increasing")
 
-            return np.asarray(idx.view("int64"), dtype=np.int64)
+            # Force nanoseconds: pandas 2 can store parsed timestamps at
+            # microsecond resolution, and both ``asi8`` and ``astype(int64)``
+            # then expose microseconds.  Bar-duration arithmetic below is ns.
+            return idx.to_numpy(dtype="datetime64[ns]").view("int64").astype(np.int64, copy=False)
 
 
         for tc in ("time", "Time", "timestamp", "datetime", "Datetime"):
@@ -888,12 +1005,19 @@ class PropFirmTradingEnv(
                     dt = pd.to_datetime(s, utc=True, errors="coerce")
 
 
-                dt = dt.dt.tz_convert(self.tz).dt.tz_localize(None).sort_values()
-                arr_dt64 = dt.to_numpy(dtype="datetime64[ns]")
-                return arr_dt64.view("int64").astype(np.int64, copy=False)
+                if dt.isna().any():
+                    raise ValueError("market-data time column contains invalid timestamps")
+                if not dt.is_monotonic_increasing:
+                    raise ValueError("market-data time column is not increasing")
+                return (
+                    pd.DatetimeIndex(dt)
+                    .to_numpy(dtype="datetime64[ns]")
+                    .view("int64")
+                    .astype(np.int64, copy=False)
+                )
 
-            except Exception:
-                return None
+            except (TypeError, ValueError, OverflowError):
+                raise
 
         return None
 
@@ -952,8 +1076,16 @@ class PropFirmTradingEnv(
             htf_t = self._df_time_ns(df)
 
             if cur_t is not None and htf_t is not None and len(htf_t) > 0:
-
-                pos = int(np.searchsorted(htf_t, cur_t, side="right") - 1)
+                # CSV timestamps are bar opens.  A decision consumes the
+                # completed primary bar, so its information time is the primary
+                # close.  An HTF row is legal only after *its* close; selecting
+                # merely htf_open <= primary_open leaked the rest of the H1/H4/D1
+                # candle into earlier M15 decisions.
+                primary_minutes = max(1, int(timeframe_to_minutes(primary_tf)))
+                htf_minutes = max(primary_minutes, int(timeframe_to_minutes(tf)))
+                decision_t = int(cur_t) + primary_minutes * 60 * 1_000_000_000
+                latest_closed_open = decision_t - htf_minutes * 60 * 1_000_000_000
+                pos = int(np.searchsorted(htf_t, latest_closed_open, side="right") - 1)
                 if pos < 0:
                     self._ohlcv_cache[lb] = {}
                     return {}
@@ -968,7 +1100,10 @@ class PropFirmTradingEnv(
                 except Exception:
                     ratio = 1
 
-                approx_end = int((int(self.current_step) + 1) / ratio)
+                approx_end = int((int(self.current_step) + 1) // ratio)
+                if approx_end <= 0:
+                    self._ohlcv_cache[lb] = {}
+                    return {}
                 end = int(np.clip(approx_end, 1, len(df)))
                 start = max(0, end - lb)
 
@@ -1110,6 +1245,35 @@ class PropFirmTradingEnv(
             diff = -diff
         return float(diff * pip_value * pos.lot_size)
 
+    def _intrabar_stop_mid(self, pos: PropPosition) -> Optional[float]:
+        """Return a conservative stop trigger from the current completed bar.
+
+        Stops are executable price levels, not end-of-bar euro thresholds.  A
+        gap through the level exits at the bar open; an ordinary touch exits at
+        the stop.  Spread and slippage are then applied by ``fill_exit``.
+        """
+        stop = getattr(pos, "stop_price", None)
+        if stop is None or not np.isfinite(float(stop)):
+            return None
+        ohlcv = self._get_ohlcv(pos.instrument, lookback=1)
+        if not ohlcv:
+            return None
+        try:
+            bar_open = float(np.asarray(ohlcv["open"], dtype=np.float64)[-1])
+            bar_high = float(np.asarray(ohlcv["high"], dtype=np.float64)[-1])
+            bar_low = float(np.asarray(ohlcv["low"], dtype=np.float64)[-1])
+        except (KeyError, IndexError, TypeError, ValueError):
+            return None
+        if not all(np.isfinite(v) for v in (bar_open, bar_high, bar_low)):
+            raise ValueError("non-finite OHLC at executable stop check")
+
+        stop = float(stop)
+        if pos.direction == "long" and bar_low <= stop:
+            return min(bar_open, stop)
+        if pos.direction == "short" and bar_high >= stop:
+            return max(bar_open, stop)
+        return None
+
     def _realize_pnl_on_exit(self, pos: PropPosition, exit_fill: float, exit_fee: float) -> float:
         pip_value, multiplier = self._get_pip_value(pos.instrument)
         diff = (exit_fill - pos.entry_price) * multiplier
@@ -1178,19 +1342,64 @@ class PropFirmTradingEnv(
         so it reads as "normal / expensive" rather than as an absolute that would
         change meaning between the historical and broker feeds.
         """
-        dt = self._get_bar_dt(instrument)
-        hour = float(dt.hour + dt.minute / 60.0) if dt is not None else 12.0
+        primary = self.data.get(instrument, {}).get(self._primary_tf())
+        decision_utc: Optional[pd.Timestamp] = None
+        if primary is not None and not primary.empty:
+            idx = int(np.clip(self.current_step, 0, len(primary) - 1))
+            raw_ts: Any = None
+            if isinstance(primary.index, pd.DatetimeIndex):
+                raw_ts = primary.index[idx]
+            else:
+                for column in ("time", "timestamp", "datetime", "date"):
+                    if column in primary.columns:
+                        raw_ts = primary[column].iloc[idx]
+                        break
+            if raw_ts is not None:
+                parsed = pd.Timestamp(raw_ts)
+                if parsed.tzinfo is None:
+                    # MT5 epoch timestamps and the canonical CSVs are UTC.  A
+                    # naive value is therefore UTC-naive, not Europe/Berlin.
+                    parsed = parsed.tz_localize("UTC")
+                else:
+                    parsed = parsed.tz_convert("UTC")
+                decision_utc = parsed + pd.Timedelta(minutes=max(1, self._tf_minutes()))
+
+        hour = (
+            float(decision_utc.hour + decision_utc.minute / 60.0)
+            if decision_utc is not None
+            else 12.0
+        )
+
+        in_london = False
+        in_new_york = False
+        if decision_utc is not None:
+            london = decision_utc.tz_convert(ZoneInfo("Europe/London"))
+            new_york = decision_utc.tz_convert(ZoneInfo("America/New_York"))
+            london_hour = london.hour + london.minute / 60.0
+            ny_hour = new_york.hour + new_york.minute / 60.0
+            in_london = 8.0 <= london_hour < 17.0
+            in_new_york = 8.0 <= ny_hour < 17.0
 
         spread_ratio = 1.0
         o = self._get_ohlcv(instrument, lookback=200)
         spreads = o.get("spread") if o else None
         if spreads is not None and len(spreads) >= 20:
             arr = np.asarray(spreads, dtype=np.float64)
-            median = float(np.median(arr))
-            if median > 1e-9:
-                spread_ratio = float(arr[-1] / median)
+            prior = arr[:-1]
+            prior = prior[np.isfinite(prior) & (prior > 0.0)]
+            current = float(arr[-1])
+            median = float(np.median(prior)) if prior.size else 0.0
+            if np.isfinite(current) and current > 0.0 and median > 1e-9:
+                execution_mult = float(getattr(self, "_episode_spread_mult", 1.0) or 1.0)
+                execution_mult *= float(getattr(self, "_scenario_spread_mult", 1.0) or 1.0)
+                spread_ratio = float(current * execution_mult / median)
 
-        return {"hour_utc": hour, "spread_ratio": spread_ratio}
+        return {
+            "hour_utc": hour,
+            "spread_ratio": spread_ratio,
+            "is_prime": bool(in_london or in_new_york),
+            "is_overlap": bool(in_london and in_new_york),
+        }
 
     def _entry_blocked_by_drawdown(self) -> bool:
         """True once drawdown has eaten the configured share of its budget.
@@ -1198,18 +1407,31 @@ class PropFirmTradingEnv(
         Blocks opening new risk while leaving closes available, so the agent can
         always work its way out of a position but cannot dig deeper.
         """
-        reserve = float(getattr(self.config, "dd_entry_veto_fraction", 0.0) or 0.0)
-        if reserve <= 0.0:
-            return False
-
         current_dd, current_daily_dd = self._calc_dds()
+        return self._entry_blocked_by_drawdown_values(current_dd, current_daily_dd)
 
-        max_limit = float(getattr(self.config, "max_drawdown_limit", 0.0) or 0.0)
-        if max_limit > 0.0 and current_dd >= max_limit * reserve:
+    def _firm_drawdown_limits(self) -> Tuple[float, float]:
+        daily = float(getattr(self.config, "firm_daily_drawdown_limit", 0.0) or 0.0)
+        total = float(getattr(self.config, "firm_max_drawdown_limit", 0.0) or 0.0)
+        if not (np.isfinite(daily) and np.isfinite(total) and 0.0 < daily < 1.0 and 0.0 < total < 1.0):
+            raise ValueError(f"invalid firm drawdown limits: daily={daily!r}, total={total!r}")
+        return daily, total
+
+    def _entry_blocked_by_drawdown_values(self, current_dd: float, current_daily_dd: float) -> bool:
+        reserve = float(getattr(self.config, "dd_entry_veto_fraction", 0.0) or 0.0)
+        if reserve == 0.0:
+            return False
+        if not np.isfinite(reserve) or reserve < 0.0 or reserve >= 1.0:
+            raise ValueError(f"dd_entry_veto_fraction must be in [0,1): {reserve!r}")
+        if not (np.isfinite(current_dd) and np.isfinite(current_daily_dd)):
             return True
 
-        daily_limit = float(getattr(self.config, "daily_drawdown_limit", 0.0) or 0.0)
-        if daily_limit > 0.0 and current_daily_dd >= daily_limit * reserve:
+        daily_limit, max_limit = self._firm_drawdown_limits()
+
+        if current_dd >= max_limit * reserve:
+            return True
+
+        if current_daily_dd >= daily_limit * reserve:
             return True
 
         return False
@@ -1276,6 +1498,16 @@ class PropFirmTradingEnv(
             self.peak_balance = max(self.peak_balance, float(self.balance))
 
     def _calc_dds(self) -> Tuple[float, float]:
+        values = {
+            "equity": float(self.equity),
+            "initial_balance": float(self.config.initial_balance),
+            "peak_balance": float(self.peak_balance),
+            "day_start_balance": float(self.day_start_balance),
+        }
+        if any((not np.isfinite(v)) for v in values.values()):
+            raise ValueError(f"non-finite account risk state: {values}")
+        if values["initial_balance"] <= 0.0 or values["peak_balance"] <= 0.0 or values["day_start_balance"] <= 0.0:
+            raise ValueError(f"non-positive account risk anchor: {values}")
         if bool(self.config.trailing_drawdown):
             current_dd = (self.peak_balance - self.equity) / max(self.peak_balance, 1.0)
         else:
@@ -1465,6 +1697,12 @@ class PropFirmTradingEnv(
         if self.consecutive_losses >= self.config.max_consecutive_losses:
             return False, "max_consecutive_losses"
 
+        # This is the authoritative non-negotiable account veto.  It is called
+        # from the mask, direct action handling, and pending-fill revalidation;
+        # a caller that ignores an advisory mask still cannot open risk.
+        if self._entry_blocked_by_drawdown_values(current_dd, current_daily_dd):
+            return False, "drawdown_entry_veto"
+
         max_dd_ok = float(current_dd) < (self.config.max_drawdown_limit - self.config.max_dd_safety_buffer)
         daily_dd_ok = float(current_daily_dd) < (self.config.daily_drawdown_limit - self.config.daily_dd_safety_buffer)
         if not (max_dd_ok and daily_dd_ok):
@@ -1546,20 +1784,70 @@ class PropFirmTradingEnv(
 
         return 0
 
+    @staticmethod
+    def _utc_timestamp_ns(value: Any) -> int:
+        ts = pd.Timestamp(value)
+        if ts.tzinfo is None:
+            ts = ts.tz_localize("UTC")
+        else:
+            ts = ts.tz_convert("UTC")
+        return int(ts.value)
+
+    def _episode_sampling_bounds(self, history_min: int, latency: int) -> Tuple[int, int]:
+        """Return a half-open range of legal episode starts.
+
+        Observation history is only a lower bound.  It must never also be
+        subtracted from the tail, which previously made the newest 3,850 M15
+        bars unreachable and removed the very regime this run needed to learn.
+        """
+        lower = max(1, int(history_min))
+        upper = int(self._min_data_len) - int(self.config.max_steps_per_episode) - max(0, int(latency))
+
+        primary = self.data.get(self._episode_instrument, {}).get(self._primary_tf())
+        times = self._df_time_ns(primary) if primary is not None else None
+        min_time = getattr(self.config, "episode_start_min_time", None)
+        max_time = getattr(self.config, "episode_start_max_time", None)
+        if times is not None and len(times) > 0:
+            if min_time is not None:
+                lower = max(lower, int(np.searchsorted(times, self._utc_timestamp_ns(min_time), side="left")))
+            if max_time is not None:
+                upper = min(upper, int(np.searchsorted(times, self._utc_timestamp_ns(max_time), side="right")))
+        elif min_time is not None or max_time is not None:
+            raise ValueError("episode time bounds require a valid primary timestamp column")
+
+        if upper <= lower:
+            raise ValueError(
+                "no legal episode start: "
+                f"history_min={history_min}, eligible=[{lower},{upper}), "
+                f"data_bars={self._min_data_len}, max_steps={self.config.max_steps_per_episode}, "
+                f"latency={latency}, min_time={min_time!r}, max_time={max_time!r}"
+            )
+        return lower, upper
+
     def reset(
         self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None
     ) -> Tuple[np.ndarray, Dict[str, Any]]:
         super().reset(seed=seed)
 
 
-        if self.curriculum and (
-            self._pending_stage_apply
-            or self._last_stage_name != getattr(self.curriculum.current_stage, "name", "")
-        ):
+        if self.curriculum:
+            effective_stage = getattr(self.curriculum, "current_stage", None)
+            if hasattr(self.curriculum, "get_effective_stage"):
+                effective_stage = self.curriculum.get_effective_stage()
+            self._episode_effective_stage_name = str(getattr(effective_stage, "name", ""))
+
+            # Effective curriculum state is episode-scoped.  In addition to a
+            # stage change, reward blending, recovery, review, mixed-stage
+            # rehearsal, and selectivity constraints can change between two
+            # resets while current_stage stays constant.  Refresh the cheap
+            # overrides every episode; the expensive difficulty cache above is
+            # retained when its config did not change.
             self._sync_curriculum_stage_overrides()
             self._pending_stage_apply = False
             self._last_stage_name = getattr(self.curriculum.current_stage, "name", "")
             self._last_stage_epoch = int(getattr(self.curriculum, "current_stage_epoch", 0))
+        else:
+            self._episode_effective_stage_name = ""
 
 
         # Before anything reads prices this episode: swaps self.data between
@@ -1605,6 +1893,9 @@ class PropFirmTradingEnv(
         self.episode_step = 0
         self.episode_bars = 0
         self._episode_return = 0.0
+        self._mask_decision_steps = 0
+        self._mask_collapse_steps = 0
+        self._stop_mode_steps = 0
 
         self._avg_vol = None
         self._episode_trade_results = []
@@ -1681,27 +1972,46 @@ class PropFirmTradingEnv(
         )
 
 
-        raw_buffer = self._episode_start_buffer()
+        buffer = self._episode_start_buffer()
         latency = max(0, self._exec_latency())
-        max_reasonable_buffer = max(0, int(self._min_data_len) - (int(self.config.max_steps_per_episode) + latency + 2))
-        buffer = int(max(1, min(raw_buffer, max_reasonable_buffer)))
+        buffer, max_start = self._episode_sampling_bounds(buffer, latency)
 
 
-        max_start = int(self._min_data_len) - int(self.config.max_steps_per_episode) - buffer
-        if max_start < buffer:
-            max_start = buffer
-
-
-        if self._data_difficulty is not None:
-
+        validation_schedule = getattr(self, "_validation_start_schedule", None)
+        if validation_schedule is not None:
+            cursor = int(getattr(self, "_validation_start_cursor", 0))
+            if cursor >= len(validation_schedule):
+                raise RuntimeError("validation episode-start schedule exhausted")
+            candidate = int(validation_schedule[cursor])
+            self._validation_start_cursor = cursor + 1
+            if not buffer <= candidate < max_start:
+                raise RuntimeError(
+                    f"scheduled validation start {candidate} left legal range "
+                    f"[{buffer}, {max_start})"
+                )
+            if self._valid_start_indices is not None and not bool(
+                np.any(self._valid_start_indices == candidate)
+            ):
+                raise RuntimeError(
+                    f"scheduled validation start {candidate} violates scenario filter"
+                )
+            self.current_step = candidate
+        elif self._data_difficulty is not None:
             self.current_step = self._sample_episode_start_with_difficulty(buffer, max_start)
         elif max_start > buffer:
             self.current_step = self._sample_episode_start(buffer, max_start)
         else:
-            self.current_step = min(buffer, max(int(self._min_data_len) - 2, 0))
+            raise ValueError(f"no legal episode start in [{buffer}, {max_start})")
 
         inst = self._episode_instrument
         dt = self._get_bar_dt(inst)
+        if dt is None:
+            raise RuntimeError(
+                "episode start has no valid market-data timestamp: "
+                f"instrument={inst!r}, step={self.current_step}"
+            )
+        self._episode_start_index = int(self.current_step)
+        self._episode_start_time = pd.Timestamp(dt).isoformat()
 
 
         simclock.reset()
@@ -1720,6 +2030,7 @@ class PropFirmTradingEnv(
         try:
             return {
                 "stage": getattr(self.curriculum.current_stage, "name", ""),
+                "effective_curriculum_stage": self._episode_effective_stage_name,
                 "stage_epoch": int(getattr(self.curriculum, "current_stage_epoch", 0)),
             }
         except Exception:
@@ -1782,6 +2093,20 @@ class PropFirmTradingEnv(
         self._maybe_relax_loss_layer_on_session_roll(session_rolled=session_rolled)
 
         current_dd, current_daily_dd = self._calc_dds()
+
+
+        if self.position is not None:
+            stop_mid = self._intrabar_stop_mid(self.position)
+            if stop_mid is not None:
+                close_result = self._close_position_now(
+                    reason=CloseReason.HARD_STOP.value,
+                    dt=dt,
+                    mid=stop_mid,
+                    vol_proxy=vol_proxy,
+                )
+                trade_closed = True
+                current_dd, current_daily_dd = self._calc_dds()
+                reward += self._compute_trade_reward(close_result, current_dd)
 
 
         forced_close_now = False
@@ -1962,6 +2287,17 @@ class PropFirmTradingEnv(
                         is_revenge_entry=is_revenge_entry,
                         entry_context=self._capture_entry_context(inst),
                     )
+                    pip_value, multiplier = self._get_pip_value(inst)
+                    per_price_unit = max(float(pip_value) * float(multiplier), 1e-9)
+                    stop_distance = float(initial_risk) / max(float(lot) * per_price_unit, 1e-9)
+                    if not (np.isfinite(stop_distance) and stop_distance > 0.0):
+                        raise ValueError(f"invalid executable stop distance: {stop_distance!r}")
+                    pos.stop_distance_price = stop_distance
+                    pos.stop_price = (
+                        float(entry_fill) - stop_distance
+                        if direction == "long"
+                        else float(entry_fill) + stop_distance
+                    )
                     self.position = pos
 
 
@@ -2057,7 +2393,10 @@ class PropFirmTradingEnv(
                     "direction": intent,
                     "lot": lot,
                     "initial_risk": initial_risk,
-                    "fill_step": self.current_step + latency,
+                    # Orders are decided after the current bar is complete.
+                    # latency=0 therefore fills on the next bar; each extra
+                    # latency bar delays it by one additional bar.
+                    "fill_step": self.current_step + latency + 1,
                     "entry_quality": entry_quality,
                     "entry_certainty": entry_certainty,
                     "setup_quality": setup_quality,
@@ -2075,6 +2414,7 @@ class PropFirmTradingEnv(
             hard_blocks = {
                 "hard_close",
                 "drawdown_headroom",
+                "drawdown_entry_veto",
                 "max_trades_per_day",
                 "max_trades_per_session",
                 "max_trades_per_episode",
@@ -2093,8 +2433,9 @@ class PropFirmTradingEnv(
 
 
         current_dd, current_daily_dd = self._calc_dds()
-        dd_breach = current_dd >= float(self.config.max_drawdown_limit)
-        daily_dd_breach = current_daily_dd >= float(self.config.daily_drawdown_limit)
+        firm_daily_limit, firm_max_limit = self._firm_drawdown_limits()
+        dd_breach = current_dd >= firm_max_limit
+        daily_dd_breach = current_daily_dd >= firm_daily_limit
 
         did_risk_liquidate_this_step = False
         if (dd_breach or daily_dd_breach) and self.position is not None:
@@ -2106,8 +2447,8 @@ class PropFirmTradingEnv(
             current_dd, current_daily_dd = self._calc_dds()
             reward += self._compute_trade_reward(close_result, current_dd)
 
-            dd_breach = current_dd >= float(self.config.max_drawdown_limit)
-            daily_dd_breach = current_daily_dd >= float(self.config.daily_drawdown_limit)
+            dd_breach = current_dd >= firm_max_limit
+            daily_dd_breach = current_daily_dd >= firm_daily_limit
 
 
         terminated = False
@@ -2141,90 +2482,38 @@ class PropFirmTradingEnv(
                 self.pending_exit = None
 
         current_dd, current_daily_dd = self._calc_dds()
-        dd_breach = current_dd >= float(self.config.max_drawdown_limit)
-        daily_dd_breach = current_daily_dd >= float(self.config.daily_drawdown_limit)
+        dd_breach = current_dd >= firm_max_limit
+        daily_dd_breach = current_daily_dd >= firm_daily_limit
 
 
         if dd_breach or daily_dd_breach:
             terminated = True
             truncated = False
-            # A breach used to cost -1.5 (or -1.0 daily) against episodes worth
-            # +23 to +140, so blowing the account was 1-5% of a good episode and
-            # the policy had no reason to avoid it. It also went unpunished
-            # entirely whenever a trade happened to close on the breaching step.
-            #
-            # In reality a breach ends the account: every gain in the episode is
-            # forfeited and all future profit is zero. Price it that way - strip
-            # the episode's earnings and leave a clear deficit, so no sequence of
-            # wins can make a breach worth risking.
-            earned = max(0.0, float(getattr(self, "_episode_reward_total", 0.0)))
-            breach_penalty = float(getattr(self.config.reward, "dd_breach_penalty", 25.0))
             if dd_breach:
                 termination_reason = "max_drawdown_breach"
-                reward -= earned + breach_penalty
             else:
                 termination_reason = "daily_limit_breach"
-                reward -= earned + breach_penalty * 0.6
 
-
+        # Trade count is evidence, not an economic objective.  A lower-bound
+        # activity reward/penalty makes the agent trade merely to satisfy the
+        # curriculum and is discontinuous around the configured quota.  Keep
+        # abstention neutral here; promotion/validation separately decide
+        # whether enough independent trades exist to claim an edge.
         reward_cfg = self.config.reward
-        if (terminated or truncated) and getattr(reward_cfg, "activity_consistency_enabled", False):
-            episode_steps = max(self.episode_step, 1)
-            actual_trades = self.total_trades
-
-            target_per_1k = getattr(reward_cfg, "target_trades_per_1k_steps", 0.0)
-            stage_activity_targets = getattr(reward_cfg, "stage_activity_targets", None)
-            if stage_activity_targets is not None:
-                stage_idx = getattr(self, "_curriculum_stage_idx", 0)
-                target_per_1k = stage_activity_targets.get(stage_idx, target_per_1k)
-
-            expected_trades = (episode_steps / 1000.0) * target_per_1k
-
-            is_dd_termination = termination_reason in ("max_drawdown_breach", "daily_limit_breach", "daily_dd_breach")
-            should_apply_penalty = expected_trades >= 2.0 and episode_steps >= 300 and not is_dd_termination
-
-            if should_apply_penalty:
-                trade_ratio = actual_trades / expected_trades
-                activity_penalty = 0.0
-                # Standing aside is charged only when it also lost money.
-                #
-                # The flat min_trades_penalty made abstention unconditionally
-                # costly, so the agent could not learn to sit out a regime that
-                # offers nothing - and on live FTMO bars, sitting out was the best
-                # available strategy: always-flat returned 0.00% against the
-                # trained model's -8.25%. Doing nothing profitably is a skill, not
-                # a failure.
-                #
-                # Trading too little AND losing is still punished, because that is
-                # incompetence rather than restraint. The profit gates already
-                # penalise a policy that never trades and therefore never earns,
-                # so no separate inactivity tax is needed.
-                if trade_ratio < 0.2:
-                    # The account, not the reward signal: _episode_return
-                    # accumulates shaped reward, which is not the same thing as
-                    # having kept the money.
-                    protected_capital = float(self.equity) >= float(self.config.initial_balance)
-                    activity_penalty = (
-                        0.0 if protected_capital
-                        else getattr(reward_cfg, "min_trades_penalty", 0.0)
-                    )
-                elif abs(trade_ratio - 1.0) > 0.5:
-                    deviation = abs(trade_ratio - 1.0) - 0.5
-                    scale = getattr(reward_cfg, "activity_deviation_penalty_scale", 0.0)
-
-
-                    max_penalty = getattr(reward_cfg, "activity_deviation_penalty_cap", 2.0)
-                    activity_penalty = min(deviation * scale, max_penalty)
-
-
-                if activity_penalty > 0:
-                    reward -= activity_penalty
-                    self._episode_reward_components["activity_consistency_penalty"] = (
-                        self._episode_reward_components.get("activity_consistency_penalty", 0.0) - activity_penalty
-                    )
-                    self._episode_reward_component_counts["activity_consistency_penalty"] = (
-                        self._episode_reward_component_counts.get("activity_consistency_penalty", 0) + 1
-                    )
+        if (terminated or truncated) and bool(getattr(reward_cfg, "activity_consistency_enabled", False)):
+            target_per_1k = float(getattr(reward_cfg, "target_trades_per_1k_steps", 0.0) or 0.0)
+            stage_targets = getattr(reward_cfg, "stage_activity_targets", None)
+            if isinstance(stage_targets, dict):
+                target_per_1k = float(stage_targets.get(getattr(self, "_curriculum_stage_idx", 0), target_per_1k))
+            expected = (max(self.episode_step, 1) / 1000.0) * target_per_1k
+            ratio = float(self.total_trades) / expected if expected >= 2.0 else 0.0
+            if ratio > 1.5:
+                scale = float(getattr(reward_cfg, "activity_deviation_penalty_scale", 0.0) or 0.0)
+                cap = float(getattr(reward_cfg, "activity_deviation_penalty_cap", 2.0) or 2.0)
+                activity_penalty = min((ratio - 1.5) * scale, cap)
+                reward -= activity_penalty
+                self._episode_reward_components["overactivity_penalty"] = -activity_penalty
+                self._episode_reward_component_counts["overactivity_penalty"] = 1
 
 
         bars_in_pos = (self.episode_bars - self.position.entry_bar) if self.position else 0
@@ -2258,7 +2547,19 @@ class PropFirmTradingEnv(
 
 
         cfg = self.config.reward
-        reward = float(np.clip(reward, cfg.min_reward, cfg.max_reward))
+        is_dd_termination = termination_reason in ("max_drawdown_breach", "daily_limit_breach")
+        if is_dd_termination:
+            # Apply the account-forfeit correction after every shaping term and
+            # outside the ordinary per-step clip.  This guarantees that no
+            # amount of reward accumulated before a breach can leave the episode
+            # profitable in reward space.
+            breach_penalty = float(getattr(cfg, "dd_breach_penalty", 25.0))
+            if termination_reason == "daily_limit_breach":
+                breach_penalty *= 0.6
+            prior_total = float(getattr(self, "_episode_reward_total", 0.0))
+            reward = min(float(reward), -prior_total - breach_penalty)
+        else:
+            reward = float(np.clip(reward, cfg.min_reward, cfg.max_reward))
 
 
         self._episode_return += float(reward)
@@ -2482,9 +2783,27 @@ class PropFirmTradingEnv(
         mask_collapse_steps = int(getattr(self, "_mask_collapse_steps", 0) or 0)
         stop_mode_steps = int(getattr(self, "_stop_mode_steps", 0) or 0)
         denom = max(decision_steps, 1)
+        end_time = ""
+        try:
+            end_dt = self._get_bar_dt(self._episode_instrument)
+            if end_dt is not None:
+                end_time = pd.Timestamp(end_dt).isoformat()
+        except Exception:
+            pass
+        episode_identity = {
+            "episode_start_time": str(getattr(self, "_episode_start_time", "") or ""),
+            "episode_end_time": end_time,
+            "episode_start_index": int(getattr(self, "_episode_start_index", 0) or 0),
+            "episode_end_index": int(self.current_step),
+            "episode_length": int(self.episode_step),
+            "effective_curriculum_stage": str(
+                getattr(self, "_episode_effective_stage_name", "") or ""
+            ),
+        }
 
         if not self._episode_trade_results:
             return {
+                **episode_identity,
                 "trade_count": 0,
                 "max_drawdown": float(self._episode_max_drawdown),
                 "win_rate": 0.0,
@@ -2571,6 +2890,7 @@ class PropFirmTradingEnv(
         )
 
         return {
+            **episode_identity,
             "trade_count": len(results),
             "max_drawdown": float(self._episode_max_drawdown),
             "winning_trades": len(wins),

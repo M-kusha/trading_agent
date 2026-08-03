@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import datetime as dt
 import math
+import os
 import time
 import uuid
 from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from modules.contracts import module_args
@@ -80,6 +82,10 @@ class ExecutorConfig:
     min_intensity: float = 0.0
     ignore_hold: bool = True
     max_orders_per_step: int = 20
+
+    firm_daily_drawdown_limit: float = 0.05
+    firm_max_drawdown_limit: float = 0.10
+    dd_entry_veto_fraction: float = 0.75
 
     default_spread: float = 0.0
     slippage_pts: float = 0.0
@@ -163,6 +169,10 @@ class Executor(BaseModule):
         self.initial_balance: float = float(100_000.0 if _cfg_ib is None else _cfg_ib)
         self.balance: float = float(self.initial_balance)
         self.equity: float = float(self.balance)
+        self.day_start_balance: float = float(self.initial_balance)
+        self.peak_balance: float = float(self.initial_balance)
+        self._risk_day: Optional[dt.date] = None
+        self._risk_anchor_authoritative: bool = False
         self._last_equity: float = float(self.equity)
         self.positions: Dict[str, PositionSnap] = {}
         self.trades: List[Dict[str, Any]] = []
@@ -334,6 +344,69 @@ class Executor(BaseModule):
             "ts": time.time(),
         }
 
+    def _count_trades_today(self) -> int:
+        utc_start = dt.datetime.now(dt.timezone.utc).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        ).timestamp()
+        count = 0
+        for trade in self.trades[-200:]:
+            if not isinstance(trade, dict) or float(trade.get("ts", 0.0) or 0.0) < utc_start:
+                continue
+            action = str(trade.get("action", "")).lower()
+            comment = str(trade.get("comment", "")).lower()
+            if not any(term in action for term in ("scale", "close", "exit", "reverse")) and (
+                any(term in action for term in ("open", "long", "short")) or comment == "open"
+            ):
+                count += 1
+        return count
+
+    def _count_consecutive_losses(self) -> int:
+        count = 0
+        for closed in reversed(self.closed_positions):
+            try:
+                pnl = float(closed.get("pnl", closed.get("profit", 0.0)) or 0.0)
+            except (AttributeError, TypeError, ValueError):
+                break
+            if pnl >= 0.0:
+                break
+            count += 1
+        return count
+
+    def _build_live_account_state(
+        self,
+        positions: Dict[str, Any],
+        *,
+        trades_today: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        records = [dict(node) for node in (positions or {}).values() if isinstance(node, dict)]
+        return {
+            "balance": float(self.balance),
+            "equity": float(self.equity),
+            "initial_balance": float(self.initial_balance),
+            "day_start_balance": float(self.day_start_balance),
+            "peak_balance": float(self.peak_balance),
+            "current_drawdown": max(
+                0.0,
+                (float(self.initial_balance) - float(self.equity))
+                / max(float(self.initial_balance), 1e-9),
+            ),
+            "daily_drawdown": max(
+                0.0,
+                (float(self.day_start_balance) - float(self.equity))
+                / max(float(self.day_start_balance), 1e-9),
+            ),
+            "trades_today": int(self._count_trades_today() if trades_today is None else trades_today),
+            "consecutive_losses": int(self._count_consecutive_losses()),
+            "has_position": bool(records),
+            "position_count": int(len(records)),
+            "position": records[0] if len(records) == 1 else None,
+            "positions": dict(positions or {}),
+            "risk_day": self._risk_day.isoformat() if self._risk_day is not None else None,
+            "risk_anchor_authoritative": bool(self._risk_anchor_authoritative),
+            "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(),
+            "step": int(self.step_idx),
+        }
+
     async def process(self, **inputs: Any) -> Dict[str, Any]:
         t0 = time.time()
         try:
@@ -373,6 +446,7 @@ class Executor(BaseModule):
                 acct = self.adapter.get_account_info() if self.adapter else {}
                 self.balance = float(acct.get("balance", self.balance))
                 self.equity = float(acct.get("equity", self.equity))
+                self._refresh_live_risk_anchors(acct)
             else:
                 self.debugger.begin("execute_sim")
                 fills, step_pnl, realized_step, unreal_after = self._execute_sim(accepted, want_breakdown=True)
@@ -595,12 +669,7 @@ class Executor(BaseModule):
             "equity": float(self.equity),
             "current_pnl": float(step_pnl),
             "pending_orders": order_data.get("accepted", []),
-            "account_state": {
-                "balance": float(self.balance),
-                "equity": float(self.equity),
-                "initial_balance": float(self.initial_balance),
-                "step": int(self.step_idx),
-            },
+            "account_state": self._build_live_account_state(positions_after),
             "order_queue": [],
             "processing_time_ms": (time.time() - t0) * 1000.0,
 
@@ -1237,6 +1306,136 @@ class Executor(BaseModule):
             pass
 
         return None
+
+    def _refresh_live_risk_anchors(self, account: Dict[str, Any]) -> Tuple[float, float, float, float]:
+        """Validate a fresh broker snapshot and maintain firm-risk anchors."""
+        try:
+            balance = float(account["balance"])
+            equity = float(account["equity"])
+            initial = float(self.initial_balance)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("missing live account balance/equity/initial anchor") from exc
+        if not all(math.isfinite(v) and v > 0.0 for v in (balance, equity, initial)):
+            raise ValueError(
+                f"invalid live account snapshot: balance={balance!r}, equity={equity!r}, initial={initial!r}"
+            )
+
+        today = dt.datetime.now(dt.timezone.utc).date()
+        if self._risk_day != today:
+            previous_day = self._risk_day
+            supplied_value: Optional[float] = None
+            authoritative = False
+
+            # A process that observes the UTC rollover can establish the new
+            # anchor itself.  A mid-day restart cannot: using current equity
+            # would erase losses incurred earlier in the broker day.
+            if previous_day is not None:
+                supplied_value = equity
+                authoritative = True
+            else:
+                bus_state = self.bus.get("account_state", "ExecutorRiskGuard", default=None)
+                if isinstance(bus_state, dict):
+                    same_day = str(bus_state.get("risk_day", "")) == today.isoformat()
+                    if same_day and bool(bus_state.get("risk_anchor_authoritative", False)):
+                        try:
+                            supplied_value = float(bus_state["day_start_balance"])
+                            authoritative = True
+                        except (KeyError, TypeError, ValueError):
+                            supplied_value = None
+                            authoritative = False
+
+                if supplied_value is None:
+                    explicit = os.environ.get("LIVE_DAY_START_BALANCE")
+                    if explicit:
+                        try:
+                            supplied_value = float(explicit)
+                            authoritative = True
+                        except ValueError:
+                            supplied_value = None
+                            authoritative = False
+
+            if supplied_value is None or not math.isfinite(supplied_value) or supplied_value <= 0.0:
+                self.day_start_balance = equity
+                self._risk_anchor_authoritative = False
+                self.logger.error(
+                    "[RISK_GUARD] No authoritative broker-day starting balance; "
+                    "new exposure is disabled until LIVE_DAY_START_BALANCE is supplied"
+                )
+            else:
+                self.day_start_balance = supplied_value
+                self._risk_anchor_authoritative = authoritative
+            self._risk_day = today
+
+        self.peak_balance = max(float(self.peak_balance), balance, equity)
+        self.balance = balance
+        self.equity = equity
+        return balance, equity, initial, float(self.day_start_balance)
+
+    def _estimate_live_order_risk(self, symbol: str, lots: float) -> float:
+        if self.adapter is None:
+            raise ValueError("live adapter unavailable")
+        quote = self.adapter.get_prices(symbol) or {}
+        bid = float(quote.get("bid", 0.0) or 0.0)
+        ask = float(quote.get("ask", 0.0) or 0.0)
+        mid = float(quote.get("mid", 0.0) or 0.0)
+        if mid <= 0.0 and bid > 0.0 and ask > 0.0:
+            mid = 0.5 * (bid + ask)
+        if not (math.isfinite(mid) and mid > 0.0 and math.isfinite(lots) and lots > 0.0):
+            raise ValueError("missing/non-finite quote or lot size")
+
+        try:
+            from modules.executor.adapters.mt5_adapter import _get_adaptive_sl_distance
+            stop_distance = float(_get_adaptive_sl_distance(symbol, 1, mid))
+        except Exception:
+            stop_distance = mid * 0.03
+        if not (math.isfinite(stop_distance) and stop_distance > 0.0):
+            raise ValueError("cannot establish a worst-case stop distance")
+        spread = max(0.0, ask - bid) if bid > 0.0 and ask > 0.0 else 0.0
+        contract = float(self._get_contract_size(symbol))
+        # Include round-trip spread plus a 20% gap/slippage reserve.
+        return float(lots * contract * (stop_distance * 1.20 + spread * 2.0))
+
+    def _guarded_market_order(
+        self,
+        symbol: str,
+        side: int,
+        lots: float,
+        *,
+        route: str,
+    ) -> Dict[str, Any]:
+        """Only exposure-increasing live order gateway (fail closed)."""
+        if self.adapter is None or not self.adapter.is_connected():
+            return {"ok": False, "error": "risk_guard_adapter_unavailable"}
+        try:
+            account = self.adapter.get_account_info() or {}
+            _balance, equity, initial, day_start = self._refresh_live_risk_anchors(account)
+            if not bool(self._risk_anchor_authoritative):
+                raise ValueError("authoritative broker-day risk anchor is unavailable")
+            daily_limit = float(self.cfg.firm_daily_drawdown_limit)
+            max_limit = float(self.cfg.firm_max_drawdown_limit)
+            reserve = float(self.cfg.dd_entry_veto_fraction)
+            if not (
+                math.isfinite(daily_limit) and 0.0 < daily_limit < 1.0
+                and math.isfinite(max_limit) and 0.0 < max_limit < 1.0
+                and math.isfinite(reserve) and 0.0 < reserve < 1.0
+            ):
+                raise ValueError("invalid firm risk guard configuration")
+            current_dd = max(0.0, (initial - equity) / initial)
+            daily_dd = max(0.0, (day_start - equity) / day_start)
+            candidate_loss = self._estimate_live_order_risk(symbol, float(lots))
+            projected_total = current_dd + candidate_loss / initial
+            projected_daily = daily_dd + candidate_loss / day_start
+            if projected_total >= max_limit * reserve or projected_daily >= daily_limit * reserve:
+                self.logger.warning(
+                    f"[RISK_GUARD] blocked {route} {symbol}: current_dd={current_dd:.3%}, "
+                    f"daily_dd={daily_dd:.3%}, candidate_loss=€{candidate_loss:.2f}, "
+                    f"projected_total={projected_total:.3%}, projected_daily={projected_daily:.3%}"
+                )
+                return {"ok": False, "error": "drawdown_entry_veto"}
+        except Exception as exc:
+            self.logger.error(f"[RISK_GUARD] blocked {route} {symbol}: {exc}")
+            return {"ok": False, "error": f"risk_state_invalid:{exc}"}
+        return self.adapter.market_order(symbol, side, lots)
 
 
     def _check_sim_exits(self) -> Tuple[List[Dict[str, Any]], float]:
@@ -2113,7 +2312,9 @@ class Executor(BaseModule):
 
                 lots = max(float(lots), float(self.adapter.cfg.min_lot))
 
-                open_result = self.adapter.market_order(symbol, decision.side, lots)
+                open_result = self._guarded_market_order(
+                    symbol, decision.side, lots, route="smart_reverse_open"
+                )
                 if open_result.get("ok"):
                     px = float(open_result.get("price", 0) or 0)
                     contract_size = self._get_contract_size(symbol)
@@ -2156,7 +2357,9 @@ class Executor(BaseModule):
                         reasons=decision.reasons[:2],
                     )
                 )
-                result = self.adapter.market_order(symbol, decision.side, decision.lots)
+                result = self._guarded_market_order(
+                    symbol, decision.side, decision.lots, route="smart_scale_up"
+                )
                 if result.get("ok"):
                     px = float(result.get("price", 0) or 0)
                     contract_size = self._get_contract_size(symbol)
@@ -2197,8 +2400,10 @@ class Executor(BaseModule):
                     result = self._partial_close_by_ticket(ticket, symbol, decision.lots)
                 else:
 
-                    self.logger.warning(f"[SCALE_DOWN] No ticket for {symbol}, falling back to market_order")
-                    result = self.adapter.market_order(symbol, close_side, decision.lots)
+                    self.logger.error(
+                        f"[SCALE_DOWN] No ticket for {symbol}; refusing a market order that could flip exposure"
+                    )
+                    result = {"ok": False, "error": "scale_down_ticket_required"}
                 if result.get("ok"):
                     px = float(result.get("price", 0) or 0)
                     contract_size = self._get_contract_size(symbol)
@@ -2452,7 +2657,9 @@ class Executor(BaseModule):
                     )
                 )
 
-                result = self.adapter.market_order(exec_symbol, decision.side, lots)
+                result = self._guarded_market_order(
+                    exec_symbol, decision.side, lots, route="order_queue_open"
+                )
                 if result.get("ok"):
                     px = float(result.get("price", 0) or 0)
                     contract_size = self._get_contract_size(exec_symbol)
@@ -2485,7 +2692,9 @@ class Executor(BaseModule):
                         reasons=decision.reasons[:2],
                     )
                 )
-                result = self.adapter.market_order(exec_symbol, decision.side, lots)
+                result = self._guarded_market_order(
+                    exec_symbol, decision.side, lots, route="order_queue_scale_up"
+                )
                 if result.get("ok"):
                     px = float(result.get("price", 0) or 0)
                     contract_size = self._get_contract_size(exec_symbol)
@@ -3068,13 +3277,7 @@ class Executor(BaseModule):
         self.bus.set("position_data", position_data, thesis="Position data bundle (executor)")
         self.bus.set("current_positions", pos_snap, thesis="Current positions alias (executor)")
 
-
-        account_state = {
-            "balance": float(self.balance),
-            "equity": float(self.equity),
-            "initial_balance": float(self.initial_balance),
-            "step": int(self.step_idx),
-        }
+        account_state = self._build_live_account_state(pos_snap)
         self.bus.set("account_state", account_state, thesis="Account state (executor)")
 
 

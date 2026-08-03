@@ -29,19 +29,12 @@ from envs.curriculum.config import (
     is_valid_threshold_field,
 )
 
-# Ratio of the CURRENT spread regime to the one in the tracked feature CSVs.
-#
-#   XAUUSD M15 spread, 2021-09 -> 2025-12 (training data):  median  8.0 points
-#   XAUUSD M15 spread, 2025-12 -> 2026-07 (measured live):  median 41.0 points
-#
-# data_spread_scale multiplies the HISTORICAL spread column, so a terminal stage
-# at 1.0 certifies the agent against a market ~5x cheaper than the one it would
-# actually trade. Each scale below is written as `fraction * SPREAD_REGIME_SCALE`
-# so the ramp keeps its shape while ending at the real cost of trading today.
-#
-# Re-measure and update when the spread regime moves. This is a market fact,
-# not a tuning knob.
-SPREAD_REGIME_SCALE = 5.125
+# Both tracked and broker files record spread in the same MT5 point units.  The
+# apparent 8-versus-41 difference came from comparing different calendar
+# regimes; overlap/boundary samples are approximately 23 versus 22.5 points.
+# Preserve each row's observed cost and model adverse costs through explicit
+# randomized/stress multipliers instead of multiplying every broker quote 5x.
+SPREAD_REGIME_SCALE = 1.0
 
 
 TIME_OF_DAY_QUALITY = {
@@ -159,7 +152,7 @@ def get_explorer_config() -> CurriculumStageConfig:
             target_trades_per_1k_steps=8.0,
             activity_deviation_penalty_scale=0.3,
             activity_deviation_penalty_cap=10.0,
-            min_trades_penalty=0.3,
+            min_trades_penalty=0.0,
 
 
             exploration_bonus=0.0,
@@ -374,7 +367,7 @@ def get_experimenter_config() -> CurriculumStageConfig:
             target_trades_per_1k_steps=8.0,
             activity_deviation_penalty_scale=0.4,
             activity_deviation_penalty_cap=12.0,
-            min_trades_penalty=0.35,
+            min_trades_penalty=0.0,
 
 
             exploration_bonus=0.0,
@@ -608,7 +601,7 @@ def get_trend_student_config() -> CurriculumStageConfig:
             target_trades_per_1k_steps=8.0,
             activity_deviation_penalty_scale=0.5,
             activity_deviation_penalty_cap=15.0,
-            min_trades_penalty=0.3,
+            min_trades_penalty=0.0,
 
 
             exploration_bonus=0.0,
@@ -841,7 +834,7 @@ def get_session_student_config() -> CurriculumStageConfig:
             target_trades_per_1k_steps=8.0,
             activity_deviation_penalty_scale=0.6,
             activity_deviation_penalty_cap=18.0,
-            min_trades_penalty=0.25,
+            min_trades_penalty=0.0,
 
 
             exploration_bonus=0.0,
@@ -1124,7 +1117,7 @@ def get_timing_student_config() -> CurriculumStageConfig:
             target_trades_per_1k_steps=6.0,
             activity_deviation_penalty_scale=0.7,
             activity_deviation_penalty_cap=20.0,
-            min_trades_penalty=0.2,
+            min_trades_penalty=0.0,
 
             exploration_bonus=0.0,
             min_reward=-100.0,
@@ -1413,7 +1406,7 @@ def get_integrator_config() -> CurriculumStageConfig:
             target_trades_per_1k_steps=5.0,
             activity_deviation_penalty_scale=0.8,
             activity_deviation_penalty_cap=20.0,
-            min_trades_penalty=0.2,
+            min_trades_penalty=0.0,
 
             exploration_bonus=0.0,
             min_reward=-200.0,
@@ -1728,7 +1721,7 @@ def get_risk_manager_config() -> CurriculumStageConfig:
             target_trades_per_1k_steps=4.0,
             activity_deviation_penalty_scale=0.8,
             activity_deviation_penalty_cap=12.0,
-            min_trades_penalty=0.15,
+            min_trades_penalty=0.0,
 
             exploration_bonus=0.0,
             min_reward=-200.0,
@@ -2051,7 +2044,7 @@ def get_strategist_config() -> CurriculumStageConfig:
             target_trades_per_1k_steps=3.5,
             activity_deviation_penalty_scale=1.0,
             activity_deviation_penalty_cap=12.0,
-            min_trades_penalty=0.1,
+            min_trades_penalty=0.0,
 
             exploration_bonus=0.0,
             min_reward=-200.0,
@@ -2389,7 +2382,7 @@ def get_professional_config() -> CurriculumStageConfig:
             target_trades_per_1k_steps=3.0,
             activity_deviation_penalty_scale=1.2,
             activity_deviation_penalty_cap=10.0,
-            min_trades_penalty=0.1,
+            min_trades_penalty=0.0,
 
             exploration_bonus=0.0,
             min_reward=-300.0,
@@ -2738,7 +2731,7 @@ def get_live_ready_config() -> CurriculumStageConfig:
             target_trades_per_1k_steps=3.0,
             activity_deviation_penalty_scale=1.5,
             activity_deviation_penalty_cap=10.0,
-            min_trades_penalty=0.1,
+            min_trades_penalty=0.0,
 
             exploration_bonus=0.0,
             min_reward=-300.0,

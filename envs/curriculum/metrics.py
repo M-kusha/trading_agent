@@ -446,16 +446,11 @@ def compute_composite_score(
     components["dd_breach_rate"] = max(0, breach_score)
 
 
-    # Two-sided. The old score was min(count/min_count, 2)/2 - monotonically
-    # increasing in trade count with no ceiling - so a policy trading 366 times
-    # against a stage target of 12 scored a perfect 1.0, exactly like one
-    # trading 24 times. The promotion gate was paying for the over-trading the
-    # activity_consistency_penalty charges for.
+    # Abstention/low frequency is neutral in the score; the promotion gate owns
+    # evidence sufficiency.  Only excess activity is economically undesirable
+    # here because it compounds spread, slippage and commission.
     max_trades = float(getattr(thresholds, "max_trade_count_avg", 0.0) or 0.0)
-    if thresholds.min_trade_count_avg > 0:
-        trade_score = min(stats.mean_trade_count / thresholds.min_trade_count_avg, 2.0) / 2.0
-    else:
-        trade_score = 0.5
+    trade_score = 1.0
     if max_trades > 0 and stats.mean_trade_count > max_trades:
         # Decay to zero by 3x the ceiling, so the score keeps a gradient across
         # the whole range a runaway policy actually reaches instead of pinning.

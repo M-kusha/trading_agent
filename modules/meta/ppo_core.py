@@ -339,16 +339,19 @@ class PPOCore:
                     expected = None
 
 
-                if expected is not None and obs_arr.shape[0] != expected:
-
-                    logging.warning(
-                        f"[PPOCore] Obs size mismatch: got {obs_arr.shape[0]}, "
-                        f"expected {expected}. Padding/truncating (may affect predictions!)"
+                if expected is None:
+                    raise ValueError("loaded SB3 policy has no one-dimensional observation contract")
+                if expected != int(self.config.obs_size):
+                    raise ValueError(
+                        f"loaded checkpoint expects {expected} observation values, "
+                        f"but runtime schema requires {self.config.obs_size}"
                     )
-                    fixed = np.zeros(expected, dtype=np.float32)
-                    copy_size = min(obs_arr.shape[0], expected)
-                    fixed[:copy_size] = obs_arr[:copy_size]
-                    obs_arr = fixed
+                if obs_arr.shape[0] != expected:
+                    raise ValueError(
+                        f"observation width {obs_arr.shape[0]} != loaded checkpoint width {expected}"
+                    )
+                if not np.all(np.isfinite(obs_arr)):
+                    raise ValueError("observation contains non-finite values")
 
 
                 if self._is_maskable_ppo:
@@ -428,7 +431,11 @@ class PPOCore:
                 return action_np, log_prob_np, value_np
 
             except Exception as e:
-                logging.warning(f"[PPOCore] SB3 predict failed: {e}, falling back to torch network")
+                # A loaded live/training policy and the native fallback are
+                # different models.  Silently switching to an untrained network
+                # after a schema, mask, or predict failure is not a safe HOLD;
+                # surface the contract failure so the caller fails closed.
+                raise RuntimeError(f"SB3 policy inference failed: {e}") from e
 
 
         obs_arr = self._normalize_obs(obs)
@@ -861,6 +868,8 @@ class PPOCore:
                     self._sb3_model_path = str(path)
                     self._is_maskable_ppo = True
 
+                    self._validate_loaded_observation_space()
+
 
                     action_space = getattr(self._sb3_model, "action_space", None)
                     if action_space is not None:
@@ -883,6 +892,7 @@ class PPOCore:
             self._sb3_model = SB3PPO.load(path, device="cpu")
             self._sb3_model_path = str(path)
             self._is_maskable_ppo = False
+            self._validate_loaded_observation_space()
             logging.info(f"[PPOCore] Loaded PPO (continuous) from {path}")
             return
 
@@ -893,6 +903,19 @@ class PPOCore:
         state = torch.load(path, map_location=self.device)
         self.set_state(state)
         logging.info(f"[PPOCore] Loaded native PyTorch checkpoint from {path}")
+
+    def _validate_loaded_observation_space(self) -> None:
+        model = self._sb3_model
+        shape = getattr(getattr(model, "observation_space", None), "shape", None)
+        if not shape or len(shape) != 1:
+            raise ValueError(f"checkpoint has unsupported observation space: {shape!r}")
+        checkpoint_width = int(shape[0])
+        runtime_width = int(self.config.obs_size)
+        if checkpoint_width != runtime_width:
+            raise ValueError(
+                f"checkpoint expects {checkpoint_width} observation dims, "
+                f"runtime schema requires {runtime_width}; retraining is required"
+            )
 
     def set_action_mask_fn(self, fn: Callable[[], np.ndarray]) -> None:
         self._action_mask_fn = fn

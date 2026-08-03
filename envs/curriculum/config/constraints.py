@@ -133,7 +133,9 @@ class RewardShaping:
     stage_activity_targets: Optional[Dict[int, float]] = None
     activity_deviation_penalty_scale: float = 0.2
     activity_deviation_penalty_cap: float = 2.0
-    min_trades_penalty: float = 0.3
+    # Legacy field retained for serialized-stage compatibility only. A trade
+    # quota must not turn honest abstention into a negative economic reward.
+    min_trades_penalty: float = 0.0
 
 
     hard_block_penalty: float = 0.02

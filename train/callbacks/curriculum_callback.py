@@ -5,6 +5,7 @@ import json
 import logging
 import time
 from collections import deque
+from collections.abc import Sized
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -12,6 +13,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback
 
+from envs.curriculum.config import CurriculumStage
 from train.obs_health import ObservationHealthTracker, trading_frequency
 
 try:
@@ -157,6 +159,7 @@ class CurriculumTrainingCallback(BaseCallback):
         self._start_time: Optional[float] = None
         self._base_lr: Optional[float] = None
         self._current_lr: Optional[float] = None
+        self._lr_warmup_active: bool = False
 
 
         self._entropy_history: deque = deque(maxlen=20)
@@ -371,6 +374,87 @@ class CurriculumTrainingCallback(BaseCallback):
         self.curriculum_manager.set_stress_test_evaluator(stress_test_evaluator)
         logger.info("Wired validation gate and stress test evaluators for promotion checks")
 
+    @staticmethod
+    def _episode_gate_payload(
+        ep_stats: Dict[str, Any],
+        *,
+        episode_reward: float = 0.0,
+        stress_applied: bool = False,
+    ) -> Dict[str, Any]:
+        """Build the complete, canonical payload consumed by promotion gates."""
+        exit_distribution = ep_stats.get(
+            "exit_quality_distribution",
+            ep_stats.get("exit_distribution", {}),
+        )
+        if not isinstance(exit_distribution, dict):
+            exit_distribution = {}
+
+        liquidation_exits = ep_stats.get("risk_liquidation_exits", None)
+        if liquidation_exits is None:
+            liquidation_exits = exit_distribution.get(
+                "risk_liquidation",
+                exit_distribution.get("risk_liquidation_exits", 0),
+            )
+        termination_reason = str(ep_stats.get("termination_reason", "") or "").lower()
+        dd_breach = bool(ep_stats.get("dd_breach", False)) or any(
+            marker in termination_reason
+            for marker in (
+                "drawdown_breach",
+                "daily_limit_breach",
+                "daily_dd_breach",
+                "max_dd_breach",
+            )
+        )
+
+        return {
+            "win_rate": float(ep_stats.get("win_rate", 0.0)),
+            "profit_factor": float(ep_stats.get("profit_factor", 0.0)),
+            "total_pnl": float(ep_stats.get("total_pnl", 0.0)),
+            "avg_r_multiple": float(ep_stats.get("avg_r_multiple", 0.0)),
+            "trade_count": int(ep_stats.get("trade_count", 0) or 0),
+            "max_drawdown": float(
+                ep_stats.get("max_drawdown", ep_stats.get("drawdown", 0.0))
+            ),
+            "avg_bars_between_trades": float(
+                ep_stats.get(
+                    "avg_bars_between_trades",
+                    ep_stats.get("mean_bars_between_trades", float("nan")),
+                )
+            ),
+            "avg_setup_quality": float(
+                ep_stats.get(
+                    "avg_setup_quality",
+                    ep_stats.get("setup_quality", float("nan")),
+                )
+            ),
+            "avg_entry_certainty": float(
+                ep_stats.get(
+                    "avg_entry_certainty",
+                    ep_stats.get("entry_certainty", float("nan")),
+                )
+            ),
+            "fomo_trade_count": int(
+                ep_stats.get("fomo_trade_count", ep_stats.get("fomo_trades", 0)) or 0
+            ),
+            "revenge_trade_count": int(
+                ep_stats.get(
+                    "revenge_trade_count",
+                    ep_stats.get("revenge_trades", 0),
+                )
+                or 0
+            ),
+            "risk_liquidation_exits": int(liquidation_exits or 0),
+            "dd_breach": dd_breach,
+            "dd_breach_count": int(ep_stats.get("dd_breach_count", 0) or 0),
+            "episode_reward": float(episode_reward),
+            "stress_applied": bool(stress_applied),
+            "episode_start_time": ep_stats.get("episode_start_time"),
+            "episode_end_time": ep_stats.get("episode_end_time"),
+            "episode_start_index": ep_stats.get("episode_start_index"),
+            "episode_end_index": ep_stats.get("episode_end_index"),
+            "episode_length": int(ep_stats.get("episode_length", 0) or 0),
+        }
+
     def _run_validation_gate_episodes(
         self,
         scenarios: list,
@@ -394,17 +478,12 @@ class CurriculumTrainingCallback(BaseCallback):
 
 
         def _predict_deterministic(obs_in):
-            masks = None
-            try:
-                if SB3_MASK_UTILS_AVAILABLE and sb3_get_action_masks is not None:
-                    masks = sb3_get_action_masks(eval_env)
-            except Exception:
-                masks = None
-
-            try:
-                return self.model.predict(obs_in, deterministic=True, action_masks=masks)  # type: ignore[arg-type]
-            except TypeError:
-                return self.model.predict(obs_in, deterministic=True)  # type: ignore[arg-type]
+            if not (SB3_MASK_UTILS_AVAILABLE and sb3_get_action_masks is not None):
+                raise RuntimeError("validation requires action-mask extraction support")
+            masks = sb3_get_action_masks(eval_env)
+            if masks is None:
+                raise RuntimeError("validation could not obtain action masks")
+            return self.model.predict(obs_in, deterministic=True, action_masks=masks)  # type: ignore[arg-type]
 
 
         def _unwrap_base_env(venv):
@@ -446,48 +525,136 @@ class CurriculumTrainingCallback(BaseCallback):
 
 
             original_difficulty = getattr(base_env, "_data_difficulty", None) if base_env is not None else None
+            original_scenario_difficulty = (
+                getattr(base_env, "_scenario_data_difficulty", None)
+                if base_env is not None
+                else None
+            )
+            scenario_difficulty_setter = (
+                getattr(base_env, "set_scenario_data_difficulty", None)
+                if base_env is not None
+                else None
+            )
+            direct_difficulty_setter = (
+                getattr(base_env, "set_data_difficulty", None)
+                if base_env is not None
+                else None
+            )
+            validation_start_planner = (
+                getattr(base_env, "configure_validation_episode_starts", None)
+                if base_env is not None
+                else None
+            )
+            validation_start_clearer = (
+                getattr(base_env, "clear_validation_episode_starts", None)
+                if base_env is not None
+                else None
+            )
 
             try:
 
-                if base_env is not None and hasattr(base_env, "set_data_difficulty"):
-                    try:
-                        from dataclasses import replace
+                filters_requested = vol_filter is not None or trend_filter is not None
+                difficulty_setter = (
+                    scenario_difficulty_setter
+                    if callable(scenario_difficulty_setter)
+                    else direct_difficulty_setter
+                )
+                if filters_requested and not callable(difficulty_setter):
+                    raise RuntimeError(
+                        f"validation scenario '{scenario_name}' requested a data filter, "
+                        "but the evaluation environment cannot apply one"
+                    )
 
-                        from envs.curriculum.config.execution import DataDifficulty
+                if filters_requested:
+                    assert callable(difficulty_setter)
+                    from envs.curriculum.config.execution import DataDifficulty
 
-                        stage_diff = getattr(self.curriculum_manager.stage_config, "data_difficulty", None) if self.curriculum_manager is not None else None
-                        scenario_diff = replace(stage_diff) if stage_diff is not None else DataDifficulty()
+                    # Validation starts from a neutral sampler.  Inheriting the
+                    # training stage's sampling rules would contaminate a named
+                    # holdout scenario with the distribution it was trained on.
+                    scenario_diff = DataDifficulty()
+
+                    if vol_filter is not None:
+                        if not isinstance(vol_filter, str):
+                            raise ValueError(
+                                f"unsupported volatility_filter {vol_filter!r}"
+                            )
+                        vf = vol_filter.lower().strip()
+                        if vf == "high":
+                            scenario_diff.volatility_percentile_range = (0.70, 1.0)
+                        elif vf == "low":
+                            scenario_diff.volatility_percentile_range = (0.0, 0.30)
+                        else:
+                            raise ValueError(
+                                f"unsupported volatility_filter {vol_filter!r}"
+                            )
+
+                    if trend_filter is not None:
+                        if not isinstance(trend_filter, str):
+                            raise ValueError(f"unsupported trend_filter {trend_filter!r}")
+                        tf = trend_filter.lower().strip()
+                        if tf in {"trend", "trending", "strong_trend"}:
+                            scenario_diff.min_trend_clarity = max(float(scenario_diff.min_trend_clarity), 0.60)
+                            scenario_diff.max_trend_clarity = 1.0
+                        elif tf in {"range", "ranging", "choppy"}:
+                            scenario_diff.min_trend_clarity = 0.0
+                            scenario_diff.max_trend_clarity = min(float(getattr(scenario_diff, "max_trend_clarity", 1.0)), 0.35)
+                        else:
+                            raise ValueError(f"unsupported trend_filter {trend_filter!r}")
+
+                    difficulty_setter(scenario_diff)
 
 
-                        scenario_diff.prefer_recent_data = False
-                        scenario_diff.recent_data_weight = 1.0
+                stress_requested = not (
+                    np.isclose(spread_mult, 1.0)
+                    and np.isclose(slippage_mult, 1.0)
+                )
+                stress_applied = (
+                    self._apply_stress_to_env(eval_env, spread_mult, slippage_mult, 0)
+                    if stress_requested
+                    else False
+                )
+                if stress_requested and not stress_applied:
+                    raise RuntimeError(
+                        f"validation scenario '{scenario_name}' requested execution stress, "
+                        "but the evaluation environment did not apply it"
+                    )
 
-                        if isinstance(vol_filter, str):
-                            vf = vol_filter.lower().strip()
-                            if vf == "high":
-                                scenario_diff.volatility_percentile_range = (0.70, 1.0)
-                            elif vf == "low":
-                                scenario_diff.volatility_percentile_range = (0.0, 0.30)
-
-                        if isinstance(trend_filter, str):
-                            tf = trend_filter.lower().strip()
-                            if tf in {"trend", "trending", "strong_trend"}:
-                                scenario_diff.min_trend_clarity = max(float(scenario_diff.min_trend_clarity), 0.60)
-                                scenario_diff.max_trend_clarity = 1.0
-                            elif tf in {"range", "ranging", "choppy"}:
-                                scenario_diff.min_trend_clarity = 0.0
-                                scenario_diff.max_trend_clarity = min(float(getattr(scenario_diff, "max_trend_clarity", 1.0)), 0.35)
-
-                        base_env.set_data_difficulty(scenario_diff)
-                    except Exception as e:
-                        logger.debug(f"Validation scenario '{scenario_name}': could not set data difficulty: {e}")
-
-
-                stress_applied = self._apply_stress_to_env(eval_env, spread_mult, slippage_mult, 0)
+                if callable(validation_start_planner):
+                    planned_starts = validation_start_planner(
+                        min_episodes=max(1, min_eps),
+                        max_episodes=max_episodes,
+                    )
+                    if isinstance(planned_starts, (str, bytes)) or not isinstance(
+                        planned_starts, Sized
+                    ):
+                        raise RuntimeError(
+                            f"validation scenario '{scenario_name}' start planner "
+                            "did not return a sized collection"
+                        )
+                    planned_count = len(planned_starts)
+                    if planned_count < max(1, min_eps):
+                        raise RuntimeError(
+                            f"validation scenario '{scenario_name}' has only "
+                            f"{planned_count} independent windows"
+                        )
+                    # The planner may honestly return fewer windows than the
+                    # requested collection ceiling.  Do not step beyond that
+                    # evidence set: the next reset is only the DummyVecEnv
+                    # sentinel, and consuming it would overlap prior paths or
+                    # exhaust the schedule and discard otherwise valid results.
+                    max_episodes = min(max_episodes, planned_count)
 
 
                 obs_result = eval_env.reset()
                 obs = obs_result[0] if isinstance(obs_result, tuple) else obs_result
+                if filters_requested and hasattr(base_env, "_data_difficulty"):
+                    active_difficulty = getattr(base_env, "_data_difficulty", None)
+                    if active_difficulty != scenario_diff:
+                        raise RuntimeError(
+                            f"validation scenario '{scenario_name}' data filter "
+                            "did not survive environment reset"
+                        )
 
 
                 max_steps_per_ep = int(getattr(getattr(base_env, "config", None), "max_steps_per_episode", 3000) or 3000)
@@ -509,24 +676,23 @@ class CurriculumTrainingCallback(BaseCallback):
                     info_dict: Dict[str, Any] = info_raw if isinstance(info_raw, dict) else {}
 
                     if done_flag:
-                        ep_stats: Dict[str, Any] = info_dict.get("episode_stats", info_dict)
+                        ep_stats = dict(info_dict)
+                        nested_stats = info_dict.get("episode_stats", {})
+                        if isinstance(nested_stats, dict):
+                            ep_stats.update(nested_stats)
                         ep_info = info_dict.get("episode", {})
                         ep_reward = ep_info.get("r", 0.0) if isinstance(ep_info, dict) else 0.0
 
                         trades = int(ep_stats.get("trade_count", 0) or 0)
                         total_trades_collected += max(trades, 0)
 
-                        scenario_episodes.append({
-                            "win_rate": float(ep_stats.get("win_rate", 0.0)),
-                            "profit_factor": float(ep_stats.get("profit_factor", 0.0)),
-                            "total_pnl": float(ep_stats.get("total_pnl", 0.0)),
-                            "avg_r_multiple": float(ep_stats.get("avg_r_multiple", 0.0)),
-                            "trade_count": trades,
-                            "max_drawdown": float(ep_stats.get("max_drawdown", 0.0)),
-                            "dd_breach": bool(ep_stats.get("dd_breach", False)),
-                            "episode_reward": float(ep_reward),
-                            "stress_applied": bool(stress_applied),
-                        })
+                        scenario_episodes.append(
+                            self._episode_gate_payload(
+                                ep_stats,
+                                episode_reward=float(ep_reward),
+                                stress_applied=bool(stress_applied),
+                            )
+                        )
 
                 if step_count >= max_steps:
                     logger.warning(f"Validation scenario '{scenario_name}' hit step limit ({max_steps})")
@@ -540,6 +706,7 @@ class CurriculumTrainingCallback(BaseCallback):
                 logger.warning(f"Validation scenario '{scenario_name}' failed: {e}")
                 import traceback
                 logger.debug(traceback.format_exc())
+                scenario_episodes = []
             finally:
 
                 try:
@@ -547,10 +714,25 @@ class CurriculumTrainingCallback(BaseCallback):
                 except Exception:
                     pass
                 try:
-                    if base_env is not None and hasattr(base_env, "set_data_difficulty"):
-                        base_env.set_data_difficulty(original_difficulty)
-                except Exception:
-                    pass
+                    if callable(validation_start_clearer):
+                        validation_start_clearer()
+                except Exception as e:
+                    logger.warning(
+                        f"Validation scenario '{scenario_name}' could not clear "
+                        f"episode-start schedule: {e}"
+                    )
+                    scenario_episodes = []
+                try:
+                    if callable(scenario_difficulty_setter):
+                        scenario_difficulty_setter(original_scenario_difficulty)
+                    elif callable(direct_difficulty_setter):
+                        direct_difficulty_setter(original_difficulty)
+                except Exception as e:
+                    logger.warning(
+                        f"Validation scenario '{scenario_name}' could not restore "
+                        f"data difficulty: {e}"
+                    )
+                    scenario_episodes = []
 
             results[scenario_name] = scenario_episodes
             logger.info(f"Validation scenario '{scenario_name}': collected {len(scenario_episodes)} episodes")
@@ -584,9 +766,23 @@ class CurriculumTrainingCallback(BaseCallback):
 
             try:
 
-                stress_applied = self._apply_stress_to_env(
-                    eval_env, spread_mult, slippage_mult, latency_add
+                stress_requested = not (
+                    np.isclose(spread_mult, 1.0)
+                    and np.isclose(slippage_mult, 1.0)
+                    and latency_add == 0
                 )
+                stress_applied = (
+                    self._apply_stress_to_env(
+                        eval_env, spread_mult, slippage_mult, latency_add
+                    )
+                    if stress_requested
+                    else False
+                )
+                if stress_requested and not stress_applied:
+                    raise RuntimeError(
+                        f"stress scenario '{scenario_name}' requested execution stress, "
+                        "but the evaluation environment did not apply it"
+                    )
 
                 obs_result = eval_env.reset()
                 obs = obs_result[0] if isinstance(obs_result, tuple) else obs_result
@@ -598,16 +794,12 @@ class CurriculumTrainingCallback(BaseCallback):
                 while episodes_collected < episodes_per_scenario and step_count < max_steps:
                     step_count += 1
 
-                    masks = None
-                    try:
-                        if SB3_MASK_UTILS_AVAILABLE and sb3_get_action_masks is not None:
-                            masks = sb3_get_action_masks(eval_env)
-                    except Exception:
-                        masks = None
-                    try:
-                        action, _ = self.model.predict(obs, deterministic=True, action_masks=masks)  # type: ignore[arg-type]
-                    except TypeError:
-                        action, _ = self.model.predict(obs, deterministic=True)  # type: ignore[arg-type]
+                    if not (SB3_MASK_UTILS_AVAILABLE and sb3_get_action_masks is not None):
+                        raise RuntimeError("stress evaluation requires action-mask extraction support")
+                    masks = sb3_get_action_masks(eval_env)
+                    if masks is None:
+                        raise RuntimeError("stress evaluation could not obtain action masks")
+                    action, _ = self.model.predict(obs, deterministic=True, action_masks=masks)  # type: ignore[arg-type]
                     obs, reward, done, info = eval_env.step(action)
 
 
@@ -617,16 +809,19 @@ class CurriculumTrainingCallback(BaseCallback):
 
 
                     if done_flag:
-                        ep_stats: Dict[str, Any] = info_dict.get('episode_stats', info_dict)
-                        scenario_episodes.append({
-                            'win_rate': float(ep_stats.get('win_rate', 0.0)),
-                            'profit_factor': float(ep_stats.get('profit_factor', 0.0)),
-                            'total_pnl': float(ep_stats.get('total_pnl', 0.0)),
-                            'avg_r_multiple': float(ep_stats.get('avg_r_multiple', 0.0)),
-                            'trade_count': int(ep_stats.get('trade_count', 0)),
-                            'max_drawdown': float(ep_stats.get('max_drawdown', 0.0)),
-                            'stress_applied': stress_applied,
-                        })
+                        ep_stats = dict(info_dict)
+                        nested_stats = info_dict.get("episode_stats", {})
+                        if isinstance(nested_stats, dict):
+                            ep_stats.update(nested_stats)
+                        ep_info = info_dict.get("episode", {})
+                        ep_reward = ep_info.get("r", 0.0) if isinstance(ep_info, dict) else 0.0
+                        scenario_episodes.append(
+                            self._episode_gate_payload(
+                                ep_stats,
+                                episode_reward=float(ep_reward),
+                                stress_applied=bool(stress_applied),
+                            )
+                        )
                         episodes_collected += 1
 
 
@@ -641,6 +836,7 @@ class CurriculumTrainingCallback(BaseCallback):
                 import traceback
                 logger.debug(traceback.format_exc())
                 self._restore_env_execution(eval_env)
+                scenario_episodes = []
 
             results.append(scenario_episodes)
             logger.info(f"Stress test scenario '{scenario_name}': collected {len(scenario_episodes)} episodes")
@@ -756,6 +952,28 @@ class CurriculumTrainingCallback(BaseCallback):
             self._save_live_metrics_inline()
             self._last_metrics_save = now
 
+    def _set_model_learning_rate(self, learning_rate: float) -> None:
+        """Keep SB3's schedule, public value, and live optimizer in sync."""
+        if self.model is None:
+            return
+
+        new_lr = float(learning_rate)
+        if not np.isfinite(new_lr) or new_lr <= 0.0:
+            raise ValueError(f"learning rate must be finite and positive, got {new_lr!r}")
+
+        if hasattr(self.model, "lr_schedule"):
+            self.model.lr_schedule = lambda _, lr=new_lr: lr
+        if hasattr(self.model, "learning_rate"):
+            self.model.learning_rate = new_lr
+
+        policy = getattr(self.model, "policy", None)
+        optimizer = getattr(policy, "optimizer", None)
+        if optimizer is not None:
+            for group in optimizer.param_groups:
+                group["lr"] = new_lr
+
+        self._current_lr = new_lr
+
     def _apply_lr_warmup(self) -> None:
         if not self.enable_lr_warmup or self.curriculum_manager is None or self.model is None:
             return
@@ -764,24 +982,21 @@ class CurriculumTrainingCallback(BaseCallback):
             return
 
 
-        lr_mult = self.curriculum_manager.get_lr_multiplier()
+        lr_mult = float(self.curriculum_manager.get_lr_multiplier())
+        if not np.isfinite(lr_mult) or lr_mult <= 0.0:
+            raise ValueError(f"invalid curriculum learning-rate multiplier: {lr_mult!r}")
 
         if lr_mult < 1.0:
-
             new_lr = self._base_lr * lr_mult
+            self._set_model_learning_rate(new_lr)
+            self._lr_warmup_active = True
+            return
 
-
-            if hasattr(self.model, 'lr_schedule'):
-                self.model.lr_schedule = lambda _, lr=new_lr: lr
-            elif hasattr(self.model, 'learning_rate'):
-                self.model.learning_rate = new_lr
-        else:
-
-            if hasattr(self.model, 'lr_schedule'):
-                base = self._base_lr
-                self.model.lr_schedule = lambda _, lr=base: lr
-            elif hasattr(self.model, 'learning_rate'):
-                self.model.learning_rate = self._base_lr
+        # Restore the base rate once when warmup actually completes.  On every
+        # later step, leave the adaptive controller's chosen rate untouched.
+        if self._lr_warmup_active:
+            self._set_model_learning_rate(self._base_lr)
+            self._lr_warmup_active = False
 
     def _apply_entropy_schedule(self) -> None:
         if not self.enable_entropy_schedule or self.curriculum_manager is None or self.model is None:
@@ -1006,18 +1221,14 @@ class CurriculumTrainingCallback(BaseCallback):
 
 
         if self.curriculum_manager is not None:
-            try:
-                if float(self.curriculum_manager.get_lr_multiplier()) < 1.0:
-                    return
-            except Exception:
-                pass
+            if float(self.curriculum_manager.get_lr_multiplier()) < 1.0:
+                return
 
 
         if self.curriculum_manager is not None:
-            try:
-                self._smart_lr_controller.on_stage_change(int(self.curriculum_manager.current_stage.value))
-            except Exception:
-                pass
+            self._smart_lr_controller.on_stage_change(
+                int(self.curriculum_manager.current_stage.value)
+            )
 
 
         steps_elapsed = self.num_timesteps - self._last_lr_update_step
@@ -1054,28 +1265,32 @@ class CurriculumTrainingCallback(BaseCallback):
 
 
         if should_apply:
-
-            if hasattr(self.model, 'lr_schedule'):
-                self.model.lr_schedule = lambda _, lr=new_lr: lr
-            if hasattr(self.model, 'learning_rate'):
-                self.model.learning_rate = new_lr
-
-
-            try:
-                if hasattr(self.model, "policy") and hasattr(self.model.policy, "optimizer"):
-                    for g in self.model.policy.optimizer.param_groups:
-                        g["lr"] = float(new_lr)
-            except Exception:
-                pass
-
-
-            self._current_lr = new_lr
+            self._set_model_learning_rate(new_lr)
 
             if self.verbose >= 1:
                 logger.info(
                     f"📊 LR PID Applied [Stage {stage}]: {reason} | "
                     f"{current_lr:.2e} -> {new_lr:.2e}"
                 )
+
+    @staticmethod
+    def _resolve_effective_stage(raw_stage: Any) -> Optional[CurriculumStage]:
+        """Resolve episode-scoped curriculum metadata without silent fallback."""
+        if raw_stage is None:
+            return None
+        if isinstance(raw_stage, CurriculumStage):
+            return raw_stage
+        if isinstance(raw_stage, str):
+            stage_name = raw_stage.strip()
+            if not stage_name:
+                return None
+            try:
+                return CurriculumStage[stage_name.upper()]
+            except KeyError as exc:
+                raise ValueError(
+                    f"invalid effective_curriculum_stage {raw_stage!r}"
+                ) from exc
+        raise ValueError(f"invalid effective_curriculum_stage {raw_stage!r}")
 
     def _on_step(self) -> bool:
         self._obs_tracker.observe(self.locals.get("new_obs"))
@@ -1117,6 +1332,19 @@ class CurriculumTrainingCallback(BaseCallback):
 
 
             ep_stats = finfo.get("episode_stats", info.get("episode_stats", {}))
+            raw_effective_stage = ep_stats.get(
+                "effective_curriculum_stage",
+                finfo.get(
+                    "effective_curriculum_stage",
+                    info.get("effective_curriculum_stage", None),
+                ),
+            )
+            effective_stage = self._resolve_effective_stage(raw_effective_stage)
+            if self.curriculum_manager is not None and effective_stage is None:
+                raise RuntimeError(
+                    "terminal episode omitted effective_curriculum_stage; refusing "
+                    "to credit it to the current stage by fallback"
+                )
 
 
             self._ep_rewards.append(ep_reward)
@@ -1227,7 +1455,9 @@ class CurriculumTrainingCallback(BaseCallback):
                 self._direction_stats["short_pnl"] += float(dir_stats.get("short_pnl", 0))
 
 
-            if self.curriculum_manager is not None:
+            if effective_stage is not None:
+                stage_name = effective_stage.name
+            elif self.curriculum_manager is not None:
                 stage_name = self.curriculum_manager.current_stage.name
             else:
                 stage_name = finfo.get("curriculum_stage", info.get("curriculum_stage", "unknown"))
@@ -1240,19 +1470,18 @@ class CurriculumTrainingCallback(BaseCallback):
                 profit_factor=float(ep_stats.get("profit_factor", finfo.get("profit_factor", 0.0))),
                 r_multiple=float(ep_stats.get("avg_r_multiple", finfo.get("avg_r_multiple", 0.0))),
                 reward=ep_reward,
+                episode_length=ep_len,
                 direction_stats=dir_stats,
             )
 
 
             if self.curriculum_manager is not None:
-                try:
-                    self.curriculum_manager.record_episode_from_info(
-                        info=finfo,
-                        episode_reward=ep_reward,
-                        episode_length=ep_len,
-                    )
-                except Exception as e:
-                    logger.debug(f"record_episode_from_info failed: {e}")
+                self.curriculum_manager.record_episode_from_info(
+                    info=finfo,
+                    episode_reward=ep_reward,
+                    episode_length=ep_len,
+                    effective_stage=effective_stage,
+                )
 
 
             if self.curriculum_manager is not None:
@@ -1319,7 +1548,7 @@ class CurriculumTrainingCallback(BaseCallback):
                     max_episodes=None,
                     max_hours=self.max_hours,
                     start_time=self.training_start_time,
-                    plateau_stop=False,
+                    plateau_stop=self.plateau_stop,
                     plateau_threshold_episodes=self.plateau_threshold_episodes,
                     max_demotions_from_same_stage=self.max_demotions_from_same_stage,
                     mastery_confirmation_episodes=self.mastery_confirmation_episodes,
@@ -1463,6 +1692,7 @@ class CurriculumTrainingCallback(BaseCallback):
         profit_factor: float,
         r_multiple: float,
         reward: float,
+        episode_length: int,
         direction_stats: Optional[Dict[str, Any]] = None,
     ) -> None:
         if stage_name not in self._per_stage_stats:
@@ -1475,6 +1705,7 @@ class CurriculumTrainingCallback(BaseCallback):
                 "total_losses": 0,
                 "total_drawdown": 0.0,
                 "total_reward": 0.0,
+                "total_timesteps": 0,
                 "sum_profit_factor": 0.0,
                 "sum_r_multiple": 0.0,
                 "pnl_values": [],
@@ -1498,6 +1729,7 @@ class CurriculumTrainingCallback(BaseCallback):
         stats["total_trades"] += trades
         stats["total_drawdown"] += drawdown
         stats["total_reward"] += reward
+        stats["total_timesteps"] += max(int(episode_length), 0)
         stats["sum_profit_factor"] += profit_factor
         stats["sum_r_multiple"] += r_multiple
         stats["last_episode"] = len(self._ep_rewards)
@@ -1577,7 +1809,7 @@ class CurriculumTrainingCallback(BaseCallback):
                 "stage_name": stage_name,
                 "stage_index": stage_order.index(stage_name),
                 "episodes": episodes,
-                "timesteps": stats["last_timestep"] - stats["first_timestep"],
+                "timesteps": stats["total_timesteps"],
                 "total_trades": total_trades,
                 "total_pnl": stats["total_pnl"],
                 "avg_pnl": avg_pnl,

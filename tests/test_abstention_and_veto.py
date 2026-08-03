@@ -70,26 +70,45 @@ def test_the_veto_fires_before_the_hard_limit():
 # ── abstention ──────────────────────────────────────────────────────────────
 
 def test_inactivity_is_free_when_capital_was_protected(env):
-    """Flat and even is restraint; the old flat penalty called it failure."""
-    import inspect
+    """An all-HOLD episode is neutral, not charged or paid for inactivity."""
+    env.config.max_steps_per_episode = 320
+    obs, _ = env.reset(seed=71)
+    total_reward = 0.0
+    done = False
+    while not done:
+        obs, reward, terminated, truncated, _info = env.step(env._ACTION_HOLD)
+        total_reward += float(reward)
+        done = terminated or truncated
+    assert env.total_trades == 0
+    assert env.equity == pytest.approx(env.config.initial_balance)
+    assert total_reward == pytest.approx(0.0, abs=1e-9)
 
-    src = inspect.getsource(type(env).step)
-    assert "protected_capital" in src, "the inactivity penalty is unconditional again"
-    assert "initial_balance" in src, (
-        "capital protection must be judged on the account, not on shaped reward"
-    )
 
-
-def test_the_trade_floor_is_waived_for_a_profitable_selective_policy():
-    import inspect
-
+def test_micro_profit_selectivity_cannot_game_promotion():
+    from envs.curriculum.config import CurriculumStage
     from envs.curriculum.curriculum_manager import CurriculumManager
+    from envs.curriculum.metrics import EpisodeMetrics
 
-    src = inspect.getsource(CurriculumManager)
-    assert "waived_as_selective" in src, (
-        "the trade-count gate no longer distinguishes restraint from incompetence"
-    )
-    assert "MIN_TRADES_FOR_VALID_RATE" in src
+    manager = CurriculumManager(initial_stage=CurriculumStage.EXPERIMENTER, auto_promote=False)
+    for _ in range(40):
+        manager.record_episode(EpisodeMetrics(total_pnl=0.0, trade_count=0), timesteps=10_000)
+    for _ in range(10):
+        manager.record_episode(
+            EpisodeMetrics(
+                total_pnl=0.01,
+                trade_count=3,
+                winning_trades=3,
+                win_rate=1.0,
+                profit_factor=10.0,
+            ),
+            timesteps=10_000,
+        )
+
+    _ready, details = manager.check_promotion_criteria()
+    activity = details["checks"]["trade_activity"]
+    assert activity["actual_mean"] < activity["required_mean"]
+    assert not activity["selective_evidence"]
+    assert not activity["passed"]
 
 
 def test_a_low_activity_losing_policy_still_fails():
@@ -134,9 +153,15 @@ def test_prime_and_overlap_sessions_are_flagged():
     from modules.meta.ppo_observation_builder import PPOObservationBuilder
 
     b = PPOObservationBuilder()
-    asian, _ = b._build_session_features({"hour_utc": 3.0, "spread_ratio": 1.0})
-    london, _ = b._build_session_features({"hour_utc": 9.0, "spread_ratio": 1.0})
-    overlap, _ = b._build_session_features({"hour_utc": 14.0, "spread_ratio": 1.0})
+    asian, _ = b._build_session_features(
+        {"hour_utc": 3.0, "spread_ratio": 1.0, "is_prime": False, "is_overlap": False}
+    )
+    london, _ = b._build_session_features(
+        {"hour_utc": 9.0, "spread_ratio": 1.0, "is_prime": True, "is_overlap": False}
+    )
+    overlap, _ = b._build_session_features(
+        {"hour_utc": 14.0, "spread_ratio": 1.0, "is_prime": True, "is_overlap": True}
+    )
 
     assert asian[2] == 0.0 and asian[4] == 0.0
     assert london[2] == 1.0 and london[4] == 0.0

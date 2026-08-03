@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -219,12 +219,17 @@ class ScenarioResult:
 
 
     episodes_run: int = 0
+    episodes_with_identity: int = 0
+    independent_episodes: int = 0
+    overlapping_episodes: int = 0
+    episode_identity_complete: bool = False
     total_trades: int = 0
 
 
     mean_win_rate: float = 0.0
     mean_profit_factor: float = 0.0
     mean_pnl: float = 0.0
+    pnl_mean_ci_low: float = float("-inf")
     mean_r_multiple: float = 0.0
 
 
@@ -399,6 +404,43 @@ class ValidationGateChecker:
 
         result.episodes_run = len(episodes)
 
+        indexed_intervals: List[Tuple[int, int, float]] = []
+        for episode in episodes:
+            try:
+                start_index = int(episode["episode_start_index"])
+                end_index = int(episode["episode_end_index"])
+                pnl_value = float(
+                    _get_episode_value(
+                        episode,
+                        "total_pnl",
+                        "pnl",
+                        "episode_pnl",
+                        "net_pnl",
+                        default=0.0,
+                    )
+                )
+            except (KeyError, TypeError, ValueError, OverflowError):
+                continue
+            if end_index <= start_index or not np.isfinite(pnl_value):
+                continue
+            indexed_intervals.append((start_index, end_index, pnl_value))
+
+        independent_intervals: List[Tuple[int, int, float]] = []
+        last_end: Optional[int] = None
+        for interval in sorted(indexed_intervals, key=lambda item: (item[1], item[0])):
+            if last_end is None or interval[0] > last_end:
+                independent_intervals.append(interval)
+                last_end = interval[1]
+        result.episodes_with_identity = len(indexed_intervals)
+        result.independent_episodes = len(independent_intervals)
+        result.overlapping_episodes = max(
+            0, result.episodes_with_identity - result.independent_episodes
+        )
+        result.episode_identity_complete = (
+            result.episodes_run > 0
+            and result.episodes_with_identity == result.episodes_run
+        )
+
 
         win_rates = []
         profit_factors = []
@@ -469,6 +511,24 @@ class ValidationGateChecker:
         result.mean_win_rate = _finite_mean(win_rates, 0.0)
         result.mean_profit_factor = _finite_mean(profit_factors, 0.0)
         result.mean_pnl = _finite_mean(pnls, 0.0)
+        if result.episode_identity_complete:
+            finite_pnls = np.asarray(
+                [interval[2] for interval in independent_intervals],
+                dtype=np.float64,
+            )
+        else:
+            # Compatibility for standalone diagnostics.  Promotion gates below
+            # require complete identities, so this fallback cannot create
+            # curriculum evidence.
+            finite_pnls = np.asarray(
+                [float(v) for v in pnls if _is_finite(v)], dtype=np.float64
+            )
+        if finite_pnls.size >= 2:
+            result.pnl_mean_ci_low = float(
+                finite_pnls.mean() - 1.96 * finite_pnls.std(ddof=1) / np.sqrt(finite_pnls.size)
+            )
+        else:
+            result.pnl_mean_ci_low = float("-inf")
         result.mean_r_multiple = _finite_mean(r_multiples, 0.0)
         result.mean_trade_count = _finite_mean(safe_trade_counts, 0.0)
         result.max_drawdown_seen = _finite_max(drawdowns, 0.0)
@@ -486,6 +546,19 @@ class ValidationGateChecker:
         if result.total_trades < scenario.min_trades:
             result.failure_reasons.append(
                 f"Insufficient trades ({result.total_trades} < {scenario.min_trades})"
+            )
+        if scenario.scenario_type == ValidationScenarioType.STANDARD and result.pnl_mean_ci_low <= 0.0:
+            result.failure_reasons.append(
+                "No positive edge evidence: episode-PnL 95% lower bound "
+                f"is {result.pnl_mean_ci_low:.4f}"
+            )
+        if scenario.scenario_type in {
+            ValidationScenarioType.WIDE_SPREAD,
+            ValidationScenarioType.HIGH_SLIPPAGE,
+            ValidationScenarioType.STRESS_TEST,
+        } and result.mean_pnl <= 0.0:
+            result.failure_reasons.append(
+                f"Unprofitable under execution stress: mean PnL={result.mean_pnl:.4f}"
             )
 
 
@@ -517,11 +590,6 @@ class ValidationGateChecker:
             if trade_ratio > self.config.max_trade_count_ratio:
                 result.failure_reasons.append(
                     f"Overtrading in validation ({trade_ratio:.1f}x training)"
-                )
-                behavior_ok = False
-            if trade_ratio < self.config.min_trade_count_ratio:
-                result.failure_reasons.append(
-                    f"Under-trading in validation ({trade_ratio:.1f}x training)"
                 )
                 behavior_ok = False
         else:
@@ -636,12 +704,47 @@ class ValidationGateChecker:
 
 
         scenario_weights = []
+        evidence_integrity_failures: List[str] = []
         scenario_list = scenarios or self.get_scenarios_for_stage(stage_index)
         for scenario in scenario_list:
             scenario_name = scenario.name
             episodes = validation_results.get(scenario_name, [])
 
             scenario_result = self.evaluate_scenario(scenario, episodes, training_stats)
+
+            # Validation begins at INTEGRATOR (stage 5).  Promotion evidence
+            # must identify every episode and contain the requested number of
+            # disjoint paths; repeated resets inside one short holdout are not
+            # independent observations and cannot support a confidence bound.
+            if stage_index >= 5:
+                if not scenario_result.episode_identity_complete:
+                    reason = (
+                        "Incomplete episode identity "
+                        f"({scenario_result.episodes_with_identity}/"
+                        f"{scenario_result.episodes_run})"
+                    )
+                    scenario_result.failure_reasons.append(reason)
+                    evidence_integrity_failures.append(f"{scenario_name}: {reason}")
+                if scenario_result.independent_episodes < int(scenario.min_episodes):
+                    reason = (
+                        "Insufficient independent episodes "
+                        f"({scenario_result.independent_episodes}/"
+                        f"{int(scenario.min_episodes)})"
+                    )
+                    scenario_result.failure_reasons.append(reason)
+                    evidence_integrity_failures.append(f"{scenario_name}: {reason}")
+                if scenario_result.overlapping_episodes > 0:
+                    reason = (
+                        "Overlapping episode evidence "
+                        f"({scenario_result.overlapping_episodes} episodes)"
+                    )
+                    scenario_result.failure_reasons.append(reason)
+                    evidence_integrity_failures.append(f"{scenario_name}: {reason}")
+                scenario_result.failure_reasons = list(
+                    dict.fromkeys(scenario_result.failure_reasons)
+                )
+                scenario_result.passed = not scenario_result.failure_reasons
+
             result.scenario_results[scenario_name] = scenario_result
 
             if scenario_result.passed:
@@ -686,6 +789,12 @@ class ValidationGateChecker:
         adjusted_min_scenarios_passed = int(_clamp(adjusted_min_scenarios_passed, 1, len(scenario_list)))
 
         blocking = []
+
+        if evidence_integrity_failures:
+            blocking.append(
+                "Invalid validation episode evidence: "
+                + "; ".join(evidence_integrity_failures)
+            )
 
         if result.scenarios_passed < adjusted_min_scenarios_passed:
             blocking.append(
@@ -734,9 +843,26 @@ class ValidationGateChecker:
             if catastrophic:
                 blocking.append("Catastrophic behavior/safety failures in validation: " + ", ".join(sorted(set(catastrophic))))
 
+        # PROFESSIONAL and LIVE_READY are candidate-quality gates, not teaching
+        # checkpoints.  A weighted 7/8 pass previously allowed the model to fail
+        # the explicit spread/slippage stress scenario and still be called ready.
+        # Once every required behavior metric is present, all declared final
+        # scenarios must pass.
+        if stage_index >= 8:
+            failed_final_scenarios = [
+                name
+                for name, scenario_result in result.scenario_results.items()
+                if not scenario_result.passed
+            ]
+            if failed_final_scenarios:
+                blocking.append(
+                    "Final-stage scenario failures: "
+                    + ", ".join(sorted(failed_final_scenarios))
+                )
+
 
         result.blocking_reasons = list(dict.fromkeys(result.blocking_reasons + blocking))
-        result.gate_passed = len(blocking) == 0
+        result.gate_passed = len(result.blocking_reasons) == 0
 
 
         total_episodes = sum(sr.episodes_run for sr in result.scenario_results.values())

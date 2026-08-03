@@ -1,8 +1,9 @@
 """Every curriculum override must actually reach the env config.
 
 _apply_overrides_to_object assigns an override only `if hasattr(target, k)`.
-A key with no matching field was dropped with no log line at all, so a stage
-could look carefully tuned while the env quietly used its own default.
+A key with no matching field used to be dropped, so a stage could look
+carefully tuned while the env quietly used its own default. Runtime application
+now fails before the episode instead of continuing with a partial stage.
 
 That is not hypothetical. activity_deviation_penalty_cap was set on all ten
 stages (10.0 -> 20.0 -> 10.0) and defined nowhere on the env's RewardConfig, so
@@ -75,17 +76,14 @@ def test_the_activity_cap_reaches_the_env():
         )
 
 
-def test_an_unknown_override_is_reported_not_swallowed(caplog):
-    """A dropped key must produce an error log, not silence."""
+def test_an_unknown_override_fails_before_it_can_be_swallowed():
+    """A malformed stage must stop training, not merely leave a log behind."""
     env = PropFirmTradingEnv.__new__(PropFirmTradingEnv)
     env._reported_dropped_overrides = set()
     cfg = PropFirmConfig()
 
-    with caplog.at_level("ERROR"):
+    with pytest.raises(AttributeError, match="no_such_reward_field"):
         env._apply_overrides_to_object(cfg.reward, {"no_such_reward_field": 1.23})
-
-    assert "no_such_reward_field" in caplog.text
-    assert "NOT in effect" in caplog.text
 
 
 def test_a_known_override_is_applied_and_not_reported(caplog):

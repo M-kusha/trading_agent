@@ -61,6 +61,7 @@ class LivePPOAgent(BaseModule):
         self.mask_builder = LiveActionMaskBuilder(LiveMaskConfig())
         self.core: Optional[Any] = None
         self._last_decision: Dict[str, Any] = {}
+        self._last_account_snapshot: Dict[str, Any] = {}
         self._consecutive_failures = 0
 
         simclock.set_mode(simclock.TimeMode.LIVE)
@@ -102,16 +103,28 @@ class LivePPOAgent(BaseModule):
             raise
 
         self._consecutive_failures = 0
-        action_id = int(self.core.select_action(obs, deterministic=True)[0])
-
-        mask = self._build_mask(state["account_state"])
+        mask = self._build_mask(self._last_account_snapshot)
+        if not bool(getattr(self.core, "is_discrete_action_space", False)):
+            raise RuntimeError("live policy must use the discrete MaskablePPO action contract")
+        self.core.select_action(obs, deterministic=True, action_mask=mask)
+        decoded = getattr(self.core, "last_discrete_action", None)
+        if decoded is None:
+            raise RuntimeError("discrete policy returned no decodable action")
+        action_id = int(decoded.action_id)
+        if action_id < 0 or action_id >= len(mask):
+            raise RuntimeError(f"policy returned out-of-range action {action_id}")
         if not bool(mask[action_id]):
-            action_id = 0  # HOLD is always legal
+            raise RuntimeError(f"masked policy returned illegal action {action_id}")
 
         intent, size_mult = self.mask_builder.decode_action(action_id)
+        direction = intent if intent in ("long", "short") else "flat"
         decision = {
             "action_id": action_id,
             "intent": intent,
+            "direction": direction,
+            "confidence": 1.0 if intent in ("long", "short") else 0.0,
+            "gate_passed": intent != "hold",
+            "instrument": DEFAULT_INSTRUMENT,
             "size_mult": float(size_mult),
             "obs_version": PPO_OBS_VERSION,
             "obs_size": int(PPO_OBS_SIZE),
@@ -144,13 +157,58 @@ class LivePPOAgent(BaseModule):
 
         account = self.smart_bus.get("account_state", name)
         if isinstance(account, dict) and account:
+            required = (
+                "balance",
+                "equity",
+                "initial_balance",
+                "day_start_balance",
+                "peak_balance",
+                "trades_today",
+                "consecutive_losses",
+                "has_position",
+                "position_count",
+                "position",
+                "risk_day",
+                "risk_anchor_authoritative",
+                "timestamp",
+            )
+            missing = [key for key in required if key not in account]
+            if missing:
+                raise RuntimeError(
+                    "LivePPOAgent account state lacks authoritative risk anchors: "
+                    + ", ".join(missing)
+                )
+            try:
+                position_count = int(account["position_count"])
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError("LivePPOAgent account position_count is invalid") from exc
+            has_position = bool(account["has_position"])
+            if position_count < 0 or has_position != (position_count > 0):
+                raise RuntimeError(
+                    f"LivePPOAgent inconsistent position state: has_position={has_position}, "
+                    f"position_count={position_count}"
+                )
+            if position_count > 1:
+                raise RuntimeError(
+                    "LivePPOAgent uses a single-position observation contract; "
+                    f"broker reports {position_count} positions"
+                )
+            if has_position and not isinstance(account["position"], dict):
+                raise RuntimeError("LivePPOAgent open position lacks a normalized position payload")
+            if not has_position and account["position"] is not None:
+                raise RuntimeError("LivePPOAgent flat account carries a non-null position payload")
+
             self.state_host.sync_account(
                 balance=float(account.get("balance", 0.0) or 0.0),
                 equity=float(account.get("equity", 0.0) or 0.0),
-                position=account.get("position"),
-                daily_trades=int(account.get("trades_today", 0) or 0),
-                consecutive_losses=int(account.get("consecutive_losses", 0) or 0),
+                position=account["position"],
+                daily_trades=int(account["trades_today"]),
+                consecutive_losses=int(account["consecutive_losses"]),
+                initial_balance=float(account["initial_balance"]),
+                day_start_balance=float(account["day_start_balance"]),
+                peak_balance=float(account["peak_balance"]),
             )
+            self._last_account_snapshot = dict(account)
         else:
             raise RuntimeError(
                 "LivePPOAgent has no account state. Sizing and risk dimensions "
@@ -162,10 +220,13 @@ class LivePPOAgent(BaseModule):
     def _build_mask(self, account_state: Dict[str, Any]) -> np.ndarray:
         return self.mask_builder.get_action_mask(
             has_position=bool(account_state.get("has_position", False)),
-            current_dd=float(account_state.get("current_drawdown", 0.0) or 0.0),
-            daily_dd=float(account_state.get("daily_drawdown", 0.0) or 0.0),
+            trade_open_allowed=bool(account_state.get("risk_anchor_authoritative", False)),
+            current_dd=account_state.get("current_drawdown"),
+            daily_dd=account_state.get("daily_drawdown"),
             daily_trades=int(account_state.get("trades_today", 0) or 0),
             consecutive_losses=int(account_state.get("consecutive_losses", 0) or 0),
+            risk_timestamp=account_state.get("timestamp"),
+            current_time=simclock.now(),
         )
 
     def _publish(self, decision: Dict[str, Any], mask: np.ndarray) -> None:
@@ -175,11 +236,12 @@ class LivePPOAgent(BaseModule):
             f"on observation schema v{PPO_OBS_VERSION}"
         )
         self.smart_bus.set("ppo_final_decision", decision, module=name, thesis=thesis)
-        self.smart_bus.set("ppo_gate_passed", decision["intent"] != "hold", module=name, thesis=thesis)
+        self.smart_bus.set("ppo_gate_passed", decision["gate_passed"], module=name, thesis=thesis)
         self.smart_bus.set("ppo_position_size", decision["size_mult"], module=name, thesis=thesis)
         self.smart_bus.set("action_mask", mask.tolist(), module=name, thesis="legal actions this step")
 
     def reset(self) -> None:
         super().reset()
         self._last_decision = {}
+        self._last_account_snapshot = {}
         self._consecutive_failures = 0

@@ -89,18 +89,22 @@ class ObservationBuildersMixin:
 
         exposure = 0.0
         if self.position is not None:
-            risk_eur = float(self.position.lot_size) * float(self.config.hard_stop_loss_eur)
+            # ATR sizing assigns each position its own executable stop risk.
+            # Multiplying the lot by the obsolete fixed-euro stop understated or
+            # overstated exposure whenever volatility changed or lot clipping
+            # applied.
+            risk_eur = float(getattr(self.position, "initial_risk_eur", 0.0) or 0.0)
             exposure = risk_eur / max(float(self.equity), 1.0)
 
 
-        daily_limit = max(float(self.config.daily_drawdown_limit), 1e-9)
+        daily_limit = max(float(getattr(self.config, "firm_daily_drawdown_limit", self.config.daily_drawdown_limit)), 1e-9)
         risk_budget = 1.0 - (float(daily_dd) / daily_limit)
 
         return {
             "current_drawdown": float(current_dd),
             "daily_drawdown": float(daily_dd),
-            "max_drawdown_limit": float(self.config.max_drawdown_limit),
-            "daily_drawdown_limit": float(self.config.daily_drawdown_limit),
+            "max_drawdown_limit": float(getattr(self.config, "firm_max_drawdown_limit", self.config.max_drawdown_limit)),
+            "daily_drawdown_limit": float(getattr(self.config, "firm_daily_drawdown_limit", self.config.daily_drawdown_limit)),
             "trades_today": int(self.daily_trades),
             "max_trades_per_day": int(self.config.max_trades_per_day),
             "risk_per_trade": float(self.config.risk_per_trade_pct),

@@ -466,8 +466,17 @@ def _translate_decision_to_intent(
     return None
 
 
-async def _run_orchestrator_mode() -> int:
-    cmd = [sys.executable, str(_project_root() / "start_live_trading.py")]
+async def _run_orchestrator_mode(args: argparse.Namespace) -> int:
+    cmd = [
+        sys.executable,
+        str(_project_root() / "start_live_trading.py"),
+        "--model",
+        str(args.model_path),
+        "--firm-initial-balance",
+        str(args.initial_balance),
+        "--day-start-balance",
+        str(args.day_start_balance),
+    ]
     logger.info("Delegating to orchestrator runner: %s", " ".join(cmd))
     try:
         proc = await asyncio.create_subprocess_exec(*cmd)
@@ -500,6 +509,8 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
 
     os.environ["EXECUTION_MODE"] = "live"
     os.environ["TRADING_MODE"] = "live"
+    if args.day_start_balance is not None:
+        os.environ["LIVE_DAY_START_BALANCE"] = str(float(args.day_start_balance))
 
 
     try:
@@ -608,13 +619,18 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
             logger.info("Loaded model: %s", model_path)
         except Exception as e:
             logger.error("Failed to load model '%s': %s", model_path, e)
+            return 1
     else:
-        logger.warning("No model found; PPOCore will use untrained weights")
+        logger.error("No model found; live inference will not use untrained weights")
+        return 1
+    if not bool(getattr(ppo_core, "is_discrete_action_space", False)):
+        logger.error("Live inference requires a discrete MaskablePPO checkpoint")
+        return 1
 
 
     mask_cfg = LiveMaskConfig(
-        daily_drawdown_limit=float(env_cfg.daily_drawdown_limit),
-        max_drawdown_limit=float(env_cfg.max_drawdown_limit),
+        daily_drawdown_limit=float(env_cfg.firm_daily_drawdown_limit),
+        max_drawdown_limit=float(env_cfg.firm_max_drawdown_limit),
         daily_dd_safety_buffer=float(env_cfg.daily_dd_safety_buffer),
         max_dd_safety_buffer=float(env_cfg.max_dd_safety_buffer),
         max_trades_per_day=int(env_cfg.max_trades_per_day),
@@ -623,6 +639,7 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
         min_minutes_between_entries=int(env_cfg.min_minutes_between_entries),
         min_minutes_after_loss=int(env_cfg.min_minutes_after_loss),
         enforce_hard_rules=bool(args.enforce_hard_rules),
+        dd_entry_veto_fraction=float(env_cfg.dd_entry_veto_fraction),
         no_new_trades_start=env_cfg.no_new_trades_start,
         no_new_trades_end=env_cfg.no_new_trades_end,
         hard_close_time=env_cfg.hard_close_time,
@@ -652,8 +669,12 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
     last_manage_ts = 0.0
     last_loss_time: Optional[datetime] = None
     last_entry_time: Optional[datetime] = None
-    day_start_balance: float = float(getattr(account, "equity", initial_balance) or initial_balance)
-    current_day = None
+    day_start_balance: float = float(
+        args.day_start_balance
+        if args.day_start_balance is not None
+        else (getattr(account, "equity", initial_balance) or initial_balance)
+    )
+    current_day = datetime.now(getattr(env, "tz", timezone.utc)).date()
     daily_trades = 0
     session_trades = 0
     consecutive_losses = 0
@@ -925,20 +946,15 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
                 expert_signals = env._prepare_expert_signals(primary_instrument)
                 committee_state = env._prepare_committee_state(expert_signals)
                 risk_state = env._prepare_risk_state()
-                memory_state = env._prepare_memory_state(primary_instrument)
                 trading_mode_state = env._prepare_trading_mode_state(primary_instrument)
-                world_model_state = env._prepare_world_model_state(primary_instrument, expert_signals, committee_state)
                 governor_state = env._get_governor_state()
+                session_state = env._prepare_session_state(primary_instrument)
 
                 if new_closed:
                     for name, obj in (
                         ("market_state", market_state),
-                        ("expert_signals", expert_signals),
-                        ("committee_state", committee_state),
                         ("risk_state", risk_state),
-                        ("memory_state", memory_state),
                         ("trading_mode_state", trading_mode_state),
-                        ("world_model_state", world_model_state),
                         ("governor_state", governor_state),
                     ):
                         h = _hash_obj(obj)
@@ -952,13 +968,11 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
                 obs = obs_builder.build(
                     market_data=market_state,
                     expert_signals=expert_signals,
-                    committee_state=committee_state,
                     risk_state=risk_state,
-                    memory_state=memory_state,
                     account_state=account_state,
-                    world_model_state=world_model_state,
                     trading_mode_state=trading_mode_state,
                     governor_state=governor_state,
+                    session_state=session_state,
                 )
 
                 action_mask = None
@@ -975,6 +989,7 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
                         last_entry_time=last_entry_time,
                         last_loss_time=last_loss_time,
                         current_time=now_dt,
+                        risk_timestamp=now_dt,
                     )
 
                 _action, _, _ = ppo_core.select_action(
@@ -1011,6 +1026,7 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
                             last_entry_time=last_entry_time,
                             last_loss_time=last_loss_time,
                             current_time=now_dt,
+                            risk_timestamp=now_dt,
                         )
                     except Exception:
                         hard_reasons = []
@@ -1143,12 +1159,7 @@ async def _run_training_mode(args: argparse.Namespace) -> int:
                             "observation_by_group": obs_by_group,
                             "states": {
                                 "market_state": market_state,
-                                "expert_signals": expert_signals,
-                                "committee_state": committee_state,
-                                "risk_state": risk_state,
-                                "memory_state": memory_state,
                                 "account_state": account_state,
-                                "world_model_state": world_model_state,
                                 "trading_mode_state": trading_mode_state,
                                 "governor_state": governor_state,
                             },
@@ -1269,6 +1280,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--dump-snapshot", action=argparse.BooleanOptionalAction, default=False, help="Dump JSON snapshot per decision to snapshot-dir.")
     p.add_argument("--snapshot-dir", type=str, default="logs/explain", help="Directory for --dump-snapshot JSON files.")
     p.add_argument("--initial-balance", type=float, default=None, help="Override initial balance used for DD features.")
+    p.add_argument(
+        "--day-start-balance",
+        type=float,
+        default=None,
+        help="Authoritative account balance/equity at the start of the current broker day.",
+    )
     return p
 
 
@@ -1305,8 +1322,22 @@ async def _amain() -> int:
     signal.signal(signal.SIGTERM, _signal_handler)
 
     args = _build_arg_parser().parse_args()
+    if args.execute:
+        missing = []
+        if not args.model_path:
+            missing.append("--model-path")
+        if args.initial_balance is None or float(args.initial_balance) <= 0.0:
+            missing.append("--initial-balance")
+        if args.day_start_balance is None or float(args.day_start_balance) <= 0.0:
+            missing.append("--day-start-balance")
+        if missing:
+            logger.error("Execution requires explicit policy and risk anchors: %s", ", ".join(missing))
+            return 2
     if args.engine == "orchestrator":
-        return await _run_orchestrator_mode()
+        if not args.execute:
+            logger.error("The orchestrator engine is an execution path; pass --execute plus explicit anchors")
+            return 2
+        return await _run_orchestrator_mode(args)
     return await _run_training_mode(args)
 
 

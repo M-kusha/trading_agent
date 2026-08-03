@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import Callable, Any, Dict, List, Optional, TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
@@ -74,16 +74,22 @@ class DataDifficultyMixin:
         df = self.data.get(inst, {}).get(primary_tf)
 
         if df is None or len(df) < 200:
-            self._valid_start_indices = None
-            return
+            raise ValueError(f"DataDifficulty requires at least 200 primary bars; got {0 if df is None else len(df)}")
 
         n_bars = len(df)
-        buffer = 120
-        max_end = n_bars - self.config.max_steps_per_episode - buffer
+        # This mixin is always composed into PropFirmTradingEnv, which defines
+        # _episode_start_buffer. The getattr is a fallback for standalone use in
+        # tests; naming the return type keeps the contract explicit rather than
+        # leaving the checker to infer `object` from getattr.
+        history_fn: Optional[Callable[[], int]] = getattr(self, "_episode_start_buffer", None)
+        buffer: int = history_fn() if callable(history_fn) else 120
+        max_end = n_bars - int(self.config.max_steps_per_episode)
 
         if max_end <= buffer:
-            self._valid_start_indices = None
-            return
+            raise ValueError(
+                f"DataDifficulty has no capacity after history/episode bounds: "
+                f"bars={n_bars}, history={buffer}, max_steps={self.config.max_steps_per_episode}"
+            )
 
 
         valid_mask = np.ones(n_bars, dtype=bool)
@@ -119,6 +125,21 @@ class DataDifficultyMixin:
                     s = s.split(".")[-1]
                 norm.add(s)
 
+            supported_regimes = {
+                "trending_up",
+                "trending_down",
+                "ranging",
+                "high_volatility",
+                "low_volatility",
+                "news_volatility",
+            }
+            unknown_regimes = sorted(norm - supported_regimes)
+            if unknown_regimes:
+                raise ValueError(
+                    "unsupported DataDifficulty regimes: "
+                    + ", ".join(unknown_regimes)
+                )
+
 
             if self._volatility_percentiles is None:
                 self._compute_volatility_percentiles(df)
@@ -146,45 +167,48 @@ class DataDifficultyMixin:
                 if "news_volatility" in norm:
                     regime_mask |= (vol_pct >= news_vol)
 
-            if regime_mask.any():
-                valid_mask &= regime_mask
+            # An empty requested regime is an empty eligible set, not an excuse
+            # to silently fall back to all bars.
+            valid_mask &= regime_mask
 
 
+        timestamps: Optional[pd.DatetimeIndex] = None
         if isinstance(df.index, pd.DatetimeIndex):
-            try:
-                hours = np.asarray(df.index.hour, dtype=np.int32)
-                if hours is not None:
-                    session_mask = np.zeros(n_bars, dtype=bool)
+            timestamps = pd.DatetimeIndex(pd.to_datetime(df.index, errors="coerce", utc=True))
+        elif "time" in df.columns:
+            parsed = pd.to_datetime(df["time"], errors="coerce", utc=True)
+            if parsed.notna().all():
+                timestamps = pd.DatetimeIndex(parsed)
 
+        if timestamps is None or len(timestamps) != n_bars:
+            raise ValueError(
+                "DataDifficulty session filtering requires one valid timestamp per bar"
+            )
 
-                    if getattr(difficulty, "include_asian_session", True):
-                        session_mask |= (hours < 8)
-                    if getattr(difficulty, "include_london_session", True):
-                        session_mask |= ((hours >= 8) & (hours < 16))
-                    if getattr(difficulty, "include_ny_session", True):
-                        session_mask |= ((hours >= 14) & (hours < 22))
-                    if getattr(difficulty, "include_overlap_sessions", True):
-                        session_mask |= ((hours >= 14) & (hours < 16))
+        hours = np.asarray(timestamps.hour, dtype=np.int32)
+        session_mask = np.zeros(n_bars, dtype=bool)
 
+        if getattr(difficulty, "include_asian_session", True):
+            session_mask |= (hours < 8)
+        if getattr(difficulty, "include_london_session", True):
+            session_mask |= ((hours >= 8) & (hours < 16))
+        if getattr(difficulty, "include_ny_session", True):
+            session_mask |= ((hours >= 14) & (hours < 22))
+        if getattr(difficulty, "include_overlap_sessions", True):
+            session_mask |= ((hours >= 14) & (hours < 16))
 
-                    if session_mask.any():
-                        valid_mask &= session_mask
-            except Exception as e:
-                logger.debug(f"Skip session filtering: {e}")
+        # Apply the requested session policy even when it selects nothing.
+        # Treating an all-false mask as "no filter" made an invalid
+        # configuration silently sample every session.
+        valid_mask &= session_mask
 
 
         if getattr(difficulty, "exclude_market_open_close", False):
-            try:
-                if isinstance(df.index, pd.DatetimeIndex):
-                    hours = np.asarray(df.index.hour, dtype=np.int32)
-
-                    open_close_mask = ~(
-                        (hours == 0) | (hours == 8) | (hours == 14) |
-                        (hours == 7) | (hours == 15) | (hours == 21)
-                    )
-                    valid_mask &= open_close_mask
-            except Exception as e:
-                logger.debug(f"Skip market open/close filter: {e}")
+            open_close_mask = ~(
+                (hours == 0) | (hours == 8) | (hours == 14) |
+                (hours == 7) | (hours == 15) | (hours == 21)
+            )
+            valid_mask &= open_close_mask
 
 
         range_mask = np.zeros(n_bars, dtype=bool)
@@ -217,14 +241,17 @@ class DataDifficultyMixin:
             low_vol = float(getattr(difficulty, "low_volatility_threshold", 0.30))
             news_vol = float(getattr(difficulty, "news_volatility_threshold", 0.90))
 
-            weights = np.ones(len(valid_indices), dtype=np.float64)
+            weights = np.zeros(len(valid_indices), dtype=np.float64)
 
             def _apply_weight(mask: np.ndarray, weight: float) -> None:
                 if weight <= 0:
                     return
                 idx_mask = mask[valid_indices]
                 if idx_mask.any():
-                    weights[idx_mask] = np.maximum(weights[idx_mask], weight)
+                    # Config values describe target mixture mass, not a raw
+                    # per-row multiplier. Divide by bucket prevalence so a rare
+                    # regime can receive its declared share.
+                    weights[idx_mask] += float(weight) / float(idx_mask.sum())
 
             if "trending_up" in weights_norm:
                 _apply_weight((trend_clarity >= trend_th) & (trend_slope > 0.0), weights_norm["trending_up"])
@@ -240,23 +267,21 @@ class DataDifficultyMixin:
                 if "news_volatility" in weights_norm:
                     _apply_weight(vol_pct >= news_vol, weights_norm["news_volatility"])
 
-            self._regime_weights = weights
+            self._regime_weights = weights if np.any(weights > 0.0) else None
 
         if len(valid_indices) == 0:
 
             # _data_difficulty is Optional; this branch can be reached before it
             # is set, so read through a local rather than dereferencing it twice.
             diff = self._data_difficulty
-            logger.warning(
+            raise ValueError(
                 f"DataDifficulty filter found 0 valid indices with settings: "
                 f"volatility_range={getattr(diff, 'volatility_percentile_range', None)}, "
                 f"min_trend_clarity={getattr(diff, 'min_trend_clarity', None)}, "
                 f"sessions=(asia={getattr(diff, 'include_asian_session', True)}, "
                 f"london={getattr(diff, 'include_london_session', True)}, "
-                f"ny={getattr(diff, 'include_ny_session', True)}). "
-                f"Falling back to full dataset ({max_end - buffer} bars)."
+                f"ny={getattr(diff, 'include_ny_session', True)})."
             )
-            self._valid_start_indices = np.arange(buffer, max_end)
         else:
             self._valid_start_indices = valid_indices
             logger.debug(f"DataDifficulty filter: {len(valid_indices)} valid start indices out of {max_end - buffer}")
@@ -264,8 +289,7 @@ class DataDifficultyMixin:
     def _compute_volatility_percentiles(self, df: pd.DataFrame) -> None:
         try:
             if "close" not in df.columns and "Close" not in df.columns:
-                self._volatility_percentiles = None
-                return
+                raise ValueError("volatility filtering requires a close column")
 
             close_col = "close" if "close" in df.columns else "Close"
             close = np.asarray(df[close_col].values, dtype=np.float64)
@@ -273,8 +297,9 @@ class DataDifficultyMixin:
 
             window = 20
             if len(close) < window + 1:
-                self._volatility_percentiles = None
-                return
+                raise ValueError(
+                    f"volatility filtering requires at least {window + 1} bars"
+                )
 
             returns = np.abs(np.diff(close) / (close[:-1] + 1e-10))
 
@@ -283,21 +308,30 @@ class DataDifficultyMixin:
             vol = np.concatenate([[0.0], vol_series.to_numpy(dtype=np.float64)])
 
 
-            percentiles = pd.Series(vol).rank(pct=True, method="average").to_numpy(dtype=np.float64)
+            # pandas may expose a read-only NumPy view.  We deliberately mutate
+            # the first undefined-return percentile below, so request owned,
+            # writable storage instead of silently losing every volatility
+            # filter on an assignment error.
+            percentiles = (
+                pd.Series(vol)
+                .rank(pct=True, method="average")
+                .to_numpy(dtype=np.float64, copy=True)
+            )
 
 
             if len(percentiles) > 0:
                 percentiles[0] = 0.5
 
             self._volatility_percentiles = percentiles
-        except Exception:
+        except Exception as exc:
             self._volatility_percentiles = None
+            raise ValueError("could not compute volatility percentiles") from exc
 
     def _compute_trend_clarity(self, df: pd.DataFrame) -> np.ndarray:
         try:
             close_col = "close" if "close" in df.columns else "Close"
             if close_col not in df.columns:
-                return np.ones(len(df))
+                raise ValueError("trend filtering requires a close column")
 
             close = np.asarray(df[close_col].values, dtype=np.float64)
             n = len(close)
@@ -316,15 +350,17 @@ class DataDifficultyMixin:
 
             clarity[:window] = np.median(clarity[window:]) if n > window else 0.5
 
+            if clarity.size != len(df) or not np.all(np.isfinite(clarity)):
+                raise ValueError("trend clarity computation produced invalid values")
             return clarity
-        except Exception:
-            return np.ones(len(df))
+        except Exception as exc:
+            raise ValueError("could not compute trend clarity") from exc
 
     def _compute_trend_slope(self, df: pd.DataFrame) -> np.ndarray:
         try:
             close_col = "close" if "close" in df.columns else "Close"
             if close_col not in df.columns:
-                return np.zeros(len(df))
+                raise ValueError("trend filtering requires a close column")
             close = np.asarray(df[close_col].values, dtype=np.float64)
             n = len(close)
             slope = np.zeros(n)
@@ -334,9 +370,11 @@ class DataDifficultyMixin:
                 seg_mean = float(np.mean(segment))
                 slope[i] = (segment[-1] - segment[0]) / (window * (seg_mean + 1e-10))
             slope[:window] = np.median(slope[window:]) if n > window else 0.0
+            if slope.size != len(df) or not np.all(np.isfinite(slope)):
+                raise ValueError("trend slope computation produced invalid values")
             return slope
-        except Exception:
-            return np.zeros(len(df))
+        except Exception as exc:
+            raise ValueError("could not compute trend slope") from exc
 
     def _sample_episode_start_with_difficulty(self, buffer: int, max_start: int) -> int:
         if self._valid_start_indices is None or len(self._valid_start_indices) == 0:
@@ -352,37 +390,81 @@ class DataDifficultyMixin:
         ]
 
         if len(valid_in_range) == 0:
-
-            if len(self._valid_start_indices) > 0:
-                return int(self.np_random.choice(self._valid_start_indices))
-            if max_start > buffer:
-                return int(self.np_random.integers(buffer, max_start))
-            return min(buffer, max(self._min_data_len - 2, 0))
+            raise ValueError(
+                f"DataDifficulty has no eligible start in [{buffer}, {max_start}); "
+                "refusing an out-of-window fallback"
+            )
 
 
-        if (self._data_difficulty is not None and
-            getattr(self._data_difficulty, "prefer_recent_data", False)):
-
-            weight = getattr(self._data_difficulty, "recent_data_weight", 1.0)
-            if weight > 1.0:
-
-                positions = np.arange(len(valid_in_range))
-                weights = np.exp(weight * positions / len(positions))
-                weights /= weights.sum()
-                idx = self.np_random.choice(len(valid_in_range), p=weights)
-                return int(valid_in_range[idx])
-
-
+        weights = np.ones(len(valid_in_range), dtype=np.float64)
         if self._regime_weights is not None and len(self._regime_weights) == len(self._valid_start_indices):
             try:
                 mask = np.isin(self._valid_start_indices, valid_in_range)
-                weights = self._regime_weights[mask]
-                if weights.size == len(valid_in_range) and weights.sum() > 0:
-                    weights = weights / weights.sum()
-                    idx = self.np_random.choice(len(valid_in_range), p=weights)
-                    return int(valid_in_range[idx])
+                regime_weights = self._regime_weights[mask]
+                if regime_weights.size == len(valid_in_range) and regime_weights.sum() > 0:
+                    weights *= regime_weights
             except Exception:
                 pass
 
+        if (self._data_difficulty is not None and
+            getattr(self._data_difficulty, "prefer_recent_data", False)):
+            recent_weight = float(getattr(self._data_difficulty, "recent_data_weight", 1.0) or 1.0)
+            if recent_weight > 1.0:
+                positions = np.arange(len(valid_in_range), dtype=np.float64)
+                weights *= np.exp((recent_weight - 1.0) * positions / max(len(positions), 1))
 
-        return int(self.np_random.choice(valid_in_range))
+        regime_start = getattr(self.config, "recent_regime_start_time", None)
+        regime_share = float(getattr(self.config, "recent_regime_target_share", 0.0) or 0.0)
+        if not np.isfinite(regime_share) or not (0.0 <= regime_share <= 1.0):
+            raise ValueError(f"recent_regime_target_share must be in [0, 1], got {regime_share!r}")
+        if regime_share > 0.0:
+            if regime_start is None:
+                raise ValueError("recent_regime_target_share requires recent_regime_start_time")
+            primary = self.data.get(self.instruments[0], {}).get(self.config.primary_timeframe)
+            time_fn = getattr(self, "_df_time_ns", None)
+            time_ns_raw = (
+                time_fn(primary)
+                if callable(time_fn) and primary is not None
+                else None
+            )
+            if time_ns_raw is None:
+                raise ValueError("temporal regime sampling requires primary timestamps")
+            time_ns = np.asarray(time_ns_raw)
+            if time_ns.ndim != 1 or time_ns.size == 0:
+                raise ValueError(
+                    "temporal regime sampling requires a non-empty, one-dimensional "
+                    "timestamp array"
+                )
+            if primary is None or time_ns.size != len(primary):
+                raise ValueError(
+                    "temporal regime timestamps must align one-for-one with primary bars"
+                )
+            if not np.issubdtype(time_ns.dtype, np.integer):
+                raise ValueError(
+                    "temporal regime timestamps must use integer nanoseconds"
+                )
+            cut = pd.Timestamp(regime_start)
+            cut = cut.tz_localize("UTC") if cut.tzinfo is None else cut.tz_convert("UTC")
+            recent_mask = np.asarray(time_ns[valid_in_range] >= int(cut.value), dtype=bool)
+            old_mask = ~recent_mask
+            if not recent_mask.any():
+                raise ValueError(
+                    f"no eligible starts exist on/after recent regime boundary {cut.isoformat()}"
+                )
+            if regime_share < 1.0 and not old_mask.any():
+                raise ValueError(
+                    f"no eligible pre-regime starts exist before {cut.isoformat()} for target share {regime_share}"
+                )
+
+            recent_mass = float(weights[recent_mask].sum())
+            old_mass = float(weights[old_mask].sum())
+            if recent_mass <= 0.0 or (regime_share < 1.0 and old_mass <= 0.0):
+                raise ValueError("temporal regime buckets have no positive sampling weight")
+            weights[recent_mask] *= regime_share / recent_mass
+            if old_mask.any():
+                weights[old_mask] *= (1.0 - regime_share) / old_mass
+
+        if not np.all(np.isfinite(weights)) or float(weights.sum()) <= 0.0:
+            raise ValueError("DataDifficulty produced invalid sampling weights")
+        weights /= weights.sum()
+        return int(self.np_random.choice(valid_in_range, p=weights))

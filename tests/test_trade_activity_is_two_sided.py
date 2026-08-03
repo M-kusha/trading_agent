@@ -46,11 +46,12 @@ def test_the_target_band_still_scores_well():
     assert _score(24.0, th) == pytest.approx(1.0)
 
 
-def test_under_trading_is_still_penalised():
-    """The floor must keep working - this must stay two-sided, not inverted."""
+def test_under_trading_is_neutral_in_score_and_evidence_is_gated_separately():
+    """Abstention is not a loss; promotion has a separate evidence check."""
     th = _thresholds()
-    assert _score(1.0, th) < 0.3
-    assert _score(2.0, th) < _score(5.0, th)
+    assert _score(0.0, th) == pytest.approx(1.0)
+    assert _score(1.0, th) == pytest.approx(1.0)
+    assert _score(2.0, th) == pytest.approx(_score(5.0, th))
 
 
 def test_the_score_decays_monotonically_above_the_ceiling():

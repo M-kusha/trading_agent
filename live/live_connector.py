@@ -1062,15 +1062,23 @@ class InfoBusLiveDataConnector:
         df = pd.DataFrame(rates)
 
 
-        df["time"] = pd.to_datetime(df["time"], unit="s")
+        # MT5 epoch seconds are UTC.  Keeping them timezone-aware prevents the
+        # same instant from shifting with the host's local timezone/DST.
+        df["time"] = pd.to_datetime(df["time"], unit="s", utc=True)
         df.set_index("time", inplace=True)
 
 
         if "tick_volume" in df.columns:
-            df = df[["open", "high", "low", "close", "tick_volume"]]
+            keep = ["open", "high", "low", "close", "tick_volume"]
+            if "spread" in df.columns:
+                keep.append("spread")
+            df = df[keep]
             df.rename(columns={"tick_volume": "volume"}, inplace=True)
         else:
-            df = df[["open", "high", "low", "close", "volume"]]
+            keep = ["open", "high", "low", "close", "volume"]
+            if "spread" in df.columns:
+                keep.append("spread")
+            df = df[keep]
 
 
         df = self._add_enhanced_volatility(df)

@@ -875,11 +875,13 @@ class PPOObservationBuilder:
         feats[0] = float(np.sin(angle))
         feats[1] = float(np.cos(angle))
 
-        # London 07-16, New York 12-21 UTC.
-        in_london = 7.0 <= hour < 16.0
-        in_ny = 12.0 <= hour < 21.0
-        feats[2] = 1.0 if (in_london or in_ny) else 0.0
-        feats[4] = 1.0 if (in_london and in_ny) else 0.0
+        # Session flags are produced from timezone-aware London/New York local
+        # clocks by the environment.  Reconstructing them from fixed UTC hours
+        # here was wrong across DST transitions.
+        is_prime = bool(session_state.get("is_prime", False))
+        is_overlap = bool(session_state.get("is_overlap", False))
+        feats[2] = 1.0 if is_prime else 0.0
+        feats[4] = 1.0 if is_overlap else 0.0
 
         # Current spread against its own typical level: 1.0 is normal, above is
         # expensive. Clipped to [0, 2] then scaled so the feature sits in [0, 1].
@@ -888,8 +890,8 @@ class PPOObservationBuilder:
 
         return feats, {
             "hour_utc": hour,
-            "in_london": in_london,
-            "in_ny": in_ny,
+            "is_prime": is_prime,
+            "is_overlap": is_overlap,
             "spread_ratio": spread_ratio,
         }
 

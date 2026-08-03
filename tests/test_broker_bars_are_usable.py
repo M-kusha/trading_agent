@@ -30,21 +30,35 @@ BROKER_COLUMNS = {"time", "open", "high", "low", "close", "volume", "spread"}
 def merged_env():
     from train.train_prop_firm import load_market_data
 
-    data = load_market_data(instruments=["XAUUSD"], min_bars=5000)
+    data = load_market_data(
+        instruments=["XAUUSD"],
+        min_bars=5000,
+        extra_dir="data/ftmo_live",
+        data_cutoff="2026-08-03T08:15:00Z",
+    )
     return PropFirmTradingEnv(data, PropFirmConfig()), data
+
+
+def test_broker_append_is_explicit_not_a_mutable_loader_default():
+    from train.train_prop_firm import load_market_data
+
+    data = load_market_data(instruments=["XAUUSD"], min_bars=5000)
+    m15 = data["XAUUSD"]["M15"]
+    assert len(m15) == 99_908
+    assert m15["time"].max() <= pd.Timestamp("2025-12-19", tz="UTC")
 
 
 def test_the_merge_actually_happened(merged_env):
     _env, data = merged_env
     m15 = data["XAUUSD"]["M15"]
     assert len(m15) > 100_000, f"only {len(m15)} bars - broker bars were not appended"
-    assert m15["time"].max() > pd.Timestamp("2026-01-01")
+    assert m15["time"].max() > pd.Timestamp("2026-01-01", tz="UTC")
 
 
 def test_appended_rows_have_complete_ohlcv(merged_env):
     _env, data = merged_env
     m15 = data["XAUUSD"]["M15"]
-    recent = m15.loc[m15["time"] > pd.Timestamp("2026-01-01")]
+    recent = m15.loc[m15["time"] > pd.Timestamp("2026-01-01", tz="UTC")]
     assert len(recent) > 1000
 
     for col in ("open", "high", "low", "close", "volume"):
@@ -58,7 +72,7 @@ def test_observations_stay_finite_inside_the_appended_region(merged_env):
     """The decisive check: step the env where the engineered columns are NaN."""
     env, data = merged_env
     m15 = data["XAUUSD"]["M15"]
-    first_new = int((m15["time"] <= pd.Timestamp("2025-12-18 23:45")).sum())
+    first_new = int((m15["time"] <= pd.Timestamp("2025-12-18 23:45", tz="UTC")).sum())
 
     env.reset(seed=0)
     env.current_step = first_new + 2000
@@ -80,7 +94,7 @@ def test_trades_execute_on_appended_bars(merged_env):
     """Finite observations are not enough - the execution path must work too."""
     env, data = merged_env
     m15 = data["XAUUSD"]["M15"]
-    first_new = int((m15["time"] <= pd.Timestamp("2025-12-18 23:45")).sum())
+    first_new = int((m15["time"] <= pd.Timestamp("2025-12-18 23:45", tz="UTC")).sum())
 
     env.reset(seed=1)
     env.current_step = first_new + 2000

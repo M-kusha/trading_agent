@@ -5,11 +5,14 @@ from __future__ import annotations
 import argparse
 import copy
 import gc
+import hashlib
 import json
 import logging
+import math
 import os
 import platform
 import random
+import subprocess
 import sys
 import time
 from dataclasses import fields
@@ -213,11 +216,78 @@ TIMEFRAME_MIN_BARS = {
     "W1": 50,
 }
 
+
+def _normalize_market_frame(
+    frame: pd.DataFrame,
+    *,
+    source: str,
+    require_spread: bool,
+) -> pd.DataFrame:
+    """Validate the executable market-data contract without repairing prices.
+
+    Engineered feature columns may legitimately be sparse near indicator warmup
+    boundaries, but the timestamp and OHLCV(+spread) substrate may not be.  A
+    previous loader silently turned malformed numeric values into zero prices
+    and continued after per-file failures, which made a run's actual dataset
+    depend on which files happened to parse.
+    """
+    df = frame.copy()
+    df.columns = df.columns.str.lower()
+
+    if "time" not in df.columns:
+        alias = next((c for c in ("timestamp", "datetime", "date") if c in df.columns), None)
+        if alias is None:
+            raise ValueError(f"{source}: missing timestamp column")
+        df = df.rename(columns={alias: "time"})
+
+    required = {"time", "open", "high", "low", "close", "volume"}
+    if require_spread:
+        required.add("spread")
+    missing = sorted(required.difference(df.columns))
+    if missing:
+        raise ValueError(f"{source}: missing required columns {missing}")
+
+    times = pd.to_datetime(df["time"], errors="coerce", utc=True)
+    if times.isna().any():
+        raise ValueError(f"{source}: invalid timestamps")
+    if times.duplicated().any():
+        sample = times.loc[times.duplicated(keep=False)].iloc[0]
+        raise ValueError(f"{source}: duplicate timestamp {sample}")
+    if not times.is_monotonic_increasing:
+        raise ValueError(f"{source}: timestamps are not strictly increasing")
+    df["time"] = times
+
+    numeric = ["open", "high", "low", "close", "volume"]
+    if "spread" in df.columns:
+        numeric.append("spread")
+    for col in numeric:
+        values = pd.to_numeric(df[col], errors="coerce")
+        array = values.to_numpy(dtype=np.float64, na_value=np.nan)
+        if not np.isfinite(array).all():
+            raise ValueError(f"{source}: {col} contains non-finite values")
+        if col in ("open", "high", "low", "close") and (array <= 0.0).any():
+            raise ValueError(f"{source}: {col} contains non-positive values")
+        if col in ("volume", "spread") and (array < 0.0).any():
+            raise ValueError(f"{source}: {col} contains negative values")
+        df[col] = values.astype(np.float32)
+
+    open_ = df["open"].to_numpy(dtype=np.float64)
+    high = df["high"].to_numpy(dtype=np.float64)
+    low = df["low"].to_numpy(dtype=np.float64)
+    close = df["close"].to_numpy(dtype=np.float64)
+    if (high < np.maximum(open_, close)).any() or (low > np.minimum(open_, close)).any():
+        raise ValueError(f"{source}: OHLC envelope is internally inconsistent")
+    if (high < low).any():
+        raise ValueError(f"{source}: high is below low")
+    return df.reset_index(drop=True)
+
 def load_market_data(
     data_dir: str = "data/processed",
     instruments: Optional[List[str]] = None,
     min_bars: int = 5000,
-    extra_dir: Optional[str] = "data/ftmo_live",
+    extra_dir: Optional[str] = None,
+    allow_synthetic: bool = False,
+    data_cutoff: Optional[Any] = None,
 ) -> Dict[str, Dict[str, pd.DataFrame]]:
     if instruments is None:
         instruments = ["XAUUSD"]
@@ -225,8 +295,10 @@ def load_market_data(
     data: Dict[str, Dict[str, pd.DataFrame]] = {}
 
     if not os.path.exists(data_dir):
-        logger.warning(f"Data directory not found: {data_dir}. Using synthetic data.")
-        return _create_synthetic_data(instruments, min_bars)
+        if allow_synthetic:
+            logger.warning(f"Data directory not found: {data_dir}. Using explicitly enabled synthetic data.")
+            return _create_synthetic_data(instruments, min_bars)
+        raise FileNotFoundError(f"market data directory not found: {data_dir}")
 
     tf_candidates = {"M1", "M5", "M15", "M30", "H1", "H2", "H4", "H8", "D1", "W1"}
 
@@ -249,60 +321,575 @@ def load_market_data(
             if instruments and instrument not in instruments:
                 continue
 
-            df = pd.read_csv(filepath)
-
-
-            df.columns = df.columns.str.lower()
-
-            required = {"open", "high", "low", "close"}
-            if not required.issubset(df.columns):
-                logger.warning(f"Skipping {file}: missing OHLC columns (have: {list(df.columns)[:10]})")
-                continue
-
-            if "volume" not in df.columns:
-                df["volume"] = 1.0
-
-
-            for tcol in ("time", "timestamp", "datetime", "date"):
-                if tcol in df.columns:
-                    ts = pd.to_datetime(df[tcol], errors="coerce")
-                    df[tcol] = ts
-                    if ts.notna().any():
-                        df = df.sort_values(by=tcol).reset_index(drop=True)
-                    break
-
-            for col in ["open", "high", "low", "close", "volume"]:
-                df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0).astype(np.float32)
-
-            df["high"] = df[["open", "high", "close"]].max(axis=1)
-            df["low"] = df[["open", "low", "close"]].min(axis=1)
+            df = _normalize_market_frame(
+                pd.read_csv(filepath),
+                source=filepath,
+                require_spread=False,
+            )
 
 
             tf_min_bars = TIMEFRAME_MIN_BARS.get(timeframe, min_bars)
             if len(df) < tf_min_bars:
-                logger.info(f"Skipping {file}: only {len(df)} bars (need {tf_min_bars}+ for {timeframe})")
-                continue
+                raise ValueError(
+                    f"{filepath}: only {len(df)} bars (need {tf_min_bars}+ for {timeframe})"
+                )
 
             data.setdefault(instrument, {})[timeframe] = df
             logger.info(f"Loaded {instrument}/{timeframe}: {len(df):,} bars")
 
         except Exception as e:
-            logger.error(f"Error loading {file}: {e}")
+            raise ValueError(f"failed to load market data file {filepath}: {e}") from e
 
     if not data:
-        logger.warning("No data loaded from files; generating synthetic data")
-        return _create_synthetic_data(instruments, min_bars)
+        if allow_synthetic:
+            logger.warning("No file data loaded; generating explicitly enabled synthetic data")
+            return _create_synthetic_data(instruments, min_bars)
+        raise RuntimeError(f"no valid market data loaded from {data_dir}")
 
     data = append_broker_bars(data, extra_dir=extra_dir)
+    if data_cutoff is not None:
+        cutoff = pd.Timestamp(data_cutoff)
+        cutoff = cutoff.tz_localize("UTC") if cutoff.tzinfo is None else cutoff.tz_convert("UTC")
+        for instrument, frames in data.items():
+            for timeframe, frame in list(frames.items()):
+                times = pd.to_datetime(frame["time"], errors="coerce", utc=True)
+                trimmed = frame.loc[times <= cutoff].copy().reset_index(drop=True)
+                minimum = TIMEFRAME_MIN_BARS.get(timeframe, min_bars)
+                if len(trimmed) < minimum:
+                    raise ValueError(
+                        f"data cutoff {cutoff.isoformat()} leaves {instrument}/{timeframe} "
+                        f"with {len(trimmed)} bars (need {minimum})"
+                    )
+                trimmed.attrs["data_cutoff"] = cutoff.isoformat()
+                frames[timeframe] = trimmed
 
     total_bars = sum(len(df) for tfs in data.values() for df in tfs.values())
     logger.info(f"Total: {len(data)} instruments, {total_bars:,} bars")
     return data
 
 
+DATASET_MANIFEST_VERSION = 1
+OPTUNA_OBJECTIVE_VERSION = "masked-ppo-walk-forward-v2"
+
+
+def _git_head() -> str:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(REPO_ROOT),
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        return result.stdout.strip()
+    except Exception:
+        return "unknown"
+
+
+def _training_code_fingerprint() -> str:
+    """Hash the code that defines training, observations, rewards, and gates."""
+    paths = [Path(__file__).resolve(), REPO_ROOT / "modules/meta/ppo_observation_builder.py"]
+    paths.extend(sorted((REPO_ROOT / "envs").rglob("*.py")))
+    paths.extend(sorted((REPO_ROOT / "train/callbacks").rglob("*.py")))
+    digest = hashlib.sha256()
+    for path in sorted(set(paths), key=lambda p: p.as_posix()):
+        if not path.is_file():
+            continue
+        digest.update(path.relative_to(REPO_ROOT).as_posix().encode("utf-8"))
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+def build_dataset_manifest(
+    data: Dict[str, Dict[str, pd.DataFrame]],
+    *,
+    role: str,
+    boundary: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """Fingerprint exactly the executable columns held in memory for a run."""
+    frames: List[Dict[str, Any]] = []
+    overall = hashlib.sha256()
+    for instrument in sorted(data):
+        for timeframe in sorted(data[instrument]):
+            frame = data[instrument][timeframe]
+            if frame is None or frame.empty:
+                raise ValueError(f"cannot fingerprint empty frame {instrument}/{timeframe}")
+            cols = [c for c in ("time", "open", "high", "low", "close", "volume", "spread") if c in frame]
+            required = {"time", "open", "high", "low", "close", "volume"}
+            if not required.issubset(cols):
+                raise ValueError(f"cannot fingerprint incomplete frame {instrument}/{timeframe}")
+            normalized = frame.loc[:, cols].copy()
+            normalized["time"] = pd.to_datetime(normalized["time"], errors="raise", utc=True)
+            row_hashes = pd.util.hash_pandas_object(normalized, index=False, categorize=False)
+            frame_hash = hashlib.sha256(row_hashes.to_numpy(dtype=np.uint64).tobytes()).hexdigest()
+            first = normalized["time"].iloc[0]
+            last = normalized["time"].iloc[-1]
+            record = {
+                "instrument": instrument,
+                "timeframe": timeframe,
+                "rows": int(len(normalized)),
+                "first_time": first.isoformat(),
+                "last_time": last.isoformat(),
+                "columns": cols,
+                "content_sha256": frame_hash,
+            }
+            frames.append(record)
+            overall.update(json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+
+    boundary_text = None
+    if boundary is not None:
+        ts = pd.Timestamp(boundary)
+        ts = ts.tz_localize("UTC") if ts.tzinfo is None else ts.tz_convert("UTC")
+        boundary_text = ts.isoformat()
+    return {
+        "manifest_version": DATASET_MANIFEST_VERSION,
+        "role": str(role),
+        "dataset_fingerprint": overall.hexdigest(),
+        "boundary": boundary_text,
+        "git_head": _git_head(),
+        "training_code_sha256": _training_code_fingerprint(),
+        "frames": frames,
+    }
+
+
+def write_dataset_manifest(manifest: Dict[str, Any], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+
+
+CURRICULUM_PROVENANCE_VERSION = 1
+TERMINAL_CURRICULUM_STAGE = "LIVE_READY"
+
+
+def _normalized_current_stage_weight(stage_config: Any) -> float:
+    """Return only the declared probability mass assigned to the current stage.
+
+    Recent/foundation branches can sometimes fall back to the current stage, but
+    crediting that incidental behaviour would make a safety-cap preflight
+    optimistic.  The budget therefore uses the explicit current-stage share.
+    """
+    sampling = stage_config.mixed_stage_sampling
+    if not bool(getattr(sampling, "enabled", False)):
+        return 1.0
+
+    current = float(getattr(sampling, "current_stage_weight", 0.0))
+    recent = float(getattr(sampling, "recent_stages_weight", 0.0))
+    foundation = float(getattr(sampling, "foundation_weight", 0.0))
+    weights = (current, recent, foundation)
+    if not all(np.isfinite(weight) and weight >= 0.0 for weight in weights):
+        raise ValueError(f"invalid mixed-stage weights for {stage_config.stage.name}: {weights}")
+    total = sum(weights)
+    if total <= 0.0:
+        # This matches CurriculumManager.sample_training_stage(), which falls
+        # back to the current stage when the declared total is zero.
+        return 1.0
+    return current / total
+
+
+def build_curriculum_budget_preflight(
+    *,
+    start_stage: Any,
+    safety_cap_timesteps: int,
+    already_consumed_timesteps: int = 0,
+    current_stage_timesteps: int = 0,
+) -> Dict[str, Any]:
+    """Build the necessary curriculum budget from ``start_stage`` to LIVE_READY.
+
+    Promotion thresholds count timesteps recorded to the current stage, not
+    global PPO timesteps.  When mixed-stage sampling is enabled, the declared
+    current-stage probability is therefore used to inflate each stage-local
+    floor.  This remains a necessary planning floor rather than a sufficiency
+    guarantee: demotions, failed gates, recovery and review sessions can all
+    require additional training.
+    """
+    if not CURRICULUM_AVAILABLE or CurriculumStage is None:
+        raise RuntimeError("Curriculum system not available. Check imports.")
+    if get_stage_progression is None or get_stage_config is None:
+        raise RuntimeError("Curriculum stage configuration is not available")
+
+    try:
+        stage = start_stage if isinstance(start_stage, CurriculumStage) else CurriculumStage[str(start_stage)]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"unknown curriculum start stage: {start_stage!r}") from exc
+
+    safety_cap = int(safety_cap_timesteps)
+    consumed = int(already_consumed_timesteps)
+    current_progress = int(current_stage_timesteps)
+    if safety_cap < 0 or consumed < 0 or current_progress < 0:
+        raise ValueError("curriculum timestep budgets cannot be negative")
+
+    progression = list(get_stage_progression())
+    try:
+        start_index = progression.index(stage)
+        terminal_index = next(i for i, candidate in enumerate(progression) if candidate.name == TERMINAL_CURRICULUM_STAGE)
+    except (ValueError, StopIteration) as exc:
+        raise RuntimeError("curriculum progression does not contain LIVE_READY") from exc
+    if start_index > terminal_index:
+        raise ValueError(f"start stage {stage.name} is after {TERMINAL_CURRICULUM_STAGE}")
+
+    entries: List[Dict[str, Any]] = []
+    minimum_remaining = 0
+    for index, candidate in enumerate(progression[start_index : terminal_index + 1]):
+        config = get_stage_config(candidate)
+        local_minimum = int(config.competence.min_timesteps)
+        local_recorded = min(current_progress, local_minimum) if index == 0 else 0
+        local_remaining = max(0, local_minimum - local_recorded)
+        current_probability = _normalized_current_stage_weight(config)
+        if current_probability <= 0.0 and local_remaining > 0:
+            global_required: Optional[int] = None
+        else:
+            global_required = (
+                0
+                if local_remaining == 0
+                else int(math.ceil(local_remaining / max(current_probability, np.finfo(float).tiny)))
+            )
+            minimum_remaining += global_required
+        entries.append(
+            {
+                "stage": candidate.name,
+                "local_min_timesteps": local_minimum,
+                "local_timesteps_already_recorded": local_recorded,
+                "local_timesteps_remaining": local_remaining,
+                "declared_current_stage_probability": current_probability,
+                "global_timesteps_required": global_required,
+            }
+        )
+
+    available = max(0, safety_cap - consumed)
+    remaining_budget = available
+    maximum_stage = stage
+    terminal_mastery_possible = True
+    impossible_stage: Optional[str] = None
+    for index, entry in enumerate(entries):
+        required = entry["global_timesteps_required"]
+        if required is None or remaining_budget < required:
+            terminal_mastery_possible = False
+            impossible_stage = str(entry["stage"])
+            break
+        remaining_budget -= int(required)
+        if index + 1 < len(entries):
+            maximum_stage = progression[start_index + index + 1]
+
+    shortfall = max(0, minimum_remaining - available)
+    return {
+        "budget_model": "stage_local_min_timesteps_divided_by_declared_current_stage_probability",
+        "necessary_not_sufficient": True,
+        "start_stage": stage.name,
+        "terminal_stage": TERMINAL_CURRICULUM_STAGE,
+        "safety_cap_timesteps": safety_cap,
+        "already_consumed_timesteps": consumed,
+        "available_timesteps": available,
+        "minimum_remaining_timesteps": minimum_remaining,
+        "minimum_total_target_timesteps": consumed + minimum_remaining,
+        "shortfall_timesteps": shortfall,
+        "maximum_theoretical_stage": maximum_stage.name,
+        "terminal_mastery_possible": bool(terminal_mastery_possible and impossible_stage is None),
+        "first_unfunded_stage": impossible_stage,
+        "stages": entries,
+        "excluded_overhead": [
+            "failed_promotion_gates",
+            "demotions",
+            "recovery_protocols",
+            "review_sessions",
+        ],
+    }
+
+
+def enforce_goal_based_budget(preflight: Dict[str, Any], *, goal_based: bool) -> None:
+    """Fail before learning when a goal-based cap cannot fund the stage floors."""
+    if not goal_based or bool(preflight.get("terminal_mastery_possible", False)):
+        return
+    raise ValueError(
+        "--goal-based safety cap cannot reach LIVE_READY under the declared curriculum budget: "
+        f"available={int(preflight['available_timesteps']):,}, "
+        f"minimum_remaining={int(preflight['minimum_remaining_timesteps']):,}, "
+        f"shortfall={int(preflight['shortfall_timesteps']):,}, "
+        f"first_unfunded_stage={preflight.get('first_unfunded_stage')}. "
+        "This is only a necessary floor; gates, demotions and reviews can require more."
+    )
+
+
+def _manifest_provenance(manifest: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "role": manifest.get("role"),
+        "fingerprint": manifest.get("dataset_fingerprint"),
+        "boundary": manifest.get("boundary"),
+        "git_head": manifest.get("git_head"),
+        "training_code_sha256": manifest.get("training_code_sha256"),
+        "frames": list(manifest.get("frames", [])),
+    }
+
+
+def current_observation_schema(model: Optional[BaseAlgorithm] = None, *, frame_stack: int = 1) -> Dict[str, Any]:
+    """Describe the runtime observation contract without relying on a checkpoint tag."""
+    from modules.meta.ppo_observation_builder import (
+        PPO_OBS_FEATURE_NAMES,
+        PPO_OBS_SIZE,
+        PPO_OBS_VERSION,
+    )
+
+    names = [str(name) for name in PPO_OBS_FEATURE_NAMES]
+    schema: Dict[str, Any] = {
+        "version": str(PPO_OBS_VERSION),
+        "base_width": int(PPO_OBS_SIZE),
+        "feature_names": names,
+        "feature_names_sha256": hashlib.sha256(
+            json.dumps(names, separators=(",", ":")).encode("utf-8")
+        ).hexdigest(),
+        "frame_stack": int(frame_stack),
+    }
+    if model is not None:
+        shape = getattr(getattr(model, "observation_space", None), "shape", None)
+        schema["model_observation_shape"] = list(shape) if shape is not None else None
+        schema["checkpoint_obs_version"] = str(getattr(model, "_obs_version", PPO_OBS_VERSION))
+    return schema
+
+
+def assess_terminal_mastery(
+    curriculum_manager: Any,
+    *,
+    mastery_confirmation_episodes: int,
+) -> Dict[str, Any]:
+    """Require terminal floors plus explicit development gate evidence.
+
+    Entering the terminal enum is not mastery.  The final stage must accumulate
+    its own competence floors, and the transition into it must be backed by
+    recorded, passing development validation and stress evaluations.  Missing
+    histories fail closed; an internal/skipped gate cannot be reconstructed as
+    external evidence after the run.
+    """
+    if get_stage_config is None or CurriculumStage is None:
+        raise RuntimeError("Curriculum stage configuration is not available")
+    config = get_stage_config(CurriculumStage.LIVE_READY)
+    final_stage = curriculum_manager.current_stage.name
+    terminal_reached = bool(getattr(config, "is_terminal", False)) and final_stage == TERMINAL_CURRICULUM_STAGE
+    required_episodes = max(
+        int(getattr(config.competence, "min_episodes", 0) or 0),
+        int(mastery_confirmation_episodes),
+    )
+    required_timesteps = int(getattr(config.competence, "min_timesteps", 0) or 0)
+    actual_episodes = int(getattr(curriculum_manager, "stage_episodes", 0) or 0)
+    actual_timesteps = int(getattr(curriculum_manager, "stage_timesteps", 0) or 0)
+
+    report = curriculum_manager.get_progress_report()
+    terminal_transitions = [
+        record
+        for record in list(report.get("recent_transitions", []) or [])
+        if record.get("type") == "promotion"
+        and record.get("from_stage") == "PROFESSIONAL"
+        and record.get("to_stage") == TERMINAL_CURRICULUM_STAGE
+    ]
+    terminal_transition = terminal_transitions[-1] if terminal_transitions else None
+
+    # The PROFESSIONAL records justify entry into LIVE_READY.  They cannot also
+    # prove that the policy remained valid after another 1.6m terminal-stage
+    # timesteps.  Terminal mastery therefore requires a fresh LIVE_READY gate
+    # produced by the non-transitioning readiness path.
+    validation_history = [
+        record
+        for record in list(report.get("validation_gate_history", []) or [])
+        if str(record.get("stage")) == TERMINAL_CURRICULUM_STAGE
+    ]
+    validation_record = validation_history[-1] if validation_history else None
+
+    validation_passed = bool(
+        validation_record
+        and validation_record.get("passed") is True
+        and int(validation_record.get("scenarios_total", 0) or 0) > 0
+    )
+    # The final validation suite contains the named wide-spread, high-slippage,
+    # high-volatility and aggregate stress scenarios.  At PROFESSIONAL and
+    # LIVE_READY the checker requires every declared scenario to pass, so this
+    # is executable stress evidence.  A separate `stress_test` stage config was
+    # never defined; demanding its empty history made mastery unreachable.
+    stress_passed = bool(
+        validation_record
+        and validation_passed
+        and int(validation_record.get("scenarios_passed", 0) or 0)
+        == int(validation_record.get("scenarios_total", 0) or 0)
+    )
+    checks = {
+        "terminal_stage_reached": terminal_reached,
+        "professional_to_live_ready_promotion": {
+            "passed": terminal_transition is not None,
+            "record": terminal_transition,
+        },
+        "terminal_min_episodes": {
+            "actual": actual_episodes,
+            "required": required_episodes,
+            "passed": actual_episodes >= required_episodes,
+        },
+        "terminal_min_timesteps": {
+            "actual": actual_timesteps,
+            "required": required_timesteps,
+            "passed": actual_timesteps >= required_timesteps,
+        },
+        "development_validation_gate": {
+            "passed": validation_passed,
+            "record": validation_record,
+        },
+        "development_stress_gate": {
+            "passed": stress_passed,
+            "source": "all LIVE_READY validation scenarios passed",
+            "record": validation_record,
+        },
+    }
+    confirmed = bool(
+        terminal_reached
+        and terminal_transition is not None
+        and checks["terminal_min_episodes"]["passed"]
+        and checks["terminal_min_timesteps"]["passed"]
+        and validation_passed
+        and stress_passed
+    )
+    return {
+        "confirmed": confirmed,
+        "checks": checks,
+        "evidence_policy": (
+            "LIVE_READY plus terminal episode/timestep floors and passing recorded "
+            "LIVE_READY validation including every declared stress scenario after "
+            "the terminal training floor; "
+            "the PROFESSIONAL promotion record separately proves the entry gate"
+        ),
+    }
+
+
+def build_curriculum_run_provenance(
+    *,
+    loaded_manifest: Dict[str, Any],
+    train_manifest: Dict[str, Any],
+    holdout_manifest: Dict[str, Any],
+    final_stage: str,
+    run_outcome: str,
+    actual_timesteps: int,
+    start_stage: str,
+    goal_based: bool,
+    safety_cap_timesteps: int,
+    holdout_enabled: bool,
+    holdout_ratio: float,
+    holdout_split_at: Optional[str],
+    resolved_holdout_split_at: Optional[str],
+    data_cutoff: Optional[str],
+    regime_start_at: Optional[str],
+    regime_target_share: float,
+    observation_schema: Dict[str, Any],
+    command: List[str],
+    budget_preflight: Dict[str, Any],
+    model_record: Dict[str, Any],
+    terminal_mastery_confirmed: bool = False,
+    terminal_mastery_evidence: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Create fail-closed provenance for the model written by a curriculum run."""
+    terminal_reached = str(final_stage) == TERMINAL_CURRICULUM_STAGE
+    mastery_evidence_confirmed = bool(
+        terminal_mastery_evidence
+        and terminal_mastery_evidence.get("confirmed") is True
+    )
+    curriculum_complete = bool(
+        terminal_reached
+        and terminal_mastery_confirmed
+        and mastery_evidence_confirmed
+        and str(run_outcome) == "finished"
+    )
+    if str(run_outcome) == "interrupted":
+        status = "INTERRUPTED_BEFORE_EXTERNAL_VALIDATION"
+    elif str(run_outcome) == "failed":
+        status = "FAILED_BEFORE_EXTERNAL_VALIDATION"
+    elif curriculum_complete:
+        status = "TERMINAL_MASTERY_CONFIRMED_PENDING_EXTERNAL_ACCEPTANCE"
+    elif terminal_reached:
+        status = "LIVE_READY_REACHED_MASTERY_UNCONFIRMED"
+    else:
+        status = "CURRICULUM_NOT_TERMINAL"
+
+    return {
+        "provenance_version": CURRICULUM_PROVENANCE_VERSION,
+        "status": status,
+        "run_outcome": str(run_outcome),
+        "accepted": False,
+        "curriculum_complete": curriculum_complete,
+        "terminal_stage_reached": terminal_reached,
+        "terminal_mastery": dict(terminal_mastery_evidence or {"confirmed": False}),
+        "terminal_stage": TERMINAL_CURRICULUM_STAGE,
+        "final_stage": str(final_stage),
+        "promotion_eligible": False,
+        "actual_timesteps": int(actual_timesteps),
+        "model": dict(model_record),
+        "datasets": {
+            "loaded": _manifest_provenance(loaded_manifest),
+            "train": _manifest_provenance(train_manifest),
+            "holdout": _manifest_provenance(holdout_manifest),
+        },
+        "arguments": {
+            "start_stage": str(start_stage),
+            "goal_based": bool(goal_based),
+            "safety_cap_timesteps": int(safety_cap_timesteps),
+            "holdout_enabled": bool(holdout_enabled),
+            "holdout_ratio": float(holdout_ratio),
+            "holdout_split_at": holdout_split_at,
+            "resolved_holdout_split_at": resolved_holdout_split_at,
+            "data_cutoff": data_cutoff,
+            "regime_start_at": regime_start_at,
+            "regime_target_share": float(regime_target_share),
+        },
+        "observation_schema": dict(observation_schema),
+        "budget_preflight": dict(budget_preflight),
+        "command": list(command),
+        "git_head": loaded_manifest.get("git_head", _git_head()),
+        "training_code_sha256": loaded_manifest.get("training_code_sha256"),
+        "recorded_at": datetime.now().astimezone().isoformat(),
+    }
+
+
+def _file_record(path: Path) -> Dict[str, Any]:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return {
+        "path": str(path),
+        "bytes": int(path.stat().st_size),
+        "sha256": digest.hexdigest(),
+    }
+
+
+def write_json_atomic(payload: Dict[str, Any], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def validate_bound_optuna_params(
+    payload: Any,
+    expected_manifest: Dict[str, Any],
+) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("Optuna parameter file must contain a JSON object")
+    params = payload.get("params")
+    metadata = payload.get("metadata")
+    if not isinstance(params, dict) or not isinstance(metadata, dict):
+        raise ValueError(
+            "refusing unbound Optuna parameters: expected params plus metadata; "
+            "legacy flat JSON does not identify its dataset, code, or objective"
+        )
+    required = {
+        "dataset_fingerprint": expected_manifest["dataset_fingerprint"],
+        "training_code_sha256": expected_manifest["training_code_sha256"],
+        "objective_version": OPTUNA_OBJECTIVE_VERSION,
+    }
+    for key, expected in required.items():
+        if metadata.get(key) != expected:
+            raise ValueError(
+                f"Optuna {key} mismatch: file has {metadata.get(key)!r}, expected {expected!r}"
+            )
+    return dict(params)
+
+
 def append_broker_bars(
     data: Dict[str, Dict[str, pd.DataFrame]],
-    extra_dir: Optional[str] = "data/ftmo_live",
+    extra_dir: Optional[str] = None,
 ) -> Dict[str, Dict[str, pd.DataFrame]]:
     """Extend each timeframe with broker bars newer than the processed set.
 
@@ -322,18 +909,32 @@ def append_broker_bars(
     for instrument, frames in data.items():
         for tf, df in list(frames.items()):
             path = os.path.join(extra_dir, f"{instrument}_{tf}.csv")
-            if not os.path.exists(path) or df is None or df.empty or "time" not in df.columns:
-                continue
+            if df is None or df.empty or "time" not in df.columns:
+                raise ValueError(f"base frame {instrument}/{tf} is missing or untimestamped")
+            if not os.path.exists(path):
+                raise FileNotFoundError(
+                    f"explicit broker dataset is incomplete: missing {path} for loaded timeframe {instrument}/{tf}"
+                )
             try:
-                extra: pd.DataFrame = pd.read_csv(path, parse_dates=["time"])
+                extra = _normalize_market_frame(
+                    pd.read_csv(path),
+                    source=path,
+                    require_spread=True,
+                )
+                df = _normalize_market_frame(
+                    df,
+                    source=f"loaded base {instrument}/{tf}",
+                    require_spread=False,
+                )
                 extra = extra.loc[extra["time"] > df["time"].max()]
                 if extra.empty:
                     continue
 
-                for col in ("open", "high", "low", "close", "volume"):
-                    if col not in extra.columns:
-                        extra[col] = 0.0
-                    extra[col] = pd.to_numeric(extra[col], errors="coerce").fillna(0.0).astype(np.float32)
+                # MT5 can report a zero spread when no valid quote was captured
+                # for a bar (six such rows exist across the supplied exports).
+                # Keep the marker: execution treats it as unavailable and falls
+                # back to the configured conservative spread, while session
+                # features use a neutral ratio.  Negative spread is invalid.
 
                 merged = pd.concat([df, extra], ignore_index=True, sort=False)
                 merged = merged.sort_values(by="time", ignore_index=True)
@@ -344,8 +945,8 @@ def append_broker_bars(
                     "Appended %d broker bars to %s/%s (now %d, through %s)",
                     len(extra), instrument, tf, len(merged), merged["time"].iloc[-1],
                 )
-            except Exception as e:  # noqa: BLE001 - a bad extra file must not kill training
-                logger.warning("Could not append broker bars for %s/%s: %s", instrument, tf, e)
+            except Exception as e:
+                raise ValueError(f"invalid broker bars for {instrument}/{tf} at {path}: {e}") from e
 
     return data
 
@@ -441,6 +1042,7 @@ def split_data_by_time(
     data: Dict[str, Dict[str, pd.DataFrame]],
     ratio: float,
     split_at: Optional[Any] = None,
+    include_holdout_context: bool = False,
 ) -> Tuple[Dict[str, Dict[str, pd.DataFrame]], Dict[str, Dict[str, pd.DataFrame]], Optional[Any]]:
     """Chronological train/holdout split at a shared timestamp.
 
@@ -461,8 +1063,7 @@ def split_data_by_time(
     for inst, tfs in data.items():
         primary = _primary_frame(tfs)
         if primary is None or "time" not in primary.columns:
-            train[inst], holdout[inst] = dict(tfs), {}
-            continue
+            raise ValueError(f"{inst} has no timestamped primary frame; chronological split is impossible")
 
         # An explicit date beats a ratio here. The dataset grows every time broker
         # bars are appended, so a fixed ratio silently walks the split backwards:
@@ -475,18 +1076,29 @@ def split_data_by_time(
             cut = int(len(primary) * (1.0 - ratio))
             cut = int(np.clip(cut, 1, len(primary) - 1))
             inst_split = primary["time"].iloc[cut]
+        inst_split = pd.Timestamp(inst_split)
+        inst_split = inst_split.tz_localize("UTC") if inst_split.tzinfo is None else inst_split.tz_convert("UTC")
         if split_ts is None:
             split_ts = inst_split
 
         train[inst], holdout[inst] = {}, {}
         for tf, df in tfs.items():
             if df is None or df.empty or "time" not in df.columns:
-                train[inst][tf] = df
-                holdout[inst][tf] = df
-                continue
-            mask = df["time"] < inst_split
-            train[inst][tf] = df.loc[mask].copy().reset_index(drop=True)
-            holdout[inst][tf] = df.loc[~mask].copy().reset_index(drop=True)
+                raise ValueError(f"{inst}/{tf} has no timestamp column; chronological split is impossible")
+            times = pd.to_datetime(df["time"], errors="coerce", utc=True)
+            if times.isna().any():
+                raise ValueError(f"{inst}/{tf} contains invalid timestamps")
+            frame = df.copy()
+            frame["time"] = times
+            split_utc = inst_split
+            mask = frame["time"] < split_utc
+            train[inst][tf] = frame.loc[mask].copy().reset_index(drop=True)
+            if include_holdout_context:
+                holdout_frame = frame.copy().reset_index(drop=True)
+                holdout_frame.attrs["episode_start_min_time"] = split_utc.isoformat()
+                holdout[inst][tf] = holdout_frame
+            else:
+                holdout[inst][tf] = frame.loc[~mask].copy().reset_index(drop=True)
 
     return train, holdout, split_ts
 
@@ -546,25 +1158,32 @@ def build_walk_forward_folds(
 
     if max_train_end <= min_train + 100:
         cut = times.iloc[max(1, max_train_end)]
+        val_data = slice_data_by_time_range(data, None, None)
+        for frames in val_data.values():
+            for frame in frames.values():
+                if frame is not None:
+                    frame.attrs["episode_start_min_time"] = pd.Timestamp(cut).isoformat()
         return [(
             slice_data_by_time_range(data, None, cut),
-            slice_data_by_time_range(data, cut, None),
+            val_data,
         )]
 
-    step = max(500, int((max_train_end - min_train) / max(n_folds, 1)))
     folds: List[Tuple[Dict[str, Dict[str, pd.DataFrame]], Dict[str, Dict[str, pd.DataFrame]]]] = []
-    train_end = min_train
+    train_ends = np.linspace(min_train, max_train_end, num=max(1, int(n_folds)), dtype=int)
 
-    for _ in range(n_folds):
-        if train_end + val_len > n:
-            break
+    for train_end in np.unique(train_ends):
         train_cut = times.iloc[train_end]
-        val_cut = times.iloc[min(train_end + val_len, n - 1)]
+        val_end = min(int(train_end) + val_len, n)
+        val_cut = times.iloc[val_end] if val_end < n else None
+        val_data = slice_data_by_time_range(data, None, val_cut)
+        for frames in val_data.values():
+            for frame in frames.values():
+                if frame is not None:
+                    frame.attrs["episode_start_min_time"] = pd.Timestamp(train_cut).isoformat()
         folds.append((
             slice_data_by_time_range(data, None, train_cut),
-            slice_data_by_time_range(data, train_cut, val_cut),
+            val_data,
         ))
-        train_end += step
 
     return folds
 
@@ -754,14 +1373,12 @@ def evaluate_agent_trading(
 
             if is_maskable and use_action_masks:
                 action_masks = get_action_masks_from_vec_env(env)
-                if action_masks is not None:
-                    predict_kwargs["action_masks"] = action_masks
+                if action_masks is None:
+                    raise RuntimeError("maskable evaluation could not obtain action masks")
+                predict_kwargs["action_masks"] = action_masks
 
 
-            try:
-                action, _ = model.predict(obs_array, **predict_kwargs)
-            except TypeError:
-                action, _ = model.predict(obs_array, deterministic=deterministic)
+            action, _ = model.predict(obs_array, **predict_kwargs)
 
 
             obs, r, dones, infos = env.step(action)
@@ -942,6 +1559,7 @@ def run_optuna_optimization(
     frame_stack: int = 4,
     study_name: str = "propfirm_ppo",
     storage: Optional[str] = None,
+    holdout_boundary: Optional[Any] = None,
 ) -> Any:
     if not OPTUNA_AVAILABLE:
         raise ImportError("Optuna not installed. Run: pip install optuna")
@@ -950,6 +1568,39 @@ def run_optuna_optimization(
     folds = build_walk_forward_folds(data, n_folds=walk_forward_folds)
     if not folds:
         raise RuntimeError("Cannot build walk-forward folds (insufficient data).")
+
+    development_manifest = build_dataset_manifest(
+        data,
+        role="optuna_development",
+        boundary=holdout_boundary,
+    )
+    fold_boundaries: List[Dict[str, Any]] = []
+    for fold_index, (fold_train, fold_val) in enumerate(folds):
+        train_primary = _primary_frame(next(iter(fold_train.values())))
+        val_primary = _primary_frame(next(iter(fold_val.values())))
+        if train_primary is None or val_primary is None:
+            raise RuntimeError(f"walk-forward fold {fold_index} has no primary frame")
+        val_start = val_primary.attrs.get("episode_start_min_time")
+        if val_start is None:
+            raise RuntimeError(f"walk-forward fold {fold_index} lacks validation boundary metadata")
+        fold_boundaries.append({
+            "fold": fold_index,
+            "train_end_exclusive": pd.Timestamp(val_start).isoformat(),
+            "train_last_bar": pd.Timestamp(train_primary["time"].iloc[-1]).isoformat(),
+            "validation_last_bar": pd.Timestamp(val_primary["time"].iloc[-1]).isoformat(),
+        })
+
+    study_binding = {
+        "dataset_fingerprint": development_manifest["dataset_fingerprint"],
+        "training_code_sha256": development_manifest["training_code_sha256"],
+        "objective_version": OPTUNA_OBJECTIVE_VERSION,
+        "fold_boundaries": fold_boundaries,
+        "git_head": development_manifest["git_head"],
+    }
+    bound_study_name = (
+        f"{study_name}__{development_manifest['dataset_fingerprint'][:12]}__"
+        f"{OPTUNA_OBJECTIVE_VERSION}"
+    )
 
     sampler = TPESampler(seed=42, multivariate=True)
     per_fold_steps = timesteps_per_trial // walk_forward_folds
@@ -961,13 +1612,23 @@ def run_optuna_optimization(
     )
 
     study = optuna.create_study(
-        study_name=study_name,
+        study_name=bound_study_name,
         storage=storage,
         direction="maximize",
         sampler=sampler,
         pruner=pruner,
-        load_if_exists=True,
+        load_if_exists=bool(storage),
     )
+    existing_binding = dict(getattr(study, "user_attrs", {}) or {})
+    if len(getattr(study, "trials", [])) > 0:
+        for key, expected in study_binding.items():
+            if existing_binding.get(key) != expected:
+                raise RuntimeError(
+                    f"refusing incompatible Optuna resume: {key}="
+                    f"{existing_binding.get(key)!r}, expected {expected!r}"
+                )
+    for key, value in study_binding.items():
+        study.set_user_attr(key, value)
 
     results_dir = Path("logs/optuna")
     results_dir.mkdir(parents=True, exist_ok=True)
@@ -1077,6 +1738,13 @@ def run_optuna_optimization(
                 model.learn(total_timesteps=per_fold_steps_local, progress_bar=True, callback=optuna_callback)
 
                 eval_cfg = _make_eval_config_adversarial(base_cfg, adversity=0.7)
+                val_primary = _primary_frame(next(iter(val_data.values())))
+                val_start = val_primary.attrs.get("episode_start_min_time") if val_primary is not None else None
+                if val_start is None:
+                    raise RuntimeError("walk-forward validation fold lacks an eligible-start boundary")
+                eval_cfg.episode_start_min_time = str(val_start)
+                eval_cfg.mirror_augmentation_prob = 0.0
+                eval_cfg.high_vol_oversample_prob = 0.0
                 eval_env = create_eval_vec_env(
                     val_data, eval_cfg,
                     seed=20_000 + trial.number + fi,
@@ -1125,6 +1793,8 @@ def run_optuna_optimization(
             "fold_scores": fold_scores,
             "params": trial.params,
             "timestamp": datetime.now().isoformat(),
+            "dataset_fingerprint": development_manifest["dataset_fingerprint"],
+            "objective_version": OPTUNA_OBJECTIVE_VERSION,
         }
         with open(results_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(record) + "\n")
@@ -1147,7 +1817,17 @@ def run_optuna_optimization(
 
     Path("logs/optuna").mkdir(parents=True, exist_ok=True)
     with open("logs/optuna/best_params.json", "w", encoding="utf-8") as f:
-        json.dump(study.best_params, f, indent=2)
+        json.dump(
+            {
+                "params": study.best_params,
+                "metadata": study_binding,
+                "study_name": bound_study_name,
+            },
+            f,
+            indent=2,
+            sort_keys=True,
+        )
+    write_dataset_manifest(development_manifest, Path("logs/optuna/dataset_manifest.json"))
 
     return study
 
@@ -1426,6 +2106,10 @@ def create_curriculum_env(
     seed: int = 0,
     monitor_dir: Optional[str] = None,
     use_action_masking: bool = True,
+    episode_start_min_time: Optional[str] = None,
+    raw_evaluation_mode: bool = False,
+    recent_regime_start_time: Optional[str] = None,
+    recent_regime_target_share: float = 0.0,
 ) -> Any:
     if not CURRICULUM_AVAILABLE:
         raise RuntimeError("Curriculum system not available")
@@ -1436,6 +2120,10 @@ def create_curriculum_env(
         max_steps_per_episode=stage_config.max_steps_per_episode,
         entry_quality_gate_enabled=stage_config.constraints.entry_quality_gate_enabled,
         entry_quality_threshold=stage_config.constraints.entry_quality_threshold,
+        episode_start_min_time=episode_start_min_time,
+        raw_evaluation_mode=bool(raw_evaluation_mode),
+        recent_regime_start_time=recent_regime_start_time,
+        recent_regime_target_share=float(recent_regime_target_share),
     )
 
     env = PropFirmTradingEnv(
@@ -1468,6 +2156,10 @@ def create_curriculum_vec_envs(
     monitor_dir: str = "logs/curriculum/training",
     use_action_masking: bool = True,
     frame_stack: int = 1,
+    episode_start_min_time: Optional[str] = None,
+    raw_evaluation_mode: bool = False,
+    recent_regime_start_time: Optional[str] = None,
+    recent_regime_target_share: float = 0.0,
 ) -> VecEnv:
     Path(monitor_dir).mkdir(parents=True, exist_ok=True)
 
@@ -1479,6 +2171,10 @@ def create_curriculum_vec_envs(
                 seed=seed + rank,
                 monitor_dir=monitor_dir,
                 use_action_masking=use_action_masking,
+                episode_start_min_time=episode_start_min_time,
+                raw_evaluation_mode=raw_evaluation_mode,
+                recent_regime_start_time=recent_regime_start_time,
+                recent_regime_target_share=recent_regime_target_share,
             )
             return env
         return _init
@@ -1530,6 +2226,11 @@ def train_curriculum_agent(
     seed: int = 42,
     holdout_ratio: float = 0.15,
     holdout_split_at: Optional[str] = None,
+    recent_regime_start_time: Optional[str] = None,
+    recent_regime_target_share: float = 0.0,
+    data_cutoff: Optional[str] = None,
+    loaded_dataset_manifest: Optional[Dict[str, Any]] = None,
+    command: Optional[List[str]] = None,
 ) -> BaseAlgorithm:
     if not CURRICULUM_AVAILABLE or CurriculumStage is None or CurriculumManager is None:
         raise RuntimeError("Curriculum system not available. Check imports.")
@@ -1556,9 +2257,25 @@ def train_curriculum_agent(
             rng_seed=seed,
         )
 
-    logger.info(f"Curriculum training: starting at {curriculum_manager.current_stage.name}")
+    current_stage = curriculum_manager.current_stage
+    if current_stage is None:
+        raise RuntimeError("CurriculumManager has no current stage")
+    run_start_stage = current_stage.name
+    logger.info(f"Curriculum training: starting at {current_stage.name}")
     if get_stage_progression is not None:
         logger.info(f"Stage progression: {' → '.join(s.name for s in get_stage_progression())}")
+
+    if goal_based_stopping:
+        # Reject obviously impossible fresh/resumed plans before constructing
+        # vector environments.  A second check after loading the model uses the
+        # larger of checkpoint and manager timestep counters.
+        early_preflight = build_curriculum_budget_preflight(
+            start_stage=curriculum_manager.current_stage,
+            safety_cap_timesteps=total_timesteps,
+            already_consumed_timesteps=int(getattr(curriculum_manager, "total_timesteps", 0) or 0),
+            current_stage_timesteps=int(getattr(curriculum_manager, "stage_timesteps", 0) or 0),
+        )
+        enforce_goal_based_budget(early_preflight, goal_based=True)
 
 
     n_bars = _min_len_across(data)
@@ -1591,35 +2308,71 @@ def train_curriculum_agent(
     primary = _primary_frame(next(iter(data.values()))) if data else None
     n_primary = len(primary) if primary is not None else n_bars
 
-    min_holdout_len = max(1500, max_steps_required + 800)
+    min_holdout_len = max(1500, max_steps_required + 2)
     min_train_len = max(3000, max_steps_required + 2000)
-    holdout_len = int(n_primary * holdout_ratio) if holdout_ratio > 0 else 0
+    holdout_requested = holdout_split_at is not None or holdout_ratio > 0.0
 
-    if holdout_len < min_holdout_len or (n_primary - holdout_len) < min_train_len:
-        if holdout_ratio > 0:
-            logger.warning(
-                "Holdout disabled: insufficient bars on the primary timeframe "
-                f"(n={n_primary}, holdout_len={holdout_len}, "
-                f"min_holdout={min_holdout_len}, min_train={min_train_len}). "
-                "Training and evaluation will use the SAME data - results are "
-                "in-sample and cannot show generalisation."
-            )
+    if not holdout_requested:
         train_data = data
         holdout_data = data
         holdout_enabled = False
+        split_ts = None
     else:
-        train_data, holdout_data, split_ts = split_data_by_time(data, holdout_ratio, split_at=holdout_split_at)
-        holdout_enabled = True
-        # `frame or []` would invoke DataFrame.__bool__, which raises.
+        train_data, holdout_data, split_ts = split_data_by_time(
+            data,
+            holdout_ratio,
+            split_at=holdout_split_at,
+            include_holdout_context=True,
+        )
         tr_frame = _primary_frame(next(iter(train_data.values())))
         ho_frame = _primary_frame(next(iter(holdout_data.values())))
-        tr = 0 if tr_frame is None else len(tr_frame)
-        ho = 0 if ho_frame is None else len(ho_frame)
+        if tr_frame is None or ho_frame is None or split_ts is None:
+            raise ValueError("chronological holdout partition produced no primary frame")
+        split_utc = pd.Timestamp(split_ts)
+        split_utc = split_utc.tz_localize("UTC") if split_utc.tzinfo is None else split_utc.tz_convert("UTC")
+        holdout_times = pd.to_datetime(ho_frame["time"], errors="coerce", utc=True)
+        eligible_holdout_len = int((holdout_times >= split_utc).sum())
+        train_len = len(tr_frame)
+        if eligible_holdout_len < min_holdout_len or train_len < min_train_len:
+            raise ValueError(
+                "requested holdout is not executable: "
+                f"train={train_len} (need {min_train_len}), post_cut={eligible_holdout_len} "
+                f"(need {min_holdout_len}), split={split_utc.isoformat()}"
+            )
+        holdout_enabled = True
         logger.info(
-            f"Holdout split at {split_ts}: train={tr} primary bars, "
-            f"holdout={ho} ({holdout_ratio:.0%}), split by timestamp so every "
-            f"timeframe is cut at the same instant"
+            f"Holdout split at {split_utc}: train={train_len} primary bars, "
+            f"holdout={eligible_holdout_len} eligible bars plus causal pre-cut context"
         )
+
+    resolved_split_at = None
+    if split_ts is not None:
+        resolved_split = pd.Timestamp(split_ts)
+        resolved_split = (
+            resolved_split.tz_localize("UTC")
+            if resolved_split.tzinfo is None
+            else resolved_split.tz_convert("UTC")
+        )
+        resolved_split_at = resolved_split.isoformat()
+
+    loaded_manifest = loaded_dataset_manifest or build_dataset_manifest(
+        data,
+        role="loaded",
+        boundary=data_cutoff,
+    )
+    train_manifest = build_dataset_manifest(
+        train_data,
+        role="curriculum_train",
+        boundary=split_ts,
+    )
+    holdout_manifest = build_dataset_manifest(
+        holdout_data,
+        role="curriculum_holdout_with_context" if holdout_enabled else "curriculum_holdout_disabled_train_reuse",
+        boundary=split_ts,
+    )
+    write_dataset_manifest(loaded_manifest, save_dir / "loaded_dataset_manifest.json")
+    write_dataset_manifest(train_manifest, save_dir / "train_dataset_manifest.json")
+    write_dataset_manifest(holdout_manifest, save_dir / "holdout_dataset_manifest.json")
 
     train_env = create_curriculum_vec_envs(
         data=train_data,
@@ -1629,18 +2382,11 @@ def train_curriculum_agent(
         monitor_dir=str(save_dir / "training"),
         use_action_masking=use_masking,
         frame_stack=frame_stack,
+        recent_regime_start_time=recent_regime_start_time,
+        recent_regime_target_share=recent_regime_target_share,
     )
 
 
-    eval_env = create_curriculum_vec_envs(
-        data=holdout_data,
-        curriculum_manager=curriculum_manager,
-        n_envs=1,
-        seed=seed + 1337,
-        monitor_dir=str(save_dir / "holdout_eval"),
-        use_action_masking=use_masking,
-        frame_stack=frame_stack,
-    )
     holdout_validation_env = create_curriculum_vec_envs(
         data=holdout_data,
         curriculum_manager=curriculum_manager,
@@ -1649,6 +2395,8 @@ def train_curriculum_agent(
         monitor_dir=str(save_dir / "holdout_validation"),
         use_action_masking=use_masking,
         frame_stack=frame_stack,
+        episode_start_min_time=str(split_ts) if holdout_enabled else None,
+        raw_evaluation_mode=True,
     )
 
     policy_kwargs = dict(
@@ -1745,6 +2493,22 @@ def train_curriculum_agent(
 
     save_freq_calls = max(1, checkpoint_freq // max(n_envs, 1))
 
+    terminal_min_episodes = 0
+    if get_stage_config is not None:
+        terminal_min_episodes = int(
+            get_stage_config(CurriculumStage.LIVE_READY).competence.min_episodes
+        )
+    effective_mastery_episodes = max(
+        int(mastery_confirmation_episodes),
+        terminal_min_episodes,
+    )
+    if effective_mastery_episodes != int(mastery_confirmation_episodes):
+        logger.warning(
+            "Raising LIVE_READY confirmation from %s to the terminal competence floor of %s episodes",
+            f"{int(mastery_confirmation_episodes):,}",
+            f"{effective_mastery_episodes:,}",
+        )
+
     curriculum_training_callback = CurriculumTrainingCallback(
         curriculum_manager=curriculum_manager,
         total_timesteps=total_timesteps,
@@ -1758,7 +2522,7 @@ def train_curriculum_agent(
         plateau_stop=True,
         plateau_threshold_episodes=plateau_threshold_episodes,
         max_demotions_from_same_stage=max_demotions_from_same_stage,
-        mastery_confirmation_episodes=mastery_confirmation_episodes,
+        mastery_confirmation_episodes=effective_mastery_episodes,
     )
 
 
@@ -1787,29 +2551,54 @@ def train_curriculum_agent(
         ),
     ]
 
-    if use_masking and MASKABLE_EVAL_AVAILABLE and MaskableEvalCallback is not None:
-        eval_cb = MaskableEvalCallback(
-            eval_env,
-            best_model_save_path=str(save_dir / "best"),
-            log_path=str(save_dir / "eval_logs"),
-            eval_freq=max(50_000 // max(n_envs, 1), save_freq_calls),
-            deterministic=True,
-            n_eval_episodes=5,
-        )
-    else:
-        eval_cb = EvalCallback(
-            eval_env,
-            best_model_save_path=str(save_dir / "best"),
-            log_path=str(save_dir / "eval_logs"),
-            eval_freq=max(50_000 // max(n_envs, 1), save_freq_calls),
-            deterministic=True,
-            n_eval_episodes=5,
-        )
-    callbacks.append(eval_cb)
+    # Do not select a "best" checkpoint by raw reward on this development
+    # window.  Curriculum reward scales and episode lengths change by stage, so
+    # those scores are not comparable; querying the same thin holdout every
+    # 50k steps also turns it into training feedback.  The bounded promotion and
+    # terminal-readiness gates above are the only in-run development queries.
+    logger.info(
+        "Periodic holdout best-model selection disabled; development holdout "
+        "is reserved for spaced curriculum gates"
+    )
 
     current_steps = int(getattr(model, 'num_timesteps', 0))
     remaining_timesteps = max(0, total_timesteps - current_steps)
     should_reset_num_timesteps = (current_steps == 0)
+
+    consumed_for_budget = max(
+        current_steps,
+        int(getattr(curriculum_manager, "total_timesteps", 0) or 0),
+    )
+    budget_preflight = build_curriculum_budget_preflight(
+        start_stage=curriculum_manager.current_stage,
+        safety_cap_timesteps=total_timesteps,
+        already_consumed_timesteps=consumed_for_budget,
+        current_stage_timesteps=int(getattr(curriculum_manager, "stage_timesteps", 0) or 0),
+    )
+    logger.info(
+        "Curriculum budget floor: start=%s available=%s required=%s max_theoretical_stage=%s",
+        budget_preflight["start_stage"],
+        f"{budget_preflight['available_timesteps']:,}",
+        f"{budget_preflight['minimum_remaining_timesteps']:,}",
+        budget_preflight["maximum_theoretical_stage"],
+    )
+    for stage_budget in budget_preflight["stages"]:
+        required = stage_budget["global_timesteps_required"]
+        required_text = "unfundable" if required is None else f"{required:,}"
+        logger.info(
+            "  %-17s local_remaining=%10s current_share=%6.2f%% global_floor=%s",
+            stage_budget["stage"],
+            f"{stage_budget['local_timesteps_remaining']:,}",
+            100.0 * float(stage_budget["declared_current_stage_probability"]),
+            required_text,
+        )
+    if goal_based_stopping:
+        enforce_goal_based_budget(budget_preflight, goal_based=True)
+    else:
+        logger.info(
+            "Fixed-run maximum theoretical stage at the configured cap: %s",
+            budget_preflight["maximum_theoretical_stage"],
+        )
 
     if current_steps > 0:
         logger.info(
@@ -1818,6 +2607,7 @@ def train_curriculum_agent(
         )
 
     start_time = datetime.now()
+    run_outcome = "finished"
     try:
         model.learn(
             total_timesteps=remaining_timesteps,
@@ -1827,39 +2617,82 @@ def train_curriculum_agent(
             reset_num_timesteps=should_reset_num_timesteps,
         )
     except KeyboardInterrupt:
+        run_outcome = "interrupted"
         logger.warning("Curriculum training interrupted by user")
+    except BaseException:
+        run_outcome = "failed"
+        raise
     finally:
         duration = datetime.now() - start_time
         logger.info(f"Training duration: {duration}")
 
-        model.save(str(save_dir / "curriculum_ppo_final.zip"))
+        final_model_path = save_dir / "curriculum_ppo_final.zip"
+        model.save(str(final_model_path))
         curriculum_manager.save(save_dir / "curriculum_state.json")
 
+        current_stage = curriculum_manager.current_stage
+        if current_stage is None:
+            raise RuntimeError("CurriculumManager lost its current stage")
+        final_stage = current_stage.name
+        terminal_mastery = assess_terminal_mastery(
+            curriculum_manager,
+            mastery_confirmation_episodes=effective_mastery_episodes,
+        )
+        provenance = build_curriculum_run_provenance(
+            loaded_manifest=loaded_manifest,
+            train_manifest=train_manifest,
+            holdout_manifest=holdout_manifest,
+            final_stage=final_stage,
+            run_outcome=run_outcome,
+            actual_timesteps=int(getattr(model, "num_timesteps", 0)),
+            start_stage=run_start_stage,
+            goal_based=goal_based_stopping,
+            safety_cap_timesteps=total_timesteps,
+            holdout_enabled=holdout_enabled,
+            holdout_ratio=holdout_ratio,
+            holdout_split_at=holdout_split_at,
+            resolved_holdout_split_at=resolved_split_at,
+            data_cutoff=data_cutoff,
+            regime_start_at=recent_regime_start_time,
+            regime_target_share=recent_regime_target_share,
+            observation_schema=current_observation_schema(model, frame_stack=frame_stack),
+            command=list(command) if command is not None else [sys.executable, *sys.argv],
+            budget_preflight=budget_preflight,
+            model_record=_file_record(final_model_path),
+            terminal_mastery_confirmed=bool(terminal_mastery["confirmed"]),
+            terminal_mastery_evidence=terminal_mastery,
+        )
+        provenance_path = save_dir / "curriculum_ppo_final.provenance.json"
+        write_json_atomic(provenance, provenance_path)
+
         summary = {
+            "status": provenance["status"],
+            "accepted": False,
+            "curriculum_complete": provenance["curriculum_complete"],
+            "terminal_mastery": terminal_mastery,
             "total_timesteps": int(getattr(model, "num_timesteps", 0)),
-            "final_stage": curriculum_manager.current_stage.name,
+            "final_stage": final_stage,
             "curriculum_progress": curriculum_manager.get_progress_report(),
-            "completed_at": datetime.now().isoformat(),
+            "run_ended_at": datetime.now().astimezone().isoformat(),
+            "run_outcome": run_outcome,
             "seed": int(seed),
+            "provenance": provenance_path.name,
             "holdout": {
                 "enabled": bool(holdout_enabled),
                 "ratio": float(holdout_ratio),
+                "split_at_argument": holdout_split_at,
+                "resolved_split_at": resolved_split_at,
                 "min_bars": int(n_bars),
             },
         }
-        with open(save_dir / "training_summary.json", "w", encoding="utf-8") as f:
-            json.dump(summary, f, indent=2)
+        write_json_atomic(summary, save_dir / "training_summary.json")
 
-        logger.info(f"Final stage: {curriculum_manager.current_stage.name}")
+        logger.info(f"Final stage: {final_stage} | status: {provenance['status']}")
+        logger.info(f"Run provenance: {provenance_path}")
         logger.info(f"Model saved to: {save_dir}")
 
         try:
             train_env.close()
-        except Exception:
-            pass
-
-        try:
-            eval_env.close()
         except Exception:
             pass
 
@@ -1948,6 +2781,27 @@ def main() -> None:
     parser.add_argument("--pretrained", type=str, default=None)
 
     parser.add_argument("--data-dir", type=str, default="data/processed")
+    parser.add_argument(
+        "--extra-data-dir",
+        type=str,
+        default=None,
+        help="Optional broker-bar directory to append. Omitted by default so evaluation data is never merged implicitly.",
+    )
+    parser.add_argument(
+        "--allow-synthetic-data",
+        action="store_true",
+        help="Explicitly permit synthetic fallback when file data is absent (development only).",
+    )
+    parser.add_argument(
+        "--data-cutoff",
+        type=str,
+        default=None,
+        help=(
+            "Inclusive UTC cutoff applied to every timeframe after loading, e.g. "
+            "2026-08-03T08:15:00Z. Use it with growing broker files so a command "
+            "reconstructs the same dataset later."
+        ),
+    )
     parser.add_argument("--instruments", type=str, nargs="+", default=["XAUUSD"])
 
     parser.add_argument("--frame-stack", type=int, default=1, help="Frame stack. 1=disabled (recommended).")
@@ -1969,6 +2823,24 @@ def main() -> None:
             "change."
         ),
     )
+    parser.add_argument(
+        "--regime-start-at",
+        type=str,
+        default=None,
+        help=(
+            "UTC start of a materially new training regime. Used only for "
+            "curriculum episode sampling and must be paired with --regime-target-share."
+        ),
+    )
+    parser.add_argument(
+        "--regime-target-share",
+        type=float,
+        default=0.0,
+        help=(
+            "Exact probability mass assigned to eligible training starts on/after "
+            "--regime-start-at, after each stage's filters (0 disables)."
+        ),
+    )
 
     parser.add_argument("--entry-quality-threshold", type=float, default=None)
     parser.add_argument("--reward-scale", type=float, default=None)
@@ -1980,6 +2852,11 @@ def main() -> None:
     parser.add_argument("--dashboard-port", type=int, default=8765, help="Dashboard server port")
 
     args = parser.parse_args()
+
+    if not np.isfinite(float(args.regime_target_share)) or not (0.0 <= float(args.regime_target_share) <= 1.0):
+        parser.error("--regime-target-share must be between 0 and 1")
+    if float(args.regime_target_share) > 0.0 and not args.regime_start_at:
+        parser.error("--regime-target-share requires --regime-start-at")
 
     logger.info("=" * 70)
     logger.info("PropFirm PPO Training System (10/10)")
@@ -2000,9 +2877,23 @@ def main() -> None:
         data_dir=args.data_dir,
         instruments=args.instruments,
         min_bars=1000 if args.test else 5000,
+        extra_dir=args.extra_data_dir,
+        allow_synthetic=bool(args.allow_synthetic_data),
+        data_cutoff=args.data_cutoff,
     )
     if not data:
         raise RuntimeError("No data available for training")
+
+    loaded_manifest = build_dataset_manifest(
+        data,
+        role="loaded",
+        boundary=args.data_cutoff,
+    )
+    write_dataset_manifest(loaded_manifest, Path("logs/training/dataset_manifest.json"))
+    logger.info(
+        "Dataset fingerprint: %s (manifest logs/training/dataset_manifest.json)",
+        loaded_manifest["dataset_fingerprint"],
+    )
 
     if args.test:
         args.timesteps = min(args.timesteps, 200_000)
@@ -2043,8 +2934,18 @@ def main() -> None:
     config_overrides["domain_randomization_enabled"] = (not bool(args.no_domain_randomization))
 
     if args.optuna:
+        optuna_data = data
+        optuna_cut = None
+        if args.holdout_split_at is not None or float(args.holdout_ratio) > 0.0:
+            optuna_data, _reserved, optuna_cut = split_data_by_time(
+                data,
+                float(args.holdout_ratio),
+                split_at=args.holdout_split_at,
+                include_holdout_context=False,
+            )
+            logger.info("Optuna restricted to data strictly before holdout boundary %s", optuna_cut)
         run_optuna_optimization(
-            data=data,
+            data=optuna_data,
             n_trials=args.trials,
             timesteps_per_trial=args.trial_timesteps,
             n_envs=args.n_envs,
@@ -2053,6 +2954,7 @@ def main() -> None:
             frame_stack=max(1, int(args.frame_stack)),
             study_name=args.study_name,
             storage=args.optuna_storage,
+            holdout_boundary=optuna_cut,
         )
     elif args.curriculum:
         if not CURRICULUM_AVAILABLE:
@@ -2062,8 +2964,29 @@ def main() -> None:
             optuna_params_path = Path(args.load_optuna_params)
             if optuna_params_path.exists():
                 with open(optuna_params_path, "r", encoding="utf-8") as f:
-                    optuna_best = json.load(f)
-                logger.info(f"Loaded Optuna best params from {optuna_params_path}")
+                    optuna_payload = json.load(f)
+
+                expected_optuna_data = data
+                expected_cut = None
+                if args.holdout_split_at is not None or float(args.holdout_ratio) > 0.0:
+                    expected_optuna_data, _reserved, expected_cut = split_data_by_time(
+                        data,
+                        float(args.holdout_ratio),
+                        split_at=args.holdout_split_at,
+                        include_holdout_context=False,
+                    )
+                expected_manifest = build_dataset_manifest(
+                    expected_optuna_data,
+                    role="optuna_development",
+                    boundary=expected_cut,
+                )
+                optuna_best = validate_bound_optuna_params(optuna_payload, expected_manifest)
+                expected_fingerprint = expected_manifest["dataset_fingerprint"]
+                logger.info(
+                    "Loaded bound Optuna params from %s (dataset %s)",
+                    optuna_params_path,
+                    expected_fingerprint,
+                )
 
                 param_map = {
                     "learning_rate": "lr",
@@ -2094,7 +3017,27 @@ def main() -> None:
         logger.info("CURRICULUM LEARNING MODE")
         if args.goal_based:
             logger.info("GOAL-BASED STOPPING ENABLED")
-            logger.info(f"Training until mastery achieved ({args.mastery_episodes} episodes to confirm)")
+            terminal_episode_floor = 0
+            if get_stage_config is not None and CurriculumStage is not None:
+                terminal_episode_floor = int(
+                    get_stage_config(CurriculumStage.LIVE_READY).competence.min_episodes
+                )
+            effective_mastery_episodes = max(
+                int(args.mastery_episodes),
+                terminal_episode_floor,
+            )
+            logger.info(
+                f"Goal-stop LIVE_READY episode floor: {effective_mastery_episodes:,}"
+            )
+            logger.info(
+                "Completion provenance additionally requires terminal timesteps plus recorded "
+                "development validation and stress gates"
+            )
+            if effective_mastery_episodes != int(args.mastery_episodes):
+                logger.info(
+                    f"Requested --mastery-episodes={int(args.mastery_episodes):,} is below "
+                    f"the terminal competence floor of {terminal_episode_floor:,}"
+                )
             logger.info(f"Safety cap: {args.timesteps:,} timesteps")
             if args.max_hours:
                 logger.info(f"Max hours: {args.max_hours}")
@@ -2132,6 +3075,11 @@ def main() -> None:
             seed=args.seed,
             holdout_ratio=args.holdout_ratio,
             holdout_split_at=args.holdout_split_at,
+            recent_regime_start_time=args.regime_start_at,
+            recent_regime_target_share=args.regime_target_share,
+            data_cutoff=args.data_cutoff,
+            loaded_dataset_manifest=loaded_manifest,
+            command=[sys.executable, *sys.argv],
         )
     else:
         train_prop_firm_agent(

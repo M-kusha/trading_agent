@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from datetime import time as dtime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -37,7 +37,11 @@ class LiveMaskConfig:
     min_minutes_after_loss: int = 15
 
 
-    enforce_hard_rules: bool = False
+    # Live exposure must be fail-closed.  HOLD and CLOSE remain legal when the
+    # account snapshot is missing or malformed, but new risk never is.
+    enforce_hard_rules: bool = True
+    dd_entry_veto_fraction: float = 0.75
+    max_risk_snapshot_age_seconds: float = 60.0
 
 
     no_new_trades_start: dtime = dtime(18, 0)
@@ -73,14 +77,15 @@ class LiveActionMaskBuilder:
         trade_open_allowed: Optional[bool] = None,
         has_pending_entry: bool = False,
         has_pending_exit: bool = False,
-        current_dd: float = 0.0,
-        daily_dd: float = 0.0,
+        current_dd: Optional[float] = None,
+        daily_dd: Optional[float] = None,
         daily_trades: int = 0,
         session_trades: int = 0,
         consecutive_losses: int = 0,
         last_entry_time: Optional[datetime] = None,
         last_loss_time: Optional[datetime] = None,
         current_time: Optional[datetime] = None,
+        risk_timestamp: Optional[Any] = None,
     ) -> np.ndarray:
         mask = np.ones(self._N_ACTIONS, dtype=np.bool_)
 
@@ -107,6 +112,7 @@ class LiveActionMaskBuilder:
                 last_entry_time=last_entry_time,
                 last_loss_time=last_loss_time,
                 current_time=now,
+                risk_timestamp=risk_timestamp,
             )
             if not hard_allowed:
                 can_enter = False
@@ -127,25 +133,67 @@ class LiveActionMaskBuilder:
 
     def _hard_entry_allowed(
         self,
-        current_dd: float,
-        daily_dd: float,
+        current_dd: Optional[float],
+        daily_dd: Optional[float],
         daily_trades: int,
         session_trades: int,
         consecutive_losses: int,
         last_entry_time: Optional[datetime],
         last_loss_time: Optional[datetime],
         current_time: datetime,
+        risk_timestamp: Optional[Any] = None,
     ) -> Tuple[bool, List[str]]:
         reasons: List[str] = []
 
 
-        max_dd_threshold = self.config.max_drawdown_limit - self.config.max_dd_safety_buffer
-        if current_dd >= max_dd_threshold:
-            reasons.append(f"max_dd_breach({current_dd:.2%} >= {max_dd_threshold:.2%})")
+        try:
+            current_dd_value = float(current_dd) if current_dd is not None else float("nan")
+            daily_dd_value = float(daily_dd) if daily_dd is not None else float("nan")
+        except (TypeError, ValueError):
+            current_dd_value = daily_dd_value = float("nan")
+        if not (np.isfinite(current_dd_value) and np.isfinite(daily_dd_value)):
+            return False, ["invalid_or_missing_drawdown_state"]
 
-        daily_dd_threshold = self.config.daily_drawdown_limit - self.config.daily_dd_safety_buffer
-        if daily_dd >= daily_dd_threshold:
-            reasons.append(f"daily_dd_breach({daily_dd:.2%} >= {daily_dd_threshold:.2%})")
+        try:
+            if isinstance(risk_timestamp, datetime):
+                risk_dt = risk_timestamp
+            elif isinstance(risk_timestamp, str) and risk_timestamp.strip():
+                risk_dt = datetime.fromisoformat(risk_timestamp.replace("Z", "+00:00"))
+            else:
+                raise ValueError("missing timestamp")
+            now_dt = current_time
+            if risk_dt.tzinfo is None:
+                risk_dt = risk_dt.replace(tzinfo=timezone.utc)
+            else:
+                risk_dt = risk_dt.astimezone(timezone.utc)
+            if now_dt.tzinfo is None:
+                now_dt = now_dt.replace(tzinfo=timezone.utc)
+            else:
+                now_dt = now_dt.astimezone(timezone.utc)
+            age = (now_dt - risk_dt).total_seconds()
+            max_age = float(self.config.max_risk_snapshot_age_seconds)
+            if not np.isfinite(max_age) or max_age <= 0.0 or age < -5.0 or age > max_age:
+                return False, [f"stale_risk_snapshot(age={age:.1f}s)"]
+        except Exception:
+            return False, ["invalid_or_missing_risk_timestamp"]
+
+        veto_fraction = float(self.config.dd_entry_veto_fraction)
+        if not np.isfinite(veto_fraction) or not (0.0 < veto_fraction < 1.0):
+            return False, ["invalid_drawdown_veto_configuration"]
+
+        max_dd_threshold = min(
+            self.config.max_drawdown_limit - self.config.max_dd_safety_buffer,
+            self.config.max_drawdown_limit * veto_fraction,
+        )
+        if current_dd_value >= max_dd_threshold:
+            reasons.append(f"max_dd_breach({current_dd_value:.2%} >= {max_dd_threshold:.2%})")
+
+        daily_dd_threshold = min(
+            self.config.daily_drawdown_limit - self.config.daily_dd_safety_buffer,
+            self.config.daily_drawdown_limit * veto_fraction,
+        )
+        if daily_dd_value >= daily_dd_threshold:
+            reasons.append(f"daily_dd_breach({daily_dd_value:.2%} >= {daily_dd_threshold:.2%})")
 
 
         if daily_trades >= self.config.max_trades_per_day:

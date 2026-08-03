@@ -36,6 +36,7 @@ class RewardShapingMixin:
             "final_exit_window": 1.20,
             "weekend_block": 1.20,
             "drawdown_headroom": 1.50,
+            "drawdown_entry_veto": 1.50,
             "max_consecutive_losses": 1.40,
             "max_trades_per_day": 1.10,
             "max_trades_per_session": 1.05,
@@ -149,30 +150,10 @@ class RewardShapingMixin:
             shaping -= churn_cost * (1.0 - 0.60 * q_best)
 
 
-        patience_enabled = bool(getattr(cfg, "patience_shaping_enabled", False))
-        patience_bonus = float(getattr(cfg, "patience_bonus_per_bar", 0.0))
-        patience_threshold = float(getattr(cfg, "patience_quality_threshold", 0.35))
-        if patience_enabled and (not has_position) and (not entry_accepted) and patience_bonus > 0.0:
-            if q_best < patience_threshold:
-                bonus = patience_bonus
-
-                if bool(getattr(cfg, "dynamic_patience_enabled", False)):
-                    base = float(getattr(cfg, "patience_bonus_base", patience_bonus))
-                    mults = getattr(cfg, "patience_bonus_multiplier", {}) or {}
-                    mult = 1.0
-                    ctx = getattr(self, "_last_step_entry_context", {}) or {}
-                    vol_regime = str(ctx.get("volatility_regime", "")).lower()
-                    trend_strength = float(ctx.get("structure_trend", 0.0))
-                    if vol_regime in ("low", "low_volatility"):
-                        mult *= float(mults.get("low_volatility", 1.0))
-                    elif vol_regime in ("high", "high_volatility"):
-                        mult *= float(mults.get("high_volatility", 1.0))
-                    if abs(trend_strength) >= 0.3:
-                        mult *= float(mults.get("trending", 1.0))
-                    else:
-                        mult *= float(mults.get("ranging", 1.0))
-                    bonus = base * mult
-                shaping += float(bonus)
+        # Flat capital is already preferable to paying spread, slippage and
+        # losing PnL.  Paying a positive reward on every idle bar lets an agent
+        # maximize shaped return without demonstrating trading edge, so
+        # abstention remains legal but economically neutral.
 
 
         obs_required = bool(getattr(cfg, "observation_period_required", False))
@@ -188,14 +169,6 @@ class RewardShapingMixin:
                     if bonus > 0.0:
                         shaping += bonus
                     self._observation_bonus_given = True
-
-
-        if bool(getattr(cfg, "win_rate_preservation_enabled", False)):
-            win_rate = float(getattr(self, "winning_trades", 0) / max(getattr(self, "total_trades", 1), 1))
-            if win_rate >= float(getattr(cfg, "current_win_rate_threshold", 0.45)):
-                sq_thr = float(getattr(cfg, "setup_quality_threshold", 0.7))
-                if (not has_position) and (not entry_accepted) and q_best < sq_thr:
-                    shaping += float(getattr(cfg, "selectivity_bonus", 0.0))
 
 
         loss_streak_caution_enabled = bool(getattr(cfg, "loss_streak_caution_enabled", True))
@@ -287,14 +260,6 @@ class RewardShapingMixin:
                 over_streak = int(getattr(cfg, "overconfidence_streak_threshold", 3) or 3)
                 if int(getattr(self, "consecutive_wins", 0)) >= over_streak:
                     shaping -= float(getattr(cfg, "overconfidence_penalty", 0.0))
-
-
-        if (not entry_accepted) and (not has_position) and bool(getattr(cfg, "win_rate_preservation_enabled", False)):
-            win_rate = float(getattr(self, "winning_trades", 0) / max(getattr(self, "total_trades", 1), 1))
-            if win_rate >= float(getattr(cfg, "current_win_rate_threshold", 0.45)):
-                sq_thr = float(getattr(cfg, "setup_quality_threshold", 0.7))
-                if max(setup_quality_long, setup_quality_short) < sq_thr:
-                    shaping += float(getattr(cfg, "selectivity_bonus", 0.0))
 
 
         min_s = float(getattr(cfg, "per_step_min", -0.05))

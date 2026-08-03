@@ -40,8 +40,10 @@ docker-compose.yml
 frontend/node_modules/
 frontend/package-lock.json
 
-# Ignore runtime state snapshots
-state/
+# Ignore only the repository-root runtime state snapshots.  The previous
+# unanchored pattern also hid the source package at trading/state/, even though
+# tracked modules import it for live/train observation parity.
+/state/
 
 # NOTE: tests/, docs/ and scripts/ were previously ignored. That is why this
 # repo had zero tracked tests and why the feature-generation script was lost.

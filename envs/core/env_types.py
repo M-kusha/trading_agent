@@ -182,6 +182,13 @@ class RewardConfig:
     win_streak_bonus_per_win: float = 0.02
     loss_streak_penalty_per_loss: float = 0.03
 
+    # Curriculum stages and recovery skills tune these values.  They must be
+    # declared on the runtime reward config; otherwise override application
+    # silently drops them and every stage uses RewardShapingMixin's fallback.
+    loss_streak_caution_enabled: bool = True
+    loss_streak_caution_base: float = 0.03
+    loss_streak_caution_cap: float = 0.25
+
 
     anti_churn_enabled: bool = True
 
@@ -209,7 +216,9 @@ class RewardConfig:
     # penalty saturated at -2.0 per episode regardless of how badly the stage
     # target was exceeded.
     activity_deviation_penalty_cap: float = 2.0
-    min_trades_penalty: float = 0.3
+    # Retained for checkpoint/config compatibility. Inactivity is neutral and
+    # evidence sufficiency belongs to promotion/validation gates.
+    min_trades_penalty: float = 0.0
 
 
     hard_block_penalty: float = 0.10
@@ -304,6 +313,12 @@ class PropFirmConfig:
     max_drawdown_limit: float = 0.10
     trailing_drawdown: bool = False
 
+    # Non-negotiable account limits.  Curriculum stages may tighten or relax
+    # their pedagogical drawdown targets, but they must never redefine the
+    # boundary at which a real prop-firm account is blocked or failed.
+    firm_daily_drawdown_limit: float = 0.05
+    firm_max_drawdown_limit: float = 0.10
+
     # Probability that an episode runs on a price-mirrored copy of the data.
     # XAUUSD rose 149.8% across this dataset (1,735 -> 4,332), so a random long
     # held 96 bars earns +241 points and a random short loses the same. Long
@@ -340,6 +355,26 @@ class PropFirmConfig:
     # refused by the action mask. 0.75 leaves a quarter of the limit as
     # reserve to trade out of an existing position. 0.0 disables the veto.
     dd_entry_veto_fraction: float = 0.75
+
+    # Optional sampling window used by chronological evaluation environments.
+    # Data before the lower bound may remain present as observation context,
+    # while episode starts are restricted to the requested out-of-sample range.
+    episode_start_min_time: Optional[str] = None
+    episode_start_max_time: Optional[str] = None
+    # Optional temporal-regime mixture for curriculum training.  When set,
+    # DataDifficulty first applies the stage's volatility/trend/session filter,
+    # then assigns this exact probability mass to eligible starts on/after the
+    # boundary.  This is explicit because a market-regime date is dataset
+    # provenance, not a universal trading constant.
+    recent_regime_start_time: Optional[str] = None
+    recent_regime_target_share: float = 0.0
+    raw_evaluation_mode: bool = False
+    # Development gates use shorter, disjoint-capable paths than the training
+    # episodes. Ten 2,800-bar resets from a 3,218-bar holdout are one path
+    # sampled ten times, not ten pieces of evidence. 168 M15 bars (42 market
+    # hours) is the largest horizon that leaves eight disjoint low-volatility
+    # starts in the explicit 2026-06-15 development window; 169 leaves seven.
+    validation_max_steps_per_episode: int = 168
 
     atr_stop_enabled: bool = True
     atr_stop_multiplier: float = 1.5
@@ -506,6 +541,8 @@ class PropPosition:
     entry_bar: int
     lot_size: float
     initial_risk_eur: float
+    stop_price: Optional[float] = None
+    stop_distance_price: float = 0.0
     peak_pnl: float = 0.0
     lowest_pnl: float = 0.0
     entry_fee_eur: float = 0.0

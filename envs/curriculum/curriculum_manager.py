@@ -170,7 +170,7 @@ class CurriculumManager:
 
         if initial_stage is None:
             initial_stage = _foundation_stage()
-        self.current_stage = initial_stage
+        self.current_stage: CurriculumStage = initial_stage
         self.max_history_size = max_history_size
         self.auto_promote = auto_promote
         self.auto_demote = auto_demote
@@ -241,6 +241,14 @@ class CurriculumManager:
         self._selectivity_phase_completed_epoch: int = -1
         self._selectivity_phase_target_episodes: int = 0
         self._selectivity_phase_failures: int = 0
+
+        # Promotion validation is intentionally re-run after the policy has
+        # changed, but not after every single episode.  The tuple is scoped to
+        # a stage epoch so a demotion/re-entry can never inherit a stale retry
+        # delay from an earlier visit to the same stage.
+        self._last_validation_attempt_stage: Optional[str] = None
+        self._last_validation_attempt_epoch: int = -1
+        self._last_validation_attempt_stage_episode: int = -1
 
 
         self._invariant_checker = CurriculumInvariantChecker(verbose=verbose)
@@ -461,12 +469,16 @@ class CurriculumManager:
         self.on_train_step(timesteps)
 
     def get_effective_stage_config(self) -> CurriculumStageConfig:
-        cfg = get_stage_config(self.current_stage)
+        # get_effective_stage() is episode-cached.  Calling it here makes mixed
+        # stage rehearsal and review sessions affect the actual configuration
+        # consumed by the environment while guaranteeing that reset() and this
+        # method see the same sampled stage for the episode.
+        effective_stage = self.get_effective_stage()
+        cfg = copy.deepcopy(get_stage_config(effective_stage))
 
 
         if self._reward_blend_remaining > 0 and self._previous_stage_config is not None:
             alpha = self.reward_blend_factor
-            blended_cfg = copy.deepcopy(cfg)
             prev_rewards = self._previous_stage_config.rewards
             curr_rewards = cfg.rewards
             for field_obj in fields(curr_rewards):
@@ -477,11 +489,7 @@ class CurriculumManager:
                 curr_val = getattr(curr_rewards, field_name, None)
                 if isinstance(prev_val, (int, float)) and isinstance(curr_val, (int, float)):
                     blended_val = prev_val * (1 - alpha) + curr_val * alpha
-                    setattr(blended_cfg.rewards, field_name, blended_val)
-            cfg = blended_cfg
-        else:
-
-            cfg = copy.deepcopy(cfg)
+                    setattr(cfg.rewards, field_name, blended_val)
 
 
         if self._recovery_state.is_active():
@@ -521,6 +529,21 @@ class CurriculumManager:
             min_certainty = float(req.get("min_entry_certainty", 0.0) or 0.0)
             if min_certainty > 0:
                 cfg.rewards.certainty_threshold = max(cfg.rewards.certainty_threshold, min_certainty)
+
+        # CurriculumStageConfig computes override dictionaries only once in
+        # __post_init__.  Reward blending and recovery mutate the dataclass
+        # afterwards, so without rebuilding this channel the environment sees
+        # the original static values.  Materialise every RewardShaping field,
+        # including fields added after the original allow-list was written.
+        cfg.reward_overrides = {
+            field_obj.name: copy.deepcopy(getattr(cfg.rewards, field_obj.name))
+            for field_obj in fields(cfg.rewards)
+        }
+
+        # Recovery also mutates constraints.  Rebuild this channel so its
+        # original static values cannot overwrite those effective constraints
+        # when the environment applies the dictionaries after direct mappings.
+        cfg.env_overrides = cfg._compute_env_overrides()
 
         return cfg
 
@@ -587,32 +610,67 @@ class CurriculumManager:
                 f"Entry certainty too low: {metrics.avg_entry_certainty:.2f} < {min_certainty}"
             )
 
-        required_wr = float(req.get("required_success_rate", 0.0) or 0.0)
-        if required_wr > 0 and float(metrics.win_rate) < required_wr:
+        # Quality/certainty averages without a trade are not evidence.  A flat
+        # episode is still allowed, but it cannot be counted as a successful
+        # selectivity demonstration merely by carrying synthetic averages.
+        if int(metrics.trade_count) <= 0 and (min_setup_quality > 0 or min_certainty > 0):
             result["passed"] = False
             result["violations"].append(
-                f"Win rate too low: {metrics.win_rate:.2%} < {required_wr:.2%}"
+                "No executed trade to evidence setup quality and entry certainty"
             )
 
         if not result["passed"]:
             self._selectivity_phase_failures += 1
 
-
         self._selectivity_phase_episodes_remaining -= 1
+        target_episodes = max(1, int(self._selectivity_phase_target_episodes))
+        episodes_remaining = max(0, int(self._selectivity_phase_episodes_remaining))
+        episodes_evaluated = min(target_episodes, target_episodes - episodes_remaining)
+        failed_episodes = min(episodes_evaluated, int(self._selectivity_phase_failures))
+        successful_episodes = max(0, episodes_evaluated - failed_episodes)
+        success_rate = successful_episodes / episodes_evaluated if episodes_evaluated > 0 else 0.0
+        required_success_rate = _clamp(
+            _safe_float(req.get("required_success_rate", 0.0), 0.0),
+            0.0,
+            1.0,
+        )
+
+        result.update({
+            "episodes_remaining": episodes_remaining,
+            "episodes_evaluated": episodes_evaluated,
+            "minimum_evidence_episodes": target_episodes,
+            "successful_episodes": successful_episodes,
+            "failed_episodes": failed_episodes,
+            "success_rate": success_rate,
+            "required_success_rate": required_success_rate,
+        })
+
         if self._selectivity_phase_episodes_remaining <= 0:
-            if self._selectivity_phase_failures == 0:
+            evidence_complete = episodes_evaluated >= target_episodes
+            phase_passed = evidence_complete and success_rate >= required_success_rate
+            result["evidence_complete"] = evidence_complete
+            result["phase_passed"] = phase_passed
+
+            if phase_passed:
                 self._selectivity_phase_active = False
                 self._selectivity_phase_completed_epoch = self._current_stage_epoch
                 result["phase_complete"] = True
                 if self.verbose:
-                    logger.info("✅ Selectivity Mastery Phase completed")
+                    logger.info(
+                        "✅ Selectivity Mastery Phase completed: "
+                        f"{successful_episodes}/{episodes_evaluated} episodes "
+                        f"({success_rate:.1%} >= {required_success_rate:.1%})"
+                    )
             else:
-
                 self._selectivity_phase_episodes_remaining = self._selectivity_phase_target_episodes
                 self._selectivity_phase_failures = 0
                 result["phase_reset"] = True
                 if self.verbose:
-                    logger.info("🔁 Selectivity phase reset due to violations")
+                    logger.info(
+                        "🔁 Selectivity phase reset: "
+                        f"{successful_episodes}/{episodes_evaluated} episodes "
+                        f"({success_rate:.1%} < {required_success_rate:.1%})"
+                    )
 
         return result
 
@@ -1556,25 +1614,37 @@ class CurriculumManager:
         }
         all_passed = all_passed and passed
 
-        # A trade floor exists for statistical validity - a win rate over two
-        # trades means nothing - not to force activity. A selective policy that
-        # trades rarely and profitably used to be blocked here regardless of how
-        # well it performed, which is the opposite of what a prop firm wants and
-        # the opposite of what the live data showed: always-flat beat the trained
-        # model on the FTMO period.
-        #
-        # So the floor is waived once the window is profitable and the sample is
-        # large enough to trust. Unprofitable inactivity still fails.
+        # Activity is evidence, not a quota.  A selective policy may trade below
+        # the per-episode target, but it only receives a waiver when edge is
+        # distributed across enough eligible episodes/trades, the 95% episode
+        # PnL lower bound is positive, and no drawdown breach occurred.  The old
+        # `30 trades + mean_pnl > 0` rule was gameable by ten tiny winning
+        # episodes among forty flat ones.
         enough_trades = stats.mean_trade_count >= thresholds.min_trade_count_avg
-        measurable = int(getattr(stats, "total_trades", 0)) >= MIN_TRADES_FOR_VALID_RATE
-        profitable = float(getattr(stats, "mean_pnl", 0.0)) > 0.0
+        selective_min_episodes = int(MIN_EVALUATION_EPISODES)
+        selective_min_trades = max(
+            int(MIN_TRADES_FOR_WILSON_GATE_DEFAULT),
+            selective_min_episodes * max(1, min_trades_ep),
+        )
+        selective_edge_evidence = (
+            eligible_eps >= selective_min_episodes
+            and eligible_trades >= selective_min_trades
+            and float(getattr(stats, "pnl_mean_ci_low", float("-inf"))) > 0.0
+            and float(getattr(stats, "dd_breach_rate", 1.0)) == 0.0
+        )
 
-        passed = enough_trades or (measurable and profitable)
+        passed = enough_trades or selective_edge_evidence
         results["checks"]["trade_activity"] = {
-            "required": thresholds.min_trade_count_avg,
-            "actual": stats.mean_trade_count,
+            "required_mean": thresholds.min_trade_count_avg,
+            "actual_mean": stats.mean_trade_count,
             "passed": passed,
-            "waived_as_selective": bool(passed and not enough_trades),
+            "selective_evidence": bool(selective_edge_evidence),
+            "eligible_episodes": eligible_eps,
+            "required_eligible_episodes": selective_min_episodes,
+            "eligible_trades": eligible_trades,
+            "required_eligible_trades": selective_min_trades,
+            "pnl_mean_ci_low": float(getattr(stats, "pnl_mean_ci_low", float("-inf"))),
+            "dd_breach_rate": float(getattr(stats, "dd_breach_rate", 1.0)),
         }
         all_passed = all_passed and passed
 
@@ -2127,16 +2197,50 @@ class CurriculumManager:
         return result
 
 
-    def try_promote(self) -> Tuple[bool, Optional[CurriculumStage]]:
-        if not self.auto_promote:
+    def _validation_retry_interval(self, config: CurriculumStageConfig) -> int:
+        """Return the minimum policy-development distance between gate attempts."""
+        evaluation_window = max(
+            0,
+            int(getattr(getattr(config, "competence", None), "evaluation_window", 0) or 0),
+        )
+        return max(25, evaluation_window // 2)
+
+    def _validation_attempt_is_due(self, config: CurriculumStageConfig) -> bool:
+        if self._last_validation_attempt_stage != self.current_stage.name:
+            return True
+        if self._last_validation_attempt_epoch != self._current_stage_epoch:
+            return True
+        episodes_since_attempt = (
+            int(self.stage_episodes) - int(self._last_validation_attempt_stage_episode)
+        )
+        return episodes_since_attempt >= self._validation_retry_interval(config)
+
+    def _record_validation_attempt(self) -> None:
+        self._last_validation_attempt_stage = self.current_stage.name
+        self._last_validation_attempt_epoch = self._current_stage_epoch
+        self._last_validation_attempt_stage_episode = self.stage_episodes
+
+    def try_promote(
+        self,
+        *,
+        readiness_only: bool = False,
+    ) -> Tuple[bool, Optional[CurriculumStage]]:
+        """Evaluate stage readiness and optionally perform the transition.
+
+        ``readiness_only`` reuses the exact promotion, invariant, validation,
+        and stress gates for terminal-stage mastery without attempting a stage
+        transition.  It deliberately does not cache a successful result: a
+        later call evaluates the then-current policy again.
+        """
+        if not self.auto_promote and not readiness_only:
             return False, None
 
         config = self.stage_config
-        if config.is_terminal:
+        if config.is_terminal and not readiness_only:
             return False, None
 
         next_stage = get_next_stage(self.current_stage)
-        if next_stage is None:
+        if next_stage is None and not readiness_only:
             return False, None
 
 
@@ -2166,6 +2270,23 @@ class CurriculumManager:
 
         gate_config = getattr(config, "validation", None)
         if gate_config is not None and getattr(gate_config, "enabled", False):
+            if not self._validation_attempt_is_due(config):
+                retry_interval = self._validation_retry_interval(config)
+                episodes_since_attempt = (
+                    self.stage_episodes - self._last_validation_attempt_stage_episode
+                )
+                results["validation_retry"] = {
+                    "due": False,
+                    "retry_interval_episodes": retry_interval,
+                    "episodes_since_attempt": episodes_since_attempt,
+                    "episodes_until_retry": max(0, retry_interval - episodes_since_attempt),
+                }
+                return False, None
+
+            # Record before invoking user-provided evaluators so exceptions are
+            # also bounded rather than retried on every subsequent episode.
+            self._record_validation_attempt()
+
             if self.validation_gate_evaluator is not None:
                 try:
                     stage_idx = _stage_to_index(self.current_stage)
@@ -2182,6 +2303,7 @@ class CurriculumManager:
                         "mean_profit_factor": stats.mean_profit_factor,
                         "mean_r_multiple": stats.mean_r_multiple,
                         "mean_pnl": stats.mean_pnl,
+                        "mean_trade_count": stats.mean_trade_count,
                         "total_trades": stats.total_trades,
                     }
 
@@ -2242,6 +2364,11 @@ class CurriculumManager:
                 results["validation_gate_pending"] = True
                 if self.verbose:
                     logger.debug("Validation gate enabled but no evaluator provided - skipping")
+                if readiness_only and self.validation_evaluator is None:
+                    # Terminal mastery is a development-holdout claim.  It may
+                    # not fall back to training-window statistics when no
+                    # external evaluator is wired.
+                    return False, None
 
 
         stress_config = getattr(config, "stress_test", None)
@@ -2309,13 +2436,16 @@ class CurriculumManager:
                         return False, None
 
                 except Exception as e:
-                    logger.warning(f"Stress test evaluator error: {e}; skipping stress gate.")
+                    logger.warning(f"Stress test evaluator error: {e}; blocking readiness.")
                     results["stress_test"] = {"error": str(e)}
+                    return False, None
             else:
 
                 results["stress_test_pending"] = True
                 if self.verbose:
                     logger.debug("Stress test enabled but no evaluator provided - skipping")
+                if readiness_only:
+                    return False, None
 
 
         val_cfg = self.stage_config.validation
@@ -2338,7 +2468,9 @@ class CurriculumManager:
                             logger.info(f"Validation failed; blocking promotion. Details: {val_result}")
                         return False, None
                 except Exception as e:
-                    logger.warning(f"Validation evaluator error: {e}; skipping validation gate.")
+                    logger.warning(f"Validation evaluator error: {e}; blocking readiness.")
+                    results["validation"] = {"error": str(e), "passed": False}
+                    return False, None
 
 
         if self.current_stage == CurriculumStage.STRATEGIST and next_stage == CurriculumStage.PROFESSIONAL:
@@ -2351,6 +2483,15 @@ class CurriculumManager:
                 self.start_selectivity_phase(episodes=20)
                 results["selectivity_phase_started"] = True
                 return False, None
+
+        if readiness_only:
+            return True, self.current_stage
+
+        # The non-transitioning readiness path above is the only valid route
+        # with no successor (the terminal stage).  Keep the mutating path
+        # explicitly narrowed for both runtime safety and static analysis.
+        if next_stage is None:
+            return False, None
 
         old_stage = self.current_stage
         self.current_stage = next_stage
@@ -2795,12 +2936,32 @@ class CurriculumManager:
     ) -> Tuple[bool, str]:
 
         if self.stage_config.is_terminal:
+            competence = self.stage_config.competence
+            required_episodes = max(
+                int(mastery_confirmation_episodes),
+                int(getattr(competence, "min_episodes", 0) or 0),
+            )
+            required_timesteps = int(getattr(competence, "min_timesteps", 0) or 0)
 
-            if self.stage_episodes >= mastery_confirmation_episodes:
-
-                meets_demotion, _ = self.check_demotion_criteria()
-                if not meets_demotion:
-                    return True, f"GOAL_ACHIEVED: Reached {self.current_stage.name} and maintained for {self.stage_episodes} episodes"
+            if (
+                self.stage_episodes >= required_episodes
+                and self.stage_timesteps >= required_timesteps
+            ):
+                # Reuse the promotion path in non-transitioning mode so LIVE_READY
+                # must satisfy competence, invariants, and the configured
+                # development validation/stress gates.  Reaching the enum value
+                # alone is not evidence of mastery or real-capital readiness.
+                mastery_ready, _ = self.try_promote(readiness_only=True)
+                if mastery_ready:
+                    meets_demotion, _ = self.check_demotion_criteria()
+                    if not meets_demotion:
+                        return (
+                            True,
+                            f"GOAL_ACHIEVED: Reached {self.current_stage.name}, "
+                            f"met competence and validation gates, and maintained "
+                            f"for {self.stage_episodes} episodes / "
+                            f"{self.stage_timesteps:,} timesteps",
+                        )
 
 
         if max_timesteps is not None and self.total_timesteps >= max_timesteps:
@@ -2896,6 +3057,12 @@ class CurriculumManager:
             "rng_state": self._rng.bit_generator.state,
 
             "validation_gate_history": self._validation_gate_history[-100:],
+
+            "validation_retry": {
+                "stage": self._last_validation_attempt_stage,
+                "stage_epoch": self._last_validation_attempt_epoch,
+                "stage_episode": self._last_validation_attempt_stage_episode,
+            },
 
             "stress_test_history": self._stress_test_history[-100:],
 
@@ -3042,6 +3209,18 @@ class CurriculumManager:
 
         manager._validation_gate_history = state.get("validation_gate_history", []) or []
 
+        validation_retry = state.get("validation_retry", {}) or {}
+        retry_stage = validation_retry.get("stage")
+        manager._last_validation_attempt_stage = (
+            str(retry_stage) if retry_stage is not None else None
+        )
+        manager._last_validation_attempt_epoch = _safe_int(
+            validation_retry.get("stage_epoch", -1), -1
+        )
+        manager._last_validation_attempt_stage_episode = _safe_int(
+            validation_retry.get("stage_episode", -1), -1
+        )
+
 
         manager._stress_test_history = state.get("stress_test_history", []) or []
 
@@ -3056,12 +3235,21 @@ class CurriculumManager:
             manager._selectivity_phase_completed_epoch = _safe_int(
                 sel_state.get("completed_epoch", -1), -1
             )
-            manager._selectivity_phase_target_episodes = _safe_int(
-                sel_state.get("target_episodes", 0), 0
-            )
             manager._selectivity_phase_failures = _safe_int(
                 sel_state.get("failures", 0), 0
             )
+            remaining = max(0, manager._selectivity_phase_episodes_remaining)
+            failures = max(0, manager._selectivity_phase_failures)
+            # Older checkpoints may not have target_episodes.  Count all
+            # remaining episodes plus known failures as the minimum evidence;
+            # unknown prior successes are deliberately not invented.
+            fallback_target = remaining + failures
+            manager._selectivity_phase_target_episodes = max(
+                fallback_target,
+                _safe_int(sel_state.get("target_episodes", fallback_target), fallback_target),
+            )
+            if manager._selectivity_phase_active and manager._selectivity_phase_target_episodes <= 0:
+                manager._selectivity_phase_target_episodes = max(1, remaining)
 
         manager._rolling_stats_dirty = True
         return manager
@@ -3134,6 +3322,12 @@ class CurriculumManager:
             "rng_state": self._rng.bit_generator.state,
 
             "validation_gate_history": self._validation_gate_history[-100:],
+
+            "validation_retry": {
+                "stage": self._last_validation_attempt_stage,
+                "stage_epoch": self._last_validation_attempt_epoch,
+                "stage_episode": self._last_validation_attempt_stage_episode,
+            },
 
             "stress_test_history": self._stress_test_history[-100:],
 
@@ -3291,6 +3485,18 @@ class CurriculumManager:
 
         manager._validation_gate_history = state.get("validation_gate_history", []) or []
 
+        validation_retry = state.get("validation_retry", {}) or {}
+        retry_stage = validation_retry.get("stage")
+        manager._last_validation_attempt_stage = (
+            str(retry_stage) if retry_stage is not None else None
+        )
+        manager._last_validation_attempt_epoch = _safe_int(
+            validation_retry.get("stage_epoch", -1), -1
+        )
+        manager._last_validation_attempt_stage_episode = _safe_int(
+            validation_retry.get("stage_episode", -1), -1
+        )
+
 
         manager._stress_test_history = state.get("stress_test_history", []) or []
 
@@ -3305,12 +3511,18 @@ class CurriculumManager:
             manager._selectivity_phase_completed_epoch = _safe_int(
                 sel_state.get("completed_epoch", -1), -1
             )
-            manager._selectivity_phase_target_episodes = _safe_int(
-                sel_state.get("target_episodes", 0), 0
-            )
             manager._selectivity_phase_failures = _safe_int(
                 sel_state.get("failures", 0), 0
             )
+            remaining = max(0, manager._selectivity_phase_episodes_remaining)
+            failures = max(0, manager._selectivity_phase_failures)
+            fallback_target = remaining + failures
+            manager._selectivity_phase_target_episodes = max(
+                fallback_target,
+                _safe_int(sel_state.get("target_episodes", fallback_target), fallback_target),
+            )
+            if manager._selectivity_phase_active and manager._selectivity_phase_target_episodes <= 0:
+                manager._selectivity_phase_target_episodes = max(1, remaining)
 
         manager._rolling_stats_dirty = True
 
