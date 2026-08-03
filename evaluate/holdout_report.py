@@ -112,6 +112,10 @@ class ExecutionContract:
 
 ACCEPTANCE_CONTRACT = ExecutionContract()
 
+# Populated by load_ftmo_data so the report can name the exact broker slice
+# it consumed, without polluting the dataset the environment iterates.
+BROKER_SLICE_FINGERPRINTS: Dict[str, Any] = {}
+
 
 def apply_execution_contract(cfg: PropFirmConfig, contract: ExecutionContract) -> Dict[str, Any]:
     """Impose the contract on an evaluation config and report what took effect.
@@ -372,7 +376,11 @@ class Result:
     @property
     def window_statistics_summary(self) -> str:
         """What these numbers are: statistics over reset windows, nothing more."""
-        pf = "n/a" if not self.trades else f"{self.profit_factor:.2f}"
+        pf = (
+            "n/a"
+            if not self.trades or not np.isfinite(self.profit_factor)
+            else f"{self.profit_factor:.2f}"
+        )
         return (
             f"mean {self.return_pct:+.3f}%/window over {self.episodes} windows, "
             f"PF {pf}, worst-window DD {self.max_drawdown_pct:.2f}%"
@@ -671,7 +679,11 @@ def run_policy(
         res.win_rate = float((arr > 0).mean() * 100.0)
         gross_win = float(wins.sum())
         gross_loss = float(abs(losses.sum()))
-        res.profit_factor = gross_win / gross_loss if gross_loss > 1e-9 else float("inf")
+        # An "infinite" profit factor is what one winning trade and no losers
+        # looks like; printing `inf` dresses a non-result as a perfect one.
+        res.profit_factor = (
+            gross_win / gross_loss if gross_loss > 1e-9 else float("nan")
+        )
 
     r = np.asarray(res.r_multiples, dtype=float)
     if r.size:
@@ -691,6 +703,70 @@ def run_policy(
 
     env.close()
     return res
+
+
+def build_artifact_integrity(args: Any, contract: ExecutionContract) -> Dict[str, Any]:
+    """Everything needed to reproduce or distrust this report later.
+
+    A stored result that does not name the code, the costs and the working-tree
+    state that produced it cannot be audited - and an invalid artifact is
+    indistinguishable from a valid one once its context is gone.
+    """
+    import subprocess
+
+    def _git(*cmd: str) -> Optional[str]:
+        try:
+            return subprocess.run(
+                ["git", *cmd], capture_output=True, text=True, timeout=10,
+                cwd=str(PROJECT_ROOT),
+            ).stdout.strip() or None
+        except Exception:
+            return None
+
+    dirty = _git("status", "--porcelain")
+
+    return {
+        "evaluator_sha256": _sha256_file(Path(__file__)),
+        "git_head": _git("rev-parse", "HEAD"),
+        # A dirty tree means the committed code is not what ran.
+        "git_dirty": bool(dirty),
+        "git_dirty_files": len(dirty.splitlines()) if dirty else 0,
+        "command": [sys.executable, *sys.argv],
+        "seed": int(getattr(args, "seed", 0)),
+        "episodes_requested": int(getattr(args, "episodes", 0)),
+        "episode_bars": int(getattr(args, "max_steps", 0)),
+        "continuous_bars": int(getattr(args, "continuous_bars", 0)),
+        "execution_contract": contract.as_dict(),
+        "broker_slice_fingerprints": dict(BROKER_SLICE_FINGERPRINTS),
+        "metric_definitions": {
+            "return_pct": "mean of per-window account returns; NOT a compounded total",
+            "mean_episode_pnl_eur": "mean P&L per reset window",
+            "pooled_sample_pnl_eur": "sum across all windows; not an account balance",
+            "max_drawdown_pct": "worst single-window drawdown, peak-to-trough within that window",
+            "return_ci_low_pct": f"{int((1 - BOOTSTRAP_ALPHA) * 100)}% lower bound, block bootstrap over whole windows",
+            "trades_per_day": "trades divided by trading days derived from bar timestamps",
+            "continuous_replay": "one account walked chronologically; the only place prop-firm limits apply",
+        },
+    }
+
+
+def trading_days_from_records(episode_records: Sequence[Dict[str, Any]]) -> float:
+    """Trading days from actual timestamps, not bars/96.
+
+    bars/96 assumes a 24h market with no gaps, so a window spanning a weekend is
+    counted as though it traded through it and every per-day rate is understated.
+    """
+    import pandas as pd
+
+    days = 0.0
+    for rec in episode_records:
+        start, end = rec.get("start_time"), rec.get("end_time")
+        if not start or not end:
+            continue
+        span = (pd.Timestamp(end) - pd.Timestamp(start)).total_seconds() / 86400.0
+        if span > 0:
+            days += span
+    return days
 
 
 def evaluate_section_verdict(
@@ -1214,7 +1290,7 @@ def format_table(results: List[Result], title: str) -> str:
     )
     lines = [f"\n{title}", "=" * len(head), head, "-" * len(head)]
     for r in results:
-        pf = "inf" if r.profit_factor == float("inf") else f"{r.profit_factor:.2f}"
+        pf = "n/a" if not np.isfinite(r.profit_factor) else f"{r.profit_factor:.2f}"
         lines.append(
             f"{r.name:<16}{r.return_pct:>9.2f}{pf:>7}{r.win_rate:>7.1f}"
             f"{r.expectancy_r:>8.3f}{r.reward_risk:>7.2f}{r.max_drawdown_pct:>8.2f}"
@@ -1224,8 +1300,13 @@ def format_table(results: List[Result], title: str) -> str:
     return "\n".join(lines)
 
 
-def load_ftmo_data(ftmo_dir: str, instrument: str, after: Optional[Any]) -> Optional[Dict[str, Dict[str, Any]]]:
-    """Broker bars strictly after the processed dataset ends."""
+def load_ftmo_data(
+    ftmo_dir: str,
+    instrument: str,
+    after: Optional[Any],
+    cutoff: Optional[Any] = None,
+) -> Optional[Dict[str, Dict[str, Any]]]:
+    """Broker bars strictly after the processed dataset ends, validated and frozen."""
     import pandas as pd
 
     d = Path(ftmo_dir)
@@ -1233,6 +1314,7 @@ def load_ftmo_data(ftmo_dir: str, instrument: str, after: Optional[Any]) -> Opti
         return None
 
     frames: Dict[str, Any] = {}
+    fingerprints: Dict[str, Any] = {}
     for tf in ("M15", "H1", "H4", "D1"):
         f = d / f"{instrument}_{tf}.csv"
         if not f.exists():
@@ -1241,17 +1323,86 @@ def load_ftmo_data(ftmo_dir: str, instrument: str, after: Optional[Any]) -> Opti
         df["time"] = pd.to_datetime(df["time"], errors="coerce", utc=True)
         if df["time"].isna().any():
             raise ValueError(f"{f} contains invalid timestamps")
+
+        df = df.sort_values(by="time", ignore_index=True)
+        _validate_broker_frame(df, source=f, timeframe=tf)
+
+        # A frozen upper bound, so a report is reproducible after more bars are
+        # pulled. Without it the same command produces a different dataset
+        # tomorrow and the two results are quietly incomparable.
+        if cutoff is not None:
+            df = df.loc[df["time"] <= pd.Timestamp(cutoff)]
         if after is not None:
             df = df.loc[df["time"] > after]
-        df = df.sort_values(by="time", ignore_index=True)
+
+        df = df.reset_index(drop=True)
         if len(df) < 60:
             logger.warning("%s only %d bars after %s - skipping", tf, len(df), after)
             continue
         frames[tf] = df
+        fingerprints[tf] = _frame_fingerprint(df)
 
     if "M15" not in frames:
         return None
+
+    # Fingerprints are returned alongside the data, never inside it: the env
+    # iterates the top-level dict as instruments, so an extra key there would be
+    # loaded as a tradeable symbol.
+    BROKER_SLICE_FINGERPRINTS.clear()
+    BROKER_SLICE_FINGERPRINTS.update(fingerprints)
     return {instrument: frames}
+
+
+def _validate_broker_frame(df: Any, *, source: Any, timeframe: str) -> None:
+    """The checks the main loader applies, applied here too.
+
+    Broker bars were being trusted on arrival while historical bars were
+    validated - so a duplicated, out-of-order or non-finite row from MT5 would
+    have entered evaluation silently.
+    """
+    import pandas as pd
+
+    if df.empty:
+        return
+
+    dupes = int(df["time"].duplicated().sum())
+    if dupes:
+        raise ValueError(f"{source}: {dupes} duplicate timestamps in {timeframe}")
+
+    if not df["time"].is_monotonic_increasing:
+        raise ValueError(f"{source}: {timeframe} timestamps are not chronological")
+
+    for col in ("open", "high", "low", "close"):
+        if col not in df.columns:
+            raise ValueError(f"{source}: {timeframe} is missing {col}")
+        values = pd.to_numeric(df[col], errors="coerce")
+        if not values.notna().all():
+            raise ValueError(f"{source}: {timeframe}.{col} contains non-numeric values")
+        if not np.isfinite(values.to_numpy(dtype=float)).all():
+            raise ValueError(f"{source}: {timeframe}.{col} contains non-finite values")
+        if (values <= 0).any():
+            raise ValueError(f"{source}: {timeframe}.{col} contains non-positive prices")
+
+    if (df["high"] < df["low"]).any():
+        raise ValueError(f"{source}: {timeframe} has bars where high < low")
+
+    if "spread" in df.columns:
+        spread = pd.to_numeric(df["spread"], errors="coerce")
+        if (spread < 0).any():
+            raise ValueError(f"{source}: {timeframe} has negative spread")
+
+
+def _frame_fingerprint(df: Any) -> Dict[str, Any]:
+    """Identify the exact slice used, so a report names its own inputs."""
+    if df.empty:
+        return {"rows": 0, "sha256": None}
+    payload = f"{len(df)}|{df['time'].iloc[0]}|{df['time'].iloc[-1]}|{float(df['close'].iloc[-1])}"
+    return {
+        "rows": int(len(df)),
+        "first_time": str(df["time"].iloc[0]),
+        "last_time": str(df["time"].iloc[-1]),
+        "sha256": hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16],
+    }
 
 
 def main() -> int:
@@ -1363,6 +1514,7 @@ def main() -> int:
         "section_metadata": {},
         "section_verdicts": {},
         "execution_contract": ACCEPTANCE_CONTRACT.as_dict(),
+        "artifact_integrity": {},  # filled once the datasets are resolved
         "provenance_binding": binding,
     }
     sections = []
@@ -1494,6 +1646,10 @@ def main() -> int:
             "confidence_interval_valid": len(episode_starts) >= MIN_INDEPENDENT_BLOCKS,
             "execution_settings": execution_settings,
         }
+
+    # Built here, not at report construction: the broker slice fingerprints are
+    # only known once load_ftmo_data has run.
+    report["artifact_integrity"] = build_artifact_integrity(args, contract)
 
     out = "\n".join(sections)
     print(out)

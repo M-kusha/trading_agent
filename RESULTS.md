@@ -1,3 +1,19 @@
+> **LEGACY - INVALID. DO NOT USE AS EVIDENCE.**
+>
+> Every figure below was computed on observations containing higher-timeframe
+> lookahead: H1/H4/D1 rows are open-stamped and the environment returned the
+> still-forming bar, so the agent read up to 45 minutes (H1) or 23h45m (D1) of
+> future data at each decision.
+>
+> The returns are also inflated about tenfold - P&L from ten independently reset
+> 100k accounts was summed and divided by one account, so the +25.70% here is a
+> +2.57% mean and the -8.25% is -0.825%. The drawdowns are artefacts of
+> concatenating those resets. Commission, latency and overnight financing were
+> all absent.
+>
+> The one defensible reading: **the model lost money on broker data and standing
+> flat was better.** A full copy is preserved under `logs/legacy_invalid/`.
+
 # Backtest results
 
 Generated 2026-08-03 13:18
@@ -6,8 +22,8 @@ Model: `models/curriculum/curriculum_ppo_final.zip`
 
 Final training state:
 ```
-2026-08-03 13:03:51,521 [INFO] Step 2,950,000/3,000,000 (98.3%) | Stage: INTEGRATOR | Reward +22.733 | PnL €+2426 | WR 61.2% | Trades 22.5 | MaxDD 1.3%
-2026-08-03 13:16:02,970 [INFO] Step 3,000,000/3,000,000 (100.0%) | Stage: INTEGRATOR | Reward +23.505 | PnL €+2418 | WR 62.2% | Trades 20.6 | MaxDD 2.2%
+2026-08-03 13:03:51,521 [INFO] Step 2,950,000/3,000,000 (98.3%) | Stage: INTEGRATOR | Reward +22.733 | PnL ï¿½+2426 | WR 61.2% | Trades 22.5 | MaxDD 1.3%
+2026-08-03 13:16:02,970 [INFO] Step 3,000,000/3,000,000 (100.0%) | Stage: INTEGRATOR | Reward +23.505 | PnL ï¿½+2418 | WR 62.2% | Trades 20.6 | MaxDD 2.2%
 2026-08-03 13:18:39,388 [INFO] Final stage: INTEGRATOR
 ```
 
