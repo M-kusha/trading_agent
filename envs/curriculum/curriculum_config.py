@@ -213,7 +213,7 @@ def get_explorer_config() -> CurriculumStageConfig:
         data_difficulty=DataDifficulty(
 
             volatility_percentile_range=(0.0, 0.30),
-            min_trend_clarity=0.5,
+            min_trend_clarity=0.362,
             include_asian_session=True,
             include_london_session=True,
             include_ny_session=True,
@@ -427,7 +427,7 @@ def get_experimenter_config() -> CurriculumStageConfig:
         allow_demotion=True,
         data_difficulty=DataDifficulty(
             volatility_percentile_range=(0.0, 0.35),
-            min_trend_clarity=0.45,
+            min_trend_clarity=0.317,
             include_asian_session=True,
             include_london_session=True,
             include_ny_session=True,
@@ -664,7 +664,7 @@ def get_trend_student_config() -> CurriculumStageConfig:
         allow_demotion=True,
         data_difficulty=DataDifficulty(
             volatility_percentile_range=(0.0, 0.45),
-            min_trend_clarity=0.35,
+            min_trend_clarity=0.255,
             include_asian_session=True,
             include_london_session=True,
             include_ny_session=True,
@@ -895,7 +895,7 @@ def get_session_student_config() -> CurriculumStageConfig:
         allow_demotion=True,
         data_difficulty=DataDifficulty(
             volatility_percentile_range=(0.0, 0.55),
-            min_trend_clarity=0.25,
+            min_trend_clarity=0.188,
             include_asian_session=True,
             include_london_session=True,
             include_ny_session=True,
@@ -1185,7 +1185,7 @@ def get_timing_student_config() -> CurriculumStageConfig:
         allow_demotion=True,
         data_difficulty=DataDifficulty(
             volatility_percentile_range=(0.0, 0.65),
-            min_trend_clarity=0.15,
+            min_trend_clarity=0.118,
             include_asian_session=True,
             include_london_session=True,
             include_ny_session=True,
