@@ -37,7 +37,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from envs.core.env_types import PropFirmConfig  # noqa: E402
 from envs.prop_firm_env import PropFirmTradingEnv  # noqa: E402
-from train.train_prop_firm import load_market_data, split_data_by_time  # noqa: E402
+from train.train_prop_firm import _primary_frame, load_market_data, split_data_by_time  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("holdout_report")
@@ -312,6 +312,33 @@ def format_table(results: List[Result], title: str) -> str:
     return "\n".join(lines)
 
 
+def load_ftmo_data(ftmo_dir: str, instrument: str, after: Optional[Any]) -> Optional[Dict[str, Dict[str, Any]]]:
+    """Broker bars strictly after the processed dataset ends."""
+    import pandas as pd
+
+    d = Path(ftmo_dir)
+    if not d.exists():
+        return None
+
+    frames: Dict[str, Any] = {}
+    for tf in ("M15", "H1", "H4", "D1"):
+        f = d / f"{instrument}_{tf}.csv"
+        if not f.exists():
+            continue
+        df: pd.DataFrame = pd.read_csv(f, parse_dates=["time"])
+        if after is not None:
+            df = df.loc[df["time"] > after]
+        df = df.sort_values(by="time", ignore_index=True)
+        if len(df) < 60:
+            logger.warning("%s only %d bars after %s - skipping", tf, len(df), after)
+            continue
+        frames[tf] = df
+
+    if "M15" not in frames:
+        return None
+    return {instrument: frames}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="models/curriculum/curriculum_ppo_final.zip")
@@ -321,6 +348,12 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=99)
     ap.add_argument("--instrument", default="XAUUSD")
     ap.add_argument("--out", default="logs/holdout_report.json")
+    ap.add_argument(
+        "--ftmo-dir", default="data/ftmo_live",
+        help="Bars pulled live from the broker, after the processed dataset ends. "
+             "This is the real out-of-sample set: not a split of data the model "
+             "trained beside, but a different regime at the broker's own spreads.",
+    )
     args = ap.parse_args()
 
     data = load_market_data(instruments=[args.instrument], min_bars=5000)
@@ -339,12 +372,26 @@ def main() -> int:
     report: Dict[str, Any] = {"split_ts": str(split_ts), "model": str(path), "sections": {}}
     sections = []
 
-    for label, mirror in (("HOLDOUT (unseen, original prices)", 0.0),
-                          ("HOLDOUT MIRRORED (drift inverted - the short-side test)", 1.0)):
+    datasets = [
+        ("HOLDOUT (unseen split, original prices)", holdout, 0.0),
+        ("HOLDOUT MIRRORED (drift inverted - the short-side test)", holdout, 1.0),
+    ]
+
+    m15 = _primary_frame(next(iter(data.values())))
+    last_trained = m15["time"].max() if m15 is not None and "time" in m15.columns else None
+    ftmo = load_ftmo_data(args.ftmo_dir, args.instrument, last_trained)
+    if ftmo is not None:
+        n = len(ftmo[args.instrument]["M15"])
+        logger.info("FTMO live bars after %s: %d M15", last_trained, n)
+        datasets.append((f"FTMO LIVE DATA (never seen, {n} M15 bars, broker spreads)", ftmo, 0.0))
+    else:
+        logger.warning("No FTMO data in %s - skipping the live out-of-sample section", args.ftmo_dir)
+
+    for label, dset, mirror in datasets:
         cfg = PropFirmConfig()
         cfg.mirror_augmentation_prob = mirror
         results = [
-            run_policy(p, holdout, cfg, args.episodes, args.seed, args.max_steps)
+            run_policy(p, dset, cfg, args.episodes, args.seed, args.max_steps)
             for p in build_policies(model)
         ]
         sections.append(format_table(results, label))
