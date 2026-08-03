@@ -440,6 +440,7 @@ def _primary_frame(tfs: Dict[str, pd.DataFrame]) -> Optional[pd.DataFrame]:
 def split_data_by_time(
     data: Dict[str, Dict[str, pd.DataFrame]],
     ratio: float,
+    split_at: Optional[Any] = None,
 ) -> Tuple[Dict[str, Dict[str, pd.DataFrame]], Dict[str, Dict[str, pd.DataFrame]], Optional[Any]]:
     """Chronological train/holdout split at a shared timestamp.
 
@@ -463,9 +464,17 @@ def split_data_by_time(
             train[inst], holdout[inst] = dict(tfs), {}
             continue
 
-        cut = int(len(primary) * (1.0 - ratio))
-        cut = int(np.clip(cut, 1, len(primary) - 1))
-        inst_split = primary["time"].iloc[cut]
+        # An explicit date beats a ratio here. The dataset grows every time broker
+        # bars are appended, so a fixed ratio silently walks the split backwards:
+        # at 0.15 over 114,399 bars it lands on 2025-11-07, which would end
+        # training BEFORE the February 2026 regime change and leave the agent
+        # never having seen the market it now has to trade.
+        if split_at is not None:
+            inst_split = pd.Timestamp(split_at)
+        else:
+            cut = int(len(primary) * (1.0 - ratio))
+            cut = int(np.clip(cut, 1, len(primary) - 1))
+            inst_split = primary["time"].iloc[cut]
         if split_ts is None:
             split_ts = inst_split
 
@@ -1520,6 +1529,7 @@ def train_curriculum_agent(
     mastery_confirmation_episodes: int = 100,
     seed: int = 42,
     holdout_ratio: float = 0.15,
+    holdout_split_at: Optional[str] = None,
 ) -> BaseAlgorithm:
     if not CURRICULUM_AVAILABLE or CurriculumStage is None or CurriculumManager is None:
         raise RuntimeError("Curriculum system not available. Check imports.")
@@ -1598,7 +1608,7 @@ def train_curriculum_agent(
         holdout_data = data
         holdout_enabled = False
     else:
-        train_data, holdout_data, split_ts = split_data_by_time(data, holdout_ratio)
+        train_data, holdout_data, split_ts = split_data_by_time(data, holdout_ratio, split_at=holdout_split_at)
         holdout_enabled = True
         # `frame or []` would invoke DataFrame.__bool__, which raises.
         tr_frame = _primary_frame(next(iter(train_data.values())))
@@ -1947,6 +1957,18 @@ def main() -> None:
         default=0.15,
         help="Fraction of latest bars reserved for holdout evaluation (curriculum validation/stress gates). 0 disables.",
     )
+    parser.add_argument(
+        "--holdout-split-at",
+        type=str,
+        default=None,
+        help=(
+            "Explicit holdout start date, e.g. 2026-06-15. Preferred over "
+            "--holdout-ratio: the dataset grows as broker bars are appended, so a "
+            "fixed ratio walks the split backwards - at 0.15 over 114,399 bars it "
+            "lands on 2025-11-07, ending training before the February 2026 regime "
+            "change."
+        ),
+    )
 
     parser.add_argument("--entry-quality-threshold", type=float, default=None)
     parser.add_argument("--reward-scale", type=float, default=None)
@@ -2109,6 +2131,7 @@ def main() -> None:
             mastery_confirmation_episodes=args.mastery_episodes,
             seed=args.seed,
             holdout_ratio=args.holdout_ratio,
+            holdout_split_at=args.holdout_split_at,
         )
     else:
         train_prop_firm_agent(
