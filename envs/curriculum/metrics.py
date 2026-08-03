@@ -93,6 +93,10 @@ class EpisodeMetrics:
     max_consecutive_losses_reached: int = 0
     hit_max_consecutive_losses: bool = False
     mask_collapse_steps: int = 0
+    # The denominator those collapse/stop counts belong over. The mask
+    # tracker runs from two call sites per env step, so dividing its
+    # counts by episode length yields rates above 1.0.
+    mask_decision_steps: int = 0
     stop_mode_steps: int = 0
     setup_skipped_count: int = 0
     fomo_trade_count: int = 0
@@ -137,7 +141,7 @@ class EpisodeMetrics:
                 "trade_count", "winning_trades", "losing_trades",
                 "consecutive_losses", "consecutive_wins",
                 "max_consecutive_losses_reached",
-                "mask_collapse_steps", "stop_mode_steps",
+                "mask_collapse_steps", "mask_decision_steps", "stop_mode_steps",
                 "setup_skipped_count", "fomo_trade_count", "revenge_trade_count",
                 "max_patience_bars",
                 "trailing_stop_exits", "agent_close_exits", "hard_stop_exits",

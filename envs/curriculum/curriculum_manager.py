@@ -1056,6 +1056,7 @@ class CurriculumManager:
                                                                    info.get("consecutive_losses", ep_stats.get("consecutive_losses", 0))), 0),
             hit_max_consecutive_losses=hit_max_consec,
             mask_collapse_steps=_safe_int(ep_stats.get("mask_collapse_steps", info.get("mask_collapse_steps", 0)), 0),
+            mask_decision_steps=_safe_int(ep_stats.get("mask_decision_steps", info.get("mask_decision_steps", 0)), 0),
             stop_mode_steps=_safe_int(ep_stats.get("stop_mode_steps", info.get("stop_mode_steps", 0)), 0),
             setup_skipped_count=_safe_int(ep_stats.get("setup_skipped_count", info.get("setup_skipped_count", 0)), 0),
             fomo_trade_count=_safe_int(ep_stats.get("fomo_trade_count", info.get("fomo_trade_count", 0)), 0),
@@ -1252,10 +1253,23 @@ class CurriculumManager:
         consecutive_loss_streak_rate = float(np.mean(max_consec_losses >= 3)) if len(max_consec_losses) else 0.0
 
 
-        total_steps = float(np.sum(episode_lengths))
-        if total_steps > 0.0:
-            mask_collapse_rate = float(np.sum(mask_collapse_steps) / total_steps)
-            stop_mode_rate = float(np.sum(stop_mode_steps) / total_steps)
+        # Denominator must be the number of mask-tracking calls, not the number
+        # of env steps. _track_action_mask_state_for_metrics runs from two call
+        # sites per step, so dividing its counts by episode length produced
+        # rates above 1.0 - a live run reported mask_collapse_rate 1.1311
+        # against a 1.0 limit and listed it as a promotion blocker that no
+        # policy could clear. The env already reports the matching denominator.
+        decision_steps = np.array(
+            [max(0.0, float(getattr(m, "mask_decision_steps", 0))) for m in window],
+            dtype=np.float64,
+        )
+        total_decisions = float(np.sum(decision_steps))
+        if total_decisions <= 0.0:
+            total_decisions = float(np.sum(episode_lengths))
+
+        if total_decisions > 0.0:
+            mask_collapse_rate = float(np.sum(mask_collapse_steps) / total_decisions)
+            stop_mode_rate = float(np.sum(stop_mode_steps) / total_decisions)
         else:
             mask_collapse_rate = 0.0
             stop_mode_rate = 0.0
