@@ -101,11 +101,24 @@ def test_pending_entry_is_cancelled_if_drawdown_worsens_before_fill(
     assert risk_env.position is None
 
     _set_total_drawdown_without_daily_breach(risk_env, equity=92_000.0)
-    _, _, terminated, truncated, second_info = risk_env.step(0)
 
-    assert not terminated
-    assert not truncated
-    assert second_info["block_reason"] == "drawdown_entry_veto"
+    # Written against a zero-latency environment, where the pending entry
+    # resolved on the very next step.  Execution latency is now honoured (it was
+    # being silently forced to 0 whenever domain randomization was disabled), so
+    # resolution can take an extra bar.  The invariant is not "cancelled within
+    # one step" - it is that a vetoed entry never becomes a position, however
+    # many bars the fill would have taken.
+    latency = max(1, int(risk_env._exec_latency()))
+    for _ in range(latency + 1):
+        _, _, terminated, truncated, second_info = risk_env.step(0)
+        assert not terminated
+        assert not truncated
+        assert second_info["block_reason"] == "drawdown_entry_veto"
+        # The load-bearing assertion, checked at every intermediate bar.
+        assert risk_env.position is None, "a vetoed entry filled into a position"
+        if risk_env.pending_entry is None:
+            break
+
     assert risk_env.pending_entry is None
     assert risk_env.position is None
     assert risk_env.daily_trades == 0

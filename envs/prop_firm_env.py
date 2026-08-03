@@ -1621,7 +1621,14 @@ class PropFirmTradingEnv(
         if not self.config.domain_randomization_enabled:
             self._episode_spread_mult = 1.0
             self._episode_slip_mult = 1.0
-            self._episode_latency_bars = 0
+            # Fall back to the CONFIGURED latency, not to zero. Forcing 0 here
+            # meant _build_episode_execution_config then overwrote the config's
+            # own latency_bars with it, so disabling randomization silently
+            # bought free instant fills - evaluation ran at zero latency while
+            # the terminal curriculum stage declares one bar.
+            self._episode_latency_bars = int(
+                getattr(self.config.execution, "latency_bars", 0) or 0
+            )
             self._episode_vol_scale = 1.0
             return
 
@@ -2982,6 +2989,9 @@ class PropFirmTradingEnv(
             trades_with_regime.append(
                 {
                     "pnl": float(r.net_pnl),
+                    # Needed to price overnight financing, which differs by
+                    # side on gold, and to decompose P&L by direction.
+                    "direction": str(r.direction),
                     "r_multiple": float(r.net_pnl / max(r.initial_risk_eur, 1.0)),
                     "is_winner": r.net_pnl > 0,
                     "bars_held": int(r.bars_held),

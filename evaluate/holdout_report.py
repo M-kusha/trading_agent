@@ -64,6 +64,137 @@ BOOTSTRAP_RESAMPLES = 10_000
 BOOTSTRAP_ALPHA = 0.05
 
 
+@dataclass(frozen=True)
+class ExecutionContract:
+    """What a trade is declared to cost when the result is used as evidence.
+
+    Evaluation was silently cheaper than anything the model would meet live:
+    commission_spec resolved to NONE, latency collapsed to zero once domain
+    randomization was disabled, no overnight financing existed at all, and the
+    effective spread came out at 7 points against a measured FTMO median of 40.
+    A result produced under those conditions flatters the strategy and cannot be
+    compared to a broker.
+
+    The contract is versioned so a stored report can be read back and audited
+    against the costs it was actually produced under.
+    """
+
+    version: str = "acceptance-1"
+    # Spread comes from the data's own spread column; this scales it.
+    data_spread_scale: float = 1.0
+    base_spread_points: float = 0.22
+    slippage_points_sigma: float = 0.06
+    max_slippage_points: float = 0.35
+    # Per lot, per side - matching the terminal curriculum stage.
+    commission_per_lot_per_side: float = 3.0
+    latency_bars: int = 1
+    # XAUUSD financing, points per lot per night. Both sides are charged on
+    # gold at most brokers; these are conservative retail figures.
+    swap_long_points_per_night: float = -1.2
+    swap_short_points_per_night: float = -0.8
+    # 22:00 UTC is the industry-standard rollover.
+    rollover_hour_utc: int = 22
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "version": self.version,
+            "data_spread_scale": self.data_spread_scale,
+            "base_spread_points": self.base_spread_points,
+            "slippage_points_sigma": self.slippage_points_sigma,
+            "max_slippage_points": self.max_slippage_points,
+            "commission_per_lot_per_side": self.commission_per_lot_per_side,
+            "latency_bars": self.latency_bars,
+            "swap_long_points_per_night": self.swap_long_points_per_night,
+            "swap_short_points_per_night": self.swap_short_points_per_night,
+            "rollover_hour_utc": self.rollover_hour_utc,
+        }
+
+
+ACCEPTANCE_CONTRACT = ExecutionContract()
+
+
+def apply_execution_contract(cfg: PropFirmConfig, contract: ExecutionContract) -> Dict[str, Any]:
+    """Impose the contract on an evaluation config and report what took effect.
+
+    Returns the settings actually resolved, so the report states its costs
+    rather than leaving them to be inferred from defaults.
+    """
+    from envs.core.execution_model import CommissionMode, CommissionSpec
+
+    ex = cfg.execution
+    ex.data_spread_scale = float(contract.data_spread_scale)
+    ex.base_spread_points = float(contract.base_spread_points)
+    ex.slippage_points_sigma = float(contract.slippage_points_sigma)
+    ex.max_slippage_points = float(contract.max_slippage_points)
+    ex.latency_bars = int(contract.latency_bars)
+
+    # deterministic_costs must not mean free: slippage stays at its declared
+    # magnitude, it simply stops being random.
+    ex.deterministic_costs = True
+    ex.rejection_enabled = False
+    ex.spread_shock_enabled = False
+
+    rate = float(contract.commission_per_lot_per_side)
+    ex.commission_spec = (
+        CommissionSpec(mode=CommissionMode.PER_LOT_PER_SIDE, commission_rate=rate)
+        if rate > 0.0
+        else CommissionSpec(mode=CommissionMode.NONE, commission_rate=0.0)
+    )
+
+    return {
+        "contract": contract.as_dict(),
+        "resolved": {
+            "data_spread_scale": ex.data_spread_scale,
+            "base_spread_points": ex.base_spread_points,
+            "slippage_points_sigma": ex.slippage_points_sigma,
+            "max_slippage_points": ex.max_slippage_points,
+            "latency_bars": ex.latency_bars,
+            "commission_mode": str(getattr(ex.commission_spec, "mode", "none")),
+            "commission_rate": float(getattr(ex.commission_spec, "commission_rate", 0.0)),
+            "deterministic_costs": ex.deterministic_costs,
+        },
+    }
+
+
+def swap_cost_eur(
+    trades: Sequence[Dict[str, Any]],
+    contract: ExecutionContract,
+    *,
+    bars_per_day: float = 96.0,
+    point_value_per_lot: float = 100.0,
+) -> float:
+    """Overnight financing the environment does not model, priced from the trades.
+
+    The env carries no swap at all, so a multi-day hold currently costs nothing
+    to finance. Rather than leave that omission silent, it is computed from each
+    trade's recorded holding time and direction and deducted explicitly.
+    """
+    total = 0.0
+    for tr in trades:
+        bars = float(tr.get("bars_held", 0.0) or 0.0)
+        lots = float(tr.get("lot_size", 0.0) or 0.0)
+        if bars <= 0.0 or lots <= 0.0:
+            continue
+        nights = int(bars // bars_per_day)
+        if nights <= 0:
+            continue
+        direction = str(tr.get("direction", "")).lower()
+        if direction not in ("long", "short"):
+            # Defaulting to "long" would silently charge every short the wrong
+            # financing rate, which is how a cost model quietly becomes fiction.
+            raise ValueError(
+                f"trade record has no usable direction ({tr.get('direction')!r}); "
+                f"cannot price overnight financing"
+            )
+        rate = (
+            contract.swap_long_points_per_night
+            if direction == "long"
+            else contract.swap_short_points_per_night
+        )
+        total += nights * rate * lots * point_value_per_lot / 100.0
+    return float(total)
+
+
 @dataclass
 class Result:
     name: str
@@ -807,6 +938,11 @@ def main() -> int:
     ap.add_argument("--instrument", default="XAUUSD")
     ap.add_argument("--out", default="logs/holdout_report.json")
     ap.add_argument(
+        "--contract-version", default=ACCEPTANCE_CONTRACT.version,
+        help="Execution contract the result is produced under. Recorded in the "
+             "report so stored evidence can be audited against its own costs.",
+    )
+    ap.add_argument(
         "--allow-unbound-model",
         action="store_true",
         help="Allow a checkpoint without matching provenance for diagnostics only.",
@@ -852,6 +988,8 @@ def main() -> int:
     else:
         logger.warning("No model at %s - baselines only", path)
 
+    contract = ACCEPTANCE_CONTRACT
+
     report: Dict[str, Any] = {
         "report_type": "DEVELOPMENT_DIAGNOSTIC_NOT_LIVE_ACCEPTANCE",
         "split_ts": str(split_ts),
@@ -869,6 +1007,7 @@ def main() -> int:
         "sections": {},
         "section_metadata": {},
         "section_verdicts": {},
+        "execution_contract": ACCEPTANCE_CONTRACT.as_dict(),
     }
     sections = []
 
@@ -893,9 +1032,10 @@ def main() -> int:
         cfg.mirror_augmentation_prob = mirror
         cfg.domain_randomization_enabled = False
         cfg.high_vol_oversample_prob = 0.0
-        cfg.execution.deterministic_costs = True
-        cfg.execution.rejection_enabled = False
-        cfg.execution.spread_shock_enabled = False
+        # Costs are declared, not inherited. Setting deterministic_costs alone
+        # left commission at NONE and latency at zero, so evaluation ran far
+        # cheaper than the terminal curriculum stage or the live book.
+        execution_settings = apply_execution_contract(cfg, contract)
         if dset is holdout:
             cfg.episode_start_min_time = str(split_ts)
         probe = PropFirmTradingEnv(dset, copy.deepcopy(cfg))
@@ -950,7 +1090,8 @@ def main() -> int:
             "episode_steps": int(args.max_steps),
             "episode_start_indices": episode_starts,
             "overlapping_windows": False,
-            "confidence_interval_valid": len(episode_starts) >= 2,
+            "confidence_interval_valid": len(episode_starts) >= MIN_INDEPENDENT_BLOCKS,
+            "execution_settings": execution_settings,
         }
 
     out = "\n".join(sections)
