@@ -860,6 +860,125 @@ def load_bound_model_provenance(
     return payload
 
 
+def bind_evaluation_to_provenance(
+    provenance: Dict[str, Any],
+    *,
+    loaded_manifest: Dict[str, Any],
+    train_manifest: Dict[str, Any],
+    holdout_manifest: Dict[str, Any],
+    resolved_split_at: Any,
+    data_cutoff: Any,
+    allow_unbound: bool,
+) -> Dict[str, Any]:
+    """Refuse to evaluate a model against data it was not trained under.
+
+    A report is only evidence about the model it names. Nothing previously
+    stopped the evaluator loading a different dataset, a different split or a
+    later cutoff than the run that produced the checkpoint, and reporting the
+    result as though it described that model.
+
+    Fingerprints, the resolved split and the cutoff must all agree. Any
+    disagreement is a hard stop rather than a warning, because a mismatched
+    evaluation is not merely imprecise - it measures something else.
+    """
+    if provenance.get("status") == "UNBOUND_MODEL_ALLOWED_FOR_DIAGNOSTICS":
+        return {"bound": False, "reason": "unbound diagnostic run", "mismatches": []}
+
+    recorded = provenance.get("datasets") or {}
+    mismatches: List[str] = []
+
+    def _compare(role: str, actual: Dict[str, Any]) -> None:
+        want = (recorded.get(role) or {}).get("fingerprint")
+        got = actual.get("dataset_fingerprint")
+        if want and got and str(want) != str(got):
+            mismatches.append(
+                f"{role} dataset fingerprint differs: model trained on {want}, "
+                f"evaluation loaded {got}"
+            )
+
+    _compare("loaded", loaded_manifest)
+    _compare("train", train_manifest)
+    _compare("holdout", holdout_manifest)
+
+    args = provenance.get("arguments") or {}
+    recorded_split = args.get("resolved_holdout_split_at")
+    if recorded_split and str(recorded_split) != str(resolved_split_at):
+        mismatches.append(
+            f"holdout split differs: model used {recorded_split}, "
+            f"evaluation resolved {resolved_split_at}"
+        )
+
+    recorded_cutoff = args.get("data_cutoff")
+    if recorded_cutoff and str(recorded_cutoff) != str(data_cutoff):
+        mismatches.append(
+            f"data cutoff differs: model used {recorded_cutoff}, "
+            f"evaluation used {data_cutoff}"
+        )
+
+    if mismatches and not allow_unbound:
+        bullet = chr(10) + "  - "
+        raise ValueError(
+            "evaluation is not bound to this model's provenance:"
+            + bullet
+            + bullet.join(mismatches)
+        )
+
+    return {
+        "bound": not mismatches,
+        "reason": "matched" if not mismatches else "mismatched (allowed)",
+        "mismatches": mismatches,
+    }
+
+
+def training_end_from_provenance(provenance: Dict[str, Any]) -> Optional[str]:
+    """The last bar the model actually trained on.
+
+    Deriving this from the current CSV maximum is wrong the moment new broker
+    bars are appended: `last_trained` jumps forward, the external section finds
+    nothing after it, and a three-way comparison silently becomes two-way. The
+    model's own record is the only correct source.
+    """
+    train = (provenance.get("datasets") or {}).get("train") or {}
+    boundary = train.get("boundary")
+    if boundary:
+        return str(boundary)
+    frames = train.get("frames") or []
+    lasts = [
+        str(f["last_time"])
+        for f in frames
+        if isinstance(f, dict) and f.get("last_time")
+    ]
+    return max(lasts) if lasts else None
+
+
+def assert_no_training_overlap(
+    dataset: Dict[str, Dict[str, Any]],
+    instrument: str,
+    training_end: Optional[str],
+) -> None:
+    """An evaluation bar at or before the training end is not out-of-sample."""
+    if not training_end:
+        return
+    frames = dataset.get(instrument) or {}
+    df = frames.get("M15")
+    if df is None or getattr(df, "empty", True) or "time" not in getattr(df, "columns", []):
+        return
+
+    import pandas as pd
+
+    boundary = pd.Timestamp(training_end)
+    if boundary.tzinfo is None:
+        boundary = boundary.tz_localize("UTC")
+    times = pd.to_datetime(df["time"], utc=True)
+    overlapping = int((times <= boundary).sum())
+    if overlapping:
+        raise ValueError(
+            f"{overlapping} evaluation bars fall at or before the model's training "
+            f"end ({training_end}); those bars are in-sample and cannot support an "
+            f"out-of-sample claim"
+        )
+
+
 def format_by_regime(results: List[Result]) -> str:
     """Break the model's P&L down by the volatility regime of each entry."""
     model = next((r for r in results if r.name == "trained-model"), None)
@@ -990,6 +1109,27 @@ def main() -> int:
 
     contract = ACCEPTANCE_CONTRACT
 
+    # Refuse to evaluate a model against data it was not trained under. A report
+    # is only evidence about the model it names.
+    binding = bind_evaluation_to_provenance(
+        model_provenance,
+        loaded_manifest=build_dataset_manifest(
+            data, role="holdout_report_loaded", boundary=args.data_cutoff
+        ),
+        train_manifest=build_dataset_manifest(
+            _train, role="holdout_report_train", boundary=split_ts
+        ),
+        holdout_manifest=build_dataset_manifest(
+            holdout, role="holdout_report_holdout", boundary=split_ts
+        ),
+        resolved_split_at=split_ts,
+        data_cutoff=args.data_cutoff,
+        allow_unbound=bool(args.allow_unbound_model),
+    )
+    if binding["mismatches"]:
+        for line in binding["mismatches"]:
+            logger.warning("PROVENANCE MISMATCH (allowed): %s", line)
+
     report: Dict[str, Any] = {
         "report_type": "DEVELOPMENT_DIAGNOSTIC_NOT_LIVE_ACCEPTANCE",
         "split_ts": str(split_ts),
@@ -1008,6 +1148,7 @@ def main() -> int:
         "section_metadata": {},
         "section_verdicts": {},
         "execution_contract": ACCEPTANCE_CONTRACT.as_dict(),
+        "provenance_binding": binding,
     }
     sections = []
 
@@ -1016,12 +1157,36 @@ def main() -> int:
         ("DEVELOPMENT HOLDOUT MIRRORED (short-side diagnostic)", holdout, 1.0),
     ]
 
+    # The model's own record of where its training data ended, not the current
+    # CSV maximum. Deriving it from the loaded frame is wrong the moment broker
+    # bars are appended: last_trained jumps to the newest bar, load_ftmo_data
+    # finds nothing after it, and the external comparison silently disappears -
+    # which is exactly what happened once the merge was added.
+    provenance_end = training_end_from_provenance(model_provenance)
     m15 = _primary_frame(next(iter(data.values())))
-    last_trained = m15["time"].max() if m15 is not None and "time" in m15.columns else None
+    csv_end = m15["time"].max() if m15 is not None and "time" in m15.columns else None
+
+    last_trained = provenance_end if provenance_end else csv_end
+    report["training_end"] = {
+        "value": str(last_trained) if last_trained is not None else None,
+        "source": "model_provenance" if provenance_end else "loaded_csv_fallback",
+        "loaded_csv_max": str(csv_end) if csv_end is not None else None,
+    }
+    if provenance_end is None and model_provenance.get("status") not in (
+        "NO_MODEL_BASELINES_ONLY",
+        "UNBOUND_MODEL_ALLOWED_FOR_DIAGNOSTICS",
+    ):
+        raise ValueError(
+            "model provenance carries no training end; the external section "
+            "cannot be shown to be out-of-sample"
+        )
+
     ftmo = load_ftmo_data(args.ftmo_dir, args.instrument, last_trained)
     if ftmo is not None:
         n = len(ftmo[args.instrument]["M15"])
         logger.info("FTMO live bars after %s: %d M15", last_trained, n)
+        # An external section that overlaps training is not external.
+        assert_no_training_overlap(ftmo, args.instrument, last_trained)
         datasets.append((f"BROKER DEVELOPMENT DATA ({n} M15 bars, broker spreads)", ftmo, 0.0))
     else:
         logger.warning("No FTMO data in %s - skipping the live out-of-sample section", args.ftmo_dir)
