@@ -327,6 +327,18 @@ class PropFirmConfig:
     emergency_close_threshold: float = 0.09
 
 
+    # Stop placed at a fixed ATR multiple rather than a fixed euro amount, so
+    # risk stays constant in probability terms as volatility changes. 1.5 ATR
+    # is the level the reachability study used: P(hit 2R before stop) 0.307
+    # over a 96-bar horizon.
+    # Share of episodes that start inside the top volatility quintile. The
+    # post-war regime is ~10% of the merged dataset, so uniform sampling gives
+    # the agent 10% exposure to the market it now has to trade.
+    high_vol_oversample_prob: float = 0.40
+
+    atr_stop_enabled: bool = True
+    atr_stop_multiplier: float = 1.5
+
     risk_per_trade_pct: float = 0.003
     max_risk_per_trade_pct: float = 0.007
     # Anti-martingale, the mirror of loss_layer_risk_mult: press while the

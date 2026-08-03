@@ -217,6 +217,7 @@ def load_market_data(
     data_dir: str = "data/processed",
     instruments: Optional[List[str]] = None,
     min_bars: int = 5000,
+    extra_dir: Optional[str] = "data/ftmo_live",
 ) -> Dict[str, Dict[str, pd.DataFrame]]:
     if instruments is None:
         instruments = ["XAUUSD"]
@@ -292,8 +293,60 @@ def load_market_data(
         logger.warning("No data loaded from files; generating synthetic data")
         return _create_synthetic_data(instruments, min_bars)
 
+    data = append_broker_bars(data, extra_dir=extra_dir)
+
     total_bars = sum(len(df) for tfs in data.values() for df in tfs.values())
     logger.info(f"Total: {len(data)} instruments, {total_bars:,} bars")
+    return data
+
+
+def append_broker_bars(
+    data: Dict[str, Dict[str, pd.DataFrame]],
+    extra_dir: Optional[str] = "data/ftmo_live",
+) -> Dict[str, Dict[str, pd.DataFrame]]:
+    """Extend each timeframe with broker bars newer than the processed set.
+
+    The processed CSVs end 2025-12-18. Everything after that is the post-war
+    regime: XAUUSD 20-day realised volatility ran 0.74-0.90% through 2025,
+    spiked to 3.28% in February 2026 and settled at 1.37-1.68%. Only 5.5% of the
+    processed bars resemble it, which is why a model trained on them alone does
+    not transfer.
+
+    Only OHLCV and spread are appended. The processed files carry 58 engineered
+    columns, but the env reads none of them - _prepare_market_data passes
+    open/high/low/close/volume and nothing else - so the join is sound.
+    """
+    if not extra_dir or not os.path.exists(extra_dir):
+        return data
+
+    for instrument, frames in data.items():
+        for tf, df in list(frames.items()):
+            path = os.path.join(extra_dir, f"{instrument}_{tf}.csv")
+            if not os.path.exists(path) or df is None or df.empty or "time" not in df.columns:
+                continue
+            try:
+                extra: pd.DataFrame = pd.read_csv(path, parse_dates=["time"])
+                extra = extra.loc[extra["time"] > df["time"].max()]
+                if extra.empty:
+                    continue
+
+                for col in ("open", "high", "low", "close", "volume"):
+                    if col not in extra.columns:
+                        extra[col] = 0.0
+                    extra[col] = pd.to_numeric(extra[col], errors="coerce").fillna(0.0).astype(np.float32)
+
+                merged = pd.concat([df, extra], ignore_index=True, sort=False)
+                merged = merged.sort_values(by="time", ignore_index=True)
+                for col in ("open", "high", "low", "close", "volume"):
+                    merged[col] = merged[col].astype(np.float32)
+                frames[tf] = merged
+                logger.info(
+                    "Appended %d broker bars to %s/%s (now %d, through %s)",
+                    len(extra), instrument, tf, len(merged), merged["time"].iloc[-1],
+                )
+            except Exception as e:  # noqa: BLE001 - a bad extra file must not kill training
+                logger.warning("Could not append broker bars for %s/%s: %s", instrument, tf, e)
+
     return data
 
 
@@ -429,26 +482,65 @@ def split_data_by_time(
     return train, holdout, split_ts
 
 
+def slice_data_by_time_range(
+    data: Dict[str, Dict[str, pd.DataFrame]],
+    start: Any,
+    end: Any,
+) -> Dict[str, Dict[str, pd.DataFrame]]:
+    """Half-open [start, end) slice applied by timestamp on every timeframe."""
+    out: Dict[str, Dict[str, pd.DataFrame]] = {}
+    for inst, tfs in data.items():
+        out[inst] = {}
+        for tf, df in tfs.items():
+            if df is None or df.empty or "time" not in df.columns:
+                out[inst][tf] = df
+                continue
+            mask = df["time"] >= start if start is not None else df["time"] == df["time"]
+            if end is not None:
+                mask = mask & (df["time"] < end)
+            out[inst][tf] = df.loc[mask].copy().reset_index(drop=True)
+    return out
+
+
 def build_walk_forward_folds(
     data: Dict[str, Dict[str, pd.DataFrame]],
     n_folds: int = 3,
     val_ratio: float = 0.12,
     min_train_ratio: float = 0.55,
 ) -> List[Tuple[Dict[str, Dict[str, pd.DataFrame]], Dict[str, Dict[str, pd.DataFrame]]]]:
-    n = _min_len_across(data)
+    """Expanding-window walk-forward folds, cut by timestamp.
+
+    Previously sized off _min_len_across(data) - the D1 row count - and sliced
+    every timeframe with that same index range, so on this dataset it produced a
+    single fold with 91 M15 training bars out of 99,908. That is the function
+    the Optuna search runs on, so any hyperparameters tuned through it were
+    fitted to 91 bars.
+
+    Cutting on timestamps keeps the timeframes aligned and sizes the folds off
+    the primary timeframe, the way the holdout split does.
+    """
+    if not data:
+        return []
+
+    primary = _primary_frame(next(iter(data.values())))
+    if primary is None or "time" not in primary.columns:
+        return []
+
+    times = primary["time"].reset_index(drop=True)
+    n = len(times)
     if n <= 0:
         return []
 
     val_len = max(1000, int(n * val_ratio))
     min_train = max(2000, int(n * min_train_ratio))
-
     max_train_end = n - val_len
+
     if max_train_end <= min_train + 100:
-
-        train = slice_data_by_index(data, 0, max_train_end)
-        val = slice_data_by_index(data, max_train_end, n)
-        return [(train, val)]
-
+        cut = times.iloc[max(1, max_train_end)]
+        return [(
+            slice_data_by_time_range(data, None, cut),
+            slice_data_by_time_range(data, cut, None),
+        )]
 
     step = max(500, int((max_train_end - min_train) / max(n_folds, 1)))
     folds: List[Tuple[Dict[str, Dict[str, pd.DataFrame]], Dict[str, Dict[str, pd.DataFrame]]]] = []
@@ -457,12 +549,15 @@ def build_walk_forward_folds(
     for _ in range(n_folds):
         if train_end + val_len > n:
             break
-        train = slice_data_by_index(data, 0, train_end)
-        val = slice_data_by_index(data, train_end, train_end + val_len)
-        folds.append((train, val))
+        train_cut = times.iloc[train_end]
+        val_cut = times.iloc[min(train_end + val_len, n - 1)]
+        folds.append((
+            slice_data_by_time_range(data, None, train_cut),
+            slice_data_by_time_range(data, train_cut, val_cut),
+        ))
         train_end += step
 
-    return folds or []
+    return folds
 
 
 def create_prop_firm_env(data: Dict[str, Dict[str, pd.DataFrame]], config: PropFirmConfig) -> PropFirmTradingEnv:

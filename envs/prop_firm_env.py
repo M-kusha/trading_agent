@@ -139,6 +139,7 @@ class PropFirmTradingEnv(
         self.curriculum: Any = None
         self._apply_curriculum_overrides = bool(apply_curriculum_overrides)
         self._reported_dropped_overrides: set = set()
+        self._high_vol_idx_cache: Dict[int, Optional[np.ndarray]] = {}
         self._pending_stage_apply: bool = False
         self._last_stage_name: str = ""
         self._last_stage_epoch: int = 0
@@ -507,6 +508,9 @@ class PropFirmTradingEnv(
     # Higher-timeframe bars requested by _prepare_market_data. The observation
     # contract requires at least min_bars_htf (30) of each, so an episode may
     # not start before this much history exists.
+    # Top quintile by 5-day realised volatility counts as the high-vol band.
+    _HIGH_VOL_FRACTION: float = 0.20
+
     _HTF_LOOKBACK_BARS: Dict[str, int] = {"H1": 60, "H4": 40, "D1": 40}
 
     def _episode_start_buffer(self) -> int:
@@ -1103,6 +1107,70 @@ class PropFirmTradingEnv(
         gross = diff * pip_value * pos.lot_size
         return float(gross - float(exit_fee))
 
+    def _high_vol_starts(self, instrument: str) -> Optional[np.ndarray]:
+        """Indices of bars in the top volatility band, computed once per frame.
+
+        The post-war regime is roughly 10% of the merged dataset, so sampling
+        episode starts uniformly gives the agent 10% exposure to the market it
+        now has to trade. Weighting the sampler is what turns 5.5% exposure into
+        enough experience to learn from.
+        """
+        df = self.data.get(instrument, {}).get(self._primary_tf())
+        if df is None or getattr(df, "empty", True):
+            return None
+
+        key = id(df)
+        cached = self._high_vol_idx_cache.get(key)
+        if cached is not None:
+            return cached
+
+        try:
+            close = df[self._resolve_column(df, "close")].to_numpy(dtype=np.float64)
+        except KeyError:
+            return None
+        if close.size < 2000:
+            self._high_vol_idx_cache[key] = None
+            return None
+
+        r = np.diff(np.log(np.maximum(close, 1e-9)))
+        window = 96 * 5
+        cs = np.cumsum(np.insert(r ** 2, 0, 0.0))
+        var = (cs[window:] - cs[:-window]) / window
+        vol = np.sqrt(np.maximum(var, 0.0))
+        pad = close.size - vol.size
+        vol = np.concatenate([np.full(pad, vol[0] if vol.size else 0.0), vol])
+
+        cutoff = float(np.nanpercentile(vol, 100.0 * (1.0 - self._HIGH_VOL_FRACTION)))
+        idx = np.flatnonzero(vol >= cutoff).astype(np.int64)
+        self._high_vol_idx_cache[key] = idx if idx.size else None
+        return self._high_vol_idx_cache[key]
+
+    def _sample_episode_start(self, buffer: int, max_start: int) -> int:
+        prob = float(getattr(self.config, "high_vol_oversample_prob", 0.0) or 0.0)
+        if prob > 0.0 and self.np_random.random() < prob:
+            idx = self._high_vol_starts(self._episode_instrument)
+            if idx is not None:
+                eligible = idx[(idx >= buffer) & (idx < max_start)]
+                if eligible.size:
+                    return int(eligible[self.np_random.integers(0, eligible.size)])
+        return int(self.np_random.integers(buffer, max_start))
+
+    def _atr_price(self, instrument: str, period: int = 14) -> float:
+        """ATR in price units, for sizing the stop against volatility."""
+        o = self._get_ohlcv(instrument, lookback=period + 2)
+        if not o or len(o.get("close", [])) < period + 1:
+            return 0.0
+        high = np.asarray(o["high"], dtype=np.float64)
+        low = np.asarray(o["low"], dtype=np.float64)
+        close = np.asarray(o["close"], dtype=np.float64)
+        tr = np.maximum(
+            high[1:] - low[1:],
+            np.maximum(np.abs(high[1:] - close[:-1]), np.abs(low[1:] - close[:-1])),
+        )
+        if tr.size < period:
+            return 0.0
+        return float(np.mean(tr[-period:]))
+
     def _calculate_lot_size(self, size_mult: float) -> Tuple[float, float]:
         base_risk = self.balance * self.config.risk_per_trade_pct
 
@@ -1111,9 +1179,35 @@ class PropFirmTradingEnv(
         risk_eur = base_risk * float(np.clip(size_mult, 0.25, 1.25))
         risk_eur = min(risk_eur, self.balance * self.config.max_risk_per_trade_pct)
 
-        lot = risk_eur / max(self.config.hard_stop_loss_eur, 100.0)
+        # The stop was a fixed euro amount, so its distance in PRICE terms had
+        # nothing to do with volatility: the same 350 EUR sat ~1.5 ATR away in a
+        # calm market and ~0.75 ATR away once volatility doubled, and got hit
+        # roughly twice as often for the same nominal risk. Gold's realised
+        # volatility went from 0.85% to ~1.55% after February 2026, so the agent
+        # was risking the same money at a very different probability of losing it.
+        #
+        # Sizing the lot from ATR fixes the stop at a constant statistical
+        # distance instead: risk in euros stays put, and the lot shrinks when the
+        # market gets wilder.
+        cfg = self.config
+        stop_eur = max(float(cfg.hard_stop_loss_eur), 100.0)
+
+        if bool(getattr(cfg, "atr_stop_enabled", True)):
+            inst = str(getattr(self, "_episode_instrument", "") or "")
+            atr = self._atr_price(inst) if inst else 0.0
+            if atr > 0.0:
+                pip_value, multiplier = self._get_pip_value(inst)
+                per_price_unit = max(pip_value * multiplier, 1e-9)
+                stop_distance = float(getattr(cfg, "atr_stop_multiplier", 1.5)) * atr
+                lot = risk_eur / max(stop_distance * per_price_unit, 1e-9)
+                lot = float(np.clip(lot, 0.01, 10.0))
+                # Recompute so the position's own stop matches the lot actually taken.
+                initial_risk = float(lot * stop_distance * per_price_unit)
+                return lot, initial_risk
+
+        lot = risk_eur / stop_eur
         lot = float(np.clip(lot, 0.01, 10.0))
-        initial_risk = float(lot * self.config.hard_stop_loss_eur)
+        initial_risk = float(lot * stop_eur)
         return lot, initial_risk
 
     def _update_peak_balance(self) -> None:
@@ -1543,7 +1637,7 @@ class PropFirmTradingEnv(
 
             self.current_step = self._sample_episode_start_with_difficulty(buffer, max_start)
         elif max_start > buffer:
-            self.current_step = int(self.np_random.integers(buffer, max_start))
+            self.current_step = self._sample_episode_start(buffer, max_start)
         else:
             self.current_step = min(buffer, max(int(self._min_data_len) - 2, 0))
 
@@ -1637,7 +1731,12 @@ class PropFirmTradingEnv(
         if self.position is not None:
             pos = self.position
 
-            if pnl_u <= -self.config.hard_stop_loss_eur:
+            # Per-position: with ATR sizing every trade has its own stop distance,
+            # so a single global euro threshold would fire at the wrong place.
+            stop_at = float(getattr(pos, "initial_risk_eur", 0.0) or 0.0)
+            if stop_at <= 0.0:
+                stop_at = float(self.config.hard_stop_loss_eur)
+            if pnl_u <= -stop_at:
                 forced_close_now = True
                 close_reason_str = CloseReason.HARD_STOP.value
 

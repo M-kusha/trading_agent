@@ -65,6 +65,10 @@ class Result:
     long_pnl: float = 0.0
     short_pnl: float = 0.0
     r_multiples: List[float] = field(default_factory=list)
+    # An aggregate number hides the thing that matters most: a strategy can
+    # look profitable overall while losing badly in exactly the regime it now
+    # has to trade.
+    by_vol: Dict[str, List[float]] = field(default_factory=dict)
 
     @property
     def ftmo_pass(self) -> bool:
@@ -250,6 +254,9 @@ def run_policy(
             pnls.append(float(tr.get("pnl", 0.0)))
             res.r_multiples.append(float(tr.get("r_multiple", 0.0)))
             bars_held.append(float(tr.get("bars_held", 0)))
+            res.by_vol.setdefault(str(tr.get("volatility_regime", "unknown")), []).append(
+                float(tr.get("pnl", 0.0))
+            )
 
         ds = stats.get("direction_stats", {}) or {}
         res.long_pnl += float(ds.get("long_pnl", 0.0))
@@ -294,6 +301,24 @@ def build_policies(model) -> List[Policy]:
     if model is not None:
         policies.insert(0, TrainedModel(model))
     return policies
+
+
+def format_by_regime(results: List[Result]) -> str:
+    """Break the model's P&L down by the volatility regime of each entry."""
+    model = next((r for r in results if r.name == "trained-model"), None)
+    if model is None or not model.by_vol:
+        return ""
+
+    lines = ["", "  by volatility regime at entry:",
+             "    %-10s %10s %8s %8s %9s" % ("regime", "P&L EUR", "trades", "win%", "avg EUR")]
+    for regime in ("low", "medium", "high", "unknown"):
+        vals = model.by_vol.get(regime)
+        if not vals:
+            continue
+        a = np.asarray(vals, dtype=float)
+        lines.append("    %-10s %10.0f %8d %8.1f %9.2f" % (
+            regime, a.sum(), a.size, (a > 0).mean() * 100.0, a.mean()))
+    return chr(10).join(lines)
 
 
 def format_table(results: List[Result], title: str) -> str:
@@ -394,7 +419,7 @@ def main() -> int:
             run_policy(p, dset, cfg, args.episodes, args.seed, args.max_steps)
             for p in build_policies(model)
         ]
-        sections.append(format_table(results, label))
+        sections.append(format_table(results, label) + format_by_regime(results))
         report["sections"][label] = [vars(r) | {"ftmo": r.ftmo_verdict} for r in results]
 
     out = "\n".join(sections)
